@@ -8842,7 +8842,7 @@ dependencies = [
 [[package]]
 name = "yantrikdb-core"
 version = "0.1.0"
-source = "git+https://github.com/spranab/aidb.git#d965ceb1c889fb60b05d49dadd8fbd8e88186004"
+source = "git+https://github.com/spranab/yantrikdb.git#d965ceb1c889fb60b05d49dadd8fbd8e88186004"
 dependencies = [
  "aes-gcm",
  "base64 0.22.1",
@@ -8861,7 +8861,7 @@ dependencies = [
 [[package]]
 name = "yantrikdb-ml"
 version = "0.1.0"
-source = "git+https://github.com/spranab/aidb.git#d965ceb1c889fb60b05d49dadd8fbd8e88186004"
+source = "git+https://github.com/spranab/yantrikdb.git#d965ceb1c889fb60b05d49dadd8fbd8e88186004"
 dependencies = [
  "anyhow",
  "candle-core",

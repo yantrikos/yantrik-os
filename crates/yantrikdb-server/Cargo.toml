@@ -6,8 +6,8 @@ description = "HTTP server for Yantrik companion (replaces Python FastAPI servic
 
 [dependencies]
 yantrikdb-companion = { path = "../yantrikdb-companion" }
-yantrikdb-ml = { git = "https://github.com/spranab/aidb.git" }
-yantrikdb-core = { git = "https://github.com/spranab/aidb.git" }
+yantrikdb-ml = { git = "https://github.com/spranab/yantrikdb.git" }
+yantrikdb-core = { git = "https://github.com/spranab/yantrikdb.git" }
 axum = "0.8"
 tokio = { version = "1", features = ["rt", "macros", "signal"] }
 tower-http = { version = "0.6", features = ["cors"] }

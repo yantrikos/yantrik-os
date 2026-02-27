@@ -11,8 +11,8 @@ path = "src/main.rs"
 [dependencies]
 yantrikdb-companion = { path = "../yantrikdb-companion" }
 yantrikdb-server = { path = "../yantrikdb-server" }
-yantrikdb-ml = { git = "https://github.com/spranab/aidb.git" }
-yantrikdb-core = { git = "https://github.com/spranab/aidb.git" }
+yantrikdb-ml = { git = "https://github.com/spranab/yantrikdb.git" }
+yantrikdb-core = { git = "https://github.com/spranab/yantrikdb.git" }
 axum = "0.8"
 clap = { version = "4", features = ["derive"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }

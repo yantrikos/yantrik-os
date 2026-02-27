@@ -10,8 +10,8 @@ path = "src/main.rs"
 
 [dependencies]
 yantrikdb-companion = { path = "../yantrikdb-companion" }
-yantrikdb-ml = { git = "https://github.com/spranab/aidb.git" }
-yantrikdb-core = { git = "https://github.com/spranab/aidb.git" }
+yantrikdb-ml = { git = "https://github.com/spranab/yantrikdb.git" }
+yantrikdb-core = { git = "https://github.com/spranab/yantrikdb.git" }
 slint = "1.9"
 crossbeam-channel = "0.5"
 tracing = "0.1"
