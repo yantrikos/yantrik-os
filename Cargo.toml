@@ -1,0 +1,13 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/yantrikdb-companion",
+    "crates/yantrikdb-server",
+    "crates/yantrik",
+    "crates/yantrik-ui",
+]
+
+# Optimize dependencies (candle, tokenizers) even in dev builds.
+# Without this, quantized LLM inference is ~100x slower.
+[profile.dev.package."*"]
+opt-level = 2

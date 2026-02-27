@@ -1,0 +1,21 @@
+# Rust
+target/
+
+# SQLite databases
+memory.db
+memory.db-shm
+memory.db-wal
+memory.db.bak
+*.db
+
+# MCP / Saga
+.mcp.json
+.tracker.db*
+.env
+
+# OS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/

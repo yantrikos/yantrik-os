@@ -1,0 +1,97 @@
+// Voice mode overlay — full-screen mic visualization.
+// States: listening → transcribing → speaking.
+
+import { Theme } from "theme.slint";
+import { Orb } from "components/orb.slint";
+
+export component VoiceOverlay inherits Rectangle {
+    // 0=listening, 1=transcribing, 2=speaking
+    in property <int> voice-state: 0;
+    in property <string> transcribed-text: "";
+    in property <string> response-text: "";
+    callback cancel-pressed();
+
+    background: #0a0a0ae0;
+
+    VerticalLayout {
+        alignment: center;
+        spacing: 32px;
+        padding: 32px;
+
+        // Large orb
+        HorizontalLayout {
+            alignment: center;
+            Orb {
+                size-px: 180;
+                is-thinking: voice-state == 1;
+                has-urges: false;
+            }
+        }
+
+        // State label
+        Text {
+            text: voice-state == 0 ? "Listening..." :
+                  voice-state == 1 ? "Transcribing..." :
+                  "Speaking...";
+            color: Theme.amber;
+            font-size: Theme.font-title;
+            horizontal-alignment: center;
+            letter-spacing: 1px;
+        }
+
+        // Transcribed text (appears after transcription)
+        if transcribed-text != "" : Rectangle {
+            background: Theme.bg-card;
+            border-radius: Theme.radius-card;
+            height: trans-text.preferred-height + 24px;
+
+            trans-text := Text {
+                x: 16px;
+                y: 12px;
+                width: parent.width - 32px;
+                text: "\"" + transcribed-text + "\"";
+                color: Theme.text-primary;
+                font-size: Theme.font-body;
+                font-italic: true;
+                wrap: word-wrap;
+            }
+        }
+
+        // Response text (while speaking)
+        if response-text != "" : Text {
+            text: response-text;
+            color: Theme.text-secondary;
+            font-size: Theme.font-body;
+            horizontal-alignment: center;
+            wrap: word-wrap;
+        }
+
+        // Cancel button
+        HorizontalLayout {
+            alignment: center;
+
+            TouchArea {
+                width: 60px;
+                height: 60px;
+                clicked => { root.cancel-pressed(); }
+
+                Rectangle {
+                    width: 60px;
+                    height: 60px;
+                    border-radius: 30px;
+                    background: Theme.bg-elevated;
+                    border-width: 1px;
+                    border-color: Theme.text-dim;
+
+                    Text {
+                        text: "✕";
+                        color: Theme.text-secondary;
+                        font-size: 24px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+        }
+    }
+}

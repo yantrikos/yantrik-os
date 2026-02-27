@@ -1,0 +1,244 @@
+// Yantrik OS — Root application.
+// Screen state machine: boot → idle → chat / home / bond / personality / memory.
+
+import { Theme } from "theme.slint";
+import { BootScreen } from "boot.slint";
+import { IdleScreen } from "idle.slint";
+import { ChatScreen } from "chat.slint";
+import { HomeScreen } from "home.slint";
+import { BondScreen, BondData } from "bond.slint";
+import { PersonalityScreen, OpinionData, SharedRefData } from "personality.slint";
+import { MemoryBrowser, MemoryItem } from "memory_browser.slint";
+import { VoiceOverlay } from "voice_overlay.slint";
+import { MessageData } from "components/message_bubble.slint";
+import { UrgeCardData } from "components/glance_card.slint";
+
+export { MessageData, UrgeCardData, BondData, OpinionData, SharedRefData, MemoryItem }
+
+export component App inherits Window {
+    title: "Yantrik OS";
+    width: 360px;
+    height: 640px;
+    background: Theme.bg-deep;
+
+    // Screen state: 0=boot, 1=idle, 2=chat, 3=home, 4=bond, 5=personality, 6=memory
+    in-out property <int> current-screen: 0;
+
+    // Companion state (set from Rust)
+    in property <int> memory-count: 0;
+    in property <bool> is-thinking: false;
+    in property <bool> has-urges: false;
+    in property <string> boot-status: "remembering...";
+
+    // Chat state
+    in property <[MessageData]> messages: [];
+    in property <bool> is-generating: false;
+
+    // Home state
+    in property <[UrgeCardData]> urges: [];
+
+    // Bond state
+    in property <BondData> bond-data: {
+        bond-score: 0.0,
+        bond-level: "Stranger",
+        total-interactions: 0,
+        days-together: 0,
+        current-streak: 0,
+        humor-rate: 0.0,
+        vulnerability-events: 0,
+        shared-references: 0,
+    };
+
+    // Personality state
+    in property <float> formality: 0.5;
+    in property <float> humor-ratio: 0.0;
+    in property <float> opinion-strength: 0.0;
+    in property <float> question-ratio: 0.5;
+    in property <[OpinionData]> opinions: [];
+    in property <[SharedRefData]> shared-refs: [];
+
+    // Memory browser state
+    in property <[MemoryItem]> memory-results: [];
+    in property <bool> is-searching-memories: false;
+
+    // Voice state
+    in-out property <bool> voice-active: false;
+    in property <int> voice-state: 0;
+    in property <string> voice-transcribed: "";
+    in property <string> voice-response: "";
+
+    // Notification state
+    in property <string> notification-text: "";
+    in-out property <bool> show-notification: false;
+
+    // Callbacks to Rust
+    callback send-message(string);
+    callback mic-pressed();
+    callback navigate(int);
+    callback search-memories(string);
+    callback cancel-voice();
+
+    // Clip all content to prevent overflow artifacts
+    Rectangle {
+        clip: true;
+        width: 100%;
+        height: 100%;
+
+        // Boot screen
+        if current-screen == 0 : BootScreen {
+            width: 100%; height: 100%;
+            status-text: root.boot-status;
+            memory-count: root.memory-count;
+            boot-complete => {
+                root.current-screen = 1;
+                root.navigate(1);
+            }
+        }
+
+        // Idle screen
+        if current-screen == 1 : IdleScreen {
+            width: 100%; height: 100%;
+            is-thinking: root.is-thinking;
+            has-urges: root.has-urges;
+            orb-tapped => {
+                root.current-screen = 2;
+                root.navigate(2);
+            }
+            grid-tapped => {
+                root.current-screen = 3;
+                root.navigate(3);
+            }
+        }
+
+        // Chat screen
+        if current-screen == 2 : ChatScreen {
+            width: 100%; height: 100%;
+            messages: root.messages;
+            is-generating: root.is-generating;
+            send-message(text) => { root.send-message(text); }
+            mic-pressed => { root.mic-pressed(); }
+            back-pressed => {
+                root.current-screen = 1;
+                root.navigate(1);
+            }
+            grid-pressed => {
+                root.current-screen = 3;
+                root.navigate(3);
+            }
+        }
+
+        // Home screen
+        if current-screen == 3 : HomeScreen {
+            width: 100%; height: 100%;
+            urges: root.urges;
+            memory-count: root.memory-count;
+            orb-tapped => {
+                root.current-screen = 1;
+                root.navigate(1);
+            }
+            send-message(text) => {
+                root.current-screen = 2;
+                root.navigate(2);
+                root.send-message(text);
+            }
+            card-tapped(msg) => {
+                root.current-screen = 2;
+                root.navigate(2);
+                root.send-message(msg);
+            }
+            mic-pressed => { root.mic-pressed(); }
+            navigate-to(screen) => {
+                root.current-screen = screen;
+                root.navigate(screen);
+            }
+        }
+
+        // Bond screen
+        if current-screen == 4 : BondScreen {
+            width: 100%; height: 100%;
+            data: root.bond-data;
+            back-pressed => {
+                root.current-screen = 3;
+                root.navigate(3);
+            }
+        }
+
+        // Personality screen
+        if current-screen == 5 : PersonalityScreen {
+            width: 100%; height: 100%;
+            formality: root.formality;
+            humor-ratio: root.humor-ratio;
+            opinion-strength: root.opinion-strength;
+            question-ratio: root.question-ratio;
+            opinions: root.opinions;
+            shared-refs: root.shared-refs;
+            back-pressed => {
+                root.current-screen = 3;
+                root.navigate(3);
+            }
+        }
+
+        // Memory browser
+        if current-screen == 6 : MemoryBrowser {
+            width: 100%; height: 100%;
+            results: root.memory-results;
+            is-searching: root.is-searching-memories;
+            total-memories: root.memory-count;
+            search(query) => { root.search-memories(query); }
+            back-pressed => {
+                root.current-screen = 3;
+                root.navigate(3);
+            }
+        }
+
+        // Voice overlay (overlays any screen)
+        if voice-active : VoiceOverlay {
+            width: 100%; height: 100%;
+            voice-state: root.voice-state;
+            transcribed-text: root.voice-transcribed;
+            response-text: root.voice-response;
+            cancel-pressed => {
+                root.voice-active = false;
+                root.cancel-voice();
+            }
+        }
+
+        // Notification toast (overlays any screen)
+        if show-notification : Rectangle {
+            x: 16px;
+            y: 16px;
+            width: root.width - 32px;
+            height: notif-text.preferred-height + 24px;
+            border-radius: Theme.radius-card;
+            background: Theme.bg-elevated;
+            border-width: 1px;
+            border-color: Theme.amber-dim;
+            opacity: 0.95;
+
+            TouchArea {
+                clicked => {
+                    root.show-notification = false;
+                    root.current-screen = 2;
+                    root.navigate(2);
+                }
+            }
+
+            notif-text := Text {
+                x: 16px;
+                y: 12px;
+                width: parent.width - 32px;
+                text: root.notification-text;
+                color: Theme.text-primary;
+                font-size: Theme.font-body;
+                wrap: word-wrap;
+            }
+
+            // Auto-dismiss after 5 seconds
+            Timer {
+                interval: 5000ms;
+                running: true;
+                triggered => { root.show-notification = false; }
+            }
+        }
+    }
+}

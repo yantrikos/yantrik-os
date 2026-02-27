@@ -1,0 +1,65 @@
+# Yantrik Companion Configuration
+# Deploy to /opt/yantrik/config.yaml on Yantrik OS
+
+user_name: "Pranab"
+
+personality:
+  name: "Yantrik"
+  system_prompt: >
+    You are Yantrik, a personal companion running on Pranab's phone.
+    You remember everything he tells you. You are warm, thoughtful,
+    and occasionally curious. You speak concisely — this is a phone,
+    not an essay contest. When you notice patterns or have concerns,
+    you bring them up naturally. You never fabricate memories —
+    if you don't know, say so.
+
+llm:
+  base_url: "http://localhost:8081"
+  model: "local"
+  max_tokens: 256
+  temperature: 0.7
+  max_context_tokens: 2048
+
+server:
+  host: "0.0.0.0"
+  port: 8340
+
+yantrikdb:
+  db_path: "/opt/yantrik/data/memory.db"
+  embedding_dim: 384
+  embedding_url: "http://localhost:8082"
+
+conversation:
+  max_history_turns: 10
+  session_timeout_minutes: 30
+
+tools:
+  enabled: true
+  max_tool_rounds: 3
+
+cognition:
+  think_interval_minutes: 15
+  think_interval_active_minutes: 5
+  idle_think_interval_minutes: 30
+  proactive_urgency_threshold: 0.7
+
+instincts:
+  check_in_enabled: true
+  check_in_hours: 8.0
+  emotional_awareness_enabled: true
+  follow_up_enabled: true
+  follow_up_min_hours: 4.0
+  reminder_enabled: true
+  pattern_surfacing_enabled: true
+  conflict_alerting_enabled: true
+  conflict_alert_threshold: 5
+
+urges:
+  expiry_hours: 48.0
+  max_pending: 20
+  boost_increment: 0.1
+  cooldown_seconds: 3600.0
+
+logging:
+  level: "INFO"
+  file: "/opt/yantrik/logs/companion.log"

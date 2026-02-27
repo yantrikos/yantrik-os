@@ -1,0 +1,193 @@
+// Personality screen — radar chart + opinions + shared references.
+
+import { Theme } from "theme.slint";
+import { RadarChart } from "components/radar_chart.slint";
+import { ListView } from "std-widgets.slint";
+
+export struct OpinionData {
+    topic: string,
+    stance: string,
+    confidence: float,
+}
+
+export struct SharedRefData {
+    text: string,
+    times-used: int,
+}
+
+export component PersonalityScreen inherits Rectangle {
+    in property <float> formality: 0.5;
+    in property <float> humor-ratio: 0.5;
+    in property <float> opinion-strength: 0.5;
+    in property <float> question-ratio: 0.5;
+    in property <[OpinionData]> opinions: [];
+    in property <[SharedRefData]> shared-refs: [];
+    callback back-pressed();
+
+    background: Theme.bg-deep;
+
+    VerticalLayout {
+        spacing: 0px;
+
+        // Header
+        Rectangle {
+            height: 56px;
+            background: Theme.bg-surface;
+
+            HorizontalLayout {
+                padding-left: 12px;
+                padding-right: 12px;
+                alignment: start;
+                spacing: 12px;
+
+                TouchArea {
+                    width: Theme.touch-target;
+                    height: Theme.touch-target;
+                    clicked => { root.back-pressed(); }
+                    Text {
+                        text: "←";
+                        color: Theme.text-secondary;
+                        font-size: 22px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+
+                Text {
+                    text: "Personality";
+                    color: Theme.text-primary;
+                    font-size: Theme.font-title;
+                    font-weight: 600;
+                    vertical-alignment: center;
+                }
+            }
+        }
+
+        // Scrollable content
+        Flickable {
+            vertical-stretch: 1;
+
+            VerticalLayout {
+                padding: 24px;
+                spacing: 20px;
+                alignment: start;
+
+                // Radar chart
+                HorizontalLayout {
+                    alignment: center;
+                    RadarChart {
+                        formality: root.formality;
+                        humor: root.humor-ratio;
+                        opinion: root.opinion-strength;
+                        question: root.question-ratio;
+                        size-px: 200;
+                    }
+                }
+
+                // Opinions section
+                Text {
+                    text: "Opinions";
+                    color: Theme.text-secondary;
+                    font-size: Theme.font-small;
+                    letter-spacing: 1px;
+                }
+
+                for op[idx] in opinions : Rectangle {
+                    background: Theme.bg-card;
+                    border-radius: Theme.radius-card;
+                    height: op-layout.preferred-height;
+
+                    op-layout := HorizontalLayout {
+                        padding: 12px;
+                        spacing: 8px;
+
+                        VerticalLayout {
+                            horizontal-stretch: 1;
+                            spacing: 4px;
+
+                            Text {
+                                text: op.topic;
+                                color: Theme.amber-light;
+                                font-size: 14px;
+                                font-weight: 600;
+                            }
+
+                            Text {
+                                text: op.stance;
+                                color: Theme.text-primary;
+                                font-size: Theme.font-body;
+                                wrap: word-wrap;
+                            }
+                        }
+
+                        // Confidence bar
+                        Rectangle {
+                            width: 40px;
+                            height: 4px;
+                            y: (parent.height - 4px) / 2;
+                            border-radius: 2px;
+                            background: Theme.bg-elevated;
+
+                            Rectangle {
+                                width: parent.width * op.confidence;
+                                height: parent.height;
+                                border-radius: 2px;
+                                background: Theme.amber;
+                            }
+                        }
+                    }
+                }
+
+                // Empty state for opinions
+                if opinions.length == 0 : Text {
+                    text: "No opinions formed yet";
+                    color: Theme.text-dim;
+                    font-size: Theme.font-body;
+                    horizontal-alignment: center;
+                }
+
+                // Shared references section
+                Text {
+                    text: "Shared References";
+                    color: Theme.text-secondary;
+                    font-size: Theme.font-small;
+                    letter-spacing: 1px;
+                }
+
+                for sr[idx] in shared-refs : Rectangle {
+                    background: Theme.bg-card;
+                    border-radius: Theme.radius-card;
+                    height: sr-layout.preferred-height;
+
+                    sr-layout := HorizontalLayout {
+                        padding: 12px;
+                        spacing: 8px;
+
+                        Text {
+                            text: "\"" + sr.text + "\"";
+                            color: Theme.text-primary;
+                            font-size: Theme.font-body;
+                            font-italic: true;
+                            wrap: word-wrap;
+                            horizontal-stretch: 1;
+                        }
+
+                        Text {
+                            text: "×" + sr.times-used;
+                            color: Theme.text-dim;
+                            font-size: Theme.font-small;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+
+                if shared-refs.length == 0 : Text {
+                    text: "No shared references yet";
+                    color: Theme.text-dim;
+                    font-size: Theme.font-body;
+                    horizontal-alignment: center;
+                }
+            }
+        }
+    }
+}

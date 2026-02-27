@@ -1,0 +1,16 @@
+[Unit]
+Description=llama.cpp Server (Qwen2.5 1.5B)
+After=network.target
+
+[Service]
+Type=simple
+User=yantrik
+Group=yantrik
+ExecStart=/usr/local/bin/llama-server -m /opt/models/qwen2.5-1.5b-instruct-q4_k_m.gguf --host 127.0.0.1 --port 8081 -c 2048 -t 2 -ngl 0
+Restart=on-failure
+RestartSec=5
+MemoryMax=2G
+Environment=LLAMA_LOG_LEVEL=warn
+
+[Install]
+WantedBy=multi-user.target

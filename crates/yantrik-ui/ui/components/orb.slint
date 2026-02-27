@@ -1,0 +1,155 @@
+// Breathing orb — the companion's visual heartbeat.
+// Enhanced with orbital rings, particle orbits, and dual-tone glow.
+// Pulsates 4s cycle (1.0-1.08 scale). Faster when thinking (1.5s).
+// Orbital ring when proactive urges pending.
+
+import { Theme } from "../theme.slint";
+
+export component Orb inherits Rectangle {
+    in property <bool> is-thinking: false;
+    in property <bool> has-urges: false;
+    in property <float> size-px: 120;
+
+    width: 1px * size-px;
+    height: 1px * size-px;
+    background: transparent;
+
+    // Animation phase (0.0 -> 1.0, loops)
+    property <float> phase: 0;
+
+    Timer {
+        interval: 16ms;
+        running: true;
+        triggered => {
+            phase = mod(phase + (is-thinking ? 0.007 : 0.0025), 1.0);
+        }
+    }
+
+    // Outer ambient glow (cyan tint)
+    Rectangle {
+        x: -parent.width * 0.4;
+        y: -parent.height * 0.4;
+        width: parent.width * 1.8;
+        height: parent.height * 1.8;
+        border-radius: self.width / 2;
+        background: @radial-gradient(circle,
+            Theme.cyan-glow 0%,
+            #5ac8d410 30%,
+            transparent 60%
+        );
+        opacity: 0.3 + 0.2 * sin(phase * 6.2832 * 1rad);
+    }
+
+    // Inner amber glow
+    Rectangle {
+        x: -parent.width * 0.25;
+        y: -parent.height * 0.25;
+        width: parent.width * 1.5;
+        height: parent.height * 1.5;
+        border-radius: self.width / 2;
+        background: @radial-gradient(circle,
+            Theme.amber-glow-strong 0%,
+            Theme.amber-glow 30%,
+            transparent 60%
+        );
+        opacity: 0.5 + 0.4 * sin(phase * 6.2832 * 1rad);
+    }
+
+    // Orbital ring 1 — horizontal ellipse (breathing)
+    Rectangle {
+        property <float> ring-scale: 1.0 + 0.05 * sin(phase * 6.2832 * 1rad);
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        width: parent.width * 1.15 * ring-scale;
+        height: parent.height * 0.35 * ring-scale;
+        border-radius: self.width / 2;
+        border-width: 1px;
+        border-color: Theme.cyan-dim;
+        background: transparent;
+        opacity: 0.2 + 0.15 * sin(phase * 4.712 * 1rad);
+    }
+
+    // Orbital ring 2 — vertical ellipse (counter-breathing)
+    Rectangle {
+        property <float> ring-scale: 1.0 + 0.04 * cos(phase * 6.2832 * 1rad);
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        width: parent.width * 0.3 * ring-scale;
+        height: parent.height * 1.2 * ring-scale;
+        border-radius: self.width / 2;
+        border-width: 1px;
+        border-color: Theme.amber-dim;
+        background: transparent;
+        opacity: 0.15 + 0.12 * cos(phase * 5.341 * 1rad);
+    }
+
+    // Core orb — dual gradient (amber center, cyan rim)
+    Rectangle {
+        property <float> scale: 1.0 + 0.08 * sin(phase * 6.2832 * 1rad);
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        width: parent.width * 0.75 * scale;
+        height: parent.height * 0.75 * scale;
+        border-radius: self.width / 2;
+        background: @radial-gradient(circle,
+            Theme.amber-light 0%,
+            Theme.amber 50%,
+            Theme.cyan-dim 100%
+        );
+        drop-shadow-blur: 30px;
+        drop-shadow-color: Theme.amber-glow;
+    }
+
+    // Inner highlight (specular)
+    Rectangle {
+        property <float> scale: 1.0 + 0.08 * sin(phase * 6.2832 * 1rad);
+        x: (parent.width - self.width) / 2 - parent.width * 0.05;
+        y: (parent.height - self.height) / 2 - parent.height * 0.05;
+        width: parent.width * 0.35 * scale;
+        height: parent.height * 0.35 * scale;
+        border-radius: self.width / 2;
+        background: @radial-gradient(circle,
+            #ffffff20 0%,
+            transparent 70%
+        );
+    }
+
+    // Orbiting particle 1 (cyan dot circling the orb)
+    Rectangle {
+        property <length> orbit-r: parent.width * 0.55;
+        x: parent.width / 2 + orbit-r * cos(phase * 6.2832 * 2.0 * 1rad) - 2px;
+        y: parent.height / 2 + orbit-r * sin(phase * 6.2832 * 2.0 * 1rad) * 0.4 - 2px;
+        width: 4px; height: 4px; border-radius: 2px;
+        background: Theme.cyan;
+        opacity: 0.5 + 0.3 * sin(phase * 12.566 * 1rad);
+        drop-shadow-blur: 6px;
+        drop-shadow-color: Theme.cyan-glow;
+    }
+
+    // Orbiting particle 2 (amber dot, opposite direction)
+    Rectangle {
+        property <length> orbit-r: parent.width * 0.5;
+        x: parent.width / 2 + orbit-r * cos(phase * 6.2832 * -1.5 * 1rad + 3.14 * 1rad) - 1.5px;
+        y: parent.height / 2 + orbit-r * sin(phase * 6.2832 * -1.5 * 1rad + 3.14 * 1rad) * 0.35 - 1.5px;
+        width: 3px; height: 3px; border-radius: 1.5px;
+        background: Theme.amber;
+        opacity: 0.4 + 0.3 * sin(phase * 9.425 * 1rad);
+        drop-shadow-blur: 4px;
+        drop-shadow-color: Theme.amber-glow;
+    }
+
+    // Proactive urge ring (pulses when urges pending)
+    Rectangle {
+        x: -parent.width * 0.08;
+        y: -parent.height * 0.08;
+        width: parent.width * 1.16;
+        height: parent.height * 1.16;
+        border-radius: self.width / 2;
+        border-width: has-urges ? 2px : 0;
+        border-color: Theme.amber;
+        opacity: has-urges ? 0.3 + 0.5 * sin(phase * 9.425 * 1rad) : 0;
+        background: transparent;
+        drop-shadow-blur: has-urges ? 12px : 0;
+        drop-shadow-color: Theme.amber-glow;
+    }
+}

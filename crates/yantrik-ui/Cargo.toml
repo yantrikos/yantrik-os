@@ -1,0 +1,31 @@
+[package]
+name = "yantrik-ui"
+version = "0.1.0"
+edition = "2021"
+description = "Yantrik OS phone shell — Slint native UI"
+
+[[bin]]
+name = "yantrik-ui"
+path = "src/main.rs"
+
+[dependencies]
+yantrikdb-companion = { path = "../yantrikdb-companion" }
+yantrikdb-ml = { git = "https://github.com/spranab/aidb.git" }
+yantrikdb-core = { git = "https://github.com/spranab/aidb.git" }
+slint = "1.9"
+crossbeam-channel = "0.5"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+serde_yaml = "0.9"
+cpal = "0.15"
+rubato = "0.16"
+anyhow = "1"
+
+[features]
+default = []
+cuda = ["yantrikdb-ml/cuda"]
+metal = ["yantrikdb-ml/metal"]
+accelerate = ["yantrikdb-ml/accelerate"]
+
+[build-dependencies]
+slint-build = "1.9"

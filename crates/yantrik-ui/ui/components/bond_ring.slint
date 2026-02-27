@@ -1,0 +1,62 @@
+// Bond ring — circular progress visualization.
+// Fills proportionally to bond_score / 5.0.
+
+import { Theme } from "../theme.slint";
+
+export component BondRing inherits Rectangle {
+    in property <float> score: 0.0;  // 0.0 to 5.0
+    in property <float> size-px: 160;
+
+    width: 1px * size-px;
+    height: 1px * size-px;
+    background: transparent;
+
+    property <float> fill-fraction: clamp(score / 5.0, 0, 1.0);
+
+    // Background ring (dark)
+    Rectangle {
+        x: 0;
+        y: 0;
+        width: parent.width;
+        height: parent.height;
+        border-radius: self.width / 2;
+        background: Theme.bg-card;
+        border-width: 6px;
+        border-color: Theme.bg-elevated;
+    }
+
+    // Progress arc (using conic gradient approximation)
+    // Slint doesn't support conic-gradient, so use stacked arcs
+    // We show a full amber ring with opacity proportional to fill
+    Rectangle {
+        x: 4px;
+        y: 4px;
+        width: parent.width - 8px;
+        height: parent.height - 8px;
+        border-radius: self.width / 2;
+        background: transparent;
+        border-width: 4px;
+        border-color: Theme.amber;
+        opacity: fill-fraction;
+    }
+
+    // Center content
+    VerticalLayout {
+        alignment: center;
+
+        Text {
+            text: @tr("{}", Math.round(score * 10) / 10);
+            color: Theme.amber;
+            font-size: 1px * size-px * 0.22;
+            font-weight: 700;
+            horizontal-alignment: center;
+        }
+
+        Text {
+            text: "/ 5.0";
+            color: Theme.text-dim;
+            font-size: 1px * size-px * 0.1;
+            horizontal-alignment: center;
+        }
+    }
+}

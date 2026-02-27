@@ -1,0 +1,74 @@
+// Chat message bubble.
+// User messages: dark pill, right-aligned.
+// Yantrik messages: left-aligned with glowing cyan dot.
+
+import { Theme } from "../theme.slint";
+
+export struct MessageData {
+    role: string,       // "user" or "assistant"
+    content: string,
+    is-streaming: bool,
+}
+
+export component MessageBubble inherits Rectangle {
+    in property <MessageData> data;
+
+    property <bool> is-user: data.role == "user";
+
+    height: self.preferred-height;
+    background: transparent;
+
+    HorizontalLayout {
+        padding-left: is-user ? 60px : 16px;
+        padding-right: is-user ? 16px : 40px;
+        padding-top: 4px;
+        padding-bottom: 4px;
+        alignment: is-user ? end : start;
+
+        if !is-user : HorizontalLayout {
+            spacing: 10px;
+            alignment: start;
+
+            // Glowing cyan dot (companion indicator)
+            Rectangle {
+                width: 8px;
+                height: 8px;
+                y: 7px;
+                border-radius: 4px;
+                background: Theme.cyan;
+                drop-shadow-blur: 8px;
+                drop-shadow-color: Theme.cyan-glow;
+            }
+
+            // Response text
+            Text {
+                text: data.content;
+                color: Theme.text-primary;
+                font-size: Theme.font-body;
+                wrap: word-wrap;
+                horizontal-stretch: 1;
+            }
+        }
+
+        if is-user : Rectangle {
+            border-radius: 18px;
+            background: Theme.bg-elevated;
+            border-width: 1px;
+            border-color: #ffffff08;
+            height: msg-layout.preferred-height;
+
+            msg-layout := HorizontalLayout {
+                padding: 10px;
+                padding-left: 14px;
+                padding-right: 14px;
+
+                Text {
+                    text: data.content;
+                    color: Theme.text-primary;
+                    font-size: Theme.font-body;
+                    wrap: word-wrap;
+                }
+            }
+        }
+    }
+}

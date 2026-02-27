@@ -1,0 +1,189 @@
+// Neural Particle Field — drifting neurons with gentle pulse.
+// Creates a living, brain-like background for the companion's mind.
+
+import { Theme } from "../theme.slint";
+
+export component ParticleField inherits Rectangle {
+    in property <bool> active: true;
+    in property <float> intensity: 1.0; // 0.0 = dim, 1.0 = full
+
+    background: transparent;
+    clip: true;
+
+    // Global animation phase
+    property <float> phase: 0;
+
+    Timer {
+        interval: 16ms;
+        running: root.active;
+        triggered => {
+            phase = mod(phase + 0.0015, 1.0);
+        }
+    }
+
+    // ── Neurons (small drifting dots) ──
+
+    // Neuron 1 — upper left drift
+    Rectangle {
+        x: parent.width * (0.15 + 0.06 * sin(phase * 6.283 * 1rad));
+        y: parent.height * (0.12 + 0.04 * cos(phase * 8.168 * 1rad));
+        width: 3px; height: 3px; border-radius: 1.5px;
+        background: Theme.cyan;
+        opacity: intensity * (0.15 + 0.2 * sin(phase * 12.566 * 1rad));
+        drop-shadow-blur: 6px;
+        drop-shadow-color: Theme.cyan-glow;
+    }
+
+    // Neuron 2 — upper right
+    Rectangle {
+        x: parent.width * (0.78 + 0.05 * sin(phase * 7.540 * 1rad));
+        y: parent.height * (0.08 + 0.05 * cos(phase * 5.027 * 1rad));
+        width: 2px; height: 2px; border-radius: 1px;
+        background: Theme.amber;
+        opacity: intensity * (0.1 + 0.15 * sin(phase * 10.996 * 1rad));
+        drop-shadow-blur: 4px;
+        drop-shadow-color: Theme.amber-glow;
+    }
+
+    // Neuron 3 — mid left
+    Rectangle {
+        x: parent.width * (0.08 + 0.04 * cos(phase * 4.712 * 1rad));
+        y: parent.height * (0.42 + 0.06 * sin(phase * 6.912 * 1rad));
+        width: 4px; height: 4px; border-radius: 2px;
+        background: Theme.cyan;
+        opacity: intensity * (0.2 + 0.2 * sin(phase * 8.796 * 1rad));
+        drop-shadow-blur: 8px;
+        drop-shadow-color: Theme.cyan-glow;
+    }
+
+    // Neuron 4 — center-high
+    Rectangle {
+        x: parent.width * (0.45 + 0.07 * sin(phase * 5.341 * 1rad));
+        y: parent.height * (0.22 + 0.03 * cos(phase * 9.425 * 1rad));
+        width: 3px; height: 3px; border-radius: 1.5px;
+        background: Theme.amber-dim;
+        opacity: intensity * (0.12 + 0.18 * sin(phase * 7.225 * 1rad));
+        drop-shadow-blur: 5px;
+        drop-shadow-color: Theme.amber-glow;
+    }
+
+    // Neuron 5 — right side
+    Rectangle {
+        x: parent.width * (0.88 + 0.03 * sin(phase * 8.482 * 1rad));
+        y: parent.height * (0.55 + 0.05 * cos(phase * 6.283 * 1rad));
+        width: 2px; height: 2px; border-radius: 1px;
+        background: Theme.cyan-dim;
+        opacity: intensity * (0.15 + 0.15 * sin(phase * 11.310 * 1rad));
+        drop-shadow-blur: 4px;
+        drop-shadow-color: Theme.cyan-glow;
+    }
+
+    // Neuron 6 — lower-left
+    Rectangle {
+        x: parent.width * (0.22 + 0.05 * cos(phase * 7.854 * 1rad));
+        y: parent.height * (0.72 + 0.04 * sin(phase * 5.655 * 1rad));
+        width: 3px; height: 3px; border-radius: 1.5px;
+        background: Theme.cyan;
+        opacity: intensity * (0.18 + 0.2 * sin(phase * 9.111 * 1rad));
+        drop-shadow-blur: 6px;
+        drop-shadow-color: Theme.cyan-glow;
+    }
+
+    // Neuron 7 — bottom center
+    Rectangle {
+        x: parent.width * (0.52 + 0.06 * sin(phase * 4.398 * 1rad));
+        y: parent.height * (0.82 + 0.03 * cos(phase * 7.540 * 1rad));
+        width: 2px; height: 2px; border-radius: 1px;
+        background: Theme.amber;
+        opacity: intensity * (0.1 + 0.15 * sin(phase * 13.195 * 1rad));
+        drop-shadow-blur: 4px;
+        drop-shadow-color: Theme.amber-glow;
+    }
+
+    // Neuron 8 — lower right
+    Rectangle {
+        x: parent.width * (0.75 + 0.04 * cos(phase * 6.597 * 1rad));
+        y: parent.height * (0.68 + 0.05 * sin(phase * 8.168 * 1rad));
+        width: 4px; height: 4px; border-radius: 2px;
+        background: Theme.cyan;
+        opacity: intensity * (0.2 + 0.25 * sin(phase * 6.597 * 1rad));
+        drop-shadow-blur: 10px;
+        drop-shadow-color: Theme.cyan-glow;
+    }
+
+    // Neuron 9 — far right center
+    Rectangle {
+        x: parent.width * (0.92 + 0.02 * sin(phase * 5.969 * 1rad));
+        y: parent.height * (0.35 + 0.04 * cos(phase * 7.225 * 1rad));
+        width: 2px; height: 2px; border-radius: 1px;
+        background: Theme.amber-dim;
+        opacity: intensity * (0.1 + 0.12 * sin(phase * 10.367 * 1rad));
+        drop-shadow-blur: 3px;
+        drop-shadow-color: Theme.amber-glow;
+    }
+
+    // Neuron 10 — center
+    Rectangle {
+        x: parent.width * (0.50 + 0.08 * sin(phase * 3.770 * 1rad));
+        y: parent.height * (0.50 + 0.06 * cos(phase * 4.712 * 1rad));
+        width: 5px; height: 5px; border-radius: 2.5px;
+        background: Theme.cyan-light;
+        opacity: intensity * (0.08 + 0.12 * sin(phase * 5.027 * 1rad));
+        drop-shadow-blur: 12px;
+        drop-shadow-color: Theme.cyan-glow;
+    }
+
+    // Neuron 11 — upper drift
+    Rectangle {
+        x: parent.width * (0.32 + 0.05 * cos(phase * 9.111 * 1rad));
+        y: parent.height * (0.05 + 0.03 * sin(phase * 6.283 * 1rad));
+        width: 2px; height: 2px; border-radius: 1px;
+        background: Theme.cyan-dim;
+        opacity: intensity * (0.12 + 0.1 * sin(phase * 8.482 * 1rad));
+        drop-shadow-blur: 3px;
+        drop-shadow-color: Theme.cyan-glow;
+    }
+
+    // Neuron 12 — mid right low
+    Rectangle {
+        x: parent.width * (0.65 + 0.04 * sin(phase * 7.854 * 1rad));
+        y: parent.height * (0.88 + 0.02 * cos(phase * 5.341 * 1rad));
+        width: 3px; height: 3px; border-radius: 1.5px;
+        background: Theme.amber;
+        opacity: intensity * (0.14 + 0.16 * sin(phase * 7.540 * 1rad));
+        drop-shadow-blur: 5px;
+        drop-shadow-color: Theme.amber-glow;
+    }
+
+    // ── Synaptic regions (larger faint glows that pulse) ──
+
+    // Region A — upper-center
+    Rectangle {
+        x: parent.width * 0.3 - 30px;
+        y: parent.height * 0.2 - 30px;
+        width: 60px; height: 60px;
+        border-radius: 30px;
+        background: @radial-gradient(circle, Theme.cyan-glow 0%, transparent 70%);
+        opacity: intensity * (0.15 + 0.1 * sin(phase * 4.398 * 1rad));
+    }
+
+    // Region B — center-right
+    Rectangle {
+        x: parent.width * 0.7 - 40px;
+        y: parent.height * 0.5 - 40px;
+        width: 80px; height: 80px;
+        border-radius: 40px;
+        background: @radial-gradient(circle, Theme.amber-glow 0%, transparent 70%);
+        opacity: intensity * (0.12 + 0.08 * sin(phase * 5.655 * 1rad));
+    }
+
+    // Region C — lower-left
+    Rectangle {
+        x: parent.width * 0.2 - 35px;
+        y: parent.height * 0.7 - 35px;
+        width: 70px; height: 70px;
+        border-radius: 35px;
+        background: @radial-gradient(circle, Theme.cyan-glow 0%, transparent 70%);
+        opacity: intensity * (0.1 + 0.08 * sin(phase * 6.912 * 1rad));
+    }
+}

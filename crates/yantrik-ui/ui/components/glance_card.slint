@@ -1,0 +1,99 @@
+// Glance card — shows a proactive urge from an instinct.
+// Left border glow indicates the instinct type.
+
+import { Theme } from "../theme.slint";
+
+export struct UrgeCardData {
+    urge-id: string,
+    instinct-name: string,
+    reason: string,
+    urgency: float,
+    suggested-message: string,
+    time-ago: string,
+    border-color: color,
+}
+
+export component GlanceCard inherits Rectangle {
+    in property <UrgeCardData> data;
+    callback tapped(string); // passes suggested-message
+
+    min-height: 64px;
+    border-radius: Theme.radius-card;
+    background: Theme.bg-card;
+    border-width: 1px;
+    border-color: #ffffff08;
+    clip: true;
+
+    // Left border glow accent
+    Rectangle {
+        x: 0; y: 0;
+        width: 3px;
+        height: parent.height;
+        border-radius: 1.5px;
+        background: data.border-color;
+        drop-shadow-blur: 8px;
+        drop-shadow-color: data.border-color;
+    }
+
+    TouchArea {
+        clicked => { root.tapped(data.suggested-message); }
+    }
+
+    HorizontalLayout {
+        padding: 14px;
+        padding-left: 16px;
+        spacing: 12px;
+
+        // Urgency indicator (glowing dot)
+        Rectangle {
+            width: 8px;
+            height: 8px;
+            y: 6px;
+            border-radius: 4px;
+            background: data.border-color;
+            opacity: 0.4 + data.urgency * 0.6;
+            drop-shadow-blur: 6px;
+            drop-shadow-color: data.border-color;
+        }
+
+        // Body
+        VerticalLayout {
+            horizontal-stretch: 1;
+            spacing: 6px;
+
+            Text {
+                text: data.reason;
+                color: Theme.text-primary;
+                font-size: 14px;
+                wrap: word-wrap;
+                overflow: elide;
+            }
+
+            HorizontalLayout {
+                spacing: 8px;
+
+                Rectangle {
+                    height: 18px;
+                    width: instinct-text.preferred-width + 12px;
+                    border-radius: 9px;
+                    background: #ffffff08;
+
+                    instinct-text := Text {
+                        text: data.instinct-name;
+                        color: Theme.text-dim;
+                        font-size: 10px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+
+                Text {
+                    text: data.time-ago;
+                    color: Theme.text-dim;
+                    font-size: Theme.font-small;
+                    vertical-alignment: center;
+                }
+            }
+        }
+    }
+}

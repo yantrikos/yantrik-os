@@ -1,0 +1,136 @@
+// Input bar — [mic] [text input] [send]
+// Clean geometric icons, futuristic styling.
+
+import { Theme } from "../theme.slint";
+
+export component InputBar inherits Rectangle {
+    in-out property <string> text: "";
+    in property <bool> send-enabled: text != "";
+    callback send-message(string);
+    callback mic-pressed();
+
+    height: 64px;
+    background: Theme.bg-surface;
+    forward-focus: input;
+
+    // Top edge glow line
+    Rectangle {
+        y: 0;
+        width: 100%;
+        height: 1px;
+        background: @linear-gradient(90deg, transparent 0%, Theme.cyan-glow 50%, transparent 100%);
+    }
+
+    HorizontalLayout {
+        padding-top: 12px;
+        padding-bottom: 12px;
+        padding-left: 12px;
+        padding-right: 12px;
+        spacing: 8px;
+
+        // Mic button
+        TouchArea {
+            width: 44px;
+            height: 40px;
+            clicked => { root.mic-pressed(); }
+
+            Rectangle {
+                width: 40px;
+                height: 40px;
+                x: 2px;
+                border-radius: 20px;
+                background: Theme.bg-card;
+                border-width: 1px;
+                border-color: Theme.cyan-dim;
+
+                // Mic icon: rounded capsule with stem
+                Rectangle {
+                    x: (parent.width - 10px) / 2;
+                    y: 10px;
+                    width: 10px;
+                    height: 12px;
+                    border-radius: 5px;
+                    background: Theme.cyan;
+                }
+                Rectangle {
+                    x: (parent.width - 2px) / 2;
+                    y: 22px;
+                    width: 2px;
+                    height: 6px;
+                    background: Theme.cyan-dim;
+                }
+            }
+        }
+
+        // Text input field
+        Rectangle {
+            horizontal-stretch: 1;
+            height: 40px;
+            border-radius: 20px;
+            background: Theme.bg-input;
+            border-width: 1px;
+            border-color: input.has-focus ? Theme.cyan-dim : #ffffff0c;
+            forward-focus: input;
+
+            animate border-color { duration: 200ms; }
+
+            input := TextInput {
+                x: 16px;
+                y: (parent.height - self.preferred-height) / 2;
+                width: parent.width - 32px;
+                color: Theme.text-primary;
+                font-size: Theme.font-body;
+                text <=> root.text;
+                accepted => {
+                    if root.text != "" {
+                        root.send-message(root.text);
+                        root.text = "";
+                    }
+                }
+            }
+
+            // Placeholder — use conditional instead of visible to avoid overlay
+            if root.text == "" : Text {
+                x: 16px;
+                y: (parent.height - self.preferred-height) / 2;
+                text: "Message Yantrik...";
+                color: Theme.text-dim;
+                font-size: Theme.font-body;
+            }
+        }
+
+        // Send button
+        TouchArea {
+            width: 44px;
+            height: 40px;
+            clicked => {
+                if root.text != "" {
+                    root.send-message(root.text);
+                    root.text = "";
+                }
+            }
+
+            Rectangle {
+                width: 40px;
+                height: 40px;
+                x: 2px;
+                border-radius: 20px;
+                background: send-enabled ? Theme.amber : Theme.bg-card;
+                border-width: send-enabled ? 0 : 1px;
+                border-color: Theme.text-dim;
+
+                animate background { duration: 200ms; }
+
+                // Arrow: simple chevron >
+                Text {
+                    text: ">";
+                    color: send-enabled ? Theme.bg-deep : Theme.text-dim;
+                    font-size: 20px;
+                    font-weight: 700;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+        }
+    }
+}

@@ -1,0 +1,99 @@
+// Idle screen — neural field with centered breathing orb.
+// Tap the orb to enter chat. Grid button to enter home.
+
+import { Theme } from "theme.slint";
+import { Orb } from "components/orb.slint";
+import { ParticleField } from "components/particle_field.slint";
+
+export component IdleScreen inherits Rectangle {
+    in property <bool> is-thinking: false;
+    in property <bool> has-urges: false;
+    callback orb-tapped();
+    callback grid-tapped();
+
+    background: Theme.bg-deep;
+    clip: true;
+
+    // Neural particle field — the companion's mind at rest
+    ParticleField {
+        width: 100%;
+        height: 100%;
+        active: true;
+        intensity: 0.8;
+    }
+
+    // Centered orb
+    TouchArea {
+        x: (parent.width - 140px) / 2;
+        y: (parent.height - 140px) / 2 - 30px;
+        width: 140px;
+        height: 140px;
+        clicked => { root.orb-tapped(); }
+
+        Orb {
+            size-px: 140;
+            is-thinking: root.is-thinking;
+            has-urges: root.has-urges;
+        }
+    }
+
+    // Label below orb
+    Text {
+        text: "YANTRIK";
+        color: Theme.cyan-dim;
+        font-size: 13px;
+        letter-spacing: 4px;
+        opacity: 0.5;
+        horizontal-alignment: center;
+        y: parent.height / 2 + 70px;
+        width: parent.width;
+    }
+
+    // Subtle tagline
+    Text {
+        text: "tap to connect";
+        color: Theme.text-dim;
+        font-size: 11px;
+        letter-spacing: 1px;
+        opacity: 0.3;
+        horizontal-alignment: center;
+        y: parent.height / 2 + 90px;
+        width: parent.width;
+    }
+
+    // Grid button (bottom-right) -> home screen
+    TouchArea {
+        x: parent.width - 60px;
+        y: parent.height - 60px;
+        width: 44px;
+        height: 44px;
+        clicked => { root.grid-tapped(); }
+
+        Rectangle {
+            width: 44px;
+            height: 44px;
+            border-radius: 22px;
+            background: Theme.bg-card;
+            border-width: 1px;
+            border-color: Theme.text-dim;
+
+            // Grid icon: 4 small squares
+            Rectangle {
+                x: 13px; y: 13px; width: 7px; height: 7px;
+                border-radius: 1.5px; background: Theme.text-secondary;
+            }
+            Rectangle {
+                x: 24px; y: 13px; width: 7px; height: 7px;
+                border-radius: 1.5px; background: Theme.text-secondary;
+            }
+            Rectangle {
+                x: 13px; y: 24px; width: 7px; height: 7px;
+                border-radius: 1.5px; background: Theme.text-secondary;
+            }
+            Rectangle {
+                x: 24px; y: 24px; width: 7px; height: 7px;
+                border-radius: 1.5px; background: Theme.text-secondary;
+            }
+        }
+    }
+}

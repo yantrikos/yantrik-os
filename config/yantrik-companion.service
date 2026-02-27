@@ -1,0 +1,20 @@
+[Unit]
+Description=Yantrik Companion Service
+After=network.target llama-server.service llama-embed.service
+Wants=llama-server.service llama-embed.service
+
+[Service]
+Type=simple
+User=yantrik
+Group=yantrik
+WorkingDirectory=/opt/yantrik
+ExecStart=/usr/bin/python3 -m aidb.agent.service --config /opt/yantrik/config.yaml
+Restart=on-failure
+RestartSec=10
+MemoryMax=512M
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONPATH=/home/yantrik/.local/lib/python3.12/site-packages
+Environment=HOME=/home/yantrik
+
+[Install]
+WantedBy=multi-user.target

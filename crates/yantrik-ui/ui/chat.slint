@@ -1,0 +1,172 @@
+// Chat screen — messages list with streaming support.
+// Futuristic neural aesthetic with glow accents.
+
+import { Theme } from "theme.slint";
+import { MessageData, MessageBubble } from "components/message_bubble.slint";
+import { InputBar } from "components/input_bar.slint";
+import { ListView } from "std-widgets.slint";
+
+export component ChatScreen inherits Rectangle {
+    in property <[MessageData]> messages: [];
+    in property <bool> is-generating: false;
+    callback send-message(string);
+    callback back-pressed();
+    callback grid-pressed();
+    callback mic-pressed();
+
+    background: Theme.bg-deep;
+    clip: true;
+
+    VerticalLayout {
+        // Header
+        Rectangle {
+            height: 56px;
+            background: Theme.bg-surface;
+
+            // Bottom glow
+            Rectangle {
+                y: parent.height - 1px;
+                width: 100%;
+                height: 1px;
+                background: @linear-gradient(90deg, transparent 0%, Theme.cyan-glow 50%, transparent 100%);
+            }
+
+            HorizontalLayout {
+                padding-left: 8px;
+                padding-right: 8px;
+                alignment: space-between;
+
+                // Back button
+                TouchArea {
+                    width: Theme.touch-target;
+                    height: Theme.touch-target;
+                    clicked => { root.back-pressed(); }
+
+                    Rectangle {
+                        width: Theme.touch-target;
+                        height: Theme.touch-target;
+                        // Back arrow: < shape
+                        Text {
+                            text: "<";
+                            color: Theme.cyan-dim;
+                            font-size: 22px;
+                            font-weight: 600;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+
+                // Title with status dot
+                HorizontalLayout {
+                    spacing: 8px;
+                    alignment: center;
+
+                    // Online indicator
+                    Rectangle {
+                        width: 8px;
+                        height: 8px;
+                        y: (parent.height - 8px) / 2;
+                        border-radius: 4px;
+                        background: Theme.cyan;
+                        drop-shadow-blur: 6px;
+                        drop-shadow-color: Theme.cyan-glow;
+                    }
+
+                    Text {
+                        text: "Yantrik";
+                        color: Theme.text-primary;
+                        font-size: Theme.font-title;
+                        font-weight: 600;
+                        vertical-alignment: center;
+                    }
+                }
+
+                // Grid button
+                TouchArea {
+                    width: Theme.touch-target;
+                    height: Theme.touch-target;
+                    clicked => { root.grid-pressed(); }
+
+                    Rectangle {
+                        width: Theme.touch-target;
+                        height: Theme.touch-target;
+                        // Grid icon: 4 dots
+                        Rectangle {
+                            x: 14px; y: 14px; width: 5px; height: 5px;
+                            border-radius: 1px; background: Theme.text-secondary;
+                        }
+                        Rectangle {
+                            x: 25px; y: 14px; width: 5px; height: 5px;
+                            border-radius: 1px; background: Theme.text-secondary;
+                        }
+                        Rectangle {
+                            x: 14px; y: 25px; width: 5px; height: 5px;
+                            border-radius: 1px; background: Theme.text-secondary;
+                        }
+                        Rectangle {
+                            x: 25px; y: 25px; width: 5px; height: 5px;
+                            border-radius: 1px; background: Theme.text-secondary;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Messages area
+        ListView {
+            vertical-stretch: 1;
+
+            for msg[idx] in root.messages : MessageBubble {
+                data: msg;
+            }
+        }
+
+        // Typing indicator
+        if is-generating : HorizontalLayout {
+            padding-left: 16px;
+            padding-bottom: 8px;
+            spacing: 6px;
+
+            property <float> dot-phase: 0;
+            Timer {
+                interval: 16ms;
+                running: root.is-generating;
+                triggered => {
+                    parent.dot-phase = mod(parent.dot-phase + 0.005, 1.0);
+                }
+            }
+
+            Rectangle {
+                width: 6px; height: 6px;
+                border-radius: 3px;
+                background: Theme.cyan;
+                opacity: 0.3 + 0.7 * sin(dot-phase * 6.2832 * 1rad);
+                drop-shadow-blur: 4px;
+                drop-shadow-color: Theme.cyan-glow;
+            }
+            Rectangle {
+                width: 6px; height: 6px;
+                border-radius: 3px;
+                background: Theme.cyan;
+                opacity: 0.3 + 0.7 * sin((dot-phase + 0.12) * 6.2832 * 1rad);
+                drop-shadow-blur: 4px;
+                drop-shadow-color: Theme.cyan-glow;
+            }
+            Rectangle {
+                width: 6px; height: 6px;
+                border-radius: 3px;
+                background: Theme.cyan;
+                opacity: 0.3 + 0.7 * sin((dot-phase + 0.24) * 6.2832 * 1rad);
+                drop-shadow-blur: 4px;
+                drop-shadow-color: Theme.cyan-glow;
+            }
+        }
+
+        // Input bar
+        InputBar {
+            send-message(text) => { root.send-message(text); }
+            mic-pressed => { root.mic-pressed(); }
+        }
+    }
+}

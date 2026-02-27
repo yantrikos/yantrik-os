@@ -1,0 +1,244 @@
+// Memory browser — search and explore stored memories.
+
+import { Theme } from "theme.slint";
+import { ListView } from "std-widgets.slint";
+
+export struct MemoryItem {
+    rid: string,
+    text: string,
+    memory-type: string,  // "episodic", "semantic", "procedural"
+    importance: float,
+    valence: float,
+    score: float,
+    time-ago: string,
+}
+
+export component MemoryBrowser inherits Rectangle {
+    in property <[MemoryItem]> results: [];
+    in property <bool> is-searching: false;
+    in property <int> total-memories: 0;
+    callback search(string);
+    callback back-pressed();
+
+    background: Theme.bg-deep;
+
+    VerticalLayout {
+        spacing: 0px;
+
+        // Header
+        Rectangle {
+            height: 56px;
+            background: Theme.bg-surface;
+
+            HorizontalLayout {
+                padding-left: 12px;
+                padding-right: 12px;
+                alignment: start;
+                spacing: 12px;
+
+                TouchArea {
+                    width: Theme.touch-target;
+                    height: Theme.touch-target;
+                    clicked => { root.back-pressed(); }
+                    Text {
+                        text: "←";
+                        color: Theme.text-secondary;
+                        font-size: 22px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+
+                Text {
+                    text: "Memories";
+                    color: Theme.text-primary;
+                    font-size: Theme.font-title;
+                    font-weight: 600;
+                    vertical-alignment: center;
+                }
+
+                // Memory count
+                Text {
+                    text: total-memories + " total";
+                    color: Theme.text-dim;
+                    font-size: Theme.font-small;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                    horizontal-alignment: right;
+                }
+            }
+        }
+
+        // Search bar
+        Rectangle {
+            height: 52px;
+            background: Theme.bg-surface;
+
+            HorizontalLayout {
+                padding: 8px;
+                padding-left: 16px;
+                padding-right: 16px;
+
+                Rectangle {
+                    border-radius: Theme.radius-pill;
+                    background: Theme.bg-card;
+                    horizontal-stretch: 1;
+                    height: 36px;
+
+                    HorizontalLayout {
+                        padding-left: 12px;
+                        padding-right: 12px;
+                        spacing: 8px;
+
+                        Text {
+                            text: "🔍";
+                            font-size: 14px;
+                            vertical-alignment: center;
+                        }
+
+                        search-input := TextInput {
+                            horizontal-stretch: 1;
+                            color: Theme.text-primary;
+                            font-size: Theme.font-body;
+                            vertical-alignment: center;
+                            accepted => {
+                                root.search(self.text);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Results
+        ListView {
+            vertical-stretch: 1;
+
+            for mem[idx] in results : Rectangle {
+                background: Theme.bg-card;
+                border-radius: Theme.radius-card;
+                height: mem-layout.preferred-height;
+
+                mem-layout := VerticalLayout {
+                    padding: 12px;
+                    spacing: 6px;
+
+                    // Header row: type badge + time
+                    HorizontalLayout {
+                        spacing: 8px;
+
+                        // Type badge
+                        Rectangle {
+                            height: 18px;
+                            width: type-text.preferred-width + 12px;
+                            border-radius: 4px;
+                            background: mem.memory-type == "episodic" ? #d4a57420 :
+                                        mem.memory-type == "semantic" ? #7aa5a520 :
+                                        #a07a5020;
+
+                            type-text := Text {
+                                text: mem.memory-type;
+                                color: mem.memory-type == "episodic" ? Theme.amber :
+                                       mem.memory-type == "semantic" ? Theme.color-follow-up :
+                                       Theme.amber-dim;
+                                font-size: 10px;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+
+                        // Importance bar
+                        Rectangle {
+                            width: 30px;
+                            height: 3px;
+                            y: (parent.height - 3px) / 2;
+                            border-radius: 1.5px;
+                            background: Theme.bg-elevated;
+
+                            Rectangle {
+                                width: parent.width * mem.importance;
+                                height: parent.height;
+                                border-radius: 1.5px;
+                                background: Theme.amber;
+                            }
+                        }
+
+                        // Valence indicator
+                        Text {
+                            text: mem.valence > 0.2 ? "+" : mem.valence < -0.2 ? "−" : "·";
+                            color: mem.valence > 0.2 ? Theme.color-check-in :
+                                   mem.valence < -0.2 ? Theme.color-conflict :
+                                   Theme.text-dim;
+                            font-size: 14px;
+                            font-weight: 700;
+                            vertical-alignment: center;
+                        }
+
+                        // Spacer + time
+                        Text {
+                            horizontal-stretch: 1;
+                            text: mem.time-ago;
+                            color: Theme.text-dim;
+                            font-size: Theme.font-small;
+                            horizontal-alignment: right;
+                            vertical-alignment: center;
+                        }
+                    }
+
+                    // Memory text
+                    Text {
+                        text: mem.text;
+                        color: Theme.text-primary;
+                        font-size: Theme.font-body;
+                        wrap: word-wrap;
+                        overflow: elide;
+                    }
+
+                    // Score (if search result)
+                    if mem.score > 0 : HorizontalLayout {
+                        Text {
+                            text: "relevance ";
+                            color: Theme.text-dim;
+                            font-size: 10px;
+                        }
+                        Rectangle {
+                            width: 50px;
+                            height: 3px;
+                            y: (parent.height - 3px) / 2;
+                            border-radius: 1.5px;
+                            background: Theme.bg-elevated;
+
+                            Rectangle {
+                                width: parent.width * clamp(mem.score, 0, 1.0);
+                                height: parent.height;
+                                border-radius: 1.5px;
+                                background: Theme.amber-dim;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Empty state
+        if results.length == 0 && !is-searching : VerticalLayout {
+            vertical-stretch: 1;
+            alignment: center;
+            padding: 40px;
+
+            Text {
+                text: "Search your memories";
+                color: Theme.text-dim;
+                font-size: Theme.font-body;
+                horizontal-alignment: center;
+            }
+
+            Text {
+                text: "Type a query above to recall memories";
+                color: Theme.text-dim;
+                font-size: Theme.font-small;
+                horizontal-alignment: center;
+            }
+        }
+    }
+}

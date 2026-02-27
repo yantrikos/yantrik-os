@@ -1,0 +1,120 @@
+// Boot screen — "The Returning Glow"
+// Neural particles drift in darkness -> converge to center -> orb kindles -> text fades in.
+
+import { Theme } from "theme.slint";
+import { Orb } from "components/orb.slint";
+import { ParticleField } from "components/particle_field.slint";
+
+export component BootScreen inherits Rectangle {
+    in property <string> status-text: "remembering...";
+    in property <int> memory-count: 0;
+    callback boot-complete();
+
+    background: Theme.bg-deep;
+    clip: true;
+
+    // Phase tracking: 0=embers, 1=converge, 2=kindle, 3=text, 4=done
+    property <int> phase: 0;
+    property <float> timer-elapsed: 0;
+
+    // Phase timer
+    Timer {
+        interval: 16ms;
+        running: phase < 4;
+        triggered => {
+            timer-elapsed += 0.016;
+            if timer-elapsed > 1.0 && phase == 0 { phase = 1; }
+            if timer-elapsed > 3.0 && phase == 1 { phase = 2; }
+            if timer-elapsed > 5.0 && phase == 2 { phase = 3; }
+            if timer-elapsed > 7.0 && phase == 3 {
+                phase = 4;
+                root.boot-complete();
+            }
+        }
+    }
+
+    // Neural particle background (fades in during boot)
+    ParticleField {
+        width: 100%;
+        height: 100%;
+        active: true;
+        intensity: phase >= 1 ? 0.6 : 0.1;
+    }
+
+    // Ember particles that converge to center
+    for ember-data[idx] in [
+        { init-x: 15, init-y: 20 },
+        { init-x: 78, init-y: 12 },
+        { init-x: 25, init-y: 75 },
+        { init-x: 70, init-y: 62 },
+        { init-x: 45, init-y: 15 },
+        { init-x: 85, init-y: 70 },
+        { init-x: 10, init-y: 50 },
+        { init-x: 55, init-y: 85 },
+    ] : Rectangle {
+        property <float> ember-phase: 0;
+        property <float> target-x: phase >= 1 ? 50 : ember-data.init-x;
+        property <float> target-y: phase >= 1 ? 50 : ember-data.init-y;
+
+        x: parent.width * target-x / 100 - 3px;
+        y: parent.height * target-y / 100 - 3px;
+        width: 6px;
+        height: 6px;
+        border-radius: 3px;
+        background: Theme.amber;
+        drop-shadow-blur: 12px;
+        drop-shadow-color: Theme.amber-glow-strong;
+        opacity: phase < 3 ? 0.3 + 0.5 * sin(ember-phase * 6.2832 * 1rad) : 0;
+
+        animate x { duration: 3000ms; easing: cubic-bezier(0.45, 0, 0.15, 1); }
+        animate y { duration: 3000ms; easing: cubic-bezier(0.45, 0, 0.15, 1); }
+        animate opacity { duration: 1000ms; easing: ease-out; }
+
+        Timer {
+            interval: 16ms;
+            running: phase < 3;
+            triggered => {
+                parent.ember-phase = mod(parent.ember-phase + 0.003 + idx * 0.0005, 1.0);
+            }
+        }
+    }
+
+    // Center content
+    VerticalLayout {
+        alignment: center;
+        spacing: 20px;
+        padding-left: (parent.width - 200px) / 2;
+        padding-right: (parent.width - 200px) / 2;
+
+        // Orb (appears at phase 2)
+        HorizontalLayout {
+            alignment: center;
+            Orb {
+                size-px: 120;
+                opacity: phase >= 2 ? 1.0 : 0;
+                animate opacity { duration: 2000ms; easing: ease-out; }
+            }
+        }
+
+        // Title
+        Text {
+            text: "Yantrik";
+            color: Theme.amber;
+            font-size: Theme.font-boot;
+            horizontal-alignment: center;
+            opacity: phase >= 3 ? 1.0 : 0;
+            animate opacity { duration: 1500ms; easing: ease-out; }
+        }
+
+        // Status line
+        Text {
+            text: status-text;
+            color: Theme.cyan-dim;
+            font-size: Theme.font-small;
+            horizontal-alignment: center;
+            letter-spacing: 1px;
+            opacity: phase >= 3 ? 0.6 : 0;
+            animate opacity { duration: 1000ms; easing: ease-out; }
+        }
+    }
+}

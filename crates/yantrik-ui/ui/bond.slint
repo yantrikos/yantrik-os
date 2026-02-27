@@ -1,0 +1,208 @@
+// Bond visualization screen.
+// Shows bond ring, level name, and relationship stats.
+
+import { Theme } from "theme.slint";
+import { BondRing } from "components/bond_ring.slint";
+
+export struct BondData {
+    bond-score: float,
+    bond-level: string,
+    total-interactions: int,
+    days-together: int,
+    current-streak: int,
+    humor-rate: float,
+    vulnerability-events: int,
+    shared-references: int,
+}
+
+export component BondScreen inherits Rectangle {
+    in property <BondData> data;
+    callback back-pressed();
+
+    background: Theme.bg-deep;
+
+    VerticalLayout {
+        spacing: 0px;
+
+        // Header
+        Rectangle {
+            height: 56px;
+            background: Theme.bg-surface;
+
+            HorizontalLayout {
+                padding-left: 12px;
+                padding-right: 12px;
+                alignment: start;
+                spacing: 12px;
+
+                TouchArea {
+                    width: Theme.touch-target;
+                    height: Theme.touch-target;
+                    clicked => { root.back-pressed(); }
+                    Text {
+                        text: "←";
+                        color: Theme.text-secondary;
+                        font-size: 22px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+
+                Text {
+                    text: "Bond";
+                    color: Theme.text-primary;
+                    font-size: Theme.font-title;
+                    font-weight: 600;
+                    vertical-alignment: center;
+                }
+            }
+        }
+
+        // Scrollable content
+        Flickable {
+            vertical-stretch: 1;
+
+            VerticalLayout {
+                padding: 24px;
+                spacing: 24px;
+                alignment: start;
+
+                // Bond ring centered
+                HorizontalLayout {
+                    alignment: center;
+                    BondRing {
+                        score: data.bond-score;
+                        size-px: 160;
+                    }
+                }
+
+                // Level name
+                Text {
+                    text: data.bond-level;
+                    color: Theme.amber-light;
+                    font-size: 22px;
+                    font-weight: 600;
+                    horizontal-alignment: center;
+                    letter-spacing: 1px;
+                }
+
+                // Stats grid (2 columns)
+                Rectangle {
+                    background: Theme.bg-card;
+                    border-radius: Theme.radius-card;
+                    height: stats-layout.preferred-height;
+
+                    stats-layout := VerticalLayout {
+                        padding: 16px;
+                        spacing: 12px;
+
+                        // Row 1
+                        HorizontalLayout {
+                            spacing: 16px;
+
+                            VerticalLayout {
+                                horizontal-stretch: 1;
+                                Text {
+                                    text: data.total-interactions;
+                                    color: Theme.text-primary;
+                                    font-size: 20px;
+                                    font-weight: 600;
+                                }
+                                Text {
+                                    text: "interactions";
+                                    color: Theme.text-secondary;
+                                    font-size: Theme.font-small;
+                                }
+                            }
+
+                            VerticalLayout {
+                                horizontal-stretch: 1;
+                                Text {
+                                    text: data.days-together;
+                                    color: Theme.text-primary;
+                                    font-size: 20px;
+                                    font-weight: 600;
+                                }
+                                Text {
+                                    text: "days together";
+                                    color: Theme.text-secondary;
+                                    font-size: Theme.font-small;
+                                }
+                            }
+                        }
+
+                        // Row 2
+                        HorizontalLayout {
+                            spacing: 16px;
+
+                            VerticalLayout {
+                                horizontal-stretch: 1;
+                                Text {
+                                    text: data.current-streak + " days";
+                                    color: Theme.text-primary;
+                                    font-size: 20px;
+                                    font-weight: 600;
+                                }
+                                Text {
+                                    text: "streak";
+                                    color: Theme.text-secondary;
+                                    font-size: Theme.font-small;
+                                }
+                            }
+
+                            VerticalLayout {
+                                horizontal-stretch: 1;
+                                Text {
+                                    text: @tr("{}%", Math.round(data.humor-rate * 100));
+                                    color: Theme.text-primary;
+                                    font-size: 20px;
+                                    font-weight: 600;
+                                }
+                                Text {
+                                    text: "humor rate";
+                                    color: Theme.text-secondary;
+                                    font-size: Theme.font-small;
+                                }
+                            }
+                        }
+
+                        // Row 3
+                        HorizontalLayout {
+                            spacing: 16px;
+
+                            VerticalLayout {
+                                horizontal-stretch: 1;
+                                Text {
+                                    text: data.vulnerability-events;
+                                    color: Theme.text-primary;
+                                    font-size: 20px;
+                                    font-weight: 600;
+                                }
+                                Text {
+                                    text: "vulnerability";
+                                    color: Theme.text-secondary;
+                                    font-size: Theme.font-small;
+                                }
+                            }
+
+                            VerticalLayout {
+                                horizontal-stretch: 1;
+                                Text {
+                                    text: data.shared-references;
+                                    color: Theme.text-primary;
+                                    font-size: 20px;
+                                    font-weight: 600;
+                                }
+                                Text {
+                                    text: "shared refs";
+                                    color: Theme.text-secondary;
+                                    font-size: Theme.font-small;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
