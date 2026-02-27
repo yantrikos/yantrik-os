@@ -1,0 +1,21 @@
+{
+  "mcpServers": {
+    "saga": {
+      "command": "npx",
+      "args": ["-y", "saga-mcp"],
+      "env": {
+        "DB_PATH": ".tracker.db"
+      }
+    },
+    "brainstorm": {
+      "command": "npx",
+      "args": ["-y", "brainstorm-mcp"],
+      "env": {
+        "OPENAI_API_KEY": "<your-openai-key>",
+        "OPENAI_DEFAULT_MODEL": "gpt-4o",
+        "DEEPSEEK_API_KEY": "<your-deepseek-key>",
+        "DEEPSEEK_DEFAULT_MODEL": "deepseek-chat"
+      }
+    }
+  }
+}
