@@ -22,6 +22,7 @@ export component SettingsScreen inherits Rectangle {
     // System info
     in property <int> memory-count: 0;
     in property <string> version-text: "0.1.0";
+    in property <int> notification-count: 0;
 
     callback back-pressed();
     callback navigate-to(int);
@@ -366,6 +367,90 @@ export component SettingsScreen inherits Rectangle {
                         }
                         Text {
                             text: "  →";
+                            color: Theme.text-dim;
+                            font-size: 18px;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+
+                // ── System section ──
+                Text {
+                    text: "SYSTEM";
+                    color: Theme.text-dim;
+                    font-size: 11px;
+                    letter-spacing: 2px;
+                }
+
+                // Notifications link
+                Rectangle {
+                    background: Theme.bg-card;
+                    border-radius: Theme.radius-card;
+                    height: 48px;
+
+                    TouchArea {
+                        clicked => { root.navigate-to(9); }
+                    }
+
+                    HorizontalLayout {
+                        padding-left: 14px;
+                        padding-right: 14px;
+
+                        Text {
+                            text: "Notifications";
+                            color: Theme.text-primary;
+                            font-size: Theme.font-body;
+                            horizontal-stretch: 1;
+                            vertical-alignment: center;
+                        }
+                        if root.notification-count > 0 : Rectangle {
+                            width: max(20px, notif-count-text.preferred-width + 10px);
+                            height: 20px;
+                            y: (parent.height - 20px) / 2;
+                            border-radius: 10px;
+                            background: Theme.amber-dim;
+
+                            notif-count-text := Text {
+                                text: root.notification-count;
+                                color: Theme.bg-deep;
+                                font-size: 10px;
+                                font-weight: 700;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                        Text {
+                            text: "  →";
+                            color: Theme.text-dim;
+                            font-size: 18px;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+
+                // System Dashboard link
+                Rectangle {
+                    background: Theme.bg-card;
+                    border-radius: Theme.radius-card;
+                    height: 48px;
+
+                    TouchArea {
+                        clicked => { root.navigate-to(10); }
+                    }
+
+                    HorizontalLayout {
+                        padding-left: 14px;
+                        padding-right: 14px;
+
+                        Text {
+                            text: "System Monitor";
+                            color: Theme.text-primary;
+                            font-size: Theme.font-body;
+                            horizontal-stretch: 1;
+                            vertical-alignment: center;
+                        }
+                        Text {
+                            text: "→";
                             color: Theme.text-dim;
                             font-size: 18px;
                             vertical-alignment: center;

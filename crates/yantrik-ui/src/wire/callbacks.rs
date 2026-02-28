@@ -8,7 +8,9 @@ use std::time::Duration;
 use slint::{ComponentHandle, ModelRc, SharedString, Timer, TimerMode, VecModel};
 
 use crate::app_context::AppContext;
-use crate::{bridge, cards, filebrowser, focus, lock, onboarding, App, FileEntry, MemoryItem};
+use crate::{
+    bridge, cards, filebrowser, focus, lock, notifications, onboarding, App, FileEntry, MemoryItem,
+};
 
 /// Wire all miscellaneous callbacks.
 pub fn wire(ui: &App, ctx: &AppContext) {
@@ -18,6 +20,8 @@ pub fn wire(ui: &App, ctx: &AppContext) {
     wire_file_browser(ui, ctx);
     wire_whisper_cards(ui, ctx);
     wire_memory_search(ui, ctx);
+    wire_notifications(ui, ctx);
+    wire_quick_settings(ui);
 }
 
 // ── Lock screen ──
@@ -200,6 +204,76 @@ fn wire_whisper_cards(ui: &App, ctx: &AppContext) {
         if let Some(ui) = ui_weak.upgrade() {
             ui.set_lens_open(true);
         }
+    });
+}
+
+// ── Notifications ──
+
+fn wire_notifications(ui: &App, ctx: &AppContext) {
+    // Clear all notifications
+    let store = ctx.notification_store.clone();
+    let ui_weak = ui.as_weak();
+    ui.on_notification_clear_all(move || {
+        store.borrow_mut().clear();
+        notifications::sync_to_ui(&store.borrow(), &ui_weak);
+        tracing::debug!("Notifications cleared");
+    });
+
+    // Mark all as read
+    let store = ctx.notification_store.clone();
+    let ui_weak = ui.as_weak();
+    ui.on_notification_mark_all_read(move || {
+        store.borrow_mut().mark_all_read();
+        notifications::sync_to_ui(&store.borrow(), &ui_weak);
+        tracing::debug!("All notifications marked as read");
+    });
+
+    // Tap a notification (mark as read)
+    let store = ctx.notification_store.clone();
+    let ui_weak = ui.as_weak();
+    ui.on_notification_tapped(move |id| {
+        if let Ok(id_num) = id.to_string().parse::<u64>() {
+            store.borrow_mut().mark_read(id_num);
+            notifications::sync_to_ui(&store.borrow(), &ui_weak);
+        }
+    });
+}
+
+// ── Quick Settings ──
+
+fn wire_quick_settings(ui: &App) {
+    // Toggle WiFi via nmcli
+    ui.on_toggle_wifi(move || {
+        // Read current state and toggle
+        let output = std::process::Command::new("nmcli")
+            .args(["radio", "wifi"])
+            .output();
+        let currently_on = output
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "enabled")
+            .unwrap_or(false);
+        let new_state = if currently_on { "off" } else { "on" };
+        let _ = std::process::Command::new("nmcli")
+            .args(["radio", "wifi", new_state])
+            .spawn();
+        tracing::info!(new_state, "WiFi toggled");
+    });
+
+    // Brightness via brightnessctl
+    ui.on_brightness_changed(move |level| {
+        let pct = format!("{}%", level);
+        let _ = std::process::Command::new("brightnessctl")
+            .args(["s", &pct])
+            .spawn();
+        tracing::debug!(level, "Brightness changed");
+    });
+
+    // Volume via amixer
+    ui.on_volume_changed(move |level| {
+        let pct = format!("{}%", level);
+        let _ = std::process::Command::new("amixer")
+            .args(["-M", "set", "Master", &pct])
+            .spawn();
+        tracing::debug!(level, "Volume changed");
     });
 }
 

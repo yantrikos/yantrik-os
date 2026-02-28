@@ -6,8 +6,10 @@ use std::time::Duration;
 
 use slint::{ComponentHandle, Timer, TimerMode};
 
+use slint::{ModelRc, VecModel};
+
 use crate::app_context::AppContext;
-use crate::{cards, features, lock, system_context, App};
+use crate::{cards, features, lock, system_context, App, ProcessData};
 
 /// Wire the system poll timer.
 pub fn wire(ui: &App, ctx: &AppContext) {
@@ -18,6 +20,7 @@ pub fn wire(ui: &App, ctx: &AppContext) {
     let snapshot = ctx.system_snapshot.clone();
     let bridge = ctx.bridge.clone();
     let card_mgr = ctx.card_manager.clone();
+    let notification_store = ctx.notification_store.clone();
 
     let timer = Timer::default();
     timer.start(TimerMode::Repeated, Duration::from_secs(3), move || {
@@ -51,6 +54,26 @@ pub fn wire(ui: &App, ctx: &AppContext) {
             if let yantrik_os::SystemEvent::KeybindTriggered { action } = event {
                 if let Some(ui) = ui_weak.upgrade() {
                     handle_keybind(&ui, action);
+                }
+            }
+        }
+
+        // 1c. Capture notifications into store
+        for event in &events {
+            if let yantrik_os::SystemEvent::NotificationReceived {
+                app,
+                summary,
+                body,
+                urgency,
+            } = event
+            {
+                notification_store
+                    .borrow_mut()
+                    .push(app.clone(), summary.clone(), body.clone(), *urgency);
+                if let Some(ui) = ui_weak.upgrade() {
+                    ui.set_notification_unread_count(
+                        notification_store.borrow().unread_count() as i32,
+                    );
                 }
             }
         }
@@ -103,7 +126,43 @@ pub fn wire(ui: &App, ctx: &AppContext) {
             }
         }
 
-        // 4b. Update system context for LLM prompt injection
+        // 4b. Live-update System Dashboard (screen 10) from snapshot
+        if let Some(ui) = ui_weak.upgrade() {
+            if ui.get_current_screen() == 10 {
+                ui.set_sys_cpu_usage(snap.cpu_usage_percent);
+                ui.set_sys_memory_usage(snap.memory_usage_percent());
+                let used_mb = snap.memory_used_bytes / (1024 * 1024);
+                let total_mb = snap.memory_total_bytes / (1024 * 1024);
+                let mem_text = if total_mb >= 1024 {
+                    format!(
+                        "{:.1} / {:.1} GB",
+                        used_mb as f64 / 1024.0,
+                        total_mb as f64 / 1024.0
+                    )
+                } else {
+                    format!("{} / {} MB", used_mb, total_mb)
+                };
+                ui.set_sys_memory_text(mem_text.into());
+                ui.set_sys_wifi_ssid(
+                    snap.network_ssid.clone().unwrap_or_default().into(),
+                );
+                ui.set_sys_wifi_signal(snap.network_signal.unwrap_or(0) as i32);
+
+                let procs: Vec<ProcessData> = snap
+                    .running_processes
+                    .iter()
+                    .take(15)
+                    .map(|p| ProcessData {
+                        name: p.name.clone().into(),
+                        pid: p.pid as i32,
+                        cpu_percent: p.cpu_percent,
+                    })
+                    .collect();
+                ui.set_sys_top_processes(ModelRc::new(VecModel::from(procs)));
+            }
+        }
+
+        // 4c. Update system context for LLM prompt injection
         bridge.set_system_context(system_context::format_system_context(&snap));
 
         // 5. Score and display urges

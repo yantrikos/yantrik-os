@@ -3,7 +3,7 @@
 //! Each tool category lives in its own file and registers tools via
 //! `register(&mut ToolRegistry)`. Mirrors the instincts pattern.
 //!
-//! Categories (22 modules, 70+ tools):
+//! Categories (25 modules, 88+ tools):
 //! - memory:     remember, recall, relate, set_reminder, introspect, form_opinion, create_inside_joke, check_bond
 //! - desktop:    open_url, read_clipboard, write_clipboard, list_files, read_file, run_command
 //! - files:      write_file, manage_files, search_files, file_info
@@ -26,6 +26,9 @@
 //! - weather:    get_weather
 //! - calculator: calculate, unit_convert
 //! - window:     list_windows, focus_window, close_window
+//! - firewall:   firewall_status, firewall_list_rules, firewall_allow_port, firewall_block_port, firewall_block_ip, firewall_enable, firewall_disable
+//! - antivirus:  antivirus_scan, antivirus_status, antivirus_update, antivirus_quarantine
+//! - networking: network_interfaces, network_ping, network_traceroute, network_ports, network_dns, network_dns_set, network_vpn_status
 
 pub mod memory;
 pub mod desktop;
@@ -49,6 +52,9 @@ pub mod git;
 pub mod weather;
 pub mod calculator;
 pub mod window;
+pub mod firewall;
+pub mod antivirus;
+pub mod networking;
 
 use yantrikdb_core::YantrikDB;
 
@@ -242,6 +248,9 @@ pub fn build_registry() -> ToolRegistry {
     weather::register(&mut reg);
     calculator::register(&mut reg);
     window::register(&mut reg);
+    firewall::register(&mut reg);
+    antivirus::register(&mut reg);
+    networking::register(&mut reg);
     reg
 }
 

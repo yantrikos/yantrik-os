@@ -16,6 +16,7 @@ export component StatusBar inherits Rectangle {
     callback anchor-clicked();
     callback queue-clicked();
     callback whisper-hint-clicked();
+    callback settings-tapped();
 
     height: Theme.status-bar-height;
     background: @linear-gradient(180deg, #0c0b10 0%, #08081a 100%);
@@ -163,57 +164,67 @@ export component StatusBar inherits Rectangle {
                 }
             }
 
-            // WiFi dot (minimal)
-            Rectangle {
-                width: 8px;
-                height: 8px;
-                y: (parent.height - 8px) / 2;
-                border-radius: 4px;
-                background: root.wifi-connected ? Theme.cyan-dim : Theme.text-dim;
-                opacity: root.wifi-connected ? 0.8 : 0.3;
-            }
+            // WiFi + Battery — tappable area opens Quick Settings
+            TouchArea {
+                height: Theme.status-bar-height;
+                clicked => { root.settings-tapped(); }
 
-            // Battery — compact
-            HorizontalLayout {
-                spacing: 3px;
+                HorizontalLayout {
+                    spacing: 12px;
 
-                Rectangle {
-                    width: 20px;
-                    height: 10px;
-                    y: (parent.height - 10px) / 2;
-                    border-radius: 2px;
-                    border-width: 1px;
-                    border-color: root.battery-level <= 20 ? Theme.color-emotional : Theme.text-dim;
-                    background: transparent;
-
-                    // Fill
+                    // WiFi dot (minimal)
                     Rectangle {
-                        x: 1.5px; y: 1.5px;
-                        width: max(0px, (parent.width - 5px) * root.battery-level / 100);
-                        height: parent.height - 5px;
-                        border-radius: 1px;
-                        background: root.battery-charging ? Theme.cyan :
-                                    root.battery-level <= 20 ? Theme.color-emotional :
-                                    Theme.text-dim;
+                        width: 8px;
+                        height: 8px;
+                        y: (parent.height - 8px) / 2;
+                        border-radius: 4px;
+                        background: root.wifi-connected ? Theme.cyan-dim : Theme.text-dim;
+                        opacity: root.wifi-connected ? 0.8 : 0.3;
                     }
 
-                    // Terminal nub
-                    Rectangle {
-                        x: parent.width;
-                        y: 2.5px;
-                        width: 1.5px;
-                        height: parent.height - 6px;
-                        border-radius: 0.5px;
-                        background: Theme.text-dim;
-                        opacity: 0.5;
-                    }
-                }
+                    // Battery — compact
+                    HorizontalLayout {
+                        spacing: 3px;
 
-                Text {
-                    text: root.battery-level + "%";
-                    color: root.battery-level <= 20 ? Theme.color-emotional : Theme.text-dim;
-                    font-size: 9px;
-                    vertical-alignment: center;
+                        Rectangle {
+                            width: 20px;
+                            height: 10px;
+                            y: (parent.height - 10px) / 2;
+                            border-radius: 2px;
+                            border-width: 1px;
+                            border-color: root.battery-level <= 20 ? Theme.color-emotional : Theme.text-dim;
+                            background: transparent;
+
+                            // Fill
+                            Rectangle {
+                                x: 1.5px; y: 1.5px;
+                                width: max(0px, (parent.width - 5px) * root.battery-level / 100);
+                                height: parent.height - 5px;
+                                border-radius: 1px;
+                                background: root.battery-charging ? Theme.cyan :
+                                            root.battery-level <= 20 ? Theme.color-emotional :
+                                            Theme.text-dim;
+                            }
+
+                            // Terminal nub
+                            Rectangle {
+                                x: parent.width;
+                                y: 2.5px;
+                                width: 1.5px;
+                                height: parent.height - 6px;
+                                border-radius: 0.5px;
+                                background: Theme.text-dim;
+                                opacity: 0.5;
+                            }
+                        }
+
+                        Text {
+                            text: root.battery-level + "%";
+                            color: root.battery-level <= 20 ? Theme.color-emotional : Theme.text-dim;
+                            font-size: 9px;
+                            vertical-alignment: center;
+                        }
+                    }
                 }
             }
         }

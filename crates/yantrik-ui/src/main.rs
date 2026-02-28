@@ -13,6 +13,7 @@
 //! - lens:           Intent Lens query routing, NL→tool matching, action resolution
 //! - cards:          Whisper Card lifecycle (add, dismiss, auto-expire, sync to UI)
 //! - focus:          Focus mode countdown timer
+//! - notifications:  Notification store + Slint sync helpers
 //! - onboarding:     First-boot marker + guided results
 //! - system_context: System snapshot formatting, event→memory, config loading
 //! - bridge:         Crossbeam companion bridge (send messages, query memory)
@@ -40,6 +41,7 @@ mod filebrowser;
 mod focus;
 mod lens;
 mod lock;
+mod notifications;
 mod onboarding;
 mod streaming;
 mod system_context;

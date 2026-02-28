@@ -1,0 +1,370 @@
+// System Dashboard — resource visualization.
+// Screen 10. CPU, RAM, battery, network, top processes.
+
+import { Theme } from "theme.slint";
+
+export struct ProcessData {
+    name: string,
+    pid: int,
+    cpu-percent: float,
+}
+
+export component SystemDashboard inherits Rectangle {
+    background: Theme.bg-deep;
+
+    in property <float> cpu-usage: 0.0;
+    in property <float> memory-usage: 0.0;
+    in property <string> memory-text: "0 / 0 MB";
+    in property <int> battery-level: 100;
+    in property <bool> battery-charging: false;
+    in property <bool> wifi-connected: false;
+    in property <string> wifi-ssid: "";
+    in property <int> wifi-signal: 0;
+    in property <string> uptime-text: "";
+    in property <[ProcessData]> top-processes: [];
+
+    callback back-pressed();
+
+    VerticalLayout {
+        spacing: 0px;
+
+        // Header
+        Rectangle {
+            height: 56px;
+            background: Theme.bg-surface;
+
+            HorizontalLayout {
+                padding-left: 12px;
+                padding-right: 12px;
+                alignment: start;
+                spacing: 12px;
+
+                TouchArea {
+                    width: Theme.touch-target;
+                    height: Theme.touch-target;
+                    clicked => { root.back-pressed(); }
+                    Text {
+                        text: "←";
+                        color: Theme.text-secondary;
+                        font-size: 22px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+
+                Text {
+                    text: "System";
+                    color: Theme.text-primary;
+                    font-size: Theme.font-title;
+                    font-weight: 600;
+                    vertical-alignment: center;
+                }
+            }
+        }
+
+        // Content
+        Flickable {
+            vertical-stretch: 1;
+
+            VerticalLayout {
+                padding: 20px;
+                spacing: 16px;
+                alignment: start;
+
+                // ── Resources section ──
+                Text {
+                    text: "RESOURCES";
+                    color: Theme.text-dim;
+                    font-size: 11px;
+                    letter-spacing: 2px;
+                }
+
+                Rectangle {
+                    background: Theme.bg-card;
+                    border-radius: Theme.radius-card;
+                    height: res-layout.preferred-height;
+
+                    res-layout := VerticalLayout {
+                        padding: 14px;
+                        spacing: 12px;
+
+                        // CPU bar
+                        VerticalLayout {
+                            spacing: 4px;
+
+                            HorizontalLayout {
+                                Text {
+                                    text: "CPU";
+                                    color: Theme.text-secondary;
+                                    font-size: Theme.font-body;
+                                    horizontal-stretch: 1;
+                                }
+                                Text {
+                                    text: Math.round(root.cpu-usage) + "%";
+                                    color: root.cpu-usage > 80 ? Theme.color-emotional :
+                                           root.cpu-usage > 50 ? Theme.amber : Theme.cyan;
+                                    font-size: Theme.font-body;
+                                    font-weight: 600;
+                                }
+                            }
+
+                            Rectangle {
+                                height: 6px;
+                                border-radius: 3px;
+                                background: Theme.bg-deep;
+
+                                Rectangle {
+                                    width: max(0px, parent.width * root.cpu-usage / 100);
+                                    height: 100%;
+                                    border-radius: 3px;
+                                    background: root.cpu-usage > 80 ? Theme.color-emotional :
+                                               root.cpu-usage > 50 ? Theme.amber : Theme.cyan;
+                                    animate width { duration: 300ms; }
+                                }
+                            }
+                        }
+
+                        Rectangle { height: 1px; background: Theme.bg-elevated; }
+
+                        // Memory bar
+                        VerticalLayout {
+                            spacing: 4px;
+
+                            HorizontalLayout {
+                                Text {
+                                    text: "Memory";
+                                    color: Theme.text-secondary;
+                                    font-size: Theme.font-body;
+                                    horizontal-stretch: 1;
+                                }
+                                Text {
+                                    text: root.memory-text;
+                                    color: root.memory-usage > 85 ? Theme.color-emotional :
+                                           root.memory-usage > 60 ? Theme.amber : Theme.text-primary;
+                                    font-size: Theme.font-small;
+                                }
+                            }
+
+                            Rectangle {
+                                height: 6px;
+                                border-radius: 3px;
+                                background: Theme.bg-deep;
+
+                                Rectangle {
+                                    width: max(0px, parent.width * root.memory-usage / 100);
+                                    height: 100%;
+                                    border-radius: 3px;
+                                    background: root.memory-usage > 85 ? Theme.color-emotional :
+                                               root.memory-usage > 60 ? Theme.amber : Theme.cyan;
+                                    animate width { duration: 300ms; }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // ── Status section ──
+                Text {
+                    text: "STATUS";
+                    color: Theme.text-dim;
+                    font-size: 11px;
+                    letter-spacing: 2px;
+                }
+
+                Rectangle {
+                    background: Theme.bg-card;
+                    border-radius: Theme.radius-card;
+                    height: status-layout.preferred-height;
+
+                    status-layout := VerticalLayout {
+                        padding: 14px;
+                        spacing: 10px;
+
+                        // Battery
+                        HorizontalLayout {
+                            Text {
+                                text: "Battery";
+                                color: Theme.text-secondary;
+                                font-size: Theme.font-body;
+                                horizontal-stretch: 1;
+                            }
+
+                            HorizontalLayout {
+                                spacing: 6px;
+
+                                // Mini battery bar
+                                Rectangle {
+                                    width: 32px;
+                                    height: 12px;
+                                    y: (parent.height - 12px) / 2;
+                                    border-radius: 3px;
+                                    border-width: 1px;
+                                    border-color: root.battery-level <= 20 ? Theme.color-emotional : Theme.text-dim;
+
+                                    Rectangle {
+                                        x: 2px; y: 2px;
+                                        width: max(0px, (parent.width - 6px) * root.battery-level / 100);
+                                        height: parent.height - 6px;
+                                        border-radius: 1px;
+                                        background: root.battery-charging ? Theme.cyan :
+                                                    root.battery-level <= 20 ? Theme.color-emotional :
+                                                    root.battery-level <= 50 ? Theme.amber : Theme.cyan;
+                                    }
+                                }
+
+                                Text {
+                                    text: root.battery-level + "%" +
+                                          (root.battery-charging ? " charging" : "");
+                                    color: root.battery-level <= 20 ? Theme.color-emotional : Theme.text-primary;
+                                    font-size: Theme.font-body;
+                                }
+                            }
+                        }
+
+                        Rectangle { height: 1px; background: Theme.bg-elevated; }
+
+                        // WiFi
+                        HorizontalLayout {
+                            Text {
+                                text: "WiFi";
+                                color: Theme.text-secondary;
+                                font-size: Theme.font-body;
+                                horizontal-stretch: 1;
+                            }
+
+                            HorizontalLayout {
+                                spacing: 8px;
+
+                                // Connection dot
+                                Rectangle {
+                                    width: 8px;
+                                    height: 8px;
+                                    y: (parent.height - 8px) / 2;
+                                    border-radius: 4px;
+                                    background: root.wifi-connected ? Theme.cyan : Theme.color-emotional;
+                                }
+
+                                Text {
+                                    text: root.wifi-connected ?
+                                          (root.wifi-ssid != "" ? root.wifi-ssid : "Connected") :
+                                          "Disconnected";
+                                    color: root.wifi-connected ? Theme.text-primary : Theme.text-dim;
+                                    font-size: Theme.font-body;
+                                }
+                            }
+                        }
+
+                        Rectangle { height: 1px; background: Theme.bg-elevated; }
+
+                        // Uptime
+                        HorizontalLayout {
+                            Text {
+                                text: "Uptime";
+                                color: Theme.text-secondary;
+                                font-size: Theme.font-body;
+                                horizontal-stretch: 1;
+                            }
+                            Text {
+                                text: root.uptime-text != "" ? root.uptime-text : "—";
+                                color: Theme.text-primary;
+                                font-size: Theme.font-body;
+                            }
+                        }
+                    }
+                }
+
+                // ── Top Processes section ──
+                Text {
+                    text: "TOP PROCESSES";
+                    color: Theme.text-dim;
+                    font-size: 11px;
+                    letter-spacing: 2px;
+                }
+
+                Rectangle {
+                    background: Theme.bg-card;
+                    border-radius: Theme.radius-card;
+                    height: proc-layout.preferred-height;
+
+                    proc-layout := VerticalLayout {
+                        padding: 14px;
+                        spacing: 6px;
+
+                        // Column headers
+                        HorizontalLayout {
+                            spacing: 8px;
+
+                            Text {
+                                text: "Name";
+                                color: Theme.text-dim;
+                                font-size: 10px;
+                                letter-spacing: 1px;
+                                horizontal-stretch: 1;
+                            }
+                            Text {
+                                text: "PID";
+                                color: Theme.text-dim;
+                                font-size: 10px;
+                                letter-spacing: 1px;
+                                min-width: 50px;
+                            }
+                            Text {
+                                text: "CPU";
+                                color: Theme.text-dim;
+                                font-size: 10px;
+                                letter-spacing: 1px;
+                                min-width: 44px;
+                                horizontal-alignment: right;
+                            }
+                        }
+
+                        Rectangle { height: 1px; background: Theme.bg-elevated; }
+
+                        if root.top-processes.length == 0 : Text {
+                            text: "No process data";
+                            color: Theme.text-dim;
+                            font-size: Theme.font-small;
+                        }
+
+                        for proc in root.top-processes : HorizontalLayout {
+                            spacing: 8px;
+                            height: 24px;
+
+                            Text {
+                                text: proc.name;
+                                color: Theme.text-primary;
+                                font-size: Theme.font-small;
+                                horizontal-stretch: 1;
+                                overflow: elide;
+                                vertical-alignment: center;
+                            }
+
+                            Text {
+                                text: proc.pid;
+                                color: Theme.text-dim;
+                                font-size: 10px;
+                                min-width: 50px;
+                                vertical-alignment: center;
+                            }
+
+                            Text {
+                                text: Math.round(proc.cpu-percent * 10) / 10 + "%";
+                                color: proc.cpu-percent > 80 ? Theme.color-emotional :
+                                       proc.cpu-percent > 50 ? Theme.amber :
+                                       Theme.text-secondary;
+                                font-size: Theme.font-small;
+                                font-weight: 500;
+                                min-width: 44px;
+                                horizontal-alignment: right;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                }
+
+                // Bottom spacer
+                Rectangle { height: 32px; }
+            }
+        }
+    }
+}

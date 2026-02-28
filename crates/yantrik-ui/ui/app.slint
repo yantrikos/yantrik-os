@@ -1,5 +1,6 @@
 // Yantrik OS — AI-native desktop shell.
-// Screen states: 0=boot, 1=desktop, 2=onboarding, 3=lock, 4=bond, 5=personality, 6=memory, 7=settings, 8=files.
+// Screen states: 0=boot, 1=desktop, 2=onboarding, 3=lock, 4=bond, 5=personality,
+//   6=memory, 7=settings, 8=files, 9=notifications, 10=system.
 // The AI IS the shell — Intent Lens is the primary interaction.
 
 import { Theme } from "theme.slint";
@@ -12,20 +13,23 @@ import { LockScreen } from "lock.slint";
 import { SettingsScreen } from "settings.slint";
 import { MemoryBrowser, MemoryItem } from "memory_browser.slint";
 import { FileBrowser, FileEntry } from "file_browser.slint";
+import { NotificationCenter, NotificationData } from "notification_center.slint";
+import { SystemDashboard, ProcessData } from "system_dashboard.slint";
 import { VoiceOverlay } from "voice_overlay.slint";
 import { MessageData } from "components/message_bubble.slint";
 import { UrgeCardData } from "components/glance_card.slint";
 import { LensResult } from "components/intent_lens.slint";
 import { WhisperCardItem } from "components/whisper_card.slint";
 
-export { MessageData, UrgeCardData, BondData, OpinionData, SharedRefData, MemoryItem, LensResult, WhisperCardItem, FileEntry }
+export { MessageData, UrgeCardData, BondData, OpinionData, SharedRefData, MemoryItem, LensResult, WhisperCardItem, FileEntry, NotificationData, ProcessData }
 
 export component App inherits Window {
     title: "Yantrik OS";
     default-font-size: 14px;
     background: Theme.bg-deep;
 
-    // Screen state: 0=boot, 1=desktop, 4=bond, 5=personality, 6=memory
+    // Screen state: 0=boot, 1=desktop, 2=onboarding, 3=lock, 4=bond, 5=personality,
+    //   6=memory, 7=settings, 8=files, 9=notifications, 10=system
     in-out property <int> current-screen: 0;
 
     // Boot state
@@ -89,6 +93,14 @@ export component App inherits Window {
     in property <[WhisperCardItem]> whisper-cards: [];
     in property <int> whisper-hint-count: 0;
 
+    // Quick Settings state
+    in-out property <bool> quick-settings-open: false;
+    in-out property <int> brightness-level: 80;
+    in-out property <int> volume-level: 50;
+    callback toggle-wifi();
+    callback brightness-changed(int);
+    callback volume-changed(int);
+
     // Notification toast
     in property <string> notification-text: "";
     in-out property <bool> show-notification: false;
@@ -120,6 +132,22 @@ export component App inherits Window {
     callback file-navigate-dir(string);
     callback file-open(string);
     callback file-go-up();
+
+    // Notification Center state (screen 9)
+    in property <[NotificationData]> notification-list: [];
+    in property <int> notification-unread-count: 0;
+    callback notification-clear-all();
+    callback notification-mark-all-read();
+    callback notification-tapped(string);
+
+    // System Dashboard state (screen 10)
+    in property <float> sys-cpu-usage: 0.0;
+    in property <float> sys-memory-usage: 0.0;
+    in property <string> sys-memory-text: "0 / 0 MB";
+    in property <string> sys-uptime-text: "";
+    in property <string> sys-wifi-ssid: "";
+    in property <int> sys-wifi-signal: 0;
+    in property <[ProcessData]> sys-top-processes: [];
 
     // Onboarding state (0=not onboarding, 1=step:terminal, 2=step:focus, 3=done)
     in-out property <int> onboarding-step: 0;
@@ -216,6 +244,13 @@ export component App inherits Window {
             whisper-card-dismissed(id) => { root.whisper-card-dismissed(id); }
             whisper-card-action(id) => { root.whisper-card-action(id); }
             whisper-hint-clicked => { root.whisper-hint-clicked(); }
+            // Quick Settings
+            quick-settings-open <=> root.quick-settings-open;
+            brightness-level <=> root.brightness-level;
+            volume-level <=> root.volume-level;
+            toggle-wifi => { root.toggle-wifi(); }
+            brightness-changed(val) => { root.brightness-changed(val); }
+            volume-changed(val) => { root.volume-changed(val); }
             // Focus mode
             focus-mode <=> root.focus-mode;
             focus-remaining: root.focus-remaining;
@@ -285,6 +320,7 @@ export component App inherits Window {
             auto-lock-secs: root.settings-auto-lock-secs;
             memory-count: root.memory-count;
             version-text: root.settings-version;
+            notification-count: root.notification-unread-count;
             back-pressed => {
                 root.current-screen = 1;
                 root.navigate(1);
@@ -308,6 +344,39 @@ export component App inherits Window {
             navigate-dir(name) => { root.file-navigate-dir(name); }
             open-file(name) => { root.file-open(name); }
             go-up => { root.file-go-up(); }
+        }
+
+        // Notification Center
+        if current-screen == 9 : NotificationCenter {
+            width: 100%; height: 100%;
+            notifications: root.notification-list;
+            unread-count: root.notification-unread-count;
+            back-pressed => {
+                root.current-screen = 1;
+                root.navigate(1);
+            }
+            clear-all => { root.notification-clear-all(); }
+            mark-all-read => { root.notification-mark-all-read(); }
+            notification-tapped(id) => { root.notification-tapped(id); }
+        }
+
+        // System Dashboard
+        if current-screen == 10 : SystemDashboard {
+            width: 100%; height: 100%;
+            cpu-usage: root.sys-cpu-usage;
+            memory-usage: root.sys-memory-usage;
+            memory-text: root.sys-memory-text;
+            battery-level: root.battery-level;
+            battery-charging: root.battery-charging;
+            wifi-connected: root.wifi-connected;
+            wifi-ssid: root.sys-wifi-ssid;
+            wifi-signal: root.sys-wifi-signal;
+            uptime-text: root.sys-uptime-text;
+            top-processes: root.sys-top-processes;
+            back-pressed => {
+                root.current-screen = 1;
+                root.navigate(1);
+            }
         }
 
         // Voice overlay

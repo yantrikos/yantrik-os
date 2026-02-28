@@ -16,6 +16,7 @@ use crate::bridge::CompanionBridge;
 use crate::cards::CardManager;
 use crate::clipboard;
 use crate::features;
+use crate::notifications;
 use crate::system_context;
 use crate::{App, MessageData, UrgeCardData, WhisperCardItem};
 
@@ -30,6 +31,7 @@ pub struct AppContext {
     pub feature_registry: Rc<RefCell<features::FeatureRegistry>>,
     pub scorer: Rc<RefCell<features::UrgencyScorer>>,
     pub system_snapshot: Rc<RefCell<yantrik_os::SystemSnapshot>>,
+    pub notification_store: notifications::SharedStore,
     pub voice_config: VoiceConfig,
 }
 
@@ -118,6 +120,7 @@ impl AppContext {
             feature_registry: Rc::new(RefCell::new(registry)),
             scorer: Rc::new(RefCell::new(features::UrgencyScorer::new())),
             system_snapshot: Rc::new(RefCell::new(yantrik_os::SystemSnapshot::default())),
+            notification_store: Rc::new(RefCell::new(notifications::NotificationStore::new())),
             voice_config,
         }
     }

@@ -11,7 +11,8 @@ use slint::{ComponentHandle, ModelRc, Timer, TimerMode, VecModel};
 use crate::app_context::AppContext;
 use crate::bridge;
 use crate::filebrowser;
-use crate::{App, BondData, FileEntry, OpinionData, SharedRefData, UrgeCardData};
+use crate::notifications;
+use crate::{App, BondData, FileEntry, OpinionData, ProcessData, SharedRefData, UrgeCardData};
 
 /// Wire on_navigate callback.
 pub fn wire(ui: &App, ctx: &AppContext) {
@@ -20,6 +21,8 @@ pub fn wire(ui: &App, ctx: &AppContext) {
     let nav_timer: Rc<RefCell<Option<Timer>>> = Rc::new(RefCell::new(None));
     let timer_inner = nav_timer.clone();
     let browser_path = ctx.browser_path.clone();
+    let notification_store = ctx.notification_store.clone();
+    let system_snapshot = ctx.system_snapshot.clone();
 
     ui.on_navigate(move |screen| {
         tracing::debug!(screen, "Navigate to screen");
@@ -144,7 +147,73 @@ pub fn wire(ui: &App, ctx: &AppContext) {
                     ui.set_file_browser_entries(ModelRc::new(VecModel::from(items)));
                 }
             }
+            // Notification Center — sync from store
+            9 => {
+                let store = notification_store.borrow();
+                notifications::sync_to_ui(&store, &ui_weak);
+            }
+            // System Dashboard — populate from snapshot
+            10 => {
+                let snap = system_snapshot.borrow();
+                if let Some(ui) = ui_weak.upgrade() {
+                    ui.set_sys_cpu_usage(snap.cpu_usage_percent);
+                    ui.set_sys_memory_usage(snap.memory_usage_percent());
+                    ui.set_sys_memory_text(format_memory(snap.memory_used_bytes, snap.memory_total_bytes).into());
+                    ui.set_sys_wifi_ssid(snap.network_ssid.clone().unwrap_or_default().into());
+                    ui.set_sys_wifi_signal(snap.network_signal.unwrap_or(0) as i32);
+                    ui.set_sys_uptime_text(format_uptime().into());
+
+                    let procs: Vec<ProcessData> = snap
+                        .running_processes
+                        .iter()
+                        .take(15)
+                        .map(|p| ProcessData {
+                            name: p.name.clone().into(),
+                            pid: p.pid as i32,
+                            cpu_percent: p.cpu_percent,
+                        })
+                        .collect();
+                    ui.set_sys_top_processes(ModelRc::new(VecModel::from(procs)));
+                }
+            }
             _ => {}
         }
     });
+}
+
+/// Format memory as human-readable text.
+fn format_memory(used_bytes: u64, total_bytes: u64) -> String {
+    let used_mb = used_bytes / (1024 * 1024);
+    let total_mb = total_bytes / (1024 * 1024);
+    if total_mb >= 1024 {
+        format!(
+            "{:.1} / {:.1} GB",
+            used_mb as f64 / 1024.0,
+            total_mb as f64 / 1024.0
+        )
+    } else {
+        format!("{} / {} MB", used_mb, total_mb)
+    }
+}
+
+/// Read /proc/uptime and format as human-readable text.
+fn format_uptime() -> String {
+    std::fs::read_to_string("/proc/uptime")
+        .ok()
+        .and_then(|content| content.split_whitespace().next().map(String::from))
+        .and_then(|s| s.parse::<f64>().ok())
+        .map(|secs| {
+            let total = secs as u64;
+            let days = total / 86400;
+            let hours = (total % 86400) / 3600;
+            let mins = (total % 3600) / 60;
+            if days > 0 {
+                format!("{}d {}h", days, hours)
+            } else if hours > 0 {
+                format!("{}h {}m", hours, mins)
+            } else {
+                format!("{}m", mins)
+            }
+        })
+        .unwrap_or_else(|| "—".to_string())
 }

@@ -1,0 +1,299 @@
+// Quick Settings — slide-down panel from status bar.
+// WiFi status, volume, brightness controls, battery info.
+// Overlays on top of the desktop when toggled.
+
+import { Theme } from "../theme.slint";
+
+export component QuickSettings inherits Rectangle {
+    in-out property <bool> is-open: false;
+    in property <int> battery-level: 100;
+    in property <bool> battery-charging: false;
+    in property <bool> wifi-connected: false;
+    in property <string> wifi-ssid: "";
+    in-out property <int> brightness-level: 80;
+    in-out property <int> volume-level: 50;
+
+    callback toggle-wifi();
+    callback brightness-changed(int);
+    callback volume-changed(int);
+    callback close();
+
+    // Eat clicks when open so they don't reach desktop behind
+    width: 100%;
+    height: 100%;
+
+    // Backdrop (click to close)
+    if root.is-open : TouchArea {
+        width: 100%;
+        height: 100%;
+        clicked => { root.is-open = false; root.close(); }
+
+        Rectangle {
+            width: 100%;
+            height: 100%;
+            background: #00000040;
+        }
+    }
+
+    // Panel — top center, slides down
+    if root.is-open : Rectangle {
+        x: (parent.width - 360px) / 2;
+        y: Theme.status-bar-height;
+        width: 360px;
+        height: qs-content.preferred-height;
+        background: Theme.bg-elevated;
+        border-radius: 0px;
+        border-bottom-left-radius: 16px;
+        border-bottom-right-radius: 16px;
+        border-width: 1px;
+        border-color: #ffffff08;
+        drop-shadow-blur: 24px;
+        drop-shadow-color: #00000080;
+
+        qs-content := VerticalLayout {
+            padding: 16px;
+            spacing: 14px;
+
+            // ── WiFi toggle ──
+            HorizontalLayout {
+                spacing: 12px;
+
+                // WiFi toggle button
+                TouchArea {
+                    width: 64px;
+                    height: 52px;
+                    clicked => { root.toggle-wifi(); }
+
+                    Rectangle {
+                        width: 100%;
+                        height: 100%;
+                        border-radius: 12px;
+                        background: root.wifi-connected ? #5ac8d420 : Theme.bg-card;
+                        border-width: 1px;
+                        border-color: root.wifi-connected ? Theme.cyan-dim : Theme.text-dim;
+
+                        VerticalLayout {
+                            alignment: center;
+                            spacing: 2px;
+
+                            Text {
+                                text: root.wifi-connected ? "◉" : "○";
+                                color: root.wifi-connected ? Theme.cyan : Theme.text-dim;
+                                font-size: 18px;
+                                horizontal-alignment: center;
+                            }
+                            Text {
+                                text: "WiFi";
+                                color: root.wifi-connected ? Theme.text-primary : Theme.text-dim;
+                                font-size: 9px;
+                                horizontal-alignment: center;
+                            }
+                        }
+                    }
+                }
+
+                // WiFi info
+                VerticalLayout {
+                    alignment: center;
+                    horizontal-stretch: 1;
+
+                    Text {
+                        text: root.wifi-connected ?
+                              (root.wifi-ssid != "" ? root.wifi-ssid : "Connected") :
+                              "Disconnected";
+                        color: Theme.text-primary;
+                        font-size: Theme.font-body;
+                    }
+                    Text {
+                        text: root.wifi-connected ? "Tap to disconnect" : "Tap to connect";
+                        color: Theme.text-dim;
+                        font-size: 10px;
+                    }
+                }
+            }
+
+            Rectangle { height: 1px; background: #ffffff08; }
+
+            // ── Brightness slider ──
+            VerticalLayout {
+                spacing: 6px;
+
+                HorizontalLayout {
+                    Text {
+                        text: "☀ Brightness";
+                        color: Theme.text-secondary;
+                        font-size: Theme.font-small;
+                        horizontal-stretch: 1;
+                        vertical-alignment: center;
+                    }
+                    Text {
+                        text: root.brightness-level + "%";
+                        color: Theme.text-dim;
+                        font-size: Theme.font-small;
+                    }
+                }
+
+                // Slider track
+                TouchArea {
+                    width: 100%;
+                    height: 28px;
+                    moved => {
+                        if self.pressed {
+                            root.brightness-level = max(5, min(100,
+                                Math.round(self.mouse-x / self.width * 100)));
+                            root.brightness-changed(root.brightness-level);
+                        }
+                    }
+                    clicked => {
+                        root.brightness-level = max(5, min(100,
+                            Math.round(self.mouse-x / self.width * 100)));
+                        root.brightness-changed(root.brightness-level);
+                    }
+
+                    Rectangle {
+                        y: (parent.height - 6px) / 2;
+                        width: 100%;
+                        height: 6px;
+                        border-radius: 3px;
+                        background: Theme.bg-deep;
+
+                        // Fill
+                        Rectangle {
+                            width: max(0px, parent.width * root.brightness-level / 100);
+                            height: 100%;
+                            border-radius: 3px;
+                            background: Theme.amber;
+                        }
+
+                        // Thumb
+                        Rectangle {
+                            x: max(0px, min(parent.width - 14px,
+                                parent.width * root.brightness-level / 100 - 7px));
+                            y: -4px;
+                            width: 14px;
+                            height: 14px;
+                            border-radius: 7px;
+                            background: Theme.amber;
+                            drop-shadow-blur: 4px;
+                            drop-shadow-color: Theme.amber-glow;
+                        }
+                    }
+                }
+            }
+
+            // ── Volume slider ──
+            VerticalLayout {
+                spacing: 6px;
+
+                HorizontalLayout {
+                    Text {
+                        text: "♪ Volume";
+                        color: Theme.text-secondary;
+                        font-size: Theme.font-small;
+                        horizontal-stretch: 1;
+                        vertical-alignment: center;
+                    }
+                    Text {
+                        text: root.volume-level + "%";
+                        color: Theme.text-dim;
+                        font-size: Theme.font-small;
+                    }
+                }
+
+                // Slider track
+                TouchArea {
+                    width: 100%;
+                    height: 28px;
+                    moved => {
+                        if self.pressed {
+                            root.volume-level = max(0, min(100,
+                                Math.round(self.mouse-x / self.width * 100)));
+                            root.volume-changed(root.volume-level);
+                        }
+                    }
+                    clicked => {
+                        root.volume-level = max(0, min(100,
+                            Math.round(self.mouse-x / self.width * 100)));
+                        root.volume-changed(root.volume-level);
+                    }
+
+                    Rectangle {
+                        y: (parent.height - 6px) / 2;
+                        width: 100%;
+                        height: 6px;
+                        border-radius: 3px;
+                        background: Theme.bg-deep;
+
+                        // Fill
+                        Rectangle {
+                            width: max(0px, parent.width * root.volume-level / 100);
+                            height: 100%;
+                            border-radius: 3px;
+                            background: Theme.cyan;
+                        }
+
+                        // Thumb
+                        Rectangle {
+                            x: max(0px, min(parent.width - 14px,
+                                parent.width * root.volume-level / 100 - 7px));
+                            y: -4px;
+                            width: 14px;
+                            height: 14px;
+                            border-radius: 7px;
+                            background: Theme.cyan;
+                            drop-shadow-blur: 4px;
+                            drop-shadow-color: Theme.cyan-glow;
+                        }
+                    }
+                }
+            }
+
+            Rectangle { height: 1px; background: #ffffff08; }
+
+            // ── Battery info ──
+            HorizontalLayout {
+                spacing: 8px;
+
+                // Battery icon
+                Rectangle {
+                    width: 28px;
+                    height: 14px;
+                    y: (parent.height - 14px) / 2;
+                    border-radius: 3px;
+                    border-width: 1px;
+                    border-color: root.battery-level <= 20 ? Theme.color-emotional : Theme.text-dim;
+
+                    Rectangle {
+                        x: 2px; y: 2px;
+                        width: max(0px, (parent.width - 6px) * root.battery-level / 100);
+                        height: parent.height - 6px;
+                        border-radius: 1px;
+                        background: root.battery-charging ? Theme.cyan :
+                                    root.battery-level <= 20 ? Theme.color-emotional :
+                                    root.battery-level <= 50 ? Theme.amber : Theme.cyan;
+                    }
+
+                    // Nub
+                    Rectangle {
+                        x: parent.width;
+                        y: 3px;
+                        width: 2px;
+                        height: parent.height - 8px;
+                        border-radius: 1px;
+                        background: Theme.text-dim;
+                        opacity: 0.5;
+                    }
+                }
+
+                Text {
+                    text: root.battery-level + "%" +
+                          (root.battery-charging ? " — Charging" : "");
+                    color: root.battery-level <= 20 ? Theme.color-emotional : Theme.text-primary;
+                    font-size: Theme.font-body;
+                    horizontal-stretch: 1;
+                    vertical-alignment: center;
+                }
+            }
+        }
+    }
+}

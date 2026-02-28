@@ -29,6 +29,7 @@ import { IntentLens, LensResult } from "components/intent_lens.slint";
 import { MessageData } from "components/message_bubble.slint";
 import { UrgeCardData } from "components/glance_card.slint";
 import { WhisperCardStack, WhisperCardItem } from "components/whisper_card.slint";
+import { QuickSettings } from "components/quick_settings.slint";
 
 export component DesktopScreen inherits Rectangle {
     // Status bar state
@@ -63,6 +64,14 @@ export component DesktopScreen inherits Rectangle {
     callback whisper-card-dismissed(string);
     callback whisper-card-action(string);
     callback whisper-hint-clicked();
+
+    // Quick Settings overlay
+    in-out property <bool> quick-settings-open: false;
+    in-out property <int> brightness-level: 80;
+    in-out property <int> volume-level: 50;
+    callback toggle-wifi();
+    callback brightness-changed(int);
+    callback volume-changed(int);
 
     // Focus mode (Workspace Morph)
     in-out property <bool> focus-mode: false;
@@ -99,6 +108,7 @@ export component DesktopScreen inherits Rectangle {
         anchor-clicked => { root.lens-open = !root.lens-open; root.open-lens(); }
         queue-clicked => { root.lens-open = true; root.open-lens(); }
         whisper-hint-clicked => { root.whisper-hint-clicked(); }
+        settings-tapped => { root.quick-settings-open = !root.quick-settings-open; }
     }
 
     // ── Layer 2: Desktop content area ──
@@ -282,7 +292,24 @@ export component DesktopScreen inherits Rectangle {
         }
     }
 
-    // ── Layer 2.5: Whisper Cards (floating, top-right) ──
+    // ── Layer 2.5: Quick Settings overlay (slide down from status bar) ──
+    QuickSettings {
+        width: 100%;
+        height: 100%;
+        is-open <=> root.quick-settings-open;
+        battery-level: root.battery-level;
+        battery-charging: root.battery-charging;
+        wifi-connected: root.wifi-connected;
+        wifi-ssid: "";
+        brightness-level <=> root.brightness-level;
+        volume-level <=> root.volume-level;
+        toggle-wifi => { root.toggle-wifi(); }
+        brightness-changed(val) => { root.brightness-changed(val); }
+        volume-changed(val) => { root.volume-changed(val); }
+        close => { root.quick-settings-open = false; }
+    }
+
+    // ── Layer 2.6: Whisper Cards (floating, top-right) ──
     WhisperCardStack {
         x: root.width - 316px;
         y: Theme.status-bar-height + 8px;
