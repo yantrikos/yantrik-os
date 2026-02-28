@@ -47,9 +47,12 @@ conversation:
   session_timeout_minutes: 30
 
 # Tool calling — enabled for 3B model (reliable tool use).
+# max_permission: safe | standard | sensitive | dangerous
+# Default "sensitive" allows everything except destructive ops (file delete, shutdown).
 tools:
   enabled: true
   max_tool_rounds: 3
+  max_permission: "sensitive"
 
 cognition:
   think_interval_minutes: 15

@@ -177,6 +177,9 @@ pub struct ToolsConfig {
     pub enabled: bool,
     #[serde(default = "default_max_tool_rounds")]
     pub max_tool_rounds: usize,
+    /// Maximum tool permission level: "safe", "standard", "sensitive", "dangerous".
+    #[serde(default = "default_max_permission")]
+    pub max_permission: String,
 }
 
 fn default_true() -> bool {
@@ -187,12 +190,16 @@ fn default_true() -> bool {
 fn default_max_tool_rounds() -> usize {
     3
 }
+fn default_max_permission() -> String {
+    "sensitive".to_string()
+}
 
 impl Default for ToolsConfig {
     fn default() -> Self {
         Self {
             enabled: default_true(),
             max_tool_rounds: default_max_tool_rounds(),
+            max_permission: default_max_permission(),
         }
     }
 }

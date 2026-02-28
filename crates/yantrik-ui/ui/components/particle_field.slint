@@ -1,12 +1,24 @@
 // Neural Particle Field — drifting neurons with living glow.
 // Deep-space neural network backdrop. Visible nebula clouds + bright neuron dots.
 // The AI's nervous system, rendered as ambient light.
+//
+// State-driven behaviors:
+//   is-thinking → phase 2.7x faster, neuron amplitude tightens to 30%
+//   has-urges   → amber nebulae glow brighter
+//   intensity   → master opacity (dims when Lens opens, focus mode)
 
 import { Theme } from "../theme.slint";
 
 export component ParticleField inherits Rectangle {
     in property <bool> active: true;
     in property <float> intensity: 1.0;
+    in property <bool> is-thinking: false;
+    in property <bool> has-urges: false;
+
+    // Derived: amplitude scale (1.0 normal, 0.3 when thinking → neurons tighten)
+    property <float> amp: is-thinking ? 0.3 : 1.0;
+    // Derived: amber boost when urges pending
+    property <float> urge-glow: has-urges ? 0.15 : 0.0;
 
     background: transparent;
     clip: true;
@@ -17,7 +29,8 @@ export component ParticleField inherits Rectangle {
         interval: 16ms;
         running: root.active;
         triggered => {
-            phase = mod(phase + 0.0015, 1.0);
+            // 2.7x faster when thinking
+            phase = mod(phase + (is-thinking ? 0.004 : 0.0015), 1.0);
         }
     }
 
@@ -36,14 +49,14 @@ export component ParticleField inherits Rectangle {
         opacity: intensity * (0.6 + 0.3 * sin(phase * 4.398 * 1rad));
     }
 
-    // Nebula B — right-center (amber)
+    // Nebula B — right-center (amber — glows brighter with urges)
     Rectangle {
         x: parent.width * 0.72 - 200px;
         y: parent.height * 0.4 - 225px;
         width: 400px; height: 450px;
         border-radius: 200px;
         background: @radial-gradient(circle, #d4a5741a 0%, #d4a5740a 40%, transparent 70%);
-        opacity: intensity * (0.5 + 0.3 * sin(phase * 5.655 * 1rad));
+        opacity: intensity * (0.5 + urge-glow + 0.3 * sin(phase * 5.655 * 1rad));
     }
 
     // Nebula C — lower-left (cyan)
@@ -66,14 +79,14 @@ export component ParticleField inherits Rectangle {
         opacity: intensity * (0.45 + 0.2 * sin(phase * 3.770 * 1rad));
     }
 
-    // Nebula E — bottom-center (amber, warms the orb area)
+    // Nebula E — bottom-center (amber — glows brighter with urges, warms the orb area)
     Rectangle {
         x: parent.width * 0.42 - 225px;
         y: parent.height * 0.75 - 175px;
         width: 450px; height: 350px;
         border-radius: 175px;
         background: @radial-gradient(circle, #d4a57414 0%, #d4a57408 30%, transparent 65%);
-        opacity: intensity * (0.5 + 0.3 * sin(phase * 5.027 * 1rad));
+        opacity: intensity * (0.5 + urge-glow + 0.3 * sin(phase * 5.027 * 1rad));
     }
 
     // Nebula F — center-wide (very subtle cyan wash)
@@ -89,12 +102,13 @@ export component ParticleField inherits Rectangle {
     // ══════════════════════════════════════════════
     // Layer 2: Neurons (bright glowing dots with halos)
     // Each is a small dot with a large soft drop-shadow.
+    // When thinking: amplitude tightens (amp=0.3), neurons cluster.
     // ══════════════════════════════════════════════
 
     // Neuron 1 — upper left
     Rectangle {
-        x: parent.width * (0.15 + 0.06 * sin(phase * 6.283 * 1rad));
-        y: parent.height * (0.12 + 0.04 * cos(phase * 8.168 * 1rad));
+        x: parent.width * (0.15 + 0.06 * amp * sin(phase * 6.283 * 1rad));
+        y: parent.height * (0.12 + 0.04 * amp * cos(phase * 8.168 * 1rad));
         width: 5px; height: 5px; border-radius: 2.5px;
         background: Theme.cyan;
         opacity: intensity * (0.35 + 0.3 * sin(phase * 12.566 * 1rad));
@@ -104,8 +118,8 @@ export component ParticleField inherits Rectangle {
 
     // Neuron 2 — upper right
     Rectangle {
-        x: parent.width * (0.78 + 0.05 * sin(phase * 7.540 * 1rad));
-        y: parent.height * (0.08 + 0.05 * cos(phase * 5.027 * 1rad));
+        x: parent.width * (0.78 + 0.05 * amp * sin(phase * 7.540 * 1rad));
+        y: parent.height * (0.08 + 0.05 * amp * cos(phase * 5.027 * 1rad));
         width: 4px; height: 4px; border-radius: 2px;
         background: Theme.amber;
         opacity: intensity * (0.3 + 0.25 * sin(phase * 10.996 * 1rad));
@@ -115,8 +129,8 @@ export component ParticleField inherits Rectangle {
 
     // Neuron 3 — mid left (larger)
     Rectangle {
-        x: parent.width * (0.08 + 0.04 * cos(phase * 4.712 * 1rad));
-        y: parent.height * (0.42 + 0.06 * sin(phase * 6.912 * 1rad));
+        x: parent.width * (0.08 + 0.04 * amp * cos(phase * 4.712 * 1rad));
+        y: parent.height * (0.42 + 0.06 * amp * sin(phase * 6.912 * 1rad));
         width: 6px; height: 6px; border-radius: 3px;
         background: Theme.cyan;
         opacity: intensity * (0.4 + 0.3 * sin(phase * 8.796 * 1rad));
@@ -126,8 +140,8 @@ export component ParticleField inherits Rectangle {
 
     // Neuron 4 — center-high
     Rectangle {
-        x: parent.width * (0.45 + 0.07 * sin(phase * 5.341 * 1rad));
-        y: parent.height * (0.22 + 0.03 * cos(phase * 9.425 * 1rad));
+        x: parent.width * (0.45 + 0.07 * amp * sin(phase * 5.341 * 1rad));
+        y: parent.height * (0.22 + 0.03 * amp * cos(phase * 9.425 * 1rad));
         width: 5px; height: 5px; border-radius: 2.5px;
         background: Theme.amber;
         opacity: intensity * (0.3 + 0.25 * sin(phase * 7.225 * 1rad));
@@ -137,8 +151,8 @@ export component ParticleField inherits Rectangle {
 
     // Neuron 5 — right side
     Rectangle {
-        x: parent.width * (0.88 + 0.03 * sin(phase * 8.482 * 1rad));
-        y: parent.height * (0.55 + 0.05 * cos(phase * 6.283 * 1rad));
+        x: parent.width * (0.88 + 0.03 * amp * sin(phase * 8.482 * 1rad));
+        y: parent.height * (0.55 + 0.05 * amp * cos(phase * 6.283 * 1rad));
         width: 4px; height: 4px; border-radius: 2px;
         background: Theme.cyan;
         opacity: intensity * (0.35 + 0.25 * sin(phase * 11.310 * 1rad));
@@ -148,8 +162,8 @@ export component ParticleField inherits Rectangle {
 
     // Neuron 6 — lower-left
     Rectangle {
-        x: parent.width * (0.22 + 0.05 * cos(phase * 7.854 * 1rad));
-        y: parent.height * (0.72 + 0.04 * sin(phase * 5.655 * 1rad));
+        x: parent.width * (0.22 + 0.05 * amp * cos(phase * 7.854 * 1rad));
+        y: parent.height * (0.72 + 0.04 * amp * sin(phase * 5.655 * 1rad));
         width: 5px; height: 5px; border-radius: 2.5px;
         background: Theme.cyan-light;
         opacity: intensity * (0.35 + 0.3 * sin(phase * 9.111 * 1rad));
@@ -159,8 +173,8 @@ export component ParticleField inherits Rectangle {
 
     // Neuron 7 — bottom center
     Rectangle {
-        x: parent.width * (0.52 + 0.06 * sin(phase * 4.398 * 1rad));
-        y: parent.height * (0.82 + 0.03 * cos(phase * 7.540 * 1rad));
+        x: parent.width * (0.52 + 0.06 * amp * sin(phase * 4.398 * 1rad));
+        y: parent.height * (0.82 + 0.03 * amp * cos(phase * 7.540 * 1rad));
         width: 4px; height: 4px; border-radius: 2px;
         background: Theme.amber;
         opacity: intensity * (0.25 + 0.2 * sin(phase * 13.195 * 1rad));
@@ -170,8 +184,8 @@ export component ParticleField inherits Rectangle {
 
     // Neuron 8 — lower right (larger, prominent)
     Rectangle {
-        x: parent.width * (0.75 + 0.04 * cos(phase * 6.597 * 1rad));
-        y: parent.height * (0.68 + 0.05 * sin(phase * 8.168 * 1rad));
+        x: parent.width * (0.75 + 0.04 * amp * cos(phase * 6.597 * 1rad));
+        y: parent.height * (0.68 + 0.05 * amp * sin(phase * 8.168 * 1rad));
         width: 7px; height: 7px; border-radius: 3.5px;
         background: Theme.cyan;
         opacity: intensity * (0.4 + 0.3 * sin(phase * 6.597 * 1rad));
@@ -181,8 +195,8 @@ export component ParticleField inherits Rectangle {
 
     // Neuron 9 — far right
     Rectangle {
-        x: parent.width * (0.92 + 0.02 * sin(phase * 5.969 * 1rad));
-        y: parent.height * (0.35 + 0.04 * cos(phase * 7.225 * 1rad));
+        x: parent.width * (0.92 + 0.02 * amp * sin(phase * 5.969 * 1rad));
+        y: parent.height * (0.35 + 0.04 * amp * cos(phase * 7.225 * 1rad));
         width: 4px; height: 4px; border-radius: 2px;
         background: Theme.amber;
         opacity: intensity * (0.25 + 0.2 * sin(phase * 10.367 * 1rad));
@@ -192,8 +206,8 @@ export component ParticleField inherits Rectangle {
 
     // Neuron 10 — center (hero neuron, biggest glow)
     Rectangle {
-        x: parent.width * (0.50 + 0.08 * sin(phase * 3.770 * 1rad));
-        y: parent.height * (0.50 + 0.06 * cos(phase * 4.712 * 1rad));
+        x: parent.width * (0.50 + 0.08 * amp * sin(phase * 3.770 * 1rad));
+        y: parent.height * (0.50 + 0.06 * amp * cos(phase * 4.712 * 1rad));
         width: 8px; height: 8px; border-radius: 4px;
         background: Theme.cyan-light;
         opacity: intensity * (0.25 + 0.2 * sin(phase * 5.027 * 1rad));
@@ -203,8 +217,8 @@ export component ParticleField inherits Rectangle {
 
     // Neuron 11 — upper drift
     Rectangle {
-        x: parent.width * (0.32 + 0.05 * cos(phase * 9.111 * 1rad));
-        y: parent.height * (0.05 + 0.03 * sin(phase * 6.283 * 1rad));
+        x: parent.width * (0.32 + 0.05 * amp * cos(phase * 9.111 * 1rad));
+        y: parent.height * (0.05 + 0.03 * amp * sin(phase * 6.283 * 1rad));
         width: 4px; height: 4px; border-radius: 2px;
         background: Theme.cyan;
         opacity: intensity * (0.3 + 0.2 * sin(phase * 8.482 * 1rad));
@@ -214,8 +228,8 @@ export component ParticleField inherits Rectangle {
 
     // Neuron 12 — mid right low
     Rectangle {
-        x: parent.width * (0.65 + 0.04 * sin(phase * 7.854 * 1rad));
-        y: parent.height * (0.88 + 0.02 * cos(phase * 5.341 * 1rad));
+        x: parent.width * (0.65 + 0.04 * amp * sin(phase * 7.854 * 1rad));
+        y: parent.height * (0.88 + 0.02 * amp * cos(phase * 5.341 * 1rad));
         width: 5px; height: 5px; border-radius: 2.5px;
         background: Theme.amber;
         opacity: intensity * (0.3 + 0.25 * sin(phase * 7.540 * 1rad));
@@ -225,8 +239,8 @@ export component ParticleField inherits Rectangle {
 
     // Neuron 13 — left center
     Rectangle {
-        x: parent.width * (0.03 + 0.03 * sin(phase * 5.341 * 1rad));
-        y: parent.height * (0.28 + 0.05 * cos(phase * 7.854 * 1rad));
+        x: parent.width * (0.03 + 0.03 * amp * sin(phase * 5.341 * 1rad));
+        y: parent.height * (0.28 + 0.05 * amp * cos(phase * 7.854 * 1rad));
         width: 4px; height: 4px; border-radius: 2px;
         background: Theme.amber;
         opacity: intensity * (0.25 + 0.2 * sin(phase * 9.425 * 1rad));
@@ -236,8 +250,8 @@ export component ParticleField inherits Rectangle {
 
     // Neuron 14 — center-right high
     Rectangle {
-        x: parent.width * (0.62 + 0.04 * cos(phase * 6.283 * 1rad));
-        y: parent.height * (0.18 + 0.04 * sin(phase * 8.168 * 1rad));
+        x: parent.width * (0.62 + 0.04 * amp * cos(phase * 6.283 * 1rad));
+        y: parent.height * (0.18 + 0.04 * amp * sin(phase * 8.168 * 1rad));
         width: 5px; height: 5px; border-radius: 2.5px;
         background: Theme.cyan;
         opacity: intensity * (0.3 + 0.25 * sin(phase * 7.540 * 1rad));
@@ -247,8 +261,8 @@ export component ParticleField inherits Rectangle {
 
     // Neuron 15 — lower center-left
     Rectangle {
-        x: parent.width * (0.35 + 0.05 * sin(phase * 7.225 * 1rad));
-        y: parent.height * (0.78 + 0.03 * cos(phase * 5.655 * 1rad));
+        x: parent.width * (0.35 + 0.05 * amp * sin(phase * 7.225 * 1rad));
+        y: parent.height * (0.78 + 0.03 * amp * cos(phase * 5.655 * 1rad));
         width: 6px; height: 6px; border-radius: 3px;
         background: Theme.cyan;
         opacity: intensity * (0.35 + 0.25 * sin(phase * 6.597 * 1rad));

@@ -410,7 +410,7 @@ fn push_state(companion: &CompanionService, ui_weak: &slint::Weak<App>) {
     let _ = slint::invoke_from_event_loop(move || {
         if let Some(ui) = weak.upgrade() {
             ui.set_memory_count(snapshot.memory_count as i32);
-            ui.set_is_thinking(false);
+            // Note: is-thinking is managed by main.rs stream timers, not here.
             ui.set_has_urges(snapshot.has_pending_urges);
         }
     });

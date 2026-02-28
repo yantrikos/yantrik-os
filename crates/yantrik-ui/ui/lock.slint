@@ -1,0 +1,118 @@
+// Lock Screen — Orb + PIN entry + clock.
+// Shown on idle timeout or manual lock. Validates PIN to unlock.
+
+import { Theme } from "theme.slint";
+
+export component LockScreen inherits Rectangle {
+    background: Theme.bg-deep;
+
+    in property <string> clock-text: "00:00";
+    in property <string> error-text: "";
+    in property <bool> shake-error: false;
+
+    callback try-unlock(string);
+
+    // Center column layout
+    VerticalLayout {
+        alignment: center;
+        spacing: 24px;
+
+        // Clock (large)
+        Text {
+            text: root.clock-text;
+            color: Theme.text-dim;
+            font-size: 48px;
+            font-weight: 300;
+            horizontal-alignment: center;
+        }
+
+        // Orb (dimmed)
+        HorizontalLayout {
+            alignment: center;
+            Rectangle {
+                width: 100px;
+                height: 100px;
+
+                orb := Rectangle {
+                    width: 80px;
+                    height: 80px;
+                    border-radius: 40px;
+                    background: Theme.amber-glow;
+                    x: (parent.width - self.width) / 2;
+                    y: (parent.height - self.height) / 2;
+
+                    // Inner glow
+                    Rectangle {
+                        width: 40px;
+                        height: 40px;
+                        border-radius: 20px;
+                        background: Theme.amber-dim;
+                        x: (parent.width - self.width) / 2;
+                        y: (parent.height - self.height) / 2;
+                    }
+                }
+            }
+        }
+
+        // "Enter PIN" label
+        Text {
+            text: "Enter PIN to unlock";
+            color: Theme.text-secondary;
+            font-size: Theme.font-small;
+            horizontal-alignment: center;
+        }
+
+        // PIN input container
+        HorizontalLayout {
+            alignment: center;
+            Rectangle {
+                width: 240px;
+                height: 48px;
+                border-radius: Theme.radius-card;
+                background: Theme.bg-input;
+                border-width: 1px;
+                border-color: root.error-text != "" ? #e86b6b80 : Theme.text-dim;
+
+                pin-input := TextInput {
+                    x: 16px;
+                    y: 0;
+                    width: parent.width - 32px;
+                    height: parent.height;
+                    color: Theme.text-primary;
+                    font-size: 20px;
+                    horizontal-alignment: center;
+                    input-type: password;
+
+                    accepted => {
+                        root.try-unlock(self.text);
+                        self.text = "";
+                    }
+                }
+            }
+        }
+
+        // Error text
+        if root.error-text != "" : Text {
+            text: root.error-text;
+            color: #e86b6b;
+            font-size: Theme.font-small;
+            horizontal-alignment: center;
+        }
+
+        // Hint
+        Text {
+            text: "Press Enter to unlock";
+            color: Theme.text-dim;
+            font-size: 11px;
+            horizontal-alignment: center;
+        }
+    }
+
+    // Focus the PIN input when shown
+    FocusScope {
+        key-pressed(event) => {
+            pin-input.focus();
+            accept
+        }
+    }
+}

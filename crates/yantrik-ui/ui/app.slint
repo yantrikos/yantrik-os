@@ -1,19 +1,24 @@
 // Yantrik OS — AI-native desktop shell.
-// Screen states: 0=boot, 1=desktop, 4=bond, 5=personality, 6=memory.
+// Screen states: 0=boot, 1=desktop, 2=onboarding, 3=lock, 4=bond, 5=personality, 6=memory, 7=settings, 8=files.
 // The AI IS the shell — Intent Lens is the primary interaction.
 
 import { Theme } from "theme.slint";
 import { BootScreen } from "boot.slint";
+import { OnboardingScreen } from "onboarding.slint";
 import { DesktopScreen } from "desktop.slint";
 import { BondScreen, BondData } from "bond.slint";
 import { PersonalityScreen, OpinionData, SharedRefData } from "personality.slint";
+import { LockScreen } from "lock.slint";
+import { SettingsScreen } from "settings.slint";
 import { MemoryBrowser, MemoryItem } from "memory_browser.slint";
+import { FileBrowser, FileEntry } from "file_browser.slint";
 import { VoiceOverlay } from "voice_overlay.slint";
 import { MessageData } from "components/message_bubble.slint";
 import { UrgeCardData } from "components/glance_card.slint";
 import { LensResult } from "components/intent_lens.slint";
+import { WhisperCardItem } from "components/whisper_card.slint";
 
-export { MessageData, UrgeCardData, BondData, OpinionData, SharedRefData, MemoryItem, LensResult }
+export { MessageData, UrgeCardData, BondData, OpinionData, SharedRefData, MemoryItem, LensResult, WhisperCardItem, FileEntry }
 
 export component App inherits Window {
     title: "Yantrik OS";
@@ -80,9 +85,46 @@ export component App inherits Window {
     in property <string> voice-transcribed: "";
     in property <string> voice-response: "";
 
+    // Whisper Cards (floating notifications)
+    in property <[WhisperCardItem]> whisper-cards: [];
+    in property <int> whisper-hint-count: 0;
+
     // Notification toast
     in property <string> notification-text: "";
     in-out property <bool> show-notification: false;
+
+    // Focus mode (Workspace Morph)
+    in-out property <bool> focus-mode: false;
+    in property <string> focus-remaining: "";
+    callback end-focus-mode();
+
+    // Lock screen state
+    in property <string> lock-error: "";
+    callback try-unlock(string);
+    callback lock-screen();
+
+    // Settings state (screen 7)
+    in property <string> settings-user-name: "";
+    in property <string> settings-companion-name: "Yantrik";
+    in property <string> settings-model-name: "";
+    in property <int> settings-max-context: 4096;
+    in property <int> settings-max-tokens: 512;
+    in property <string> settings-tool-permission: "sensitive";
+    in property <int> settings-auto-lock-secs: 300;
+    in property <string> settings-version: "0.1.0";
+
+    // File browser state (screen 8)
+    in property <string> file-browser-path: "~";
+    in property <[FileEntry]> file-browser-entries: [];
+    in property <bool> file-browser-loading: false;
+    callback file-navigate-dir(string);
+    callback file-open(string);
+    callback file-go-up();
+
+    // Onboarding state (0=not onboarding, 1=step:terminal, 2=step:focus, 3=done)
+    in-out property <int> onboarding-step: 0;
+    callback onboarding-ready();
+    callback onboarding-skip();
 
     // Callbacks to Rust
     callback send-message(string);
@@ -96,6 +138,9 @@ export component App inherits Window {
     callback lens-result-selected(string);
     callback open-lens();
     callback close-lens();
+    callback whisper-card-dismissed(string);
+    callback whisper-card-action(string);
+    callback whisper-hint-clicked();
 
     Rectangle {
         clip: true;
@@ -108,9 +153,37 @@ export component App inherits Window {
             status-text: root.boot-status;
             memory-count: root.memory-count;
             boot-complete => {
+                if root.onboarding-step > 0 {
+                    root.current-screen = 2;
+                    root.navigate(2);
+                } else {
+                    root.current-screen = 1;
+                    root.navigate(1);
+                }
+            }
+        }
+
+        // Onboarding (first boot only)
+        if current-screen == 2 : OnboardingScreen {
+            width: 100%; height: 100%;
+            ready => {
                 root.current-screen = 1;
                 root.navigate(1);
+                root.onboarding-ready();
             }
+            skip => {
+                root.current-screen = 1;
+                root.navigate(1);
+                root.onboarding-skip();
+            }
+        }
+
+        // Lock screen
+        if current-screen == 3 : LockScreen {
+            width: 100%; height: 100%;
+            clock-text: root.clock-text;
+            error-text: root.lock-error;
+            try-unlock(pin) => { root.try-unlock(pin); }
         }
 
         // Desktop (the main experience)
@@ -137,6 +210,16 @@ export component App inherits Window {
             is-generating: root.is-generating;
             // Urges
             urges: root.urges;
+            // Whisper Cards
+            whisper-cards: root.whisper-cards;
+            whisper-hint-count: root.whisper-hint-count;
+            whisper-card-dismissed(id) => { root.whisper-card-dismissed(id); }
+            whisper-card-action(id) => { root.whisper-card-action(id); }
+            whisper-hint-clicked => { root.whisper-hint-clicked(); }
+            // Focus mode
+            focus-mode <=> root.focus-mode;
+            focus-remaining: root.focus-remaining;
+            end-focus-mode => { root.end-focus-mode(); }
             // Callbacks
             send-message(text) => { root.send-message(text); }
             mic-pressed => { root.mic-pressed(); }
@@ -188,6 +271,43 @@ export component App inherits Window {
                 root.current-screen = 1;
                 root.navigate(1);
             }
+        }
+
+        // Settings screen
+        if current-screen == 7 : SettingsScreen {
+            width: 100%; height: 100%;
+            user-name: root.settings-user-name;
+            companion-name: root.settings-companion-name;
+            model-name: root.settings-model-name;
+            max-context: root.settings-max-context;
+            max-tokens: root.settings-max-tokens;
+            tool-permission: root.settings-tool-permission;
+            auto-lock-secs: root.settings-auto-lock-secs;
+            memory-count: root.memory-count;
+            version-text: root.settings-version;
+            back-pressed => {
+                root.current-screen = 1;
+                root.navigate(1);
+            }
+            navigate-to(screen) => {
+                root.current-screen = screen;
+                root.navigate(screen);
+            }
+        }
+
+        // File browser
+        if current-screen == 8 : FileBrowser {
+            width: 100%; height: 100%;
+            current-path: root.file-browser-path;
+            entries: root.file-browser-entries;
+            is-loading: root.file-browser-loading;
+            back-pressed => {
+                root.current-screen = 1;
+                root.navigate(1);
+            }
+            navigate-dir(name) => { root.file-navigate-dir(name); }
+            open-file(name) => { root.file-open(name); }
+            go-up => { root.file-go-up(); }
         }
 
         // Voice overlay

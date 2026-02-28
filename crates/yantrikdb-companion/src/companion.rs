@@ -17,7 +17,7 @@ use crate::evolution::Evolution;
 use crate::instincts::{self, Instinct};
 use crate::learning;
 use crate::narrative::Narrative;
-use crate::tools;
+use crate::tools::{self, ToolContext, ToolRegistry, parse_permission};
 use crate::types::{AgentResponse, CompanionState, ProactiveMessage};
 use crate::urges::UrgeQueue;
 
@@ -48,6 +48,9 @@ pub struct CompanionService {
 
     // Desktop system state — set from SystemObserver via bridge
     system_context: String,
+
+    // Tool registry — modular tool store
+    registry: ToolRegistry,
 }
 
 impl CompanionService {
@@ -60,6 +63,7 @@ impl CompanionService {
 
         let urge_queue = UrgeQueue::new(db.conn(), config.urges.clone());
         let instincts = instincts::load_instincts(&config.instincts);
+        let registry = tools::build_registry();
 
         // Load current bond state
         let bond_state = BondTracker::get_state(db.conn());
@@ -82,6 +86,7 @@ impl CompanionService {
             bond_score: bond_state.bond_score,
             bond_level_changed: false,
             system_context: String::new(),
+            registry,
         }
     }
 
@@ -90,11 +95,12 @@ impl CompanionService {
         // Step 1: Check session timeout
         self.check_session_timeout();
 
-        // Step 2: Recall relevant user memories
+        // Step 2: Recall relevant user memories + compute confidence
         let memories = self
             .db
             .recall_text(user_text, 5)
             .unwrap_or_default();
+        let (recall_confidence, recall_hint) = compute_recall_confidence(&memories);
 
         // Step 3: Recall self-memories (reflections about the companion itself)
         let self_memories = self
@@ -147,6 +153,8 @@ impl CompanionService {
             opinions: &opinions,
             shared_refs: &shared_refs,
             system_state: &self.system_context,
+            recall_confidence,
+            recall_hint: recall_hint.as_deref(),
         };
 
         let mut messages = context::build_messages(
@@ -162,10 +170,9 @@ impl CompanionService {
         );
 
         // Add tool definitions to system message if tools enabled
+        let max_perm = parse_permission(&self.config.tools.max_permission);
         if self.config.tools.enabled {
-            let mut tool_defs = tools::companion_tool_defs();
-            tool_defs.extend(tools::desktop_tool_defs());
-            let tool_text = format_tools(&tool_defs);
+            let tool_text = format_tools(&self.registry.definitions(max_perm));
             if let Some(sys_msg) = messages.first_mut() {
                 sys_msg.content.push_str(&tool_text);
             }
@@ -204,9 +211,10 @@ impl CompanionService {
             let text_part = extract_text_content(&llm_response.text);
             messages.push(ChatMessage::assistant(&llm_response.text));
 
+            let ctx = ToolContext { db: &self.db, max_permission: max_perm };
             for call in &tool_calls {
                 tool_calls_made.push(call.name.clone());
-                let result = tools::execute_tool(&self.db, &call.name, &call.arguments);
+                let result = self.registry.execute(&ctx, &call.name, &call.arguments);
 
                 // Add tool result as user message (tool response)
                 messages.push(ChatMessage::user(format!(
@@ -312,6 +320,7 @@ impl CompanionService {
         self.check_session_timeout();
 
         let memories = self.db.recall_text(user_text, 5).unwrap_or_default();
+        let (recall_confidence, recall_hint) = compute_recall_confidence(&memories);
 
         let self_memories = self
             .db
@@ -353,6 +362,8 @@ impl CompanionService {
             opinions: &opinions,
             shared_refs: &shared_refs,
             system_state: &self.system_context,
+            recall_confidence,
+            recall_hint: recall_hint.as_deref(),
         };
 
         let mut messages = context::build_messages(
@@ -367,10 +378,9 @@ impl CompanionService {
             Some(&signals),
         );
 
+        let max_perm = parse_permission(&self.config.tools.max_permission);
         if self.config.tools.enabled {
-            let mut tool_defs = tools::companion_tool_defs();
-            tool_defs.extend(tools::desktop_tool_defs());
-            let tool_text = format_tools(&tool_defs);
+            let tool_text = format_tools(&self.registry.definitions(max_perm));
             if let Some(sys_msg) = messages.first_mut() {
                 sys_msg.content.push_str(&tool_text);
             }
@@ -401,10 +411,11 @@ impl CompanionService {
                     let text_part = extract_text_content(&r.text);
                     messages.push(ChatMessage::assistant(&r.text));
 
+                    let ctx = ToolContext { db: &self.db, max_permission: max_perm };
                     for call in &tool_calls {
                         tool_calls_made.push(call.name.clone());
                         let result =
-                            tools::execute_tool(&self.db, &call.name, &call.arguments);
+                            self.registry.execute(&ctx, &call.name, &call.arguments);
                         messages.push(ChatMessage::user(format!(
                             "Tool result for {}: {result}",
                             call.name
@@ -605,6 +616,60 @@ impl CompanionService {
             self.session_turn_count = 0;
         }
     }
+}
+
+/// Compute recall confidence from result scores.
+/// Returns (confidence, hint) where hint is a prompt instruction for low confidence.
+fn compute_recall_confidence(
+    memories: &[yantrikdb_core::types::RecallResult],
+) -> (f64, Option<String>) {
+    if memories.is_empty() {
+        return (0.0, Some("You have no relevant memories for this topic.".into()));
+    }
+
+    let n = memories.len() as f64;
+
+    // Signal 1: Average similarity (0.0–1.0) — how well do results match the query?
+    let avg_sim = memories.iter().map(|r| r.scores.similarity).sum::<f64>() / n;
+
+    // Signal 2: Best similarity — is there at least one strong hit?
+    let best_sim = memories
+        .iter()
+        .map(|r| r.scores.similarity)
+        .fold(0.0_f64, f64::max);
+
+    // Signal 3: Score gap — large gap between best and worst = uncertain spread
+    let worst_score = memories
+        .iter()
+        .map(|r| r.score)
+        .fold(f64::MAX, f64::min);
+    let best_score = memories.iter().map(|r| r.score).fold(0.0_f64, f64::max);
+    let gap_penalty = if best_score > 0.0 {
+        ((best_score - worst_score) / best_score).min(1.0)
+    } else {
+        1.0
+    };
+
+    // Combined: weighted average
+    let confidence = (0.40 * avg_sim + 0.35 * best_sim + 0.25 * (1.0 - gap_penalty)).clamp(0.0, 1.0);
+
+    let hint = if confidence < 0.3 {
+        Some(
+            "Your memory match is very weak — ask clarifying questions \
+             to understand what the user means."
+                .into(),
+        )
+    } else if confidence < 0.5 {
+        Some(
+            "Your memory match is uncertain — mention what you do remember \
+             and ask if that's what they mean."
+                .into(),
+        )
+    } else {
+        None
+    };
+
+    (confidence, hint)
 }
 
 fn now_ts() -> f64 {

@@ -75,7 +75,8 @@ apk add -q \
     wayland-libs-egl wayland-libs-client wayland-libs-server wayland-libs-cursor \
     speech-dispatcher \
     ca-certificates \
-    gcc musl-dev
+    gcc musl-dev \
+    grim slurp jq bc diffutils
 
 echo "  Installed: labwc, foot, dbus, eudev, mesa, fonts, seatd, gcompat, wayland"
 
@@ -229,6 +230,7 @@ conversation:
 tools:
   enabled: true
   max_tool_rounds: 3
+  max_permission: "sensitive"
 
 cognition:
   think_interval_minutes: 15

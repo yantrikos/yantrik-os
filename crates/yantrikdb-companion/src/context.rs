@@ -23,6 +23,10 @@ pub struct ContextSignals<'a> {
     pub shared_refs: &'a [SharedReference],
     /// Pre-formatted system state (battery, network, processes, etc.)
     pub system_state: &'a str,
+    /// Recall confidence (0.0–1.0) — how well memories match the query.
+    pub recall_confidence: f64,
+    /// Hint for the LLM when confidence is low.
+    pub recall_hint: Option<&'a str>,
 }
 
 /// Build the full message array for LLM chat.
@@ -135,14 +139,41 @@ fn build_system_prompt(
         }
     }
 
-    // ── 5. User memories (highest value context) ──
+    // ── 5. User memories (confidence-aware) ──
     if !over_budget(&prompt) {
         let remaining_chars = (max_prompt_tokens.saturating_sub(estimate_tokens(&prompt))) * 4;
         let mem_budget = remaining_chars.min(600);
+
+        let (confidence, hint) = if let Some(s) = signals {
+            (s.recall_confidence, s.recall_hint)
+        } else {
+            (1.0, None)
+        };
+
         if memories.is_empty() {
             if state.memory_count > 0 {
-                prompt.push_str(&format!("You have {} stored memories.\n\n", state.memory_count));
+                prompt.push_str(&format!(
+                    "You have {} stored memories but none matched this topic.\n\
+                     Ask the user to tell you more so you can help.\n\n",
+                    state.memory_count
+                ));
             }
+        } else if confidence < 0.3 {
+            prompt.push_str("Possibly related memories (low confidence):\n");
+            prompt.push_str(&format_memories(memories, mem_budget));
+            if let Some(h) = hint {
+                prompt.push_str(h);
+                prompt.push('\n');
+            }
+            prompt.push('\n');
+        } else if confidence < 0.5 {
+            prompt.push_str("Related memories (partial match):\n");
+            prompt.push_str(&format_memories(memories, mem_budget));
+            if let Some(h) = hint {
+                prompt.push_str(h);
+                prompt.push('\n');
+            }
+            prompt.push('\n');
         } else {
             prompt.push_str("Relevant memories:\n");
             prompt.push_str(&format_memories(memories, mem_budget));
@@ -213,7 +244,12 @@ fn build_system_prompt(
         }
     }
 
-    // ── 12. Final instructions (always) ──
+    // ── 12. Tool chaining guidance ──
+    if !over_budget(&prompt) && config.tools.enabled {
+        prompt.push_str(&tool_chaining_instructions());
+    }
+
+    // ── 13. Final instructions (always) ──
     prompt.push_str(&response_instructions(level, name, user));
 
     prompt
@@ -274,6 +310,20 @@ fn response_instructions(level: BondLevel, name: &str, user: &str) -> String {
     }
 }
 
+/// Tool chaining guidance — teaches the LLM to sequence multiple tool calls.
+fn tool_chaining_instructions() -> String {
+    "You have tools. You can chain multiple tool calls to complete complex tasks.\n\
+     Examples of chaining:\n\
+     - \"Download and extract\": use run_command to download, then run_command to extract.\n\
+     - \"Find and read a file\": use list_files to find it, then read_file on the match.\n\
+     - \"Screenshot and remember\": use run_command for grim, then remember the context.\n\
+     - \"Check disk and clean up\": use run_command for df, then list_files to find large files.\n\
+     - \"Search memory and summarize\": use recall to find memories, then explain them.\n\
+     When a task needs multiple steps, use one tool per step. After each tool result, \
+     decide if another tool call is needed to finish the task.\n\n"
+        .to_string()
+}
+
 fn personality_tone(profile: &PersonalityProfile) -> String {
     let mut parts = Vec::new();
 
@@ -303,7 +353,12 @@ fn format_memories(memories: &[yantrikdb_core::types::RecallResult], max_chars: 
     let mut chars_used = 0;
 
     for mem in memories {
-        let line = format!("- {}\n", mem.text);
+        let sim_pct = (mem.scores.similarity * 100.0) as u32;
+        let line = if sim_pct < 50 {
+            format!("- [~{}% match] {}\n", sim_pct, mem.text)
+        } else {
+            format!("- {}\n", mem.text)
+        };
         if chars_used + line.len() > max_chars {
             break;
         }

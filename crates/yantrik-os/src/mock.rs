@@ -4,6 +4,7 @@
 //! don't exist. Simulates a realistic sequence of system events.
 
 use crossbeam_channel::Sender;
+use std::io::Write;
 use std::time::Duration;
 
 use crate::events::{FileChangeKind, SystemEvent};
@@ -11,6 +12,9 @@ use crate::events::{FileChangeKind, SystemEvent};
 /// Run the mock observer. Emits fake events in a cycle.
 pub fn run_mock_observer(tx: Sender<SystemEvent>) {
     tracing::info!("Mock observer running — fake events every few seconds");
+
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/root".to_string());
+    let cmd_log_path = format!("{}/.yantrik/cmd_log", home);
 
     let mut tick: u64 = 0;
     let mut battery_level: u8 = 85;
@@ -92,6 +96,53 @@ pub fn run_mock_observer(tx: Sender<SystemEvent>) {
             let _ = tx.send(SystemEvent::FileChanged {
                 path: path.to_string(),
                 kind: kind.clone(),
+            });
+        }
+
+        // Fake shell error every 90s (18 ticks) — for ErrorCompanion
+        if tick % 18 == 0 {
+            let mock_cmds = [
+                "cargo build",
+                "git push origin main",
+                "npm install",
+                "python3 train.py",
+                "make test",
+            ];
+            let cmd = mock_cmds[(tick / 18) as usize % mock_cmds.len()];
+            let ts = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            let line = format!("{}\t{}\t1\n", ts, cmd);
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&cmd_log_path)
+            {
+                let _ = f.write_all(line.as_bytes());
+            }
+            let _ = tx.send(SystemEvent::FileChanged {
+                path: cmd_log_path.clone(),
+                kind: FileChangeKind::Modified,
+            });
+        }
+
+        // Fake notifications every 35s (7 ticks)
+        if tick % 7 == 0 {
+            let notifications = [
+                ("Firefox", "Download Complete", "report.pdf has finished downloading", 1u8),
+                ("Thunderbird", "New Email", "Meeting tomorrow at 10am — from Alice", 1),
+                ("System", "Update Available", "3 packages can be upgraded", 0),
+                ("Signal", "New Message", "Hey, are you free this afternoon?", 1),
+                ("Disk Monitor", "Low Disk Space", "/home is 92% full", 2),
+            ];
+            let idx = (tick / 7) as usize % notifications.len();
+            let (app, summary, body, urgency) = notifications[idx];
+            let _ = tx.send(SystemEvent::NotificationReceived {
+                app: app.to_string(),
+                summary: summary.to_string(),
+                body: body.to_string(),
+                urgency,
             });
         }
 

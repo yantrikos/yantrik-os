@@ -1,0 +1,429 @@
+// Settings panel — system configuration and info.
+// Screen 7. Scrollable sections: account, AI model, security, navigation, about.
+
+import { Theme } from "theme.slint";
+
+export component SettingsScreen inherits Rectangle {
+    background: Theme.bg-deep;
+
+    // Account
+    in property <string> user-name: "";
+    in property <string> companion-name: "Yantrik";
+
+    // AI Model
+    in property <string> model-name: "";
+    in property <int> max-context: 4096;
+    in property <int> max-tokens: 512;
+    in property <string> tool-permission: "sensitive";
+
+    // Security
+    in property <int> auto-lock-secs: 300;
+
+    // System info
+    in property <int> memory-count: 0;
+    in property <string> version-text: "0.1.0";
+
+    callback back-pressed();
+    callback navigate-to(int);
+
+    VerticalLayout {
+        spacing: 0px;
+
+        // Header
+        Rectangle {
+            height: 56px;
+            background: Theme.bg-surface;
+
+            HorizontalLayout {
+                padding-left: 12px;
+                padding-right: 12px;
+                alignment: start;
+                spacing: 12px;
+
+                TouchArea {
+                    width: Theme.touch-target;
+                    height: Theme.touch-target;
+                    clicked => { root.back-pressed(); }
+                    Text {
+                        text: "←";
+                        color: Theme.text-secondary;
+                        font-size: 22px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+
+                Text {
+                    text: "Settings";
+                    color: Theme.text-primary;
+                    font-size: Theme.font-title;
+                    font-weight: 600;
+                    vertical-alignment: center;
+                }
+            }
+        }
+
+        // Scrollable content
+        Flickable {
+            vertical-stretch: 1;
+
+            VerticalLayout {
+                padding: 20px;
+                spacing: 16px;
+                alignment: start;
+
+                // ── Account section ──
+                Text {
+                    text: "ACCOUNT";
+                    color: Theme.text-dim;
+                    font-size: 11px;
+                    letter-spacing: 2px;
+                }
+
+                Rectangle {
+                    background: Theme.bg-card;
+                    border-radius: Theme.radius-card;
+                    height: acct-layout.preferred-height;
+
+                    acct-layout := VerticalLayout {
+                        padding: 14px;
+                        spacing: 10px;
+
+                        HorizontalLayout {
+                            Text {
+                                text: "User";
+                                color: Theme.text-secondary;
+                                font-size: Theme.font-body;
+                                horizontal-stretch: 1;
+                            }
+                            Text {
+                                text: root.user-name;
+                                color: Theme.text-primary;
+                                font-size: Theme.font-body;
+                            }
+                        }
+
+                        // Separator
+                        Rectangle {
+                            height: 1px;
+                            background: Theme.bg-elevated;
+                        }
+
+                        HorizontalLayout {
+                            Text {
+                                text: "Companion";
+                                color: Theme.text-secondary;
+                                font-size: Theme.font-body;
+                                horizontal-stretch: 1;
+                            }
+                            Text {
+                                text: root.companion-name;
+                                color: Theme.amber;
+                                font-size: Theme.font-body;
+                            }
+                        }
+                    }
+                }
+
+                // ── AI Model section ──
+                Text {
+                    text: "AI MODEL";
+                    color: Theme.text-dim;
+                    font-size: 11px;
+                    letter-spacing: 2px;
+                }
+
+                Rectangle {
+                    background: Theme.bg-card;
+                    border-radius: Theme.radius-card;
+                    height: model-layout.preferred-height;
+
+                    model-layout := VerticalLayout {
+                        padding: 14px;
+                        spacing: 10px;
+
+                        HorizontalLayout {
+                            Text {
+                                text: "Model";
+                                color: Theme.text-secondary;
+                                font-size: Theme.font-body;
+                                horizontal-stretch: 1;
+                            }
+                            Text {
+                                text: root.model-name;
+                                color: Theme.cyan;
+                                font-size: Theme.font-small;
+                            }
+                        }
+
+                        Rectangle {
+                            height: 1px;
+                            background: Theme.bg-elevated;
+                        }
+
+                        HorizontalLayout {
+                            Text {
+                                text: "Context window";
+                                color: Theme.text-secondary;
+                                font-size: Theme.font-body;
+                                horizontal-stretch: 1;
+                            }
+                            Text {
+                                text: root.max-context + " tokens";
+                                color: Theme.text-primary;
+                                font-size: Theme.font-body;
+                            }
+                        }
+
+                        Rectangle {
+                            height: 1px;
+                            background: Theme.bg-elevated;
+                        }
+
+                        HorizontalLayout {
+                            Text {
+                                text: "Max output";
+                                color: Theme.text-secondary;
+                                font-size: Theme.font-body;
+                                horizontal-stretch: 1;
+                            }
+                            Text {
+                                text: root.max-tokens + " tokens";
+                                color: Theme.text-primary;
+                                font-size: Theme.font-body;
+                            }
+                        }
+
+                        Rectangle {
+                            height: 1px;
+                            background: Theme.bg-elevated;
+                        }
+
+                        HorizontalLayout {
+                            Text {
+                                text: "Tool permission";
+                                color: Theme.text-secondary;
+                                font-size: Theme.font-body;
+                                horizontal-stretch: 1;
+                            }
+                            Text {
+                                text: root.tool-permission;
+                                color: Theme.text-primary;
+                                font-size: Theme.font-body;
+                            }
+                        }
+                    }
+                }
+
+                // ── Security section ──
+                Text {
+                    text: "SECURITY";
+                    color: Theme.text-dim;
+                    font-size: 11px;
+                    letter-spacing: 2px;
+                }
+
+                Rectangle {
+                    background: Theme.bg-card;
+                    border-radius: Theme.radius-card;
+                    height: sec-layout.preferred-height;
+
+                    sec-layout := VerticalLayout {
+                        padding: 14px;
+                        spacing: 10px;
+
+                        HorizontalLayout {
+                            Text {
+                                text: "Auto-lock";
+                                color: Theme.text-secondary;
+                                font-size: Theme.font-body;
+                                horizontal-stretch: 1;
+                            }
+                            Text {
+                                text: root.auto-lock-secs >= 60
+                                    ? Math.floor(root.auto-lock-secs / 60) + " min"
+                                    : root.auto-lock-secs + " sec";
+                                color: Theme.text-primary;
+                                font-size: Theme.font-body;
+                            }
+                        }
+
+                        Rectangle {
+                            height: 1px;
+                            background: Theme.bg-elevated;
+                        }
+
+                        HorizontalLayout {
+                            Text {
+                                text: "PIN lock";
+                                color: Theme.text-secondary;
+                                font-size: Theme.font-body;
+                                horizontal-stretch: 1;
+                            }
+                            Text {
+                                text: "Enabled";
+                                color: Theme.color-reminder;
+                                font-size: Theme.font-body;
+                            }
+                        }
+                    }
+                }
+
+                // ── Navigate section ──
+                Text {
+                    text: "COMPANION";
+                    color: Theme.text-dim;
+                    font-size: 11px;
+                    letter-spacing: 2px;
+                }
+
+                // Bond link
+                Rectangle {
+                    background: Theme.bg-card;
+                    border-radius: Theme.radius-card;
+                    height: 48px;
+
+                    TouchArea {
+                        clicked => { root.navigate-to(4); }
+                    }
+
+                    HorizontalLayout {
+                        padding-left: 14px;
+                        padding-right: 14px;
+
+                        Text {
+                            text: "Bond";
+                            color: Theme.text-primary;
+                            font-size: Theme.font-body;
+                            horizontal-stretch: 1;
+                            vertical-alignment: center;
+                        }
+                        Text {
+                            text: "→";
+                            color: Theme.text-dim;
+                            font-size: 18px;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+
+                // Personality link
+                Rectangle {
+                    background: Theme.bg-card;
+                    border-radius: Theme.radius-card;
+                    height: 48px;
+
+                    TouchArea {
+                        clicked => { root.navigate-to(5); }
+                    }
+
+                    HorizontalLayout {
+                        padding-left: 14px;
+                        padding-right: 14px;
+
+                        Text {
+                            text: "Personality";
+                            color: Theme.text-primary;
+                            font-size: Theme.font-body;
+                            horizontal-stretch: 1;
+                            vertical-alignment: center;
+                        }
+                        Text {
+                            text: "→";
+                            color: Theme.text-dim;
+                            font-size: 18px;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+
+                // Memory browser link
+                Rectangle {
+                    background: Theme.bg-card;
+                    border-radius: Theme.radius-card;
+                    height: 48px;
+
+                    TouchArea {
+                        clicked => { root.navigate-to(6); }
+                    }
+
+                    HorizontalLayout {
+                        padding-left: 14px;
+                        padding-right: 14px;
+
+                        Text {
+                            text: "Memory Browser";
+                            color: Theme.text-primary;
+                            font-size: Theme.font-body;
+                            horizontal-stretch: 1;
+                            vertical-alignment: center;
+                        }
+                        Text {
+                            text: root.memory-count + " entries";
+                            color: Theme.text-dim;
+                            font-size: Theme.font-small;
+                            vertical-alignment: center;
+                        }
+                        Text {
+                            text: "  →";
+                            color: Theme.text-dim;
+                            font-size: 18px;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+
+                // ── About section ──
+                Text {
+                    text: "ABOUT";
+                    color: Theme.text-dim;
+                    font-size: 11px;
+                    letter-spacing: 2px;
+                }
+
+                Rectangle {
+                    background: Theme.bg-card;
+                    border-radius: Theme.radius-card;
+                    height: about-layout.preferred-height;
+
+                    about-layout := VerticalLayout {
+                        padding: 14px;
+                        spacing: 10px;
+
+                        HorizontalLayout {
+                            Text {
+                                text: "Yantrik OS";
+                                color: Theme.amber;
+                                font-size: Theme.font-body;
+                                font-weight: 600;
+                                horizontal-stretch: 1;
+                            }
+                            Text {
+                                text: "v" + root.version-text;
+                                color: Theme.text-secondary;
+                                font-size: Theme.font-body;
+                            }
+                        }
+
+                        Rectangle {
+                            height: 1px;
+                            background: Theme.bg-elevated;
+                        }
+
+                        Text {
+                            text: "AI-native desktop shell. The AI IS the shell.";
+                            color: Theme.text-dim;
+                            font-size: Theme.font-small;
+                            wrap: word-wrap;
+                        }
+                    }
+                }
+
+                // Bottom spacer
+                Rectangle {
+                    height: 32px;
+                }
+            }
+        }
+    }
+}

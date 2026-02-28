@@ -1,0 +1,175 @@
+// Whisper Card — floating urgency-driven notification.
+// Slides in from right, pressure-based opacity and persistence.
+// Tiers: Whisper (0.50-0.85, auto-fade 10s), Interrupt (≥0.85, persistent).
+
+import { Theme } from "../theme.slint";
+
+export struct WhisperCardItem {
+    id: string,
+    title: string,
+    context: string,
+    accent-r: float,
+    accent-g: float,
+    accent-b: float,
+    target-opacity: float,    // 0.6 for Whisper, 1.0 for Interrupt
+    show-actions: bool,       // true for Interrupt tier
+    action-label: string,
+    shown: bool,              // false → right of screen; true → slides in
+    source: string,           // Feature name badge
+}
+
+component WhisperCard inherits Rectangle {
+    in property <WhisperCardItem> card;
+
+    callback dismissed(string);
+    callback action-clicked(string);
+
+    property <bool> hovered: hover-area.has-hover;
+
+    width: 300px;
+    height: hovered ? 100px : 64px;
+    x: card.shown ? 0px : self.width + 20px;
+    opacity: card.shown ? card.target-opacity : 0;
+    border-radius: Theme.radius-card;
+    background: Theme.bg-card;
+    border-width: 1px;
+    border-color: hovered ? #ffffff18 : #ffffff08;
+    clip: true;
+    drop-shadow-blur: 12px;
+    drop-shadow-color: #00000050;
+
+    animate x { duration: 300ms; easing: ease-out; }
+    animate opacity { duration: 250ms; }
+    animate height { duration: 150ms; easing: ease-out; }
+    animate border-color { duration: 120ms; }
+
+    // Left accent bar
+    Rectangle {
+        x: 0; y: 0;
+        width: 4px;
+        height: parent.height;
+        border-radius: 2px;
+        background: Colors.rgb(card.accent-r, card.accent-g, card.accent-b);
+        drop-shadow-blur: 8px;
+        drop-shadow-color: Colors.rgb(card.accent-r, card.accent-g, card.accent-b);
+    }
+
+    // Main hover area
+    hover-area := TouchArea {
+        width: 100%; height: 100%;
+    }
+
+    // Content layout
+    VerticalLayout {
+        padding-left: 16px;
+        padding-right: 32px;
+        padding-top: 10px;
+        padding-bottom: 8px;
+        spacing: 4px;
+
+        // Title
+        Text {
+            text: card.title;
+            color: Theme.text-primary;
+            font-size: 13px;
+            font-weight: 600;
+            overflow: elide;
+        }
+
+        // Context
+        Text {
+            text: card.context;
+            color: Theme.text-secondary;
+            font-size: 11px;
+            overflow: elide;
+        }
+
+        // Source badge row
+        HorizontalLayout {
+            spacing: 8px;
+            alignment: start;
+
+            Rectangle {
+                height: 16px;
+                width: max(24px, source-text.preferred-width + 10px);
+                border-radius: 8px;
+                background: #ffffff08;
+
+                source-text := Text {
+                    text: card.source;
+                    color: Theme.text-dim;
+                    font-size: 9px;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+        }
+
+        // Action button (visible when hovered + show-actions)
+        if card.show-actions && root.hovered : TouchArea {
+            height: 24px;
+            clicked => { root.action-clicked(card.id); }
+
+            Rectangle {
+                width: max(48px, action-text.preferred-width + 16px);
+                height: 22px;
+                border-radius: 11px;
+                background: Colors.rgb(card.accent-r, card.accent-g, card.accent-b);
+                opacity: 0.8;
+
+                action-text := Text {
+                    text: card.action-label;
+                    color: Theme.bg-deep;
+                    font-size: 10px;
+                    font-weight: 700;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+        }
+    }
+
+    // Dismiss X button (top-right corner)
+    TouchArea {
+        x: parent.width - 24px;
+        y: 4px;
+        width: 20px;
+        height: 20px;
+        clicked => { root.dismissed(card.id); }
+
+        Rectangle {
+            width: 100%; height: 100%;
+            border-radius: 10px;
+            background: root.hovered ? #ffffff10 : transparent;
+
+            Text {
+                text: "✕";
+                color: root.hovered ? Theme.text-secondary : Theme.text-dim;
+                font-size: 10px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+    }
+}
+
+export component WhisperCardStack inherits Rectangle {
+    in property <[WhisperCardItem]> cards;
+
+    callback card-dismissed(string);
+    callback card-action(string);
+
+    background: transparent;
+    width: 300px;
+
+    VerticalLayout {
+        alignment: start;
+        spacing: 8px;
+
+        for item in root.cards : WhisperCard {
+            card: item;
+            dismissed(id) => { root.card-dismissed(id); }
+            action-clicked(id) => { root.card-action(id); }
+        }
+    }
+}

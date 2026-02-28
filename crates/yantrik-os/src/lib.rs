@@ -11,8 +11,10 @@ pub mod observer;
 
 mod battery;
 mod files;
+pub mod keybinds;
 mod mock;
 mod network;
+mod notifications;
 mod processes;
 
 pub use events::{FileChangeKind, ProcessInfo, SystemEvent, SystemSnapshot};

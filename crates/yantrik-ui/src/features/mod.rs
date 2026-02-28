@@ -8,7 +8,10 @@
 
 pub mod resource_guardian;
 pub mod process_sentinel;
+pub mod error_companion;
 pub mod focus_flow;
+pub mod notification_relay;
+pub mod tool_suggester;
 
 use std::collections::HashMap;
 use yantrik_os::{SystemEvent, SystemSnapshot};
@@ -47,6 +50,10 @@ pub enum UrgeCategory {
     Focus,
     /// Positive feedback / celebration.
     Celebration,
+    /// Shell command error.
+    Shell,
+    /// App notification (from D-Bus notification daemon).
+    Notification,
 }
 
 /// What the user did with an urge.

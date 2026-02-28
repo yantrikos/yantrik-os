@@ -28,6 +28,7 @@ import { AppDock } from "components/app_dock.slint";
 import { IntentLens, LensResult } from "components/intent_lens.slint";
 import { MessageData } from "components/message_bubble.slint";
 import { UrgeCardData } from "components/glance_card.slint";
+import { WhisperCardStack, WhisperCardItem } from "components/whisper_card.slint";
 
 export component DesktopScreen inherits Rectangle {
     // Status bar state
@@ -56,6 +57,18 @@ export component DesktopScreen inherits Rectangle {
     // Urges (for quiet queue)
     in property <[UrgeCardData]> urges: [];
 
+    // Whisper Cards (floating notifications)
+    in property <[WhisperCardItem]> whisper-cards: [];
+    in property <int> whisper-hint-count: 0;
+    callback whisper-card-dismissed(string);
+    callback whisper-card-action(string);
+    callback whisper-hint-clicked();
+
+    // Focus mode (Workspace Morph)
+    in-out property <bool> focus-mode: false;
+    in property <string> focus-remaining: "";
+    callback end-focus-mode();
+
     // Callbacks
     callback send-message(string);
     callback mic-pressed();
@@ -70,18 +83,22 @@ export component DesktopScreen inherits Rectangle {
     background: Theme.bg-deep;
     clip: true;
 
-    // ── Layer 1: Status bar (always on top, always visible) ──
+    // ── Layer 1: Status bar (always on top, dims in focus mode) ──
     StatusBar {
         x: 0; y: 0;
         width: 100%;
+        opacity: root.focus-mode ? 0.5 : 1.0;
+        animate opacity { duration: 300ms; }
         clock-text: root.clock-text;
         companion-status: root.companion-status;
         battery-level: root.battery-level;
         battery-charging: root.battery-charging;
         wifi-connected: root.wifi-connected;
         pending-count: root.pending-count;
+        whisper-hint-count: root.whisper-hint-count;
         anchor-clicked => { root.lens-open = !root.lens-open; root.open-lens(); }
         queue-clicked => { root.lens-open = true; root.open-lens(); }
+        whisper-hint-clicked => { root.whisper-hint-clicked(); }
     }
 
     // ── Layer 2: Desktop content area ──
@@ -136,13 +153,15 @@ export component DesktopScreen inherits Rectangle {
             width: 100%;
             height: 100%;
             active: true;
-            intensity: root.lens-open ? 0.3 : 0.7;
+            intensity: root.lens-open ? 0.3 : (root.focus-mode ? 0.15 : 0.7);
+            is-thinking: root.is-thinking;
+            has-urges: root.has-urges;
 
             animate intensity { duration: 300ms; }
         }
 
-        // ── Greeting (center of desktop) ──
-        VerticalLayout {
+        // ── Greeting (center of desktop, hidden in focus mode) ──
+        if !root.focus-mode : VerticalLayout {
             alignment: center;
             padding-bottom: 80px;  // Push up a bit from dead center
 
@@ -173,8 +192,63 @@ export component DesktopScreen inherits Rectangle {
             }
         }
 
-        // ── Floating Orb — bottom center ──
-        TouchArea {
+        // ── Focus Overlay (Workspace Morph) ──
+        if root.focus-mode : VerticalLayout {
+            alignment: center;
+            spacing: 8px;
+
+            // Large countdown timer
+            Text {
+                text: root.focus-remaining;
+                color: Theme.text-primary;
+                font-size: 72px;
+                font-weight: 200;
+                letter-spacing: 4px;
+                horizontal-alignment: center;
+                opacity: 0.85;
+            }
+
+            // Label
+            Text {
+                text: "remaining";
+                color: Theme.text-dim;
+                font-size: 14px;
+                letter-spacing: 3px;
+                horizontal-alignment: center;
+                opacity: 0.5;
+            }
+
+            // Spacer
+            Rectangle { height: 32px; }
+
+            // End Focus button
+            TouchArea {
+                width: 120px;
+                height: 36px;
+                x: (parent.width - 120px) / 2;
+                clicked => { root.end-focus-mode(); }
+
+                Rectangle {
+                    width: 100%; height: 100%;
+                    border-radius: 18px;
+                    border-width: 1px;
+                    border-color: Theme.text-dim;
+                    background: parent.has-hover ? #ffffff10 : transparent;
+
+                    Text {
+                        text: "End Focus";
+                        color: Theme.text-secondary;
+                        font-size: 13px;
+                        font-weight: 500;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+        }
+
+        // ── Floating Orb — bottom center (hidden in focus mode) ──
+        if !root.focus-mode : TouchArea {
             x: (parent.width - Theme.orb-desktop-size) / 2;
             y: parent.height - Theme.orb-desktop-size - 32px;
             width: Theme.orb-desktop-size;
@@ -206,6 +280,15 @@ export component DesktopScreen inherits Rectangle {
                 root.open-lens();
             }
         }
+    }
+
+    // ── Layer 2.5: Whisper Cards (floating, top-right) ──
+    WhisperCardStack {
+        x: root.width - 316px;
+        y: Theme.status-bar-height + 8px;
+        cards: root.whisper-cards;
+        card-dismissed(id) => { root.whisper-card-dismissed(id); }
+        card-action(id) => { root.whisper-card-action(id); }
     }
 
     // ── Layer 3: Intent Lens overlay ──

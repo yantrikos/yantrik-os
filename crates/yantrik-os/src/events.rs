@@ -30,6 +30,8 @@ pub enum SystemEvent {
         app: String,
         summary: String,
         body: String,
+        /// D-Bus urgency hint: 0=low, 1=normal, 2=critical.
+        urgency: u8,
     },
 
     // ── File system ──
@@ -76,6 +78,13 @@ pub enum SystemEvent {
         idle_seconds: u64,
     },
     UserResumed,
+
+    // ── Keybind ──
+    /// A global keybind was triggered via D-Bus (from labwc).
+    KeybindTriggered {
+        /// Action identifier, e.g. "open-lens", "lock-screen", "open-terminal".
+        action: String,
+    },
 }
 
 /// What kind of file system change occurred.

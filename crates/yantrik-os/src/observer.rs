@@ -112,13 +112,33 @@ impl SystemObserver {
             handles.push(h);
 
             // Network monitor (D-Bus NetworkManager)
-            let tx = event_tx;
+            let tx = event_tx.clone();
             let h = std::thread::Builder::new()
                 .name("yos-network".into())
                 .spawn(move || {
                     crate::network::run_network_monitor(tx);
                 })
                 .expect("failed to spawn network monitor");
+            handles.push(h);
+
+            // Notification daemon (session D-Bus — org.freedesktop.Notifications)
+            let tx = event_tx.clone();
+            let h = std::thread::Builder::new()
+                .name("yos-notifications".into())
+                .spawn(move || {
+                    crate::notifications::run_notification_daemon(tx);
+                })
+                .expect("failed to spawn notification daemon");
+            handles.push(h);
+
+            // Keybind daemon (session D-Bus — org.yantrik.Keybinds)
+            let tx = event_tx;
+            let h = std::thread::Builder::new()
+                .name("yos-keybinds".into())
+                .spawn(move || {
+                    crate::keybinds::run_keybind_daemon(tx);
+                })
+                .expect("failed to spawn keybind daemon");
             handles.push(h);
         }
 

@@ -1,0 +1,197 @@
+// File browser — visual file navigation.
+// Screen 8. List view, breadcrumb path, open/navigate actions.
+
+import { Theme } from "theme.slint";
+import { ListView } from "std-widgets.slint";
+
+export struct FileEntry {
+    name: string,
+    is-dir: bool,
+    size-text: string,
+    modified-text: string,
+    icon-char: string,
+}
+
+export component FileBrowser inherits Rectangle {
+    background: Theme.bg-deep;
+
+    in property <string> current-path: "~";
+    in property <[FileEntry]> entries: [];
+    in property <bool> is-loading: false;
+
+    callback back-pressed();
+    callback navigate-dir(string);
+    callback open-file(string);
+    callback go-up();
+
+    VerticalLayout {
+        spacing: 0px;
+
+        // Header
+        Rectangle {
+            height: 56px;
+            background: Theme.bg-surface;
+
+            HorizontalLayout {
+                padding-left: 12px;
+                padding-right: 12px;
+                alignment: start;
+                spacing: 12px;
+
+                TouchArea {
+                    width: Theme.touch-target;
+                    height: Theme.touch-target;
+                    clicked => { root.back-pressed(); }
+                    Text {
+                        text: "←";
+                        color: Theme.text-secondary;
+                        font-size: 22px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+
+                Text {
+                    text: "Files";
+                    color: Theme.text-primary;
+                    font-size: Theme.font-title;
+                    font-weight: 600;
+                    vertical-alignment: center;
+                }
+            }
+        }
+
+        // Breadcrumb path bar
+        Rectangle {
+            height: 40px;
+            background: Theme.bg-surface;
+
+            HorizontalLayout {
+                padding-left: 16px;
+                padding-right: 16px;
+                spacing: 8px;
+
+                // Up button
+                TouchArea {
+                    width: 32px;
+                    height: 32px;
+                    clicked => { root.go-up(); }
+                    Text {
+                        text: "↑";
+                        color: Theme.text-secondary;
+                        font-size: 18px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+
+                // Path display
+                Text {
+                    text: root.current-path;
+                    color: Theme.cyan-dim;
+                    font-size: Theme.font-small;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                    overflow: elide;
+                }
+            }
+        }
+
+        // File list
+        ListView {
+            vertical-stretch: 1;
+
+            for entry[idx] in entries : Rectangle {
+                height: 48px;
+                background: file-touch.has-hover ? Theme.bg-elevated : Theme.bg-deep;
+
+                file-touch := TouchArea {
+                    clicked => {
+                        if entry.is-dir {
+                            root.navigate-dir(entry.name);
+                        } else {
+                            root.open-file(entry.name);
+                        }
+                    }
+                }
+
+                HorizontalLayout {
+                    padding-left: 16px;
+                    padding-right: 16px;
+                    spacing: 12px;
+
+                    // Icon
+                    Text {
+                        text: entry.icon-char;
+                        color: entry.is-dir ? Theme.cyan : Theme.text-dim;
+                        font-size: 18px;
+                        width: 28px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+
+                    // Name
+                    Text {
+                        text: entry.name;
+                        color: entry.is-dir ? Theme.cyan-light : Theme.text-primary;
+                        font-size: Theme.font-body;
+                        font-weight: entry.is-dir ? 600 : 400;
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                        overflow: elide;
+                    }
+
+                    // Size (files only)
+                    if !entry.is-dir : Text {
+                        text: entry.size-text;
+                        color: Theme.text-dim;
+                        font-size: Theme.font-small;
+                        vertical-alignment: center;
+                    }
+
+                    // Modified time
+                    Text {
+                        text: entry.modified-text;
+                        color: Theme.text-dim;
+                        font-size: Theme.font-small;
+                        vertical-alignment: center;
+                    }
+                }
+
+                // Bottom separator
+                Rectangle {
+                    y: parent.height - 1px;
+                    height: 1px;
+                    background: Theme.bg-elevated;
+                }
+            }
+        }
+
+        // Empty state
+        if entries.length == 0 && !is-loading : VerticalLayout {
+            vertical-stretch: 1;
+            alignment: center;
+            padding: 40px;
+
+            Text {
+                text: "Empty directory";
+                color: Theme.text-dim;
+                font-size: Theme.font-body;
+                horizontal-alignment: center;
+            }
+        }
+
+        // Loading indicator
+        if is-loading : VerticalLayout {
+            vertical-stretch: 1;
+            alignment: center;
+
+            Text {
+                text: "Loading...";
+                color: Theme.text-dim;
+                font-size: Theme.font-body;
+                horizontal-alignment: center;
+            }
+        }
+    }
+}
