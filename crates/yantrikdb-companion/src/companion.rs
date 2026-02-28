@@ -45,6 +45,9 @@ pub struct CompanionService {
     bond_level: BondLevel,
     bond_score: f64,
     bond_level_changed: bool,
+
+    // Desktop system state — set from SystemObserver via bridge
+    system_context: String,
 }
 
 impl CompanionService {
@@ -78,6 +81,7 @@ impl CompanionService {
             bond_level: bond_state.bond_level,
             bond_score: bond_state.bond_score,
             bond_level_changed: false,
+            system_context: String::new(),
         }
     }
 
@@ -142,6 +146,7 @@ impl CompanionService {
             style: &style,
             opinions: &opinions,
             shared_refs: &shared_refs,
+            system_state: &self.system_context,
         };
 
         let mut messages = context::build_messages(
@@ -158,7 +163,8 @@ impl CompanionService {
 
         // Add tool definitions to system message if tools enabled
         if self.config.tools.enabled {
-            let tool_defs = tools::companion_tool_defs();
+            let mut tool_defs = tools::companion_tool_defs();
+            tool_defs.extend(tools::desktop_tool_defs());
             let tool_text = format_tools(&tool_defs);
             if let Some(sys_msg) = messages.first_mut() {
                 sys_msg.content.push_str(&tool_text);
@@ -346,6 +352,7 @@ impl CompanionService {
             style: &style,
             opinions: &opinions,
             shared_refs: &shared_refs,
+            system_state: &self.system_context,
         };
 
         let mut messages = context::build_messages(
@@ -361,7 +368,8 @@ impl CompanionService {
         );
 
         if self.config.tools.enabled {
-            let tool_defs = tools::companion_tool_defs();
+            let mut tool_defs = tools::companion_tool_defs();
+            tool_defs.extend(tools::desktop_tool_defs());
             let tool_text = format_tools(&tool_defs);
             if let Some(sys_msg) = messages.first_mut() {
                 sys_msg.content.push_str(&tool_text);
@@ -555,6 +563,12 @@ impl CompanionService {
         self.active_patterns = patterns;
         self.open_conflicts_count = conflicts_count;
         self.recent_valence_avg = valence_avg;
+    }
+
+    /// Update the system context string (battery, network, etc.)
+    /// that gets injected into the LLM system prompt.
+    pub fn set_system_context(&mut self, ctx: String) {
+        self.system_context = ctx;
     }
 
     /// Get conversation history.

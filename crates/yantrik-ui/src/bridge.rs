@@ -48,6 +48,10 @@ pub enum CompanionCommand {
         domain: String,
         importance: f64,
     },
+    /// Update the system context string for LLM prompt injection.
+    SetSystemContext {
+        context: String,
+    },
     /// Run a background think cycle.
     Think,
     /// Shut down the worker.
@@ -191,6 +195,11 @@ impl CompanionBridge {
             domain,
             importance,
         });
+    }
+
+    /// Update the system context for LLM prompt injection.
+    pub fn set_system_context(&self, context: String) {
+        let _ = self.cmd_tx.send(CompanionCommand::SetSystemContext { context });
     }
 
     /// Trigger a think cycle.
@@ -356,6 +365,9 @@ fn worker_loop(
                     tracing::warn!(error = %e, "Failed to record system event");
                 }
             }
+            Ok(CompanionCommand::SetSystemContext { context }) => {
+                companion.set_system_context(context);
+            }
             Ok(CompanionCommand::Think) => {
                 let db = &companion.db;
                 let config = yantrikdb_core::types::ThinkConfig::default();
@@ -496,11 +508,15 @@ fn build_companion(config: CompanionConfig) -> CompanionService {
         CandleLLM::from_gguf(std::path::Path::new(gguf), std::path::Path::new(tok))
             .expect("failed to load LLM")
     } else {
-        tracing::info!("Downloading Qwen2.5-0.5B from HuggingFace Hub");
+        tracing::info!(
+            repo = config.llm.hub_repo,
+            gguf = config.llm.hub_gguf,
+            "Downloading LLM from HuggingFace Hub"
+        );
         let files = GGUFFiles::from_hub(
-            "Qwen/Qwen2.5-0.5B-Instruct-GGUF",
-            "qwen2.5-0.5b-instruct-q4_k_m.gguf",
-            "Qwen/Qwen2.5-0.5B-Instruct",
+            &config.llm.hub_repo,
+            &config.llm.hub_gguf,
+            &config.llm.hub_tokenizer,
         )
         .expect("failed to download LLM");
         CandleLLM::from_gguf(&files.gguf, &files.tokenizer).expect("failed to load LLM")

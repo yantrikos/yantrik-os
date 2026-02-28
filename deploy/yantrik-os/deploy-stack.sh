@@ -176,12 +176,12 @@ else
     echo "  Embedder already present"
 fi
 
-# Qwen2.5-0.5B-Instruct GGUF (~469MB)
-if [ ! -f "$MODEL_DIR/llm/qwen2.5-0.5b-instruct-q4_k_m.gguf" ]; then
-    echo "  Downloading Qwen2.5-0.5B GGUF (~469MB)..."
-    HF_LLM="https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main"
-    HF_TOK="https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct/resolve/main"
-    wget -q -O "$MODEL_DIR/llm/qwen2.5-0.5b-instruct-q4_k_m.gguf" "$HF_LLM/qwen2.5-0.5b-instruct-q4_k_m.gguf"
+# Qwen2.5-3B-Instruct GGUF (~1.7GB) — desktop-grade model
+if [ ! -f "$MODEL_DIR/llm/qwen2.5-3b-instruct-q4_k_m.gguf" ]; then
+    echo "  Downloading Qwen2.5-3B GGUF (~1.7GB)..."
+    HF_LLM="https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/main"
+    HF_TOK="https://huggingface.co/Qwen/Qwen2.5-3B-Instruct/resolve/main"
+    wget -q -O "$MODEL_DIR/llm/qwen2.5-3b-instruct-q4_k_m.gguf" "$HF_LLM/qwen2.5-3b-instruct-q4_k_m.gguf"
     wget -q -O "$MODEL_DIR/llm/tokenizer.json" "$HF_TOK/tokenizer.json"
     wget -q -O "$MODEL_DIR/llm/config.json" "$HF_TOK/config.json"
     echo "  LLM downloaded"
@@ -206,9 +206,12 @@ personality:
 
 llm:
   model_dir: "/opt/yantrik/models/llm"
-  max_tokens: 256
+  hub_repo: "Qwen/Qwen2.5-3B-Instruct-GGUF"
+  hub_gguf: "qwen2.5-3b-instruct-q4_k_m.gguf"
+  hub_tokenizer: "Qwen/Qwen2.5-3B-Instruct"
+  max_tokens: 512
   temperature: 0.7
-  max_context_tokens: 2048
+  max_context_tokens: 4096
 
 server:
   host: "0.0.0.0"
@@ -224,7 +227,7 @@ conversation:
   session_timeout_minutes: 30
 
 tools:
-  enabled: false
+  enabled: true
   max_tool_rounds: 3
 
 cognition:

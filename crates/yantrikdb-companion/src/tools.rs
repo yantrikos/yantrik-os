@@ -1,5 +1,10 @@
-//! Companion tools — remember, recall, relate, set_reminder,
+//! Companion tools — memory tools + desktop system tools.
+//!
+//! Memory tools: remember, recall, relate, set_reminder,
 //! introspect, form_opinion, create_inside_joke, check_bond.
+//!
+//! Desktop tools: open_url, read_clipboard, write_clipboard,
+//! list_files, read_file, run_command.
 //!
 //! These are the functions the LLM can call during conversation.
 
@@ -136,9 +141,98 @@ pub fn companion_tool_defs() -> Vec<serde_json::Value> {
     ]
 }
 
+/// Desktop tool definitions — system interaction tools for the AI shell.
+pub fn desktop_tool_defs() -> Vec<serde_json::Value> {
+    vec![
+        serde_json::json!({
+            "type": "function",
+            "function": {
+                "name": "open_url",
+                "description": "Open a URL in the user's web browser.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "url": {"type": "string", "description": "The URL to open"}
+                    },
+                    "required": ["url"]
+                }
+            }
+        }),
+        serde_json::json!({
+            "type": "function",
+            "function": {
+                "name": "read_clipboard",
+                "description": "Read the current contents of the user's clipboard.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {}
+                }
+            }
+        }),
+        serde_json::json!({
+            "type": "function",
+            "function": {
+                "name": "write_clipboard",
+                "description": "Write text to the user's clipboard.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "text": {"type": "string", "description": "Text to copy to clipboard"}
+                    },
+                    "required": ["text"]
+                }
+            }
+        }),
+        serde_json::json!({
+            "type": "function",
+            "function": {
+                "name": "list_files",
+                "description": "List files in a directory on the user's system.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "description": "Directory path (e.g. ~/Downloads)"},
+                        "pattern": {"type": "string", "description": "Optional glob pattern (e.g. *.pdf)"}
+                    },
+                    "required": ["path"]
+                }
+            }
+        }),
+        serde_json::json!({
+            "type": "function",
+            "function": {
+                "name": "read_file",
+                "description": "Read the contents of a text file. Limited to first 2000 characters.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "description": "File path to read"}
+                    },
+                    "required": ["path"]
+                }
+            }
+        }),
+        serde_json::json!({
+            "type": "function",
+            "function": {
+                "name": "run_command",
+                "description": "Run a simple shell command. Only safe, read-only commands are allowed (ls, cat, date, uptime, df, free, whoami, pwd, echo).",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "command": {"type": "string", "description": "The command to run"}
+                    },
+                    "required": ["command"]
+                }
+            }
+        }),
+    ]
+}
+
 /// Execute a tool call and return the result as a string.
 pub fn execute_tool(db: &YantrikDB, name: &str, args: &serde_json::Value) -> String {
     match name {
+        // Memory tools
         "remember" => tool_remember(db, args),
         "recall" => tool_recall(db, args),
         "relate_entities" => tool_relate(db, args),
@@ -147,6 +241,13 @@ pub fn execute_tool(db: &YantrikDB, name: &str, args: &serde_json::Value) -> Str
         "form_opinion" => tool_form_opinion(db.conn(), args),
         "create_inside_joke" => tool_create_inside_joke(db.conn(), args),
         "check_bond" => tool_check_bond(db.conn()),
+        // Desktop tools
+        "open_url" => tool_open_url(args),
+        "read_clipboard" => tool_read_clipboard(),
+        "write_clipboard" => tool_write_clipboard(args),
+        "list_files" => tool_list_files(args),
+        "read_file" => tool_read_file(args),
+        "run_command" => tool_run_command(args),
         _ => format!("Unknown tool: {name}"),
     }
 }
@@ -319,6 +420,239 @@ fn tool_check_bond(conn: &Connection) -> String {
         state.vulnerability_events,
         state.shared_references,
     )
+}
+
+// ── Desktop tool implementations ──
+
+fn tool_open_url(args: &serde_json::Value) -> String {
+    let url = args.get("url").and_then(|v| v.as_str()).unwrap_or_default();
+    if url.is_empty() {
+        return "Error: url is required".to_string();
+    }
+    // Validate URL looks reasonable (no command injection)
+    if !url.starts_with("http://") && !url.starts_with("https://") {
+        return "Error: URL must start with http:// or https://".to_string();
+    }
+    match std::process::Command::new("xdg-open").arg(url).spawn() {
+        Ok(_) => format!("Opened: {url}"),
+        Err(e) => format!("Failed to open URL: {e}"),
+    }
+}
+
+fn tool_read_clipboard() -> String {
+    // wl-paste for Wayland clipboard
+    match std::process::Command::new("wl-paste")
+        .arg("--no-newline")
+        .output()
+    {
+        Ok(output) if output.status.success() => {
+            let text = String::from_utf8_lossy(&output.stdout);
+            if text.is_empty() {
+                "Clipboard is empty.".to_string()
+            } else {
+                // Limit to avoid blowing up context
+                let truncated = if text.len() > 1000 { &text[..1000] } else { &text };
+                format!("Clipboard contents:\n{truncated}")
+            }
+        }
+        Ok(output) => {
+            let err = String::from_utf8_lossy(&output.stderr);
+            format!("Clipboard read failed: {err}")
+        }
+        Err(e) => format!("Failed to read clipboard (wl-paste not available?): {e}"),
+    }
+}
+
+fn tool_write_clipboard(args: &serde_json::Value) -> String {
+    let text = args.get("text").and_then(|v| v.as_str()).unwrap_or_default();
+    if text.is_empty() {
+        return "Error: text is required".to_string();
+    }
+    // wl-copy for Wayland clipboard
+    let mut child = match std::process::Command::new("wl-copy")
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(e) => return format!("Failed to write clipboard (wl-copy not available?): {e}"),
+    };
+    if let Some(mut stdin) = child.stdin.take() {
+        use std::io::Write;
+        let _ = stdin.write_all(text.as_bytes());
+    }
+    match child.wait() {
+        Ok(s) if s.success() => "Copied to clipboard.".to_string(),
+        Ok(s) => format!("wl-copy exited with: {s}"),
+        Err(e) => format!("Failed to write clipboard: {e}"),
+    }
+}
+
+fn tool_list_files(args: &serde_json::Value) -> String {
+    let path = args.get("path").and_then(|v| v.as_str()).unwrap_or_default();
+    if path.is_empty() {
+        return "Error: path is required".to_string();
+    }
+    // Expand ~ to home directory
+    let expanded = if path.starts_with("~/") {
+        if let Ok(home) = std::env::var("HOME") {
+            format!("{}/{}", home, &path[2..])
+        } else {
+            path.to_string()
+        }
+    } else {
+        path.to_string()
+    };
+
+    let pattern = args.get("pattern").and_then(|v| v.as_str()).unwrap_or("*");
+
+    let dir = std::path::Path::new(&expanded);
+    if !dir.is_dir() {
+        return format!("Error: '{}' is not a directory", path);
+    }
+
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(e) => return format!("Error reading directory: {e}"),
+    };
+
+    let mut files = Vec::new();
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        // Simple glob match: * matches anything, *.ext matches extension
+        if pattern == "*" || glob_match(pattern, &name) {
+            let meta = entry.metadata().ok();
+            let size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
+            let is_dir = meta.as_ref().map(|m| m.is_dir()).unwrap_or(false);
+            let suffix = if is_dir { "/" } else { "" };
+            files.push(format!("  {}{} ({})", name, suffix, format_size(size)));
+        }
+    }
+
+    if files.is_empty() {
+        format!("No files matching '{}' in {}", pattern, path)
+    } else {
+        files.sort();
+        let count = files.len();
+        // Limit output
+        files.truncate(50);
+        let mut result = format!("Files in {} ({} items):\n", path, count);
+        result.push_str(&files.join("\n"));
+        if count > 50 {
+            result.push_str(&format!("\n  ... and {} more", count - 50));
+        }
+        result
+    }
+}
+
+fn tool_read_file(args: &serde_json::Value) -> String {
+    let path = args.get("path").and_then(|v| v.as_str()).unwrap_or_default();
+    if path.is_empty() {
+        return "Error: path is required".to_string();
+    }
+    let expanded = if path.starts_with("~/") {
+        if let Ok(home) = std::env::var("HOME") {
+            format!("{}/{}", home, &path[2..])
+        } else {
+            path.to_string()
+        }
+    } else {
+        path.to_string()
+    };
+
+    match std::fs::read_to_string(&expanded) {
+        Ok(content) => {
+            if content.len() > 2000 {
+                format!("{}\n... (truncated, {} total bytes)", &content[..2000], content.len())
+            } else {
+                content
+            }
+        }
+        Err(e) => format!("Error reading file: {e}"),
+    }
+}
+
+/// Safe command allowlist — only read-only, harmless commands.
+const SAFE_COMMANDS: &[&str] = &[
+    "ls", "cat", "head", "tail", "date", "uptime", "df", "free",
+    "whoami", "pwd", "echo", "wc", "file", "stat", "uname",
+    "hostname", "id", "which", "env", "printenv",
+];
+
+fn tool_run_command(args: &serde_json::Value) -> String {
+    let command = args.get("command").and_then(|v| v.as_str()).unwrap_or_default();
+    if command.is_empty() {
+        return "Error: command is required".to_string();
+    }
+
+    // Extract the base command (first word)
+    let base_cmd = command.split_whitespace().next().unwrap_or("");
+    if !SAFE_COMMANDS.contains(&base_cmd) {
+        return format!(
+            "Error: '{}' is not in the safe command list. Allowed: {}",
+            base_cmd,
+            SAFE_COMMANDS.join(", ")
+        );
+    }
+
+    // Block shell metacharacters that could enable injection
+    if command.contains('|') || command.contains(';') || command.contains('&')
+        || command.contains('`') || command.contains('$') || command.contains('>')
+        || command.contains('<')
+    {
+        return "Error: shell metacharacters (|;&`$><) are not allowed".to_string();
+    }
+
+    match std::process::Command::new("sh")
+        .arg("-c")
+        .arg(command)
+        .output()
+    {
+        Ok(output) => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let mut result = String::new();
+            if !stdout.is_empty() {
+                let truncated = if stdout.len() > 2000 { &stdout[..2000] } else { &stdout };
+                result.push_str(truncated);
+            }
+            if !stderr.is_empty() {
+                result.push_str(&format!("\nStderr: {}", &stderr[..stderr.len().min(500)]));
+            }
+            if result.is_empty() {
+                "(no output)".to_string()
+            } else {
+                result
+            }
+        }
+        Err(e) => format!("Failed to run command: {e}"),
+    }
+}
+
+/// Simple glob matching (supports * and *.ext patterns).
+fn glob_match(pattern: &str, name: &str) -> bool {
+    if pattern == "*" {
+        return true;
+    }
+    if let Some(ext) = pattern.strip_prefix("*.") {
+        return name.ends_with(&format!(".{}", ext));
+    }
+    if let Some(prefix) = pattern.strip_suffix('*') {
+        return name.starts_with(prefix);
+    }
+    pattern == name
+}
+
+/// Format byte size into human-readable string.
+fn format_size(bytes: u64) -> String {
+    if bytes < 1024 {
+        format!("{} B", bytes)
+    } else if bytes < 1024 * 1024 {
+        format!("{:.1} KB", bytes as f64 / 1024.0)
+    } else if bytes < 1024 * 1024 * 1024 {
+        format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
+    } else {
+        format!("{:.1} GB", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
+    }
 }
 
 fn tool_set_reminder(db: &YantrikDB, args: &serde_json::Value) -> String {

@@ -43,6 +43,15 @@ pub struct LLMConfig {
     /// Directory containing *.gguf + tokenizer.json.
     #[serde(default)]
     pub model_dir: Option<String>,
+    /// HuggingFace Hub repo for GGUF model (e.g. "Qwen/Qwen2.5-3B-Instruct-GGUF").
+    #[serde(default = "default_hub_repo")]
+    pub hub_repo: String,
+    /// GGUF filename within the hub repo.
+    #[serde(default = "default_hub_gguf")]
+    pub hub_gguf: String,
+    /// HuggingFace Hub repo for tokenizer (e.g. "Qwen/Qwen2.5-3B-Instruct").
+    #[serde(default = "default_hub_tokenizer")]
+    pub hub_tokenizer: String,
     #[serde(default = "default_max_tokens")]
     pub max_tokens: usize,
     #[serde(default = "default_temperature")]
@@ -51,6 +60,15 @@ pub struct LLMConfig {
     pub max_context_tokens: usize,
 }
 
+fn default_hub_repo() -> String {
+    "Qwen/Qwen2.5-0.5B-Instruct-GGUF".to_string()
+}
+fn default_hub_gguf() -> String {
+    "qwen2.5-0.5b-instruct-q4_k_m.gguf".to_string()
+}
+fn default_hub_tokenizer() -> String {
+    "Qwen/Qwen2.5-0.5B-Instruct".to_string()
+}
 fn default_max_tokens() -> usize {
     256
 }
@@ -67,6 +85,9 @@ impl Default for LLMConfig {
             gguf_path: None,
             tokenizer_path: None,
             model_dir: None,
+            hub_repo: default_hub_repo(),
+            hub_gguf: default_hub_gguf(),
+            hub_tokenizer: default_hub_tokenizer(),
             max_tokens: default_max_tokens(),
             temperature: default_temperature(),
             max_context_tokens: default_max_context_tokens(),

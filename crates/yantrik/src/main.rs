@@ -119,11 +119,15 @@ fn build_companion(config: CompanionConfig) -> CompanionService {
         )
         .expect("failed to load LLM")
     } else {
-        tracing::info!("Downloading Qwen2.5-0.5B from HuggingFace Hub");
+        tracing::info!(
+            repo = config.llm.hub_repo,
+            gguf = config.llm.hub_gguf,
+            "Downloading LLM from HuggingFace Hub"
+        );
         let files = GGUFFiles::from_hub(
-            "Qwen/Qwen2.5-0.5B-Instruct-GGUF",
-            "qwen2.5-0.5b-instruct-q4_k_m.gguf",
-            "Qwen/Qwen2.5-0.5B-Instruct",
+            &config.llm.hub_repo,
+            &config.llm.hub_gguf,
+            &config.llm.hub_tokenizer,
         )
         .expect("failed to download LLM");
         CandleLLM::from_gguf(&files.gguf, &files.tokenizer)

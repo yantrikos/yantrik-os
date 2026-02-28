@@ -263,11 +263,11 @@ fn main() {
                 return;
             }
 
-            // Generate results based on query
+            // Generate results based on query — keyword routing
             let lower = query.to_lowercase();
             let mut results = Vec::new();
 
-            // App matches
+            // App matches: "open terminal", "browser", "files"
             for (app_id, _cmd, desc) in KNOWN_APPS {
                 if app_id.contains(&lower) || lower.contains(app_id) || lower.contains("open") {
                     results.push(LensResult {
@@ -280,7 +280,103 @@ fn main() {
                 }
             }
 
-            // Setting matches
+            // Web search: "search for X", "google X", "look up X"
+            let search_prefixes = ["search for ", "search ", "google ", "look up ", "find online "];
+            for prefix in &search_prefixes {
+                if let Some(rest) = lower.strip_prefix(prefix) {
+                    if !rest.is_empty() {
+                        let search_url = format!(
+                            "https://duckduckgo.com/?q={}",
+                            rest.replace(' ', "+")
+                        );
+                        results.push(LensResult {
+                            result_type: "do".into(),
+                            title: SharedString::from(format!("Search: \"{}\"", rest)),
+                            subtitle: "Open in browser".into(),
+                            icon_char: "🔍".into(),
+                            action_id: SharedString::from(format!("url:{}", search_url)),
+                        });
+                        break;
+                    }
+                }
+            }
+
+            // URL: "go to example.com", pasted URLs
+            if lower.starts_with("http://") || lower.starts_with("https://")
+                || lower.starts_with("go to ")
+            {
+                let url = if let Some(rest) = lower.strip_prefix("go to ") {
+                    let rest = rest.trim();
+                    if rest.contains('.') {
+                        format!("https://{}", rest)
+                    } else {
+                        String::new()
+                    }
+                } else {
+                    query.clone()
+                };
+                if !url.is_empty() {
+                    results.push(LensResult {
+                        result_type: "do".into(),
+                        title: SharedString::from(format!("Open {}", &url)),
+                        subtitle: "Open in browser".into(),
+                        icon_char: "🌐".into(),
+                        action_id: SharedString::from(format!("url:{}", url)),
+                    });
+                }
+            }
+
+            // Clipboard: "copy X", "paste", "clipboard"
+            if lower == "paste" || lower == "clipboard" || lower.starts_with("what's on clipboard")
+                || lower.starts_with("what did i copy")
+            {
+                results.push(LensResult {
+                    result_type: "do".into(),
+                    title: "Read clipboard".into(),
+                    subtitle: "Show clipboard contents".into(),
+                    icon_char: "📋".into(),
+                    action_id: "clipboard:read".into(),
+                });
+            }
+
+            // File operations: "show downloads", "list files", "what's in ~/X"
+            if lower.starts_with("show ") || lower.starts_with("list ") || lower.contains("downloads")
+                || lower.starts_with("what's in ")
+            {
+                let dir = if lower.contains("downloads") {
+                    "~/Downloads"
+                } else if lower.contains("documents") {
+                    "~/Documents"
+                } else if lower.contains("desktop") {
+                    "~/Desktop"
+                } else {
+                    ""
+                };
+                if !dir.is_empty() {
+                    results.push(LensResult {
+                        result_type: "find".into(),
+                        title: SharedString::from(format!("Browse {}", dir)),
+                        subtitle: "List directory contents".into(),
+                        icon_char: "📁".into(),
+                        action_id: SharedString::from(format!("files:{}", dir)),
+                    });
+                }
+            }
+
+            // System info: "battery", "memory", "disk space", "uptime"
+            if lower.contains("battery") || lower.contains("memory") || lower.contains("ram")
+                || lower.contains("disk") || lower.contains("uptime") || lower.contains("system")
+            {
+                results.push(LensResult {
+                    result_type: "find".into(),
+                    title: "System status".into(),
+                    subtitle: "Battery, memory, disk, uptime".into(),
+                    icon_char: "📊".into(),
+                    action_id: "system:status".into(),
+                });
+            }
+
+            // Setting matches: "focus", "timer", "settings"
             if lower.contains("focus") || lower.contains("timer") {
                 results.push(LensResult {
                     result_type: "setting".into(),
@@ -288,6 +384,19 @@ fn main() {
                     subtitle: "Dim desktop, suppress notifications".into(),
                     icon_char: "◎".into(),
                     action_id: "setting:focus".into(),
+                });
+            }
+
+            // Memory search: "remember", "what do you know about"
+            if lower.starts_with("remember") || lower.contains("you know about")
+                || lower.starts_with("recall ")
+            {
+                results.push(LensResult {
+                    result_type: "memory".into(),
+                    title: SharedString::from(format!("Search memories: \"{}\"", &query)),
+                    subtitle: "Search Yantrik's memory".into(),
+                    icon_char: "🧠".into(),
+                    action_id: SharedString::from(format!("memory:{}", &query)),
                 });
             }
 
@@ -326,10 +435,33 @@ fn main() {
             if let Some(ui) = ui_weak_result.upgrade() {
                 ui.set_lens_open(false);
             }
+        } else if action.starts_with("url:") {
+            let url = &action[4..];
+            tracing::info!(url, "Opening URL from Lens");
+            match std::process::Command::new("xdg-open").arg(url).spawn() {
+                Ok(_) => tracing::info!(url, "URL opened"),
+                Err(e) => tracing::error!(url, error = %e, "Failed to open URL"),
+            }
+            if let Some(ui) = ui_weak_result.upgrade() {
+                ui.set_lens_open(false);
+            }
+        } else if action == "clipboard:read" || action.starts_with("files:")
+            || action == "system:status" || action.starts_with("memory:")
+        {
+            // Route these through the AI as natural language queries
+            let query = match action.as_str() {
+                "clipboard:read" => "What's on my clipboard?".to_string(),
+                "system:status" => "Show me system status — battery, memory, disk.".to_string(),
+                a if a.starts_with("files:") => format!("List the files in {}", &a[6..]),
+                a if a.starts_with("memory:") => a[7..].to_string(),
+                _ => action.clone(),
+            };
+            if let Some(ui) = ui_weak_result.upgrade() {
+                ui.invoke_lens_submit(SharedString::from(&query));
+            }
         } else if action.starts_with("ask:") {
             let query = &action[4..];
             if let Some(ui) = ui_weak_result.upgrade() {
-                // Trigger lens submit with this query
                 ui.invoke_lens_submit(SharedString::from(query));
             }
         }
@@ -695,6 +827,9 @@ fn main() {
             ui.set_wifi_connected(snap.network_connected);
         }
 
+        // 4b. Update system context for LLM prompt injection
+        bridge_sys.set_system_context(format_system_context(&snap));
+
         // 5. Score and display urges
         if !all_urges.is_empty() {
             let scored = scorer_poll.borrow_mut().score(all_urges);
@@ -814,6 +949,47 @@ fn load_system_config(path: Option<PathBuf>) -> yantrik_os::SystemObserverConfig
             }
         }
     }
+}
+
+/// Format a SystemSnapshot into a compact string for LLM context injection.
+/// Kept short (~100 tokens) to fit the token budget.
+fn format_system_context(snap: &yantrik_os::SystemSnapshot) -> String {
+    let mut parts = Vec::new();
+
+    // Battery
+    let charge_str = if snap.battery_charging { " (charging)" } else { "" };
+    parts.push(format!("Battery: {}%{}", snap.battery_level, charge_str));
+
+    // Network
+    if snap.network_connected {
+        let ssid = snap.network_ssid.as_deref().unwrap_or("connected");
+        parts.push(format!("WiFi: {}", ssid));
+    } else {
+        parts.push("WiFi: disconnected".to_string());
+    }
+
+    // CPU & memory
+    if snap.cpu_usage_percent > 0.0 {
+        parts.push(format!("CPU: {:.0}%", snap.cpu_usage_percent));
+    }
+    if snap.memory_total_bytes > 0 {
+        let used_mb = snap.memory_used_bytes / (1024 * 1024);
+        let total_mb = snap.memory_total_bytes / (1024 * 1024);
+        parts.push(format!("RAM: {}/{}MB ({:.0}%)", used_mb, total_mb, snap.memory_usage_percent()));
+    }
+
+    // Running processes (top 5 by name)
+    if !snap.running_processes.is_empty() {
+        let names: Vec<&str> = snap.running_processes.iter().take(5).map(|p| p.name.as_str()).collect();
+        parts.push(format!("Apps: {}", names.join(", ")));
+    }
+
+    // User idle
+    if snap.user_idle && snap.idle_seconds > 60 {
+        parts.push(format!("User idle: {}m", snap.idle_seconds / 60));
+    }
+
+    parts.join("\n")
 }
 
 /// Convert a system event into a memory record (text, domain, importance).

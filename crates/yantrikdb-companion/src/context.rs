@@ -21,6 +21,8 @@ pub struct ContextSignals<'a> {
     pub style: &'a CommunicationStyle,
     pub opinions: &'a [Opinion],
     pub shared_refs: &'a [SharedReference],
+    /// Pre-formatted system state (battery, network, processes, etc.)
+    pub system_state: &'a str,
 }
 
 /// Build the full message array for LLM chat.
@@ -122,6 +124,15 @@ fn build_system_prompt(
             "Current time: {}\n\n",
             now.format("%A, %B %d %I:%M %p")
         ));
+    }
+
+    // ── 4b. System state (desktop awareness) ──
+    if let Some(s) = signals {
+        if !over_budget(&prompt) && !s.system_state.is_empty() {
+            prompt.push_str("System state:\n");
+            prompt.push_str(s.system_state);
+            prompt.push_str("\n\n");
+        }
     }
 
     // ── 5. User memories (highest value context) ──

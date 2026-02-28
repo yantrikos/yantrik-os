@@ -18,14 +18,16 @@ personality:
     and proactively help when something needs attention.
 
 # In-process Candle LLM — no external server needed.
-# Models are loaded from local files at startup.
+# Desktop mode: Qwen2.5-3B-Instruct (~1.7GB GGUF Q4_K_M, fits in 2GB VRAM).
+# Falls back to hub_repo download if model_dir is missing.
 llm:
-  # Local model directory (contains .gguf + tokenizer.json)
-  # If omitted, downloads Qwen2.5-0.5B-Instruct from HuggingFace on first run.
   model_dir: "/opt/yantrik/models/llm"
-  max_tokens: 256
+  hub_repo: "Qwen/Qwen2.5-3B-Instruct-GGUF"
+  hub_gguf: "qwen2.5-3b-instruct-q4_k_m.gguf"
+  hub_tokenizer: "Qwen/Qwen2.5-3B-Instruct"
+  max_tokens: 512
   temperature: 0.7
-  max_context_tokens: 2048
+  max_context_tokens: 4096
 
 # REST API (for debug / external clients)
 server:
@@ -44,9 +46,9 @@ conversation:
   max_history_turns: 10
   session_timeout_minutes: 30
 
-# Tool calling — disable for tiny models (0.5B), enable for 1.5B+
+# Tool calling — enabled for 3B model (reliable tool use).
 tools:
-  enabled: false
+  enabled: true
   max_tool_rounds: 3
 
 cognition:
