@@ -1,7 +1,10 @@
-//! Yantrik OS — native Slint UI shell.
+//! Yantrik OS — AI-native desktop shell.
 //!
-//! The phone's primary interface. Embeds CompanionService in-process
+//! The desktop's primary interface. Embeds CompanionService in-process
 //! on a worker thread, renders via Slint on the main thread.
+//!
+//! Layout: boot animation → desktop (particle field, orb, Intent Lens).
+//! The Intent Lens is the primary interaction — search, ask, launch, control.
 //!
 //! Usage:
 //!   yantrik-ui [config.yaml]
@@ -16,9 +19,20 @@ use slint::{Model, ModelRc, SharedString, Timer, TimerMode, VecModel};
 use yantrikdb_companion::CompanionConfig;
 
 mod bridge;
+// NOTE: #[allow(dead_code)] required to avoid rustc 1.93.1 ICE in check_mod_deathness.
+// Remove once rustc is updated past the fix.
+#[allow(dead_code)]
+mod features;
 mod voice;
 
 slint::include_modules!();
+
+/// Known apps that can be launched via the Intent Lens or dock.
+const KNOWN_APPS: &[(&str, &str, &str)] = &[
+    ("terminal", "foot", "Open terminal emulator"),
+    ("browser", "firefox-esr", "Open web browser"),
+    ("files", "thunar", "Open file manager"),
+];
 
 fn main() {
     // Initialize tracing
@@ -40,12 +54,15 @@ fn main() {
     // Set boot status
     ui.set_boot_status("remembering...".into());
 
+    // Set initial greeting based on time of day
+    ui.set_greeting_text(time_of_day_greeting().into());
+
     // Start companion bridge (spawns worker thread)
     let bridge = Arc::new(bridge::CompanionBridge::start(config, ui.as_weak()));
 
     // ── Wire callbacks ──
 
-    // Send message — timer must outlive the callback, so we store it in an Rc.
+    // Send message — used by Intent Lens chat mode
     let bridge_send = bridge.clone();
     let ui_weak_send = ui.as_weak();
     let stream_timer: Rc<RefCell<Option<Timer>>> = Rc::new(RefCell::new(None));
@@ -77,6 +94,8 @@ fn main() {
                 is_streaming: true,
             });
             ui.set_is_generating(true);
+            // Switch Lens to chat mode
+            ui.set_lens_chat_mode(true);
         }
 
         // Start streaming from companion
@@ -84,11 +103,10 @@ fn main() {
         let ui_weak_stream = ui_weak.clone();
         let timer_handle = stream_timer_inner.clone();
 
-        // Poll tokens at 16ms (60fps) — stored in Rc so it survives this closure
+        // Poll tokens at 16ms (60fps)
         let timer = Timer::default();
         timer.start(TimerMode::Repeated, Duration::from_millis(16), move || {
             let mut done = false;
-            // Drain all available tokens this frame
             while let Ok(token) = token_rx.try_recv() {
                 if token == "__DONE__" {
                     done = true;
@@ -113,7 +131,6 @@ fn main() {
             if done {
                 if let Some(ui) = ui_weak_stream.upgrade() {
                     ui.set_is_generating(false);
-                    // Mark last message as not streaming
                     let messages = ui.get_messages();
                     let model = messages
                         .as_any()
@@ -126,16 +143,217 @@ fn main() {
                         model.set_row_data(count - 1, last);
                     }
                 }
-                // Stop the timer now that generation is done
                 *timer_handle.borrow_mut() = None;
             }
         });
-        // Store timer so it lives beyond this callback
         *stream_timer_inner.borrow_mut() = Some(timer);
     });
 
+    // ── Intent Lens: submit query ──
+    // When user presses Enter in the Lens, route the query.
+    let bridge_lens = bridge.clone();
+    let ui_weak_lens = ui.as_weak();
+    let lens_stream_timer: Rc<RefCell<Option<Timer>>> = Rc::new(RefCell::new(None));
+    let lens_stream_inner = lens_stream_timer.clone();
+    ui.on_lens_submit(move |query| {
+        let query = query.to_string();
+        if query.is_empty() {
+            return;
+        }
+
+        tracing::info!(query = %query, "Lens submit");
+
+        // Check if this is an app launch command
+        let lower = query.to_lowercase();
+        for (app_id, cmd, _) in KNOWN_APPS {
+            if lower.contains(&format!("open {}", app_id))
+                || lower.contains(app_id)
+                || lower.contains(cmd)
+            {
+                tracing::info!(cmd, "Launching app from Lens");
+                match std::process::Command::new(cmd).spawn() {
+                    Ok(_) => tracing::info!(cmd, "App started"),
+                    Err(e) => tracing::error!(cmd, error = %e, "Failed to launch app"),
+                }
+                if let Some(ui) = ui_weak_lens.upgrade() {
+                    ui.set_lens_open(false);
+                }
+                return;
+            }
+        }
+
+        // Otherwise treat as an AI conversation — send to companion
+        if let Some(ui) = ui_weak_lens.upgrade() {
+            let messages = ui.get_messages();
+            let model = messages
+                .as_any()
+                .downcast_ref::<VecModel<MessageData>>()
+                .unwrap();
+            model.push(MessageData {
+                role: "user".into(),
+                content: SharedString::from(&query),
+                is_streaming: false,
+            });
+            model.push(MessageData {
+                role: "assistant".into(),
+                content: "".into(),
+                is_streaming: true,
+            });
+            ui.set_is_generating(true);
+            ui.set_lens_chat_mode(true);
+        }
+
+        let token_rx = bridge_lens.send_message(query);
+        let ui_weak_stream = ui_weak_lens.clone();
+        let timer_handle = lens_stream_inner.clone();
+
+        let timer = Timer::default();
+        timer.start(TimerMode::Repeated, Duration::from_millis(16), move || {
+            let mut done = false;
+            while let Ok(token) = token_rx.try_recv() {
+                if token == "__DONE__" {
+                    done = true;
+                    break;
+                }
+                if let Some(ui) = ui_weak_stream.upgrade() {
+                    let messages = ui.get_messages();
+                    let model = messages
+                        .as_any()
+                        .downcast_ref::<VecModel<MessageData>>()
+                        .unwrap();
+                    let count = model.row_count();
+                    if count > 0 {
+                        let mut last = model.row_data(count - 1).unwrap();
+                        let mut content = last.content.to_string();
+                        content.push_str(&token);
+                        last.content = SharedString::from(&content);
+                        model.set_row_data(count - 1, last);
+                    }
+                }
+            }
+            if done {
+                if let Some(ui) = ui_weak_stream.upgrade() {
+                    ui.set_is_generating(false);
+                    let messages = ui.get_messages();
+                    let model = messages
+                        .as_any()
+                        .downcast_ref::<VecModel<MessageData>>()
+                        .unwrap();
+                    let count = model.row_count();
+                    if count > 0 {
+                        let mut last = model.row_data(count - 1).unwrap();
+                        last.is_streaming = false;
+                        model.set_row_data(count - 1, last);
+                    }
+                }
+                *timer_handle.borrow_mut() = None;
+            }
+        });
+        *lens_stream_inner.borrow_mut() = Some(timer);
+    });
+
+    // ── Intent Lens: query changed (live search) ──
+    let ui_weak_query = ui.as_weak();
+    ui.on_lens_query(move |text| {
+        let query = text.to_string();
+        if let Some(ui) = ui_weak_query.upgrade() {
+            if query.is_empty() {
+                ui.set_lens_results(ModelRc::new(VecModel::<LensResult>::default()));
+                ui.set_lens_chat_mode(false);
+                return;
+            }
+
+            // Generate results based on query
+            let lower = query.to_lowercase();
+            let mut results = Vec::new();
+
+            // App matches
+            for (app_id, _cmd, desc) in KNOWN_APPS {
+                if app_id.contains(&lower) || lower.contains(app_id) || lower.contains("open") {
+                    results.push(LensResult {
+                        result_type: "do".into(),
+                        title: SharedString::from(format!("Open {}", capitalize(app_id))),
+                        subtitle: SharedString::from(*desc),
+                        icon_char: "▶".into(),
+                        action_id: SharedString::from(format!("launch:{}", app_id)),
+                    });
+                }
+            }
+
+            // Setting matches
+            if lower.contains("focus") || lower.contains("timer") {
+                results.push(LensResult {
+                    result_type: "setting".into(),
+                    title: "Start focus mode".into(),
+                    subtitle: "Dim desktop, suppress notifications".into(),
+                    icon_char: "◎".into(),
+                    action_id: "setting:focus".into(),
+                });
+            }
+
+            // Always offer AI conversation as the last option
+            if !lower.is_empty() {
+                results.push(LensResult {
+                    result_type: "ask".into(),
+                    title: SharedString::from(format!("Ask: \"{}\"", &query)),
+                    subtitle: "Send to Yantrik AI".into(),
+                    icon_char: "?".into(),
+                    action_id: SharedString::from(format!("ask:{}", &query)),
+                });
+            }
+
+            ui.set_lens_results(ModelRc::new(VecModel::from(results)));
+        }
+    });
+
+    // ── Intent Lens: result selected ──
+    let ui_weak_result = ui.as_weak();
+    ui.on_lens_result_selected(move |action_id| {
+        let action = action_id.to_string();
+        tracing::info!(action = %action, "Lens result selected");
+
+        if action.starts_with("launch:") {
+            let app_id = &action[7..];
+            for (_id, cmd, _) in KNOWN_APPS {
+                if app_id == *_id {
+                    match std::process::Command::new(cmd).spawn() {
+                        Ok(_) => tracing::info!(cmd, "App started"),
+                        Err(e) => tracing::error!(cmd, error = %e, "Failed to launch"),
+                    }
+                    break;
+                }
+            }
+            if let Some(ui) = ui_weak_result.upgrade() {
+                ui.set_lens_open(false);
+            }
+        } else if action.starts_with("ask:") {
+            let query = &action[4..];
+            if let Some(ui) = ui_weak_result.upgrade() {
+                // Trigger lens submit with this query
+                ui.invoke_lens_submit(SharedString::from(query));
+            }
+        }
+    });
+
+    // ── Lens open/close ──
+    let ui_weak_open = ui.as_weak();
+    ui.on_open_lens(move || {
+        tracing::debug!("Lens opened");
+        // Could trigger pre-population of suggestions here
+        let _ = ui_weak_open.upgrade();
+    });
+
+    let ui_weak_close = ui.as_weak();
+    ui.on_close_lens(move || {
+        tracing::debug!("Lens closed");
+        if let Some(ui) = ui_weak_close.upgrade() {
+            // Reset lens state on close
+            ui.set_lens_results(ModelRc::new(VecModel::<LensResult>::default()));
+            ui.set_lens_chat_mode(false);
+        }
+    });
+
     // Navigation callback — load data when entering certain screens.
-    // Timer stored in Rc so it survives the callback.
     let bridge_nav = bridge.clone();
     let ui_weak_nav = ui.as_weak();
     let nav_timer: Rc<RefCell<Option<Timer>>> = Rc::new(RefCell::new(None));
@@ -144,8 +362,8 @@ fn main() {
         tracing::debug!(screen, "Navigate to screen");
 
         match screen {
-            // Home screen — load pending urges
-            3 => {
+            // Desktop — load pending urges
+            1 => {
                 let reply_rx = bridge_nav.request_pending_urges();
                 let weak = ui_weak_nav.clone();
                 let handle = nav_timer_inner.clone();
@@ -166,10 +384,13 @@ fn main() {
                                     reason: u.reason.clone().into(),
                                     urgency: u.urgency as f32,
                                     suggested_message: u.suggested_message.clone().into(),
-                                    time_ago: format_time_ago(now - u.created_at).into(),
+                                    time_ago: bridge::format_time_ago(now - u.created_at).into(),
                                     border_color: bridge::instinct_color(&u.instinct_name),
                                 })
                                 .collect();
+
+                            // Set pending count for Quiet Queue badge
+                            ui.set_pending_count(cards.len() as i32);
                             ui.set_urges(ModelRc::new(VecModel::from(cards)));
                         }
                         *handle.borrow_mut() = None;
@@ -177,7 +398,7 @@ fn main() {
                 });
                 *nav_timer_inner.borrow_mut() = Some(timer);
             }
-            // Bond screen — request bond data
+            // Bond screen
             4 => {
                 let reply_rx = bridge_nav.request_bond();
                 let weak = ui_weak_nav.clone();
@@ -202,7 +423,7 @@ fn main() {
                 });
                 *nav_timer_inner.borrow_mut() = Some(timer);
             }
-            // Personality screen — request evolution data
+            // Personality screen
             5 => {
                 let reply_rx = bridge_nav.request_evolution();
                 let weak = ui_weak_nav.clone();
@@ -246,7 +467,7 @@ fn main() {
         }
     });
 
-    // Memory search callback — timer stored in Rc so it survives the callback.
+    // Memory search callback
     let bridge_search = bridge.clone();
     let ui_weak_search = ui.as_weak();
     let search_timer: Rc<RefCell<Option<Timer>>> = Rc::new(RefCell::new(None));
@@ -282,7 +503,7 @@ fn main() {
                             importance: r.importance as f32,
                             valence: r.valence as f32,
                             score: r.score as f32,
-                            time_ago: format_time_ago(now - r.created_at).into(),
+                            time_ago: bridge::format_time_ago(now - r.created_at).into(),
                         })
                         .collect();
                     ui.set_memory_results(ModelRc::new(VecModel::from(items)));
@@ -292,6 +513,28 @@ fn main() {
             }
         });
         *search_timer_inner.borrow_mut() = Some(timer);
+    });
+
+    // App launch callback (from dock)
+    ui.on_launch_app(move |app_id| {
+        let app = app_id.to_string();
+        tracing::info!(app = %app, "Launching app");
+
+        let cmd = match app.as_str() {
+            "terminal" => "foot",
+            "browser" => "firefox-esr",
+            "files" => "thunar",
+            "settings" => return,
+            _ => {
+                tracing::warn!(app = %app, "Unknown app");
+                return;
+            }
+        };
+
+        match std::process::Command::new(cmd).spawn() {
+            Ok(_) => tracing::info!(cmd, "App started"),
+            Err(e) => tracing::error!(cmd, error = %e, "Failed to launch app"),
+        }
     });
 
     // Voice mode
@@ -341,6 +584,18 @@ fn main() {
     let urges_model = VecModel::<UrgeCardData>::default();
     ui.set_urges(ModelRc::new(urges_model));
 
+    // Clock timer (updates every 30 seconds)
+    let ui_weak_clock = ui.as_weak();
+    let clock_timer = Timer::default();
+    clock_timer.start(TimerMode::Repeated, Duration::from_secs(30), move || {
+        if let Some(ui) = ui_weak_clock.upgrade() {
+            ui.set_clock_text(current_time_hhmm().into());
+            ui.set_greeting_text(time_of_day_greeting().into());
+        }
+    });
+    // Set initial clock
+    ui.set_clock_text(current_time_hhmm().into());
+
     // Background cognition timer (every 60s)
     let bridge_think = bridge.clone();
     let think_timer = Timer::default();
@@ -348,8 +603,107 @@ fn main() {
         bridge_think.think();
     });
 
+    // ── System Observer + Proactive Features ──
+
+    // Load system observer config from same YAML
+    let sys_config = load_system_config(std::env::args().nth(1).map(PathBuf::from));
+
+    // Start the system observer (spawns monitor threads)
+    let observer = yantrik_os::SystemObserver::start(&sys_config);
+
+    // Create feature registry and register all v1 features
+    let mut registry = features::FeatureRegistry::new();
+    registry.register(Box::new(features::resource_guardian::ResourceGuardian::new()));
+    registry.register(Box::new(features::process_sentinel::ProcessSentinel::new()));
+    registry.register(Box::new(features::focus_flow::FocusFlow::new()));
+
+    let scorer = features::UrgencyScorer::new();
+    let system_snapshot = yantrik_os::SystemSnapshot::default();
+
+    // Wrap in Rc<RefCell> for shared main-thread access
+    let observer = Rc::new(observer);
+    let registry = Rc::new(RefCell::new(registry));
+    let scorer = Rc::new(RefCell::new(scorer));
+    let system_snapshot = Rc::new(RefCell::new(system_snapshot));
+
+    // System poll timer — drains events, runs features, updates UI (every 3s)
+    let ui_weak_sys = ui.as_weak();
+    let observer_poll = observer.clone();
+    let registry_poll = registry.clone();
+    let scorer_poll = scorer.clone();
+    let snapshot_poll = system_snapshot.clone();
+    let system_timer = Timer::default();
+    system_timer.start(TimerMode::Repeated, Duration::from_secs(3), move || {
+        // 1. Drain all pending system events
+        let events = observer_poll.drain();
+        if events.is_empty() {
+            // Still tick features (for time-based logic like FocusFlow)
+            let snap = snapshot_poll.borrow();
+            let ctx = features::FeatureContext {
+                system: &snap,
+                clock: std::time::SystemTime::now(),
+            };
+            let tick_urges = registry_poll.borrow_mut().tick(&ctx);
+            if !tick_urges.is_empty() {
+                let scored = scorer_poll.borrow_mut().score(tick_urges);
+                if !scored.is_empty() {
+                    push_whisper_cards(&ui_weak_sys, &scored);
+                }
+            }
+            return;
+        }
+
+        // 2. Process each event
+        let mut all_urges = Vec::new();
+        for event in &events {
+            // Update system snapshot
+            snapshot_poll.borrow_mut().apply(event);
+
+            // Route through features
+            let snap = snapshot_poll.borrow();
+            let ctx = features::FeatureContext {
+                system: &snap,
+                clock: std::time::SystemTime::now(),
+            };
+            let event_urges = registry_poll.borrow_mut().process_event(event, &ctx);
+            all_urges.extend(event_urges);
+        }
+
+        // Tick features too
+        {
+            let snap = snapshot_poll.borrow();
+            let ctx = features::FeatureContext {
+                system: &snap,
+                clock: std::time::SystemTime::now(),
+            };
+            all_urges.extend(registry_poll.borrow_mut().tick(&ctx));
+        }
+
+        // 3. Update status bar from snapshot
+        let snap = snapshot_poll.borrow();
+        if let Some(ui) = ui_weak_sys.upgrade() {
+            ui.set_battery_level(snap.battery_level as i32);
+            ui.set_battery_charging(snap.battery_charging);
+            ui.set_wifi_connected(snap.network_connected);
+        }
+
+        // 4. Score and display urges
+        if !all_urges.is_empty() {
+            let scored = scorer_poll.borrow_mut().score(all_urges);
+            if !scored.is_empty() {
+                tracing::info!(
+                    count = scored.len(),
+                    top_pressure = scored[0].pressure,
+                    top_title = %scored[0].urge.title,
+                    "Whisper cards generated"
+                );
+                push_whisper_cards(&ui_weak_sys, &scored);
+            }
+        }
+    });
+
     // Run the Slint event loop
-    tracing::info!("Starting Yantrik OS shell");
+    tracing::info!("Starting Yantrik OS desktop shell");
     ui.run().unwrap();
 
     tracing::info!("Yantrik OS shutting down");
@@ -368,15 +722,151 @@ fn load_config(path: Option<PathBuf>) -> CompanionConfig {
     }
 }
 
-/// Format seconds-ago into a human-readable string.
-fn format_time_ago(seconds: f64) -> String {
-    if seconds < 60.0 {
-        "just now".to_string()
-    } else if seconds < 3600.0 {
-        format!("{}m ago", (seconds / 60.0) as i64)
-    } else if seconds < 86400.0 {
-        format!("{}h ago", (seconds / 3600.0) as i64)
-    } else {
-        format!("{}d ago", (seconds / 86400.0) as i64)
+/// Get current time as HH:MM string.
+fn current_time_hhmm() -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let hours = (now / 3600) % 24;
+    let minutes = (now / 60) % 60;
+    format!("{:02}:{:02}", hours, minutes)
+}
+
+/// Generate a time-of-day greeting.
+fn time_of_day_greeting() -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let hour = (now / 3600) % 24;
+    match hour {
+        5..=11 => "Good morning".to_string(),
+        12..=17 => "Good afternoon".to_string(),
+        18..=21 => "Good evening".to_string(),
+        _ => "Good night".to_string(),
     }
+}
+
+/// Capitalize first letter of a string.
+fn capitalize(s: &str) -> String {
+    let mut c = s.chars();
+    match c.next() {
+        None => String::new(),
+        Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+    }
+}
+
+/// Load system observer config from the YAML file.
+/// Falls back to defaults (mock mode) if not present.
+fn load_system_config(path: Option<PathBuf>) -> yantrik_os::SystemObserverConfig {
+    let Some(p) = path else {
+        return yantrik_os::SystemObserverConfig {
+            mock: true,
+            ..Default::default()
+        };
+    };
+
+    // Parse the YAML and extract the "system" key
+    let contents = match std::fs::read_to_string(&p) {
+        Ok(c) => c,
+        Err(_) => {
+            return yantrik_os::SystemObserverConfig {
+                mock: true,
+                ..Default::default()
+            };
+        }
+    };
+
+    let yaml: serde_yaml::Value = match serde_yaml::from_str(&contents) {
+        Ok(v) => v,
+        Err(_) => {
+            return yantrik_os::SystemObserverConfig {
+                mock: true,
+                ..Default::default()
+            };
+        }
+    };
+
+    match yaml.get("system") {
+        Some(sys_val) => {
+            serde_yaml::from_value(sys_val.clone()).unwrap_or_else(|e| {
+                tracing::warn!(error = %e, "Invalid system config, using defaults");
+                yantrik_os::SystemObserverConfig {
+                    mock: true,
+                    ..Default::default()
+                }
+            })
+        }
+        None => {
+            tracing::info!("No 'system' section in config, using mock mode");
+            yantrik_os::SystemObserverConfig {
+                mock: true,
+                ..Default::default()
+            }
+        }
+    }
+}
+
+/// Push scored urges as Whisper Cards to the Slint UI.
+fn push_whisper_cards(ui_weak: &slint::Weak<App>, scored: &[features::ScoredUrge]) {
+    let cards: Vec<UrgeCardData> = scored
+        .iter()
+        .filter(|s| s.tier != features::UrgeTier::Drop)
+        .map(|s| {
+            let color = match s.urge.category {
+                features::UrgeCategory::Resource => {
+                    slint::Color::from_rgb_u8(0xD4, 0xA5, 0x74) // amber
+                }
+                features::UrgeCategory::Security => {
+                    slint::Color::from_rgb_u8(0xE8, 0x6B, 0x6B) // red
+                }
+                features::UrgeCategory::FileManagement => {
+                    slint::Color::from_rgb_u8(0x5A, 0xC8, 0xD4) // cyan
+                }
+                features::UrgeCategory::Focus => {
+                    slint::Color::from_rgb_u8(0xC4, 0x8B, 0xD4) // purple
+                }
+                features::UrgeCategory::Celebration => {
+                    slint::Color::from_rgb_u8(0x8B, 0xE8, 0x6B) // green
+                }
+            };
+
+            UrgeCardData {
+                urge_id: s.urge.id.clone().into(),
+                instinct_name: s.urge.source.clone().into(),
+                reason: s.urge.body.clone().into(),
+                urgency: s.pressure,
+                suggested_message: s.urge.title.clone().into(),
+                time_ago: "just now".into(),
+                border_color: color,
+            }
+        })
+        .collect();
+
+    if cards.is_empty() {
+        return;
+    }
+
+    let weak = ui_weak.clone();
+    let _ = slint::invoke_from_event_loop(move || {
+        if let Some(ui) = weak.upgrade() {
+            // Merge with existing urges (append new ones)
+            let existing = ui.get_urges();
+            let model = existing
+                .as_any()
+                .downcast_ref::<VecModel<UrgeCardData>>();
+
+            if let Some(model) = model {
+                for card in cards {
+                    model.push(card);
+                }
+                ui.set_pending_count(model.row_count() as i32);
+            } else {
+                let count = cards.len();
+                ui.set_urges(ModelRc::new(VecModel::from(cards)));
+                ui.set_pending_count(count as i32);
+            }
+        }
+    });
 }

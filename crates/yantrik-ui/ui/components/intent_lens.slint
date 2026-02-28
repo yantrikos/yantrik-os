@@ -1,0 +1,461 @@
+// Intent Lens — the primary interaction primitive of Yantrik OS.
+// Centered 720px panel. Single input + unified ranked result feed.
+// Replaces chat panel, app launcher, search, and settings access.
+//
+// States:
+//   closed → open (input + results) → chat (multi-turn conversation)
+//
+// Invoke: Super key or click anchor dot / orb.
+// Dismiss: Escape or click outside.
+
+import { Theme } from "../theme.slint";
+import { MessageData, MessageBubble } from "message_bubble.slint";
+import { ListView } from "std-widgets.slint";
+
+// A single result in the Intent Feed.
+export struct LensResult {
+    result-type: string,     // "do", "find", "ask", "memory", "setting"
+    title: string,           // Main display text
+    subtitle: string,        // "Why" rationale line
+    icon-char: string,       // Single-char badge
+    action-id: string,       // Identifier for callback
+}
+
+export component IntentLens inherits Rectangle {
+    in property <bool> is-open: false;
+    in property <bool> is-thinking: false;
+    in property <[LensResult]> results: [];
+    in property <string> companion-status: "idle";
+
+    // Chat mode (multi-turn conversation within the Lens)
+    in property <bool> chat-mode: false;
+    in property <[MessageData]> messages: [];
+    in property <bool> is-generating: false;
+
+    // Callbacks
+    callback query-changed(string);
+    callback submit-query(string);
+    callback result-selected(string);    // action-id
+    callback close-lens();
+    callback send-message(string);
+    callback mic-pressed();
+
+    // Internal state
+    in-out property <string> input-text: "";
+
+    // Full overlay — click outside to close
+    width: 100%;
+    height: 100%;
+    background: is-open ? #00000060 : transparent;
+    visible: is-open;
+
+    animate background { duration: 150ms; }
+
+    // Click outside the lens panel to close
+    TouchArea {
+        width: 100%;
+        height: 100%;
+        clicked => { root.close-lens(); }
+    }
+
+    // The Lens panel — centered
+    Rectangle {
+        x: (root.width - Theme.lens-width) / 2;
+        y: root.is-open ? root.height * 0.18 : root.height * 0.22;
+        width: Theme.lens-width;
+        height: min(lens-content.preferred-height, root.height * 0.65);
+        border-radius: 16px;
+        background: Theme.bg-surface;
+        border-width: 1px;
+        border-color: #ffffff0a;
+        clip: true;
+        drop-shadow-blur: 32px;
+        drop-shadow-color: #000000a0;
+        opacity: root.is-open ? 1.0 : 0.0;
+
+        animate y { duration: 200ms; easing: ease-out; }
+        animate opacity { duration: 150ms; easing: ease-out; }
+
+        // Block click-through to the outside TouchArea
+        TouchArea { width: 100%; height: 100%; }
+
+        lens-content := VerticalLayout {
+            padding: 0;
+
+            // ── Input area ──
+            Rectangle {
+                height: Theme.lens-input-height;
+                background: Theme.bg-surface;
+
+                HorizontalLayout {
+                    padding-left: 20px;
+                    padding-right: 16px;
+                    spacing: 12px;
+
+                    // Thinking indicator / search icon
+                    Rectangle {
+                        width: 20px;
+                        height: 20px;
+                        y: (parent.height - 20px) / 2;
+
+                        // Search circle
+                        Rectangle {
+                            width: 14px;
+                            height: 14px;
+                            border-radius: 7px;
+                            border-width: 2px;
+                            border-color: root.is-thinking ? Theme.amber : Theme.text-dim;
+                            background: transparent;
+
+                            animate border-color { duration: 300ms; }
+                        }
+
+                        // Search handle
+                        Rectangle {
+                            x: 12px;
+                            y: 12px;
+                            width: 6px;
+                            height: 2px;
+                            background: root.is-thinking ? Theme.amber : Theme.text-dim;
+                            // Rotated 45deg approximation
+                            border-radius: 1px;
+
+                            animate background { duration: 300ms; }
+                        }
+                    }
+
+                    // Text input
+                    Rectangle {
+                        horizontal-stretch: 1;
+                        height: Theme.lens-input-height;
+                        forward-focus: lens-input;
+
+                        lens-input := TextInput {
+                            y: (parent.height - self.preferred-height) / 2;
+                            width: parent.width;
+                            color: Theme.text-primary;
+                            font-size: 18px;
+                            text <=> root.input-text;
+                            accepted => {
+                                if root.input-text != "" {
+                                    root.submit-query(root.input-text);
+                                }
+                            }
+                        }
+
+                        // Placeholder
+                        if root.input-text == "" : Text {
+                            y: (parent.height - self.preferred-height) / 2;
+                            text: "Search, ask, or do anything...";
+                            color: Theme.text-dim;
+                            font-size: 18px;
+                        }
+                    }
+
+                    // Escape hint
+                    Rectangle {
+                        width: 36px;
+                        height: 22px;
+                        y: (parent.height - 22px) / 2;
+                        border-radius: 4px;
+                        background: Theme.bg-card;
+                        border-width: 1px;
+                        border-color: #ffffff08;
+
+                        Text {
+                            text: "esc";
+                            color: Theme.text-dim;
+                            font-size: 10px;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+
+                // Bottom divider
+                Rectangle {
+                    y: parent.height - 1px;
+                    width: 100%;
+                    height: 1px;
+                    background: #ffffff08;
+                }
+            }
+
+            // ── Thinking indicator bar ──
+            if root.is-thinking : Rectangle {
+                height: 2px;
+                width: 100%;
+
+                // Scanning gradient
+                property <float> scan-phase: 0;
+                Timer {
+                    interval: 16ms;
+                    running: root.is-thinking;
+                    triggered => { parent.scan-phase = mod(parent.scan-phase + 0.008, 1.0); }
+                }
+
+                Rectangle {
+                    x: parent.width * scan-phase - parent.width * 0.3;
+                    width: parent.width * 0.3;
+                    height: 2px;
+                    background: @linear-gradient(90deg,
+                        transparent 0%,
+                        Theme.amber 50%,
+                        Theme.cyan 100%
+                    );
+                    opacity: 0.8;
+                }
+            }
+
+            // ── Results feed (non-chat mode) ──
+            if !root.chat-mode : VerticalLayout {
+                padding: 4px;
+                padding-bottom: 8px;
+
+                for result[idx] in root.results : TouchArea {
+                    height: Theme.lens-result-height;
+                    property <bool> hovered: self.has-hover;
+                    clicked => { root.result-selected(result.action-id); }
+
+                    Rectangle {
+                        property <bool> is-hovered: parent.hovered;
+                        width: 100%;
+                        height: Theme.lens-result-height;
+                        border-radius: 8px;
+                        background: is-hovered ? Theme.bg-card : transparent;
+
+                        animate background { duration: 100ms; }
+
+                        HorizontalLayout {
+                            padding-left: 16px;
+                            padding-right: 16px;
+                            spacing: 12px;
+
+                            // Type badge
+                            Rectangle {
+                                width: 28px;
+                                height: 20px;
+                                y: (parent.height - 20px) / 2;
+                                border-radius: 4px;
+                                background:
+                                    result.result-type == "do"      ? Theme.color-do :
+                                    result.result-type == "find"    ? Theme.color-find :
+                                    result.result-type == "ask"     ? Theme.color-ask :
+                                    result.result-type == "memory"  ? Theme.color-memory :
+                                    Theme.color-setting;
+                                opacity: 0.15;
+
+                                Text {
+                                    text: result.icon-char;
+                                    color:
+                                        result.result-type == "do"      ? Theme.color-do :
+                                        result.result-type == "find"    ? Theme.color-find :
+                                        result.result-type == "ask"     ? Theme.color-ask :
+                                        result.result-type == "memory"  ? Theme.color-memory :
+                                        Theme.color-setting;
+                                    font-size: 11px;
+                                    font-weight: 700;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                            }
+
+                            // Title + subtitle
+                            VerticalLayout {
+                                horizontal-stretch: 1;
+                                alignment: center;
+                                spacing: 2px;
+
+                                Text {
+                                    text: result.title;
+                                    color: Theme.text-primary;
+                                    font-size: 14px;
+                                    overflow: elide;
+                                }
+
+                                if result.subtitle != "" : Text {
+                                    text: result.subtitle;
+                                    color: Theme.text-dim;
+                                    font-size: 11px;
+                                    overflow: elide;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Empty state
+                if root.results.length == 0 && root.input-text == "" : Rectangle {
+                    height: 64px;
+
+                    VerticalLayout {
+                        alignment: center;
+                        padding-left: 20px;
+
+                        Text {
+                            text: "Type to search, ask, or command";
+                            color: Theme.text-dim;
+                            font-size: 13px;
+                        }
+                    }
+                }
+            }
+
+            // ── Chat mode (multi-turn conversation) ──
+            if root.chat-mode : VerticalLayout {
+                // Messages
+                ListView {
+                    vertical-stretch: 1;
+                    min-height: 200px;
+                    max-height: root.height * 0.4;
+
+                    for msg[idx] in root.messages : MessageBubble {
+                        data: msg;
+                    }
+                }
+
+                // Typing indicator
+                if root.is-generating : HorizontalLayout {
+                    padding-left: 20px;
+                    padding-bottom: 8px;
+                    spacing: 6px;
+
+                    property <float> dot-phase: 0;
+                    Timer {
+                        interval: 16ms;
+                        running: root.is-generating;
+                        triggered => {
+                            parent.dot-phase = mod(parent.dot-phase + 0.005, 1.0);
+                        }
+                    }
+
+                    Rectangle {
+                        width: 5px; height: 5px; border-radius: 2.5px;
+                        background: Theme.cyan;
+                        opacity: 0.3 + 0.7 * sin(dot-phase * 6.2832 * 1rad);
+                    }
+                    Rectangle {
+                        width: 5px; height: 5px; border-radius: 2.5px;
+                        background: Theme.cyan;
+                        opacity: 0.3 + 0.7 * sin((dot-phase + 0.12) * 6.2832 * 1rad);
+                    }
+                    Rectangle {
+                        width: 5px; height: 5px; border-radius: 2.5px;
+                        background: Theme.cyan;
+                        opacity: 0.3 + 0.7 * sin((dot-phase + 0.24) * 6.2832 * 1rad);
+                    }
+                }
+
+                // Input bar for chat mode
+                Rectangle {
+                    height: 48px;
+                    background: Theme.bg-deep;
+
+                    Rectangle {
+                        y: 0; width: 100%; height: 1px;
+                        background: #ffffff08;
+                    }
+
+                    HorizontalLayout {
+                        padding: 8px;
+                        padding-left: 12px;
+                        padding-right: 12px;
+                        spacing: 8px;
+
+                        // Mic button
+                        TouchArea {
+                            width: 32px;
+                            height: 32px;
+                            clicked => { root.mic-pressed(); }
+
+                            Rectangle {
+                                width: 32px; height: 32px;
+                                border-radius: 16px;
+                                background: Theme.bg-card;
+                                border-width: 1px;
+                                border-color: Theme.cyan-dim;
+
+                                Rectangle {
+                                    x: (parent.width - 8px) / 2;
+                                    y: 8px;
+                                    width: 8px; height: 10px;
+                                    border-radius: 4px;
+                                    background: Theme.cyan;
+                                }
+                            }
+                        }
+
+                        // Chat input
+                        Rectangle {
+                            horizontal-stretch: 1;
+                            height: 32px;
+                            border-radius: 16px;
+                            background: Theme.bg-input;
+                            border-width: 1px;
+                            border-color: chat-input.has-focus ? Theme.cyan-dim : #ffffff0c;
+                            forward-focus: chat-input;
+
+                            animate border-color { duration: 200ms; }
+
+                            chat-input := TextInput {
+                                property <string> chat-text: "";
+                                x: 12px;
+                                y: (parent.height - self.preferred-height) / 2;
+                                width: parent.width - 24px;
+                                color: Theme.text-primary;
+                                font-size: 14px;
+                                text <=> chat-text;
+                                accepted => {
+                                    if chat-text != "" {
+                                        root.send-message(chat-text);
+                                        chat-text = "";
+                                    }
+                                }
+                            }
+
+                            if chat-input.chat-text == "" : Text {
+                                x: 12px;
+                                y: (parent.height - self.preferred-height) / 2;
+                                text: "Continue conversation...";
+                                color: Theme.text-dim;
+                                font-size: 14px;
+                            }
+                        }
+
+                        // Send
+                        TouchArea {
+                            width: 32px;
+                            height: 32px;
+                            clicked => {
+                                if chat-input.chat-text != "" {
+                                    root.send-message(chat-input.chat-text);
+                                    chat-input.chat-text = "";
+                                }
+                            }
+
+                            Rectangle {
+                                width: 32px; height: 32px;
+                                border-radius: 16px;
+                                background: chat-input.chat-text != "" ? Theme.amber : Theme.bg-card;
+
+                                animate background { duration: 150ms; }
+
+                                Text {
+                                    text: ">";
+                                    color: chat-input.chat-text != "" ? Theme.bg-deep : Theme.text-dim;
+                                    font-size: 16px;
+                                    font-weight: 700;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Auto-focus input when lens opens
+    forward-focus: lens-input;
+}

@@ -2,7 +2,7 @@
 name = "yantrik-ui"
 version = "0.1.0"
 edition = "2021"
-description = "Yantrik OS phone shell — Slint native UI"
+description = "Yantrik OS desktop shell — Slint native UI"
 
 [[bin]]
 name = "yantrik-ui"
@@ -12,7 +12,8 @@ path = "src/main.rs"
 yantrikdb-companion = { path = "../yantrikdb-companion" }
 yantrikdb-ml = { git = "https://github.com/spranab/yantrikdb.git" }
 yantrikdb-core = { git = "https://github.com/spranab/yantrikdb.git" }
-slint = "1.9"
+yantrik-os = { path = "../yantrik-os" }
+slint = { version = "1.9", features = ["renderer-software"] }
 crossbeam-channel = "0.5"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

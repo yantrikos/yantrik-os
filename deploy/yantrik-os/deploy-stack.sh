@@ -1,342 +1,428 @@
 #!/bin/bash
 # ═══════════════════════════════════════════════════════════════
-# Yantrik OS — Deploy Full Stack
+# Yantrik OS — Deploy AI-Native Desktop Stack
 # ═══════════════════════════════════════════════════════════════
 #
-# Run this ON the Yantrik OS device (VM, phone, or any Alpine/postmarketOS).
-# Installs: YantrikDB engine, Python companion service, llama.cpp, embeddings.
+# Run this ON the Alpine VM after OS installation.
+# Deploys: labwc compositor, Yantrik UI binary, AI models, config.
+#
+# Everything runs in-process — no Python, no llama.cpp, no
+# external servers. Single Rust binary with Candle LLM.
 #
 # Usage:
 #   chmod +x deploy-stack.sh
-#   sudo ./deploy-stack.sh
+#   ./deploy-stack.sh          (run as root)
 #
+# Prerequisites:
+#   - Alpine Linux installed (via setup-alpine-vm.sh)
+#   - Community repo enabled in /etc/apk/repositories
+#   - SSH access (ssh -p 2222 root@localhost)
+#   - Yantrik UI binary uploaded to /tmp/yantrik-ui
 # ═══════════════════════════════════════════════════════════════
 
 set -euo pipefail
 
 YANTRIK_HOME="/opt/yantrik"
 YANTRIK_USER="yantrik"
+BIN_DIR="$YANTRIK_HOME/bin"
 DATA_DIR="$YANTRIK_HOME/data"
+MODEL_DIR="$YANTRIK_HOME/models"
 LOG_DIR="$YANTRIK_HOME/logs"
+CONFIG_DIR="$YANTRIK_HOME"
 
 echo "═══════════════════════════════════════════════"
-echo "  Yantrik Stack Deployment"
+echo "  Yantrik OS — Desktop Stack Deployment"
 echo "═══════════════════════════════════════════════"
 echo
+echo "  Mode: AI-native desktop (labwc + Slint)"
+echo "  No Python, no llama.cpp, no external servers"
+echo
 
-# ── Detect OS ──
-if [ -f /etc/alpine-release ]; then
-    PKG_MGR="apk"
-    echo "Detected: Alpine Linux $(cat /etc/alpine-release)"
-elif [ -f /etc/debian_version ]; then
-    PKG_MGR="apt"
-    echo "Detected: Debian/Ubuntu"
+# ── Verify Alpine ──
+if [ ! -f /etc/alpine-release ]; then
+    echo "Warning: Not Alpine Linux. Continuing anyway..."
+fi
+echo "OS: Alpine $(cat /etc/alpine-release 2>/dev/null || echo 'unknown')"
+
+# ── Step 0: Enable community repo ──
+echo
+echo "[0/8] Enabling community repository..."
+if grep -q "^#.*community" /etc/apk/repositories; then
+    sed -i 's|^#\(.*community\)|\1|' /etc/apk/repositories
+    echo "  Community repo enabled"
 else
-    PKG_MGR="unknown"
-    echo "Warning: Unknown OS, attempting Alpine commands"
-    PKG_MGR="apk"
+    echo "  Community repo already enabled"
 fi
 
 # ── Step 1: System packages ──
 echo
-echo "[1/7] Installing system packages..."
-if [ "$PKG_MGR" = "apk" ]; then
-    apk update -q
-    apk add -q \
-        python3 py3-pip py3-virtualenv py3-sqlite3 \
-        sqlite curl wget git \
-        build-base python3-dev \
-        openrc dbus
-elif [ "$PKG_MGR" = "apt" ]; then
-    apt-get update -qq
-    apt-get install -y -qq \
-        python3 python3-pip python3-venv python3-dev \
-        sqlite3 curl wget git build-essential
+echo "[1/8] Installing system packages..."
+apk update -q
+apk add -q \
+    labwc \
+    foot \
+    dbus dbus-openrc \
+    eudev eudev-openrc \
+    mesa-dri-gallium \
+    font-dejavu \
+    seatd seatd-openrc \
+    wlr-randr \
+    alsa-utils alsa-lib \
+    curl wget \
+    openrc \
+    gcompat \
+    libinput \
+    wayland-libs-egl wayland-libs-client wayland-libs-server wayland-libs-cursor \
+    speech-dispatcher \
+    ca-certificates \
+    gcc musl-dev
+
+echo "  Installed: labwc, foot, dbus, eudev, mesa, fonts, seatd, gcompat, wayland"
+
+# Install optional desktop apps (non-fatal if unavailable)
+apk add -q thunar 2>/dev/null && echo "  Installed: thunar (file manager)" || echo "  thunar not available, skipping"
+apk add -q firefox-esr 2>/dev/null && echo "  Installed: firefox-esr (browser)" || echo "  firefox-esr not available, skipping"
+
+# ── Step 1b: Build glibc compatibility shim ──
+echo "  Building glibc shim..."
+cat > /tmp/glibc_shim.c <<'SHIM'
+#include <fcntl.h>
+#include <stdarg.h>
+
+/* fcntl64 is glibc 2.28+; musl fcntl is already 64-bit */
+int fcntl64(int fd, int cmd, ...) {
+    va_list ap;
+    va_start(ap, cmd);
+    void *arg = va_arg(ap, void *);
+    va_end(ap);
+    return fcntl(fd, cmd, arg);
+}
+
+/* __res_init is glibc resolver init; musl handles this automatically */
+int __res_init(void) {
+    return 0;
+}
+
+/* gnu_get_libc_version placeholder */
+const char *gnu_get_libc_version(void) {
+    return "2.38";
+}
+SHIM
+gcc -shared -o /usr/lib/libglibc_shim.so /tmp/glibc_shim.c
+rm /tmp/glibc_shim.c
+echo "  glibc shim installed at /usr/lib/libglibc_shim.so"
+
+# ── Step 1c: Fix DRI driver path ──
+echo "  Fixing DRI driver paths..."
+if [ -d /usr/lib/xorg/modules/dri ] && [ ! -d /usr/lib/dri ]; then
+    mkdir -p /usr/lib/dri
+    cp /usr/lib/xorg/modules/dri/*.so /usr/lib/dri/ 2>/dev/null || true
+    echo "  DRI drivers copied to /usr/lib/dri/"
+else
+    echo "  DRI paths OK"
 fi
 
-# ── Step 2: Create yantrik user and directories ──
-echo "[2/7] Setting up Yantrik directories..."
-id "$YANTRIK_USER" &>/dev/null || adduser -D -h "$YANTRIK_HOME" "$YANTRIK_USER" 2>/dev/null || true
-mkdir -p "$YANTRIK_HOME" "$DATA_DIR" "$LOG_DIR" "$YANTRIK_HOME/wheels"
-chown -R "$YANTRIK_USER:$YANTRIK_USER" "$YANTRIK_HOME" 2>/dev/null || true
+# ── Step 2: Create user and directories ──
+echo "[2/8] Setting up directories..."
+id "$YANTRIK_USER" &>/dev/null || adduser -D -h "/home/$YANTRIK_USER" "$YANTRIK_USER" 2>/dev/null || true
+addgroup "$YANTRIK_USER" seat 2>/dev/null || true
+addgroup "$YANTRIK_USER" video 2>/dev/null || true
+addgroup "$YANTRIK_USER" audio 2>/dev/null || true
+addgroup "$YANTRIK_USER" input 2>/dev/null || true
 
-# ── Step 3: Install llama.cpp ──
-echo "[3/7] Installing llama.cpp..."
-if ! command -v llama-server &>/dev/null; then
-    LLAMA_DIR="$YANTRIK_HOME/llama.cpp"
-    if [ ! -d "$LLAMA_DIR" ]; then
-        git clone --depth 1 https://github.com/ggerganov/llama.cpp.git "$LLAMA_DIR"
+mkdir -p "$BIN_DIR" "$DATA_DIR" "$MODEL_DIR" "$LOG_DIR" \
+    "$MODEL_DIR/llm" "$MODEL_DIR/embedder" "$MODEL_DIR/whisper"
+
+# ── Step 3: Deploy binary ──
+echo "[3/8] Deploying Yantrik binary..."
+BINARY_SRC=""
+
+for f in \
+    "/tmp/yantrik-ui" \
+    "$HOME/yantrik-ui" \
+    "$YANTRIK_HOME/yantrik-ui"; do
+    if [ -f "$f" ]; then
+        BINARY_SRC="$f"
+        break
     fi
-    cd "$LLAMA_DIR"
-    make -j$(nproc) llama-server 2>&1 | tail -3
-    cp llama-server /usr/local/bin/
-    echo "  llama-server installed"
+done
+
+if [ -n "$BINARY_SRC" ]; then
+    cp "$BINARY_SRC" "$BIN_DIR/yantrik-ui"
+    chmod +x "$BIN_DIR/yantrik-ui"
+    echo "  Binary: $BIN_DIR/yantrik-ui (from $BINARY_SRC)"
 else
-    echo "  llama-server already installed"
+    echo "  WARNING: No yantrik-ui binary found."
+    echo "  Upload it to the VM:"
+    echo "    scp -P 2222 target/release/yantrik-ui root@localhost:/tmp/"
+    echo "  Then re-run this script."
+    echo
+    echo "  Creating placeholder for now..."
+    touch "$BIN_DIR/yantrik-ui"
 fi
 
 # ── Step 4: Download models ──
-echo "[4/7] Downloading LLM models..."
-MODEL_DIR="$YANTRIK_HOME/models"
-mkdir -p "$MODEL_DIR"
+echo "[4/8] Downloading AI models..."
 
-# Chat model: Qwen2.5-1.5B (small, fast, good quality)
-CHAT_MODEL="$MODEL_DIR/qwen2.5-1.5b-instruct-q4_k_m.gguf"
-if [ ! -f "$CHAT_MODEL" ]; then
-    echo "  Downloading Qwen2.5-1.5B chat model (~1GB)..."
-    wget -q --show-progress -O "$CHAT_MODEL" \
-        "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf" || {
-        echo "  Warning: Download failed. You can manually download the model later."
-    }
+# MiniLM embedder (~87MB)
+if [ ! -f "$MODEL_DIR/embedder/model.safetensors" ]; then
+    echo "  Downloading MiniLM embedder (~87MB)..."
+    HF_EMB="https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main"
+    for f in config.json tokenizer.json tokenizer_config.json special_tokens_map.json model.safetensors; do
+        wget -q -O "$MODEL_DIR/embedder/$f" "$HF_EMB/$f"
+    done
+    echo "  Embedder downloaded"
 else
-    echo "  Chat model already present"
+    echo "  Embedder already present"
 fi
 
-# Embedding model: all-MiniLM-L6-v2 (384-dim, tiny)
-EMBED_MODEL="$MODEL_DIR/all-minilm-l6-v2-q8_0.gguf"
-if [ ! -f "$EMBED_MODEL" ]; then
-    echo "  Downloading MiniLM embedding model (~23MB)..."
-    wget -q --show-progress -O "$EMBED_MODEL" \
-        "https://huggingface.co/leliuga/all-MiniLM-L6-v2-GGUF/resolve/main/all-MiniLM-L6-v2.Q8_0.gguf" || {
-        echo "  Warning: Download failed. You can manually download the model later."
-    }
+# Qwen2.5-0.5B-Instruct GGUF (~469MB)
+if [ ! -f "$MODEL_DIR/llm/qwen2.5-0.5b-instruct-q4_k_m.gguf" ]; then
+    echo "  Downloading Qwen2.5-0.5B GGUF (~469MB)..."
+    HF_LLM="https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main"
+    HF_TOK="https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct/resolve/main"
+    wget -q -O "$MODEL_DIR/llm/qwen2.5-0.5b-instruct-q4_k_m.gguf" "$HF_LLM/qwen2.5-0.5b-instruct-q4_k_m.gguf"
+    wget -q -O "$MODEL_DIR/llm/tokenizer.json" "$HF_TOK/tokenizer.json"
+    wget -q -O "$MODEL_DIR/llm/config.json" "$HF_TOK/config.json"
+    echo "  LLM downloaded"
 else
-    echo "  Embedding model already present"
+    echo "  LLM already present"
 fi
 
-# ── Step 5: Python virtual environment + YantrikDB ──
-echo "[5/7] Setting up Python environment..."
-VENV="$YANTRIK_HOME/venv"
-if [ ! -d "$VENV" ]; then
-    python3 -m venv "$VENV"
-fi
-source "$VENV/bin/activate"
-
-pip install --quiet --upgrade pip
-
-# Install YantrikDB wheel if present
-WHEEL=$(ls "$YANTRIK_HOME/wheels/"yantrikdb*.whl 2>/dev/null | head -1)
-if [ -n "$WHEEL" ]; then
-    echo "  Installing YantrikDB from wheel: $(basename $WHEEL)"
-    pip install --quiet "$WHEEL"
-else
-    echo "  Warning: No YantrikDB wheel found in $YANTRIK_HOME/wheels/"
-    echo "  Build it on your dev machine and copy here:"
-    echo "    cd /path/to/yantrikdb && maturin build --release"
-    echo "    scp target/wheels/yantrikdb-*.whl yantrik@device:$YANTRIK_HOME/wheels/"
-fi
-
-# Install companion dependencies
-pip install --quiet httpx pyyaml fastapi uvicorn
-
-# ── Step 6: Configuration ──
-echo "[6/7] Writing configuration..."
-cat > "$YANTRIK_HOME/config.yaml" <<'CONFIG'
-# Yantrik Companion Configuration
+# ── Step 5: Configuration ──
+echo "[5/8] Writing configuration..."
+cat > "$CONFIG_DIR/config.yaml" <<'CONFIG'
 user_name: "Pranab"
 
+personality:
+  name: "Yantrik"
+  system_prompt: >
+    You are Yantrik, a personal AI companion running as the desktop shell.
+    You remember everything the user tells you. You are warm, thoughtful,
+    and occasionally curious. You are aware of the system state — battery,
+    network, running apps, files. When you notice patterns or have concerns,
+    you bring them up naturally. You never fabricate memories —
+    if you don't know, say so.
+
 llm:
-  base_url: "http://127.0.0.1:8081/v1"
-  model: "qwen2.5"
-  max_tokens: 512
+  model_dir: "/opt/yantrik/models/llm"
+  max_tokens: 256
   temperature: 0.7
   max_context_tokens: 2048
 
-embedding:
-  base_url: "http://127.0.0.1:8082/v1"
-  model: "all-minilm"
-  dim: 384
+server:
+  host: "0.0.0.0"
+  port: 8340
+
+yantrikdb:
+  db_path: "/opt/yantrik/data/memory.db"
+  embedding_dim: 384
+  embedder_model_dir: "/opt/yantrik/models/embedder"
 
 conversation:
   max_history_turns: 10
   session_timeout_minutes: 30
 
 tools:
-  enabled: true
+  enabled: false
   max_tool_rounds: 3
 
-urges:
+cognition:
+  think_interval_minutes: 15
+  think_interval_active_minutes: 5
+  idle_think_interval_minutes: 30
   proactive_urgency_threshold: 0.7
-  max_pending: 20
-  expiry_hours: 24
 
 instincts:
-  enabled:
-    - check_in
-    - emotional_awareness
-    - follow_up
-    - pattern_surfacing
-    - conflict_alerting
-  check_in:
-    idle_hours_threshold: 8
-  emotional_awareness:
-    negative_valence_threshold: -0.3
-  follow_up:
-    aging_hours: 4
+  check_in_enabled: true
+  check_in_hours: 8.0
+  emotional_awareness_enabled: true
+  follow_up_enabled: true
+  follow_up_min_hours: 4.0
+  reminder_enabled: true
+  pattern_surfacing_enabled: true
+  conflict_alerting_enabled: true
+  conflict_alert_threshold: 5
 
-background:
-  think_interval_active: 900    # 15 min
-  think_interval_idle: 1800     # 30 min
-  urge_expiry_check: 3600       # 1 hour
+urges:
+  expiry_hours: 48.0
+  max_pending: 20
+  boost_increment: 0.1
+  cooldown_seconds: 3600.0
 
-db:
-  path: "/opt/yantrik/data/memory.db"
-  embedding_dim: 384
+bond:
+  enabled: true
+
+voice:
+  enabled: true
+  whisper_model: "openai/whisper-tiny"
+  piper_voice: "en_US-lessac-medium"
+  silence_threshold: 0.01
+  silence_duration_ms: 800
 CONFIG
 
-# ── Step 7: Systemd/OpenRC services ──
-echo "[7/7] Setting up services..."
+# ── Step 6: labwc compositor config ──
+echo "[6/8] Configuring labwc compositor..."
 
-# Detect init system
-if command -v systemctl &>/dev/null; then
-    INIT="systemd"
-elif command -v rc-service &>/dev/null; then
-    INIT="openrc"
-else
-    INIT="none"
+LABWC_DIR="/home/$YANTRIK_USER/.config/labwc"
+mkdir -p "$LABWC_DIR"
+
+# labwc environment — all QEMU/Wayland env vars
+cat > "$LABWC_DIR/environment" <<'ENV'
+# glibc compat shim (binary built on Ubuntu glibc, running on Alpine musl)
+LD_PRELOAD=/usr/lib/libglibc_shim.so
+
+# Use virtio-gpu (card0), not bochs VGA (card1)
+WLR_DRM_DEVICES=/dev/dri/card0
+
+# Allow software rendering fallback (QEMU virtio-gpu)
+WLR_RENDERER_ALLOW_SOFTWARE=1
+
+# Suppress libinput check (QEMU uses evdev)
+WLR_LIBINPUT_NO_DEVICES=1
+
+# Force Slint software renderer (no OpenGL/EGL needed)
+SLINT_BACKEND=winit-software
+ENV
+
+# labwc autostart — launch yantrik-ui as fullscreen desktop shell
+cat > "$LABWC_DIR/autostart" <<'AUTOSTART'
+#!/bin/sh
+# Start Yantrik OS desktop shell
+/opt/yantrik/bin/yantrik-ui /opt/yantrik/config.yaml >> /opt/yantrik/logs/yantrik-os.log 2>&1 &
+AUTOSTART
+chmod +x "$LABWC_DIR/autostart"
+
+# labwc rc.xml — window rules and key bindings
+cat > "$LABWC_DIR/rc.xml" <<'RCXML'
+<?xml version="1.0" encoding="UTF-8"?>
+<labwc_config>
+  <core>
+    <gap>0</gap>
+  </core>
+
+  <theme>
+    <name></name>
+    <titlebar>
+      <font name="DejaVu Sans" size="10" />
+    </titlebar>
+  </theme>
+
+  <keyboard>
+    <!-- Alt+Tab window switching -->
+    <keybind key="A-Tab">
+      <action name="NextWindow" />
+    </keybind>
+
+    <!-- Alt+F4 close window -->
+    <keybind key="A-F4">
+      <action name="Close" />
+    </keybind>
+
+    <!-- Super key launches terminal (quick access) -->
+    <keybind key="Super_L">
+      <action name="Execute">
+        <command>foot</command>
+      </action>
+    </keybind>
+  </keyboard>
+
+  <windowRules>
+    <!-- Yantrik shell starts maximized (acts as desktop) -->
+    <windowRule identifier="yantrik-ui">
+      <action name="Maximize" />
+    </windowRule>
+  </windowRules>
+</labwc_config>
+RCXML
+
+chown -R "$YANTRIK_USER:$YANTRIK_USER" "$LABWC_DIR"
+
+echo "  labwc config written to $LABWC_DIR/"
+
+# ── Step 7: Enable system services ──
+echo "[7/8] Configuring services..."
+
+rc-update add dbus default 2>/dev/null || true
+rc-update add seatd default 2>/dev/null || true
+rc-update add udev sysinit 2>/dev/null || true
+
+rc-service seatd start 2>/dev/null || true
+rc-service dbus start 2>/dev/null || true
+
+echo "  Services: dbus, seatd enabled"
+
+# ── Step 8: Auto-login + labwc setup ──
+echo "[8/8] Configuring auto-login..."
+
+# Configure getty for auto-login on tty1
+if [ -f /etc/inittab ]; then
+    sed -i 's|^tty1::.*|tty1::respawn:/sbin/getty -n -l /opt/yantrik/bin/yantrik-login 38400 tty1|' /etc/inittab 2>/dev/null || true
 fi
 
-if [ "$INIT" = "openrc" ]; then
-    # llama-server (chat)
-    cat > /etc/init.d/llama-server <<'SVC'
-#!/sbin/openrc-run
-name="llama-server"
-description="llama.cpp chat inference server"
-command="/usr/local/bin/llama-server"
-command_args="-m /opt/yantrik/models/qwen2.5-1.5b-instruct-q4_k_m.gguf --host 127.0.0.1 --port 8081 -ngl 0 -c 2048"
-command_user="yantrik"
-command_background="yes"
-pidfile="/run/${RC_SVCNAME}.pid"
-output_log="/opt/yantrik/logs/llama-server.log"
-error_log="/opt/yantrik/logs/llama-server.log"
-SVC
-    chmod +x /etc/init.d/llama-server
-
-    # llama-server (embeddings)
-    cat > /etc/init.d/llama-embed <<'SVC'
-#!/sbin/openrc-run
-name="llama-embed"
-description="llama.cpp embedding server"
-command="/usr/local/bin/llama-server"
-command_args="-m /opt/yantrik/models/all-minilm-l6-v2-q8_0.gguf --host 127.0.0.1 --port 8082 --embedding -ngl 0 -c 512"
-command_user="yantrik"
-command_background="yes"
-pidfile="/run/${RC_SVCNAME}.pid"
-output_log="/opt/yantrik/logs/llama-embed.log"
-error_log="/opt/yantrik/logs/llama-embed.log"
-SVC
-    chmod +x /etc/init.d/llama-embed
-
-    # yantrik-companion
-    cat > /etc/init.d/yantrik-companion <<'SVC'
-#!/sbin/openrc-run
-name="yantrik-companion"
-description="Yantrik AI Companion Service"
-command="/opt/yantrik/venv/bin/python"
-command_args="-m uvicorn yantrikdb.agent.service:app --host 0.0.0.0 --port 8340"
-command_user="yantrik"
-command_background="yes"
-pidfile="/run/${RC_SVCNAME}.pid"
-output_log="/opt/yantrik/logs/companion.log"
-error_log="/opt/yantrik/logs/companion.log"
-directory="/opt/yantrik"
-depend() {
-    need llama-server llama-embed
-}
-SVC
-    chmod +x /etc/init.d/yantrik-companion
-
-    # Enable services
-    rc-update add llama-server default 2>/dev/null || true
-    rc-update add llama-embed default 2>/dev/null || true
-    rc-update add yantrik-companion default 2>/dev/null || true
-
-    echo "  OpenRC services configured"
-
-elif [ "$INIT" = "systemd" ]; then
-    # llama-server (chat)
-    cat > /etc/systemd/system/llama-server.service <<'SVC'
-[Unit]
-Description=llama.cpp chat inference server
-After=network.target
-
-[Service]
-Type=simple
-User=yantrik
-ExecStart=/usr/local/bin/llama-server -m /opt/yantrik/models/qwen2.5-1.5b-instruct-q4_k_m.gguf --host 127.0.0.1 --port 8081 -ngl 0 -c 2048
-Restart=on-failure
-MemoryMax=2G
-
-[Install]
-WantedBy=multi-user.target
-SVC
-
-    # llama-server (embeddings)
-    cat > /etc/systemd/system/llama-embed.service <<'SVC'
-[Unit]
-Description=llama.cpp embedding server
-After=network.target
-
-[Service]
-Type=simple
-User=yantrik
-ExecStart=/usr/local/bin/llama-server -m /opt/yantrik/models/all-minilm-l6-v2-q8_0.gguf --host 127.0.0.1 --port 8082 --embedding -ngl 0 -c 512
-Restart=on-failure
-MemoryMax=256M
-
-[Install]
-WantedBy=multi-user.target
-SVC
-
-    # yantrik-companion
-    cat > /etc/systemd/system/yantrik-companion.service <<'SVC'
-[Unit]
-Description=Yantrik AI Companion Service
-After=llama-server.service llama-embed.service
-
-[Service]
-Type=simple
-User=yantrik
-WorkingDirectory=/opt/yantrik
-ExecStart=/opt/yantrik/venv/bin/python -m uvicorn yantrikdb.agent.service:app --host 0.0.0.0 --port 8340
-Restart=on-failure
-MemoryMax=512M
-
-[Install]
-WantedBy=multi-user.target
-SVC
-
-    systemctl daemon-reload
-    systemctl enable llama-server llama-embed yantrik-companion 2>/dev/null || true
-    echo "  Systemd services configured"
+# Create login wrapper that starts labwc
+cat > "$BIN_DIR/yantrik-login" <<'LOGIN'
+#!/bin/sh
+# Auto-login as yantrik user and start labwc compositor
+if [ "$(whoami)" = "root" ]; then
+    exec su -l yantrik -c "exec /opt/yantrik/bin/yantrik-start"
 else
-    echo "  Warning: No init system detected. Services not configured."
-    echo "  Start manually:"
-    echo "    llama-server -m $CHAT_MODEL --host 127.0.0.1 --port 8081 -ngl 0 -c 2048 &"
-    echo "    llama-server -m $EMBED_MODEL --host 127.0.0.1 --port 8082 --embedding -ngl 0 -c 512 &"
-    echo "    $VENV/bin/python -m uvicorn yantrikdb.agent.service:app --host 0.0.0.0 --port 8340 &"
+    exec /opt/yantrik/bin/yantrik-start
 fi
+LOGIN
+chmod +x "$BIN_DIR/yantrik-login"
 
+# Create startup script that launches labwc (which auto-starts yantrik-ui)
+cat > "$BIN_DIR/yantrik-start" <<'START'
+#!/bin/sh
+# Start Yantrik OS desktop via labwc compositor
+export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+mkdir -p "$XDG_RUNTIME_DIR"
+
+LOG=/opt/yantrik/logs/yantrik-os.log
+echo "$(date): Starting Yantrik OS desktop..." >> "$LOG"
+
+# labwc reads its config from ~/.config/labwc/
+# It will auto-start yantrik-ui via the autostart file
+exec labwc >> "$LOG" 2>&1
+START
+chmod +x "$BIN_DIR/yantrik-start"
+
+# XDG runtime dir boot script (survives reboot)
+cat > /etc/local.d/xdg-runtime.start <<'XDG'
+#!/bin/sh
+YANTRIK_UID=$(id -u yantrik 2>/dev/null || echo 1000)
+mkdir -p "/run/user/$YANTRIK_UID"
+chown yantrik:yantrik "/run/user/$YANTRIK_UID"
+chmod 700 "/run/user/$YANTRIK_UID"
+XDG
+chmod +x /etc/local.d/xdg-runtime.start
+rc-update add local default 2>/dev/null || true
+
+# Fix ownership
 chown -R "$YANTRIK_USER:$YANTRIK_USER" "$YANTRIK_HOME" 2>/dev/null || true
 
 echo
 echo "═══════════════════════════════════════════════"
-echo "  Yantrik Stack Deployed!"
+echo "  Yantrik OS — Desktop Deployment Complete"
 echo "═══════════════════════════════════════════════"
 echo
-echo "Services:"
-echo "  llama-server     → 127.0.0.1:8081  (chat LLM)"
-echo "  llama-embed      → 127.0.0.1:8082  (embeddings)"
-echo "  yantrik-companion → 0.0.0.0:8340   (web UI + API)"
+echo "  Binary:     $BIN_DIR/yantrik-ui"
+echo "  Config:     $CONFIG_DIR/config.yaml"
+echo "  Data:       $DATA_DIR/"
+echo "  Models:     $MODEL_DIR/"
+echo "  Logs:       $LOG_DIR/"
+echo "  Compositor: labwc ($LABWC_DIR/)"
 echo
-echo "Start all:"
-if [ "$INIT" = "openrc" ]; then
-    echo "  rc-service llama-server start"
-    echo "  rc-service llama-embed start"
-    echo "  rc-service yantrik-companion start"
-elif [ "$INIT" = "systemd" ]; then
-    echo "  sudo systemctl start llama-server llama-embed yantrik-companion"
+echo "  Auto-start: labwc → yantrik-ui on tty1"
+echo "  Services:   seatd, dbus (OpenRC)"
+echo
+if [ -x "$BIN_DIR/yantrik-ui" ]; then
+    echo "  Reboot to start:"
+    echo "    reboot"
+else
+    echo "  NEXT: Upload the binary:"
+    echo "    scp -P 2222 target/release/yantrik-ui root@localhost:/tmp/"
+    echo "  Then re-run: ./deploy-stack.sh"
 fi
-echo
-echo "Open in browser: http://localhost:8340"
 echo

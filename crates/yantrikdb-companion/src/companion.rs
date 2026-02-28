@@ -377,7 +377,7 @@ impl CompanionService {
         };
 
         let mut tool_calls_made = Vec::new();
-        let mut response_text = String::new();
+        let mut response_text: String;
 
         let llm_response = self.llm.chat_streaming(&messages, &gen_config, &mut |token| {
             on_token(token);

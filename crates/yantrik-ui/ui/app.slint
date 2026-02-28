@@ -1,41 +1,54 @@
-// Yantrik OS — Root application.
-// Screen state machine: boot → idle → chat / home / bond / personality / memory.
+// Yantrik OS — AI-native desktop shell.
+// Screen states: 0=boot, 1=desktop, 4=bond, 5=personality, 6=memory.
+// The AI IS the shell — Intent Lens is the primary interaction.
 
 import { Theme } from "theme.slint";
 import { BootScreen } from "boot.slint";
-import { IdleScreen } from "idle.slint";
-import { ChatScreen } from "chat.slint";
-import { HomeScreen } from "home.slint";
+import { DesktopScreen } from "desktop.slint";
 import { BondScreen, BondData } from "bond.slint";
 import { PersonalityScreen, OpinionData, SharedRefData } from "personality.slint";
 import { MemoryBrowser, MemoryItem } from "memory_browser.slint";
 import { VoiceOverlay } from "voice_overlay.slint";
 import { MessageData } from "components/message_bubble.slint";
 import { UrgeCardData } from "components/glance_card.slint";
+import { LensResult } from "components/intent_lens.slint";
 
-export { MessageData, UrgeCardData, BondData, OpinionData, SharedRefData, MemoryItem }
+export { MessageData, UrgeCardData, BondData, OpinionData, SharedRefData, MemoryItem, LensResult }
 
 export component App inherits Window {
     title: "Yantrik OS";
-    width: 360px;
-    height: 640px;
+    default-font-size: 14px;
     background: Theme.bg-deep;
 
-    // Screen state: 0=boot, 1=idle, 2=chat, 3=home, 4=bond, 5=personality, 6=memory
+    // Screen state: 0=boot, 1=desktop, 4=bond, 5=personality, 6=memory
     in-out property <int> current-screen: 0;
 
-    // Companion state (set from Rust)
+    // Boot state
+    in property <string> boot-status: "remembering...";
+
+    // Companion state
     in property <int> memory-count: 0;
     in property <bool> is-thinking: false;
     in property <bool> has-urges: false;
-    in property <string> boot-status: "remembering...";
 
     // Chat state
     in property <[MessageData]> messages: [];
     in property <bool> is-generating: false;
 
-    // Home state
+    // Desktop state
     in property <[UrgeCardData]> urges: [];
+    in property <string> clock-text: "00:00";
+    in property <string> companion-status: "idle";
+    in property <int> battery-level: 100;
+    in property <bool> battery-charging: false;
+    in property <bool> wifi-connected: false;
+    in property <int> pending-count: 0;
+    in property <string> greeting-text: "Hello";
+
+    // Intent Lens state
+    in-out property <bool> lens-open: false;
+    in property <[LensResult]> lens-results: [];
+    in property <bool> lens-chat-mode: false;
 
     // Bond state
     in property <BondData> bond-data: {
@@ -67,7 +80,7 @@ export component App inherits Window {
     in property <string> voice-transcribed: "";
     in property <string> voice-response: "";
 
-    // Notification state
+    // Notification toast
     in property <string> notification-text: "";
     in-out property <bool> show-notification: false;
 
@@ -77,8 +90,13 @@ export component App inherits Window {
     callback navigate(int);
     callback search-memories(string);
     callback cancel-voice();
+    callback launch-app(string);
+    callback lens-query(string);
+    callback lens-submit(string);
+    callback lens-result-selected(string);
+    callback open-lens();
+    callback close-lens();
 
-    // Clip all content to prevent overflow artifacts
     Rectangle {
         clip: true;
         width: 100%;
@@ -95,62 +113,43 @@ export component App inherits Window {
             }
         }
 
-        // Idle screen
-        if current-screen == 1 : IdleScreen {
+        // Desktop (the main experience)
+        if current-screen == 1 : DesktopScreen {
             width: 100%; height: 100%;
+            // Status bar
+            clock-text: root.clock-text;
+            companion-status: root.companion-status;
+            battery-level: root.battery-level;
+            battery-charging: root.battery-charging;
+            wifi-connected: root.wifi-connected;
+            pending-count: root.pending-count;
+            // Companion
             is-thinking: root.is-thinking;
             has-urges: root.has-urges;
-            orb-tapped => {
-                root.current-screen = 2;
-                root.navigate(2);
-            }
-            grid-tapped => {
-                root.current-screen = 3;
-                root.navigate(3);
-            }
-        }
-
-        // Chat screen
-        if current-screen == 2 : ChatScreen {
-            width: 100%; height: 100%;
+            greeting-text: root.greeting-text;
+            memory-count: root.memory-count;
+            // Intent Lens
+            lens-open <=> root.lens-open;
+            lens-results: root.lens-results;
+            lens-chat-mode: root.lens-chat-mode;
+            // Chat
             messages: root.messages;
             is-generating: root.is-generating;
+            // Urges
+            urges: root.urges;
+            // Callbacks
             send-message(text) => { root.send-message(text); }
             mic-pressed => { root.mic-pressed(); }
-            back-pressed => {
-                root.current-screen = 1;
-                root.navigate(1);
-            }
-            grid-pressed => {
-                root.current-screen = 3;
-                root.navigate(3);
-            }
-        }
-
-        // Home screen
-        if current-screen == 3 : HomeScreen {
-            width: 100%; height: 100%;
-            urges: root.urges;
-            memory-count: root.memory-count;
-            orb-tapped => {
-                root.current-screen = 1;
-                root.navigate(1);
-            }
-            send-message(text) => {
-                root.current-screen = 2;
-                root.navigate(2);
-                root.send-message(text);
-            }
-            card-tapped(msg) => {
-                root.current-screen = 2;
-                root.navigate(2);
-                root.send-message(msg);
-            }
-            mic-pressed => { root.mic-pressed(); }
+            launch-app(app-id) => { root.launch-app(app-id); }
             navigate-to(screen) => {
                 root.current-screen = screen;
                 root.navigate(screen);
             }
+            lens-query(text) => { root.lens-query(text); }
+            lens-submit(text) => { root.lens-submit(text); }
+            lens-result-selected(id) => { root.lens-result-selected(id); }
+            open-lens => { root.open-lens(); }
+            close-lens => { root.close-lens(); }
         }
 
         // Bond screen
@@ -158,8 +157,8 @@ export component App inherits Window {
             width: 100%; height: 100%;
             data: root.bond-data;
             back-pressed => {
-                root.current-screen = 3;
-                root.navigate(3);
+                root.current-screen = 1;
+                root.navigate(1);
             }
         }
 
@@ -173,8 +172,8 @@ export component App inherits Window {
             opinions: root.opinions;
             shared-refs: root.shared-refs;
             back-pressed => {
-                root.current-screen = 3;
-                root.navigate(3);
+                root.current-screen = 1;
+                root.navigate(1);
             }
         }
 
@@ -186,12 +185,12 @@ export component App inherits Window {
             total-memories: root.memory-count;
             search(query) => { root.search-memories(query); }
             back-pressed => {
-                root.current-screen = 3;
-                root.navigate(3);
+                root.current-screen = 1;
+                root.navigate(1);
             }
         }
 
-        // Voice overlay (overlays any screen)
+        // Voice overlay
         if voice-active : VoiceOverlay {
             width: 100%; height: 100%;
             voice-state: root.voice-state;
@@ -203,37 +202,34 @@ export component App inherits Window {
             }
         }
 
-        // Notification toast (overlays any screen)
+        // Notification toast (top-right, above the Lens)
         if show-notification : Rectangle {
-            x: 16px;
-            y: 16px;
-            width: root.width - 32px;
-            height: notif-text.preferred-height + 24px;
-            border-radius: Theme.radius-card;
+            x: root.width - 380px;
+            y: 32px;
+            width: 360px;
+            height: notif-text.preferred-height + 20px;
+            border-radius: 12px;
             background: Theme.bg-elevated;
             border-width: 1px;
             border-color: Theme.amber-dim;
             opacity: 0.95;
+            drop-shadow-blur: 16px;
+            drop-shadow-color: #00000060;
 
             TouchArea {
-                clicked => {
-                    root.show-notification = false;
-                    root.current-screen = 2;
-                    root.navigate(2);
-                }
+                clicked => { root.show-notification = false; }
             }
 
             notif-text := Text {
-                x: 16px;
-                y: 12px;
-                width: parent.width - 32px;
+                x: 14px;
+                y: 10px;
+                width: parent.width - 28px;
                 text: root.notification-text;
                 color: Theme.text-primary;
-                font-size: Theme.font-body;
+                font-size: 13px;
                 wrap: word-wrap;
             }
 
-            // Auto-dismiss after 5 seconds
             Timer {
                 interval: 5000ms;
                 running: true;

@@ -25,34 +25,34 @@ export component Orb inherits Rectangle {
         }
     }
 
-    // Outer ambient glow (cyan tint)
+    // Outer ambient glow (cyan tint, large)
     Rectangle {
-        x: -parent.width * 0.4;
-        y: -parent.height * 0.4;
-        width: parent.width * 1.8;
-        height: parent.height * 1.8;
+        x: -parent.width * 0.6;
+        y: -parent.height * 0.6;
+        width: parent.width * 2.2;
+        height: parent.height * 2.2;
         border-radius: self.width / 2;
         background: @radial-gradient(circle,
-            Theme.cyan-glow 0%,
-            #5ac8d410 30%,
+            #5ac8d430 0%,
+            #5ac8d418 30%,
             transparent 60%
         );
-        opacity: 0.3 + 0.2 * sin(phase * 6.2832 * 1rad);
+        opacity: 0.5 + 0.3 * sin(phase * 6.2832 * 1rad);
     }
 
     // Inner amber glow
     Rectangle {
-        x: -parent.width * 0.25;
-        y: -parent.height * 0.25;
-        width: parent.width * 1.5;
-        height: parent.height * 1.5;
+        x: -parent.width * 0.35;
+        y: -parent.height * 0.35;
+        width: parent.width * 1.7;
+        height: parent.height * 1.7;
         border-radius: self.width / 2;
         background: @radial-gradient(circle,
             Theme.amber-glow-strong 0%,
             Theme.amber-glow 30%,
-            transparent 60%
+            transparent 55%
         );
-        opacity: 0.5 + 0.4 * sin(phase * 6.2832 * 1rad);
+        opacity: 0.6 + 0.35 * sin(phase * 6.2832 * 1rad);
     }
 
     // Orbital ring 1 — horizontal ellipse (breathing)
@@ -96,8 +96,8 @@ export component Orb inherits Rectangle {
             Theme.amber 50%,
             Theme.cyan-dim 100%
         );
-        drop-shadow-blur: 30px;
-        drop-shadow-color: Theme.amber-glow;
+        drop-shadow-blur: 40px;
+        drop-shadow-color: #d4a57480;
     }
 
     // Inner highlight (specular)

@@ -1,0 +1,201 @@
+// App dock — auto-hiding 48px bottom edge.
+// 4px amber glow trigger at bottom. Reveals on hover. Hides after 2s.
+// Pinned apps + running indicators. For switching, not launching.
+
+import { Theme } from "../theme.slint";
+
+struct DockItem {
+    app-id: string,
+    label: string,
+    icon-char: string,
+    is-running: bool,
+}
+
+export component AppDock inherits Rectangle {
+    in property <[DockItem]> items: [
+        { app-id: "terminal", label: "Terminal", icon-char: ">_", is-running: false },
+        { app-id: "browser",  label: "Browser",  icon-char: "W",  is-running: false },
+        { app-id: "files",    label: "Files",    icon-char: "F",  is-running: false },
+        { app-id: "settings", label: "Settings", icon-char: "*",  is-running: false },
+    ];
+
+    callback launch-app(string);
+    callback anchor-pressed();
+
+    // Dock visibility state
+    in-out property <bool> dock-visible: false;
+    property <float> hide-timer-phase: 0;
+
+    height: dock-visible ? Theme.dock-height : 4px;
+    background: transparent;
+    clip: true;
+
+    animate height { duration: 150ms; easing: ease-out; }
+
+    // Bottom edge glow trigger (always visible, 4px)
+    Rectangle {
+        y: parent.height - 4px;
+        width: 100%;
+        height: 4px;
+        background: @linear-gradient(90deg,
+            transparent 20%,
+            Theme.amber-glow 50%,
+            transparent 80%
+        );
+        opacity: dock-visible ? 0.0 : 0.6;
+
+        animate opacity { duration: 200ms; }
+    }
+
+    // Hover detection area (at the very bottom)
+    TouchArea {
+        width: 100%;
+        height: 100%;
+        // Show dock on hover
+        moved => {
+            root.dock-visible = true;
+            root.hide-timer-phase = 0;
+        }
+    }
+
+    // Hide timer — 2s after no hover
+    Timer {
+        interval: 100ms;
+        running: root.dock-visible;
+        triggered => {
+            root.hide-timer-phase += 0.1;
+            if root.hide-timer-phase > 2.0 {
+                root.dock-visible = false;
+                root.hide-timer-phase = 0;
+            }
+        }
+    }
+
+    // Dock surface (only visible when revealed)
+    if dock-visible : Rectangle {
+        width: 100%;
+        height: Theme.dock-height;
+        y: parent.height - Theme.dock-height;
+        background: Theme.bg-surface;
+
+        // Top glow line
+        Rectangle {
+            y: 0;
+            width: 100%;
+            height: 1px;
+            background: @linear-gradient(90deg, transparent 0%, Theme.cyan-glow 50%, transparent 100%);
+        }
+
+        // Reset hide timer on hover
+        TouchArea {
+            width: 100%;
+            height: 100%;
+            moved => { root.hide-timer-phase = 0; }
+        }
+
+        HorizontalLayout {
+            alignment: center;
+            spacing: 20px;
+            padding-top: 4px;
+            padding-bottom: 4px;
+
+            for item[idx] in root.items : TouchArea {
+                width: 44px;
+                height: 40px;
+                property <bool> hovered: self.has-hover;
+                clicked => {
+                    root.launch-app(item.app-id);
+                    root.hide-timer-phase = 0;
+                }
+                moved => { root.hide-timer-phase = 0; }
+
+                Rectangle {
+                    property <bool> is-hovered: parent.hovered;
+                    width: Theme.dock-icon-size;
+                    height: Theme.dock-icon-size;
+                    x: (parent.width - self.width) / 2;
+                    y: 0;
+                    border-radius: 10px;
+                    background: is-hovered ? Theme.bg-elevated : Theme.bg-card;
+                    border-width: 1px;
+                    border-color: is-hovered ? Theme.cyan-dim : #ffffff08;
+                    drop-shadow-blur: is-hovered ? 6px : 0;
+                    drop-shadow-color: Theme.cyan-glow;
+
+                    animate background { duration: 120ms; }
+                    animate border-color { duration: 120ms; }
+                    animate drop-shadow-blur { duration: 120ms; }
+
+                    Text {
+                        text: item.icon-char;
+                        color: parent.is-hovered ? Theme.cyan : Theme.text-secondary;
+                        font-size: 14px;
+                        font-weight: 700;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+
+                        animate color { duration: 120ms; }
+                    }
+                }
+
+                // Running indicator dot
+                if item.is-running : Rectangle {
+                    width: 3px;
+                    height: 3px;
+                    x: (parent.width - 3px) / 2;
+                    y: Theme.dock-icon-size + 2px;
+                    border-radius: 1.5px;
+                    background: Theme.cyan;
+                    drop-shadow-blur: 2px;
+                    drop-shadow-color: Theme.cyan-glow;
+                }
+            }
+
+            // Separator
+            Rectangle {
+                width: 1px;
+                height: 28px;
+                y: 6px;
+                background: Theme.text-dim;
+                opacity: 0.2;
+            }
+
+            // Anchor orb button — opens Lens
+            TouchArea {
+                width: 44px;
+                height: 40px;
+                clicked => { root.anchor-pressed(); }
+                moved => { root.hide-timer-phase = 0; }
+
+                Rectangle {
+                    width: Theme.dock-icon-size;
+                    height: Theme.dock-icon-size;
+                    x: (parent.width - self.width) / 2;
+                    y: 0;
+                    border-radius: self.width / 2;
+                    background: @radial-gradient(circle,
+                        Theme.amber-glow-strong 0%,
+                        Theme.amber-glow 60%,
+                        transparent 100%
+                    );
+                    border-width: 1px;
+                    border-color: Theme.amber-dim;
+
+                    // Mini core
+                    Rectangle {
+                        x: (parent.width - 16px) / 2;
+                        y: (parent.height - 16px) / 2;
+                        width: 16px;
+                        height: 16px;
+                        border-radius: 8px;
+                        background: @radial-gradient(circle,
+                            Theme.amber-light 0%,
+                            Theme.amber 60%,
+                            Theme.cyan-dim 100%
+                        );
+                    }
+                }
+            }
+        }
+    }
+}

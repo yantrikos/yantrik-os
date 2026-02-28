@@ -1,0 +1,105 @@
+# Yantrik OS — Device Configuration
+# Deploy to /opt/yantrik/config.yaml on the device / VM.
+#
+# Single-binary mode: LLM + embeddings run in-process via Candle.
+# No external servers, no cloud, no network calls.
+
+user_name: "Pranab"
+
+personality:
+  name: "Yantrik"
+  system_prompt: >
+    You are Yantrik, a personal AI companion running as the desktop shell
+    on Pranab's computer. You remember everything he tells you. You are
+    warm, thoughtful, and occasionally curious. You speak concisely.
+    When you notice patterns or have concerns, you bring them up naturally.
+    You never fabricate memories — if you don't know, say so.
+    You can see system events (battery, network, files, processes)
+    and proactively help when something needs attention.
+
+# In-process Candle LLM — no external server needed.
+# Models are loaded from local files at startup.
+llm:
+  # Local model directory (contains .gguf + tokenizer.json)
+  # If omitted, downloads Qwen2.5-0.5B-Instruct from HuggingFace on first run.
+  model_dir: "/opt/yantrik/models/llm"
+  max_tokens: 256
+  temperature: 0.7
+  max_context_tokens: 2048
+
+# REST API (for debug / external clients)
+server:
+  host: "0.0.0.0"
+  port: 8340
+
+# YantrikDB memory engine
+yantrikdb:
+  db_path: "/opt/yantrik/data/memory.db"
+  embedding_dim: 384
+  # Local embedder model directory (contains model files)
+  # If omitted, downloads all-MiniLM-L6-v2 from HuggingFace on first run.
+  embedder_model_dir: "/opt/yantrik/models/embedder"
+
+conversation:
+  max_history_turns: 10
+  session_timeout_minutes: 30
+
+# Tool calling — disable for tiny models (0.5B), enable for 1.5B+
+tools:
+  enabled: false
+  max_tool_rounds: 3
+
+cognition:
+  think_interval_minutes: 15
+  think_interval_active_minutes: 5
+  idle_think_interval_minutes: 30
+  proactive_urgency_threshold: 0.7
+
+instincts:
+  check_in_enabled: true
+  check_in_hours: 8.0
+  emotional_awareness_enabled: true
+  follow_up_enabled: true
+  follow_up_min_hours: 4.0
+  reminder_enabled: true
+  pattern_surfacing_enabled: true
+  conflict_alerting_enabled: true
+  conflict_alert_threshold: 5
+
+urges:
+  expiry_hours: 48.0
+  max_pending: 20
+  boost_increment: 0.1
+  cooldown_seconds: 3600.0
+
+bond:
+  enabled: true
+
+evolution:
+  formality_alpha: 0.05
+  opinion_threshold: 3
+
+narrative:
+  update_interval_interactions: 10
+  max_tokens: 300
+
+# System observer — watches battery, network, files, processes.
+# Set mock: true for QEMU dev (fakes events on timers).
+system:
+  mock: true
+  watch_dirs:
+    - "~/Downloads"
+    - "~/Documents"
+    - "~/Desktop"
+  process_poll_secs: 5
+  resource_poll_secs: 10
+
+voice:
+  enabled: true
+  # Whisper STT — in-process via Candle
+  whisper_model: "openai/whisper-tiny"
+  whisper_model_dir: "/opt/yantrik/models/whisper"
+  # Piper TTS
+  piper_voice: "en_US-lessac-medium"
+  silence_threshold: 0.01
+  silence_duration_ms: 800

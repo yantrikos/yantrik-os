@@ -1,0 +1,195 @@
+// Status bar — 24px minimal top edge.
+// Anchor dot (AI state) + clock + pending count + battery/network.
+// The anchor dot is the always-visible AI presence indicator.
+
+import { Theme } from "../theme.slint";
+
+export component StatusBar inherits Rectangle {
+    in property <string> clock-text: "00:00";
+    in property <string> companion-status: "idle";
+    in property <int> battery-level: 100;
+    in property <bool> battery-charging: false;
+    in property <bool> wifi-connected: false;
+    in property <int> pending-count: 0;
+
+    callback anchor-clicked();
+    callback queue-clicked();
+
+    height: Theme.status-bar-height;
+    background: @linear-gradient(180deg, #0c0b10 0%, #08081a 100%);
+
+    // Bottom glow line (Firelight signature — brighter)
+    Rectangle {
+        y: parent.height - 1px;
+        width: 100%;
+        height: 1px;
+        background: @linear-gradient(90deg, transparent 5%, #5ac8d460 50%, transparent 95%);
+    }
+
+    // Glow bloom behind the line
+    Rectangle {
+        y: parent.height - 3px;
+        width: 100%;
+        height: 6px;
+        background: @linear-gradient(90deg, transparent 10%, #5ac8d418 50%, transparent 90%);
+    }
+
+    HorizontalLayout {
+        padding-left: 12px;
+        padding-right: 12px;
+
+        // ── Left: Anchor dot + Clock ──
+        HorizontalLayout {
+            horizontal-stretch: 1;
+            spacing: 10px;
+            alignment: start;
+
+            // Anchor dot — 16px AI state indicator
+            TouchArea {
+                width: 20px;
+                height: Theme.status-bar-height;
+                clicked => { root.anchor-clicked(); }
+
+                Rectangle {
+                    property <float> breath-phase: 0;
+                    Timer {
+                        interval: 16ms;
+                        running: true;
+                        triggered => {
+                            parent.breath-phase = mod(parent.breath-phase + 0.003, 1.0);
+                        }
+                    }
+
+                    // Outer glow ring (breathing)
+                    x: (parent.width - 16px) / 2;
+                    y: (parent.height - 16px) / 2;
+                    width: 16px;
+                    height: 16px;
+                    border-radius: 8px;
+                    background: transparent;
+                    border-width: root.companion-status == "thinking" ? 2px : 1px;
+                    border-color: root.companion-status == "thinking" ? Theme.amber :
+                                  root.companion-status == "listening" ? Theme.cyan-light :
+                                  Theme.cyan-dim;
+                    opacity: 0.4 + 0.3 * sin(breath-phase * 6.2832 * 1rad);
+                    drop-shadow-blur: root.companion-status == "thinking" ? 6px : 3px;
+                    drop-shadow-color: root.companion-status == "thinking" ? Theme.amber-glow : Theme.cyan-glow;
+
+                    animate border-width { duration: 300ms; }
+                    animate border-color { duration: 300ms; }
+                    animate drop-shadow-blur { duration: 300ms; }
+
+                    // Core dot
+                    Rectangle {
+                        x: (parent.width - 8px) / 2;
+                        y: (parent.height - 8px) / 2;
+                        width: 8px;
+                        height: 8px;
+                        border-radius: 4px;
+                        background: root.companion-status == "thinking" ? Theme.amber :
+                                    root.companion-status == "listening" ? Theme.cyan-light :
+                                    Theme.cyan;
+                        drop-shadow-blur: 4px;
+                        drop-shadow-color: root.companion-status == "thinking" ? Theme.amber-glow : Theme.cyan-glow;
+
+                        animate background { duration: 300ms; }
+                    }
+                }
+            }
+
+            // Clock
+            Text {
+                text: root.clock-text;
+                color: Theme.text-secondary;
+                font-size: 12px;
+                font-weight: 500;
+                letter-spacing: 1px;
+                vertical-alignment: center;
+            }
+        }
+
+        // ── Right: Pending count + WiFi + Battery ──
+        HorizontalLayout {
+            spacing: 12px;
+            alignment: end;
+
+            // Pending count badge (Quiet Queue)
+            if root.pending-count > 0 : TouchArea {
+                width: queue-badge.preferred-width + 4px;
+                height: Theme.status-bar-height;
+                clicked => { root.queue-clicked(); }
+
+                queue-badge := Rectangle {
+                    width: max(18px, queue-text.preferred-width + 8px);
+                    height: 16px;
+                    y: (parent.height - 16px) / 2;
+                    border-radius: 8px;
+                    background: Theme.amber-dim;
+
+                    queue-text := Text {
+                        text: root.pending-count;
+                        color: Theme.bg-deep;
+                        font-size: 9px;
+                        font-weight: 700;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+
+            // WiFi dot (minimal)
+            Rectangle {
+                width: 8px;
+                height: 8px;
+                y: (parent.height - 8px) / 2;
+                border-radius: 4px;
+                background: root.wifi-connected ? Theme.cyan-dim : Theme.text-dim;
+                opacity: root.wifi-connected ? 0.8 : 0.3;
+            }
+
+            // Battery — compact
+            HorizontalLayout {
+                spacing: 3px;
+
+                Rectangle {
+                    width: 20px;
+                    height: 10px;
+                    y: (parent.height - 10px) / 2;
+                    border-radius: 2px;
+                    border-width: 1px;
+                    border-color: root.battery-level <= 20 ? Theme.color-emotional : Theme.text-dim;
+                    background: transparent;
+
+                    // Fill
+                    Rectangle {
+                        x: 1.5px; y: 1.5px;
+                        width: max(0px, (parent.width - 5px) * root.battery-level / 100);
+                        height: parent.height - 5px;
+                        border-radius: 1px;
+                        background: root.battery-charging ? Theme.cyan :
+                                    root.battery-level <= 20 ? Theme.color-emotional :
+                                    Theme.text-dim;
+                    }
+
+                    // Terminal nub
+                    Rectangle {
+                        x: parent.width;
+                        y: 2.5px;
+                        width: 1.5px;
+                        height: parent.height - 6px;
+                        border-radius: 0.5px;
+                        background: Theme.text-dim;
+                        opacity: 0.5;
+                    }
+                }
+
+                Text {
+                    text: root.battery-level + "%";
+                    color: root.battery-level <= 20 ? Theme.color-emotional : Theme.text-dim;
+                    font-size: 9px;
+                    vertical-alignment: center;
+                }
+            }
+        }
+    }
+}

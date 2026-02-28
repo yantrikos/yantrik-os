@@ -1,21 +1,24 @@
-# Yantrik Companion Configuration
-# Deploy to /opt/yantrik/config.yaml on Yantrik OS
+# Yantrik Companion — Desktop Development Configuration
+# Use this for local development (yantrik chat, yantrik serve).
+# For OS deployment, use yantrik-os.yaml instead.
+#
+# Single-binary mode: LLM + embeddings run in-process via Candle.
+# Models auto-download from HuggingFace on first run.
 
 user_name: "Pranab"
 
 personality:
   name: "Yantrik"
   system_prompt: >
-    You are Yantrik, a personal companion running on Pranab's phone.
-    You remember everything he tells you. You are warm, thoughtful,
-    and occasionally curious. You speak concisely — this is a phone,
-    not an essay contest. When you notice patterns or have concerns,
+    You are Yantrik, a personal AI companion. You remember everything
+    Pranab tells you. You are warm, thoughtful, and occasionally curious.
+    You speak concisely. When you notice patterns or have concerns,
     you bring them up naturally. You never fabricate memories —
     if you don't know, say so.
 
+# In-process Candle LLM — auto-downloads if model_dir is omitted.
 llm:
-  base_url: "http://localhost:8081"
-  model: "local"
+  # model_dir: "./models/llm"  # Uncomment to use pre-downloaded models
   max_tokens: 256
   temperature: 0.7
   max_context_tokens: 2048
@@ -25,16 +28,16 @@ server:
   port: 8340
 
 yantrikdb:
-  db_path: "/opt/yantrik/data/memory.db"
+  db_path: "./data/memory.db"
   embedding_dim: 384
-  embedding_url: "http://localhost:8082"
+  # embedder_model_dir: "./models/embedder"  # Uncomment to use pre-downloaded
 
 conversation:
   max_history_turns: 10
   session_timeout_minutes: 30
 
 tools:
-  enabled: true
+  enabled: false
   max_tool_rounds: 3
 
 cognition:
@@ -60,6 +63,20 @@ urges:
   boost_increment: 0.1
   cooldown_seconds: 3600.0
 
-logging:
-  level: "INFO"
-  file: "/opt/yantrik/logs/companion.log"
+bond:
+  enabled: true
+
+evolution:
+  formality_alpha: 0.05
+  opinion_threshold: 3
+
+narrative:
+  update_interval_interactions: 10
+  max_tokens: 300
+
+voice:
+  enabled: true
+  whisper_model: "openai/whisper-tiny"
+  piper_voice: "en_US-lessac-medium"
+  silence_threshold: 0.01
+  silence_duration_ms: 800

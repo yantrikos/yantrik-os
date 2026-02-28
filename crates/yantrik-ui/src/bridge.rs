@@ -21,10 +21,6 @@ pub enum CompanionCommand {
         text: String,
         token_tx: Sender<String>,
     },
-    /// Request a state snapshot.
-    GetState {
-        reply_tx: Sender<StateSnapshot>,
-    },
     /// Request bond state for the bond screen.
     GetBondState {
         reply_tx: Sender<BondSnapshot>,
@@ -56,10 +52,6 @@ pub enum CompanionCommand {
 #[derive(Debug, Clone)]
 pub struct StateSnapshot {
     pub memory_count: i64,
-    pub bond_level: String,
-    pub bond_score: f64,
-    pub session_active: bool,
-    pub conversation_turns: usize,
     pub has_pending_urges: bool,
 }
 
@@ -149,13 +141,6 @@ impl CompanionBridge {
         let (token_tx, token_rx) = crossbeam_channel::unbounded();
         let _ = self.cmd_tx.send(CompanionCommand::SendMessage { text, token_tx });
         token_rx
-    }
-
-    /// Request a state snapshot.
-    pub fn request_state(&self) -> Receiver<StateSnapshot> {
-        let (reply_tx, reply_rx) = crossbeam_channel::unbounded();
-        let _ = self.cmd_tx.send(CompanionCommand::GetState { reply_tx });
-        reply_rx
     }
 
     /// Request bond data.
@@ -252,10 +237,6 @@ fn worker_loop(
 
                 // Push updated state
                 push_state(&companion, &ui_weak);
-            }
-            Ok(CompanionCommand::GetState { reply_tx }) => {
-                let state = build_snapshot(&companion);
-                let _ = reply_tx.send(state);
             }
             Ok(CompanionCommand::GetBondState { reply_tx }) => {
                 let bond = BondTracker::get_state(companion.db.conn());
@@ -396,10 +377,6 @@ fn build_snapshot(companion: &CompanionService) -> StateSnapshot {
     let state = companion.build_state();
     StateSnapshot {
         memory_count: state.memory_count,
-        bond_level: format!("{:?}", state.bond_level),
-        bond_score: state.bond_score,
-        session_active: state.session_active,
-        conversation_turns: state.conversation_turn_count,
         has_pending_urges: !state.pending_triggers.is_empty(),
     }
 }
@@ -450,7 +427,7 @@ pub fn instinct_color(name: &str) -> slint::Color {
 }
 
 /// Format seconds-ago into a human-readable string.
-fn format_time_ago(seconds: f64) -> String {
+pub fn format_time_ago(seconds: f64) -> String {
     if seconds < 60.0 {
         "just now".to_string()
     } else if seconds < 3600.0 {

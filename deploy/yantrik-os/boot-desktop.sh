@@ -1,17 +1,18 @@
 #!/bin/bash
 # ═══════════════════════════════════════════════════════════════
-# boot-phone.sh — Boot Yantrik OS in a phone-sized QEMU window
+# boot-desktop.sh — Boot Yantrik OS in a desktop-sized QEMU window
 # ═══════════════════════════════════════════════════════════════
 #
-# This script boots a postmarketOS/Alpine image in QEMU with:
-# - Phone-sized display (720x1280)
-# - Port forwarding for SSH and Web UI
+# This script boots an Alpine Linux image in QEMU with:
+# - Desktop display (1920x1080 landscape)
+# - Port forwarding for SSH, Web UI, and VNC
 # - 4GB RAM, 4 CPUs
+# - Automatic WSL2, Linux, and macOS detection
 #
 # Usage:
-#   ./boot-phone.sh [path-to-disk-image]
+#   ./boot-desktop.sh [path-to-disk-image]
 #
-# If no image is specified, uses the default location.
+# If no image is specified, looks in ~/yantrik-vm/
 # ═══════════════════════════════════════════════════════════════
 
 set -euo pipefail
@@ -23,44 +24,57 @@ SSH_PORT=2222
 WEB_PORT=8340
 VNC_PORT=5900
 
+# ── Detect platform ──
+OS_TYPE="linux"
+IS_WSL=false
+
+case "$(uname -s)" in
+    Darwin)  OS_TYPE="macos" ;;
+    Linux)
+        if grep -qi microsoft /proc/version 2>/dev/null; then
+            IS_WSL=true
+            OS_TYPE="wsl2"
+        fi
+        ;;
+esac
+
 # ── Detect architecture ──
 ARCH=$(uname -m)
 case "$ARCH" in
     x86_64|amd64)
         QEMU_BIN="qemu-system-x86_64"
-        ACCEL="-enable-kvm"
-        # Check if KVM is available
-        if [ ! -e /dev/kvm ]; then
-            ACCEL="-accel tcg"
-            echo "Warning: KVM not available, using software emulation (slower)"
-        fi
+        ACCEL=""
         MACHINE="-machine q35"
+
+        if [ "$OS_TYPE" = "wsl2" ] || [ "$OS_TYPE" = "linux" ]; then
+            if [ -e /dev/kvm ]; then
+                ACCEL="-enable-kvm"
+            else
+                ACCEL="-accel tcg"
+                echo "Warning: KVM not available, using software emulation (slower)"
+                echo "  WSL2: Enable 'nestedVirtualization' in .wslconfig"
+            fi
+        fi
         ;;
     arm64|aarch64)
         QEMU_BIN="qemu-system-aarch64"
-        # macOS uses HVF, Linux uses KVM
-        if [ "$(uname -s)" = "Darwin" ]; then
+        if [ "$OS_TYPE" = "macos" ]; then
             ACCEL="-accel hvf"
-            # macOS needs UEFI firmware
             EFI_CODE=""
             for f in \
                 /opt/homebrew/share/qemu/edk2-aarch64-code.fd \
-                /usr/local/share/qemu/edk2-aarch64-code.fd \
-                /usr/share/AAVMF/AAVMF_CODE.fd; do
-                if [ -f "$f" ]; then
-                    EFI_CODE="$f"
-                    break
-                fi
+                /usr/local/share/qemu/edk2-aarch64-code.fd; do
+                [ -f "$f" ] && EFI_CODE="$f" && break
             done
             if [ -z "$EFI_CODE" ]; then
-                echo "Error: UEFI firmware not found for aarch64"
-                echo "Install: brew install qemu (includes EDK2 firmware)"
+                echo "Error: UEFI firmware not found. Install: brew install qemu"
                 exit 1
             fi
             MACHINE="-machine virt,highmem=on -cpu host -bios $EFI_CODE"
         else
-            ACCEL="-enable-kvm"
-            if [ ! -e /dev/kvm ]; then
+            if [ -e /dev/kvm ]; then
+                ACCEL="-enable-kvm"
+            else
                 ACCEL="-accel tcg"
             fi
             MACHINE="-machine virt -cpu cortex-a72"
@@ -72,15 +86,36 @@ case "$ARCH" in
         ;;
 esac
 
+# ── Determine display backend ──
+DISPLAY_ARGS=""
+case "$OS_TYPE" in
+    wsl2)
+        if [ -n "${DISPLAY:-}" ] || [ -d "/mnt/wslg" ]; then
+            DISPLAY_ARGS="-display gtk"
+        else
+            DISPLAY_ARGS="-display none -vnc :0"
+            echo "Note: No display detected. Using VNC on port $VNC_PORT"
+            echo "  Connect with a VNC viewer: localhost:$VNC_PORT"
+        fi
+        ;;
+    macos)
+        DISPLAY_ARGS="-display cocoa"
+        ;;
+    linux)
+        DISPLAY_ARGS="-display gtk"
+        ;;
+esac
+
 # ── Find disk image ──
+DISK_IMG=""
 if [ $# -ge 1 ]; then
     DISK_IMG="$1"
 else
-    # Default locations
     for f in \
-        "$HOME/yantrik-os-image/"*.img \
+        "$HOME/yantrik-vm/yantrik-os.qcow2" \
         "$HOME/yantrik-vm/"*.qcow2 \
-        "$HOME/yantrik-vm/"*.img; do
+        "$HOME/yantrik-vm/"*.img \
+        "$HOME/yantrik-os-image/"*.img; do
         if [ -f "$f" ]; then
             DISK_IMG="$f"
             break
@@ -93,32 +128,32 @@ if [ -z "${DISK_IMG:-}" ] || [ ! -f "$DISK_IMG" ]; then
     echo
     echo "Usage: $0 [path-to-disk-image]"
     echo
-    echo "To create a disk image:"
-    echo "  1. WSL2: Run setup-wsl2.sh (builds postmarketOS)"
-    echo "  2. Manual: Download Alpine and install to disk:"
-    echo "     qemu-img create -f qcow2 yantrik.qcow2 16G"
-    echo "     $QEMU_BIN ... -cdrom alpine-virt.iso -boot d"
+    echo "Create one first:"
+    echo "  ./setup-alpine-vm.sh"
     exit 1
 fi
 
 echo "═══════════════════════════════════════════════"
-echo "  Yantrik OS — Phone Simulator"
+echo "  Yantrik OS — Desktop"
 echo "═══════════════════════════════════════════════"
 echo
-echo "  Arch:    $ARCH"
-echo "  Image:   $DISK_IMG"
-echo "  RAM:     $RAM"
-echo "  CPUs:    $CPUS"
-echo "  Display: 720x1280 (phone portrait)"
+echo "  Platform: $OS_TYPE ($ARCH)"
+echo "  Image:    $DISK_IMG"
+echo "  RAM:      $RAM"
+echo "  CPUs:     $CPUS"
+echo "  Display:  1920x1080 (desktop)"
 echo
 echo "  Access:"
 echo "    SSH:     ssh -p $SSH_PORT yantrik@localhost"
 echo "    Web UI:  http://localhost:$WEB_PORT"
-echo "    VNC:     localhost:$VNC_PORT"
+if [[ "$DISPLAY_ARGS" == *vnc* ]]; then
+    echo "    VNC:     localhost:$VNC_PORT"
+fi
 echo
 echo "Starting..."
 
 # ── Launch QEMU ──
+# shellcheck disable=SC2086
 $QEMU_BIN \
     $MACHINE \
     $ACCEL \
@@ -126,12 +161,13 @@ $QEMU_BIN \
     -smp "$CPUS" \
     -drive file="$DISK_IMG",if=virtio \
     -device virtio-gpu-pci \
-    -display gtk,window-close=poweroff \
+    $DISPLAY_ARGS \
     -device virtio-keyboard-pci \
-    -device virtio-tablet-pci \
+    -device virtio-mouse-pci \
     -device virtio-net-pci,netdev=net0 \
     -netdev user,id=net0,hostfwd=tcp::${SSH_PORT}-:22,hostfwd=tcp::${WEB_PORT}-:8340,hostfwd=tcp::${VNC_PORT}-:5900 \
     -device virtio-rng-pci \
+    -device intel-hda -device hda-duplex \
     -boot c \
     -name "Yantrik OS" \
     "$@"

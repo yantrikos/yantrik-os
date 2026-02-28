@@ -1,0 +1,19 @@
+[package]
+name = "yantrik-os"
+version = "0.1.0"
+edition = "2021"
+description = "Yantrik OS system integration — D-Bus, inotify, sysinfo. Zero AI deps."
+
+[dependencies]
+crossbeam-channel = "0.5"
+tracing = "0.1"
+serde = { version = "1", features = ["derive"] }
+
+# System monitoring (process list, CPU, memory, disk)
+sysinfo = "0.33"
+
+# D-Bus (pure Rust, musl-compatible). Uses async-io internally for blocking wrappers.
+zbus = "5"
+
+# File system monitoring (inotify on Linux)
+notify = "7"

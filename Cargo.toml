@@ -5,6 +5,7 @@ members = [
     "crates/yantrikdb-server",
     "crates/yantrik",
     "crates/yantrik-ui",
+    "crates/yantrik-os",
 ]
 
 # Optimize dependencies (candle, tokenizers) even in dev builds.

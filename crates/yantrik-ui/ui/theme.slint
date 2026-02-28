@@ -13,14 +13,15 @@ export global Theme {
     out property <color> amber: #d4a574;
     out property <color> amber-light: #e8c496;
     out property <color> amber-dim: #a07a50;
-    out property <color> amber-glow: #d4a57440;
-    out property <color> amber-glow-strong: #d4a57480;
+    out property <color> amber-glow: #d4a57460;
+    out property <color> amber-glow-strong: #d4a574b0;
 
     // Cyan palette (neural, electric, data)
     out property <color> cyan: #5ac8d4;
     out property <color> cyan-light: #7ee0e8;
     out property <color> cyan-dim: #3a8a94;
-    out property <color> cyan-glow: #5ac8d430;
+    out property <color> cyan-glow: #5ac8d450;
+    out property <color> cyan-glow-strong: #5ac8d480;
 
     // Instinct colors
     out property <color> color-pattern: #c48bd4;
@@ -50,4 +51,22 @@ export global Theme {
     out property <length> radius-card: 12px;
     out property <length> radius-pill: 16px;
     out property <length> radius-round: 50px;
+
+    // Desktop layout sizes
+    out property <length> status-bar-height: 24px;
+    out property <length> dock-height: 48px;
+    out property <length> dock-icon-size: 36px;
+    out property <length> orb-desktop-size: 80px;
+
+    // Intent Lens
+    out property <length> lens-width: 720px;
+    out property <length> lens-input-height: 52px;
+    out property <length> lens-result-height: 48px;
+
+    // Result type colors
+    out property <color> color-do: #d4a574;       // amber — actions
+    out property <color> color-find: #5ac8d4;     // cyan — entities/files
+    out property <color> color-ask: #c4a050;      // muted gold — reasoning
+    out property <color> color-memory: #a07a50;   // dim amber — memories
+    out property <color> color-setting: #7a8494;  // gray — settings
 }

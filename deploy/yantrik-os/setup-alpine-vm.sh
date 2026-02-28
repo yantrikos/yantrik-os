@@ -10,7 +10,7 @@
 #   ./setup-alpine-vm.sh
 #
 # This creates the disk image and boots the Alpine installer.
-# After installation, use boot-phone.sh to start the phone.
+# After installation, use boot-desktop.sh to start the desktop.
 # ═══════════════════════════════════════════════════════════════
 
 set -euo pipefail
@@ -26,6 +26,12 @@ echo "════════════════════════�
 echo
 
 mkdir -p "$VM_DIR"
+
+# ── Detect platform ──
+IS_WSL=false
+if grep -qi microsoft /proc/version 2>/dev/null; then
+    IS_WSL=true
+fi
 
 # ── Detect architecture ──
 ARCH=$(uname -m)
@@ -79,7 +85,6 @@ COMMON_ARGS=(
     -device virtio-net-pci,netdev=net0
     -netdev "user,id=net0,hostfwd=tcp::2222-:22"
     -device virtio-rng-pci
-    -display gtk
     -name "Yantrik OS Setup"
 )
 
@@ -120,7 +125,7 @@ if [ "$ARCH" = "arm64" ] || [ "$ARCH" = "aarch64" ]; then
     echo "  9. SSH: openssh"
     echo "  10. Disk: vda, sys mode"
     echo "  11. After install: poweroff"
-    echo "  12. Then use: ./boot-phone.sh $DISK_IMG"
+    echo "  12. Then boot: ./boot-desktop.sh"
     echo "════════════════════════════════════════════"
     echo
 
@@ -129,12 +134,25 @@ if [ "$ARCH" = "arm64" ] || [ "$ARCH" = "aarch64" ]; then
         -cpu host \
         $ACCEL \
         -bios "$EFI_CODE" \
-        "${COMMON_ARGS[@]}"
+        "${COMMON_ARGS[@]}" \
+        -display cocoa
 
 else
     # x86_64 (WSL2 / Linux)
     ACCEL="-enable-kvm"
     [ ! -e /dev/kvm ] && ACCEL="-accel tcg"
+
+    # Display backend for WSL2 vs native Linux
+    DISPLAY_OPT="-display gtk"
+    if [ "$IS_WSL" = true ]; then
+        if [ -n "${DISPLAY:-}" ] || [ -d "/mnt/wslg" ]; then
+            DISPLAY_OPT="-display gtk"
+        else
+            DISPLAY_OPT="-display none -vnc :0"
+            echo "Note: No display detected. Using VNC on port 5900."
+            echo "  Connect from Windows: localhost:5900"
+        fi
+    fi
 
     echo
     echo "Booting Alpine installer (x86_64)..."
@@ -153,16 +171,20 @@ else
     echo "  9. SSH: openssh"
     echo "  10. Disk: vda, sys mode"
     echo "  11. After install: poweroff"
-    echo "  12. Then use: ./boot-phone.sh $DISK_IMG"
+    echo "  12. Then deploy: scp -P 2222 deploy-stack.sh root@localhost:"
+    echo "  13. SSH in:       ssh -p 2222 root@localhost ./deploy-stack.sh"
+    echo "  14. Boot desktop: ./boot-desktop.sh"
     echo "════════════════════════════════════════════"
     echo
 
+    # shellcheck disable=SC2086
     $QEMU_BIN \
         -machine q35 \
         $ACCEL \
-        "${COMMON_ARGS[@]}"
+        "${COMMON_ARGS[@]}" \
+        $DISPLAY_OPT
 fi
 
 echo
 echo "Installation complete!"
-echo "Boot the phone: ./boot-phone.sh $DISK_IMG"
+echo "Boot the desktop: ./boot-desktop.sh $DISK_IMG"
