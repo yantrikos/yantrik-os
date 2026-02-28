@@ -626,12 +626,13 @@ fn main() {
     let scorer = Rc::new(RefCell::new(scorer));
     let system_snapshot = Rc::new(RefCell::new(system_snapshot));
 
-    // System poll timer — drains events, runs features, updates UI (every 3s)
+    // System poll timer — drains events, runs features, updates UI, records in brain (every 3s)
     let ui_weak_sys = ui.as_weak();
     let observer_poll = observer.clone();
     let registry_poll = registry.clone();
     let scorer_poll = scorer.clone();
     let snapshot_poll = system_snapshot.clone();
+    let bridge_sys = bridge.clone();
     let system_timer = Timer::default();
     system_timer.start(TimerMode::Repeated, Duration::from_secs(3), move || {
         // 1. Drain all pending system events
@@ -679,7 +680,14 @@ fn main() {
             all_urges.extend(registry_poll.borrow_mut().tick(&ctx));
         }
 
-        // 3. Update status bar from snapshot
+        // 3. Forward significant events to the brain (companion memory)
+        for event in &events {
+            if let Some((text, domain, importance)) = event_to_memory(event) {
+                bridge_sys.record_system_event(text, domain, importance);
+            }
+        }
+
+        // 4. Update status bar from snapshot
         let snap = snapshot_poll.borrow();
         if let Some(ui) = ui_weak_sys.upgrade() {
             ui.set_battery_level(snap.battery_level as i32);
@@ -687,7 +695,7 @@ fn main() {
             ui.set_wifi_connected(snap.network_connected);
         }
 
-        // 4. Score and display urges
+        // 5. Score and display urges
         if !all_urges.is_empty() {
             let scored = scorer_poll.borrow_mut().score(all_urges);
             if !scored.is_empty() {
@@ -805,6 +813,96 @@ fn load_system_config(path: Option<PathBuf>) -> yantrik_os::SystemObserverConfig
                 ..Default::default()
             }
         }
+    }
+}
+
+/// Convert a system event into a memory record (text, domain, importance).
+/// Returns None for events that aren't worth remembering (routine resource polls).
+fn event_to_memory(event: &yantrik_os::SystemEvent) -> Option<(String, String, f64)> {
+    use yantrik_os::SystemEvent;
+    match event {
+        SystemEvent::BatteryChanged { level, charging, .. } => {
+            // Only record significant battery events
+            if *charging {
+                Some((
+                    format!("Battery started charging at {}%", level),
+                    "system/battery".into(),
+                    0.3,
+                ))
+            } else if *level <= 20 {
+                Some((
+                    format!("Battery low at {}%", level),
+                    "system/battery".into(),
+                    0.6,
+                ))
+            } else {
+                None // Don't record every battery tick
+            }
+        }
+        SystemEvent::NetworkChanged { connected, ssid, .. } => {
+            let text = if *connected {
+                format!("Connected to network{}", ssid.as_ref().map(|s| format!(" '{}'", s)).unwrap_or_default())
+            } else {
+                "Network disconnected".into()
+            };
+            Some((text, "system/network".into(), 0.4))
+        }
+        SystemEvent::NotificationReceived { app, summary, .. } => {
+            Some((
+                format!("Notification from {}: {}", app, summary),
+                "system/notification".into(),
+                0.5,
+            ))
+        }
+        SystemEvent::FileChanged { path, kind } => {
+            let action = match kind {
+                yantrik_os::FileChangeKind::Created => "created",
+                yantrik_os::FileChangeKind::Modified => "modified",
+                yantrik_os::FileChangeKind::Deleted => "deleted",
+                yantrik_os::FileChangeKind::Renamed { to } => {
+                    return Some((
+                        format!("File renamed: {} → {}", path, to),
+                        "system/files".into(),
+                        0.3,
+                    ));
+                }
+            };
+            Some((
+                format!("File {}: {}", action, path),
+                "system/files".into(),
+                0.3,
+            ))
+        }
+        SystemEvent::ProcessStarted { name, .. } => {
+            Some((
+                format!("App opened: {}", name),
+                "system/process".into(),
+                0.2,
+            ))
+        }
+        SystemEvent::ProcessStopped { name, .. } => {
+            Some((
+                format!("App closed: {}", name),
+                "system/process".into(),
+                0.2,
+            ))
+        }
+        SystemEvent::UserIdle { idle_seconds } if *idle_seconds > 300 => {
+            Some((
+                format!("User idle for {} minutes", idle_seconds / 60),
+                "system/presence".into(),
+                0.2,
+            ))
+        }
+        SystemEvent::UserResumed => {
+            Some((
+                "User returned".into(),
+                "system/presence".into(),
+                0.3,
+            ))
+        }
+        // Skip routine resource pressure events (too noisy for memory)
+        _ => None,
     }
 }
 

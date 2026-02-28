@@ -42,6 +42,12 @@ pub enum CompanionCommand {
     GetPendingUrges {
         reply_tx: Sender<Vec<UrgeSnapshot>>,
     },
+    /// Record a system event in the companion's memory.
+    RecordSystemEvent {
+        text: String,
+        domain: String,
+        importance: f64,
+    },
     /// Run a background think cycle.
     Think,
     /// Shut down the worker.
@@ -176,6 +182,15 @@ impl CompanionBridge {
         let (reply_tx, reply_rx) = crossbeam_channel::unbounded();
         let _ = self.cmd_tx.send(CompanionCommand::GetPendingUrges { reply_tx });
         reply_rx
+    }
+
+    /// Record a system event in the companion's memory.
+    pub fn record_system_event(&self, text: String, domain: String, importance: f64) {
+        let _ = self.cmd_tx.send(CompanionCommand::RecordSystemEvent {
+            text,
+            domain,
+            importance,
+        });
     }
 
     /// Trigger a think cycle.
@@ -323,6 +338,23 @@ fn worker_loop(
                     })
                     .collect();
                 let _ = reply_tx.send(snapshots);
+            }
+            Ok(CompanionCommand::RecordSystemEvent { text, domain, importance }) => {
+                if let Err(e) = companion.db.record_text(
+                    &text,
+                    "episodic",     // system events are episodic memories
+                    importance,
+                    0.0,            // neutral valence
+                    604800.0,       // 7-day half-life
+                    &serde_json::json!({}),
+                    "default",
+                    0.9,            // high certainty (we observed it)
+                    &domain,
+                    "system",       // source = system observer
+                    None,
+                ) {
+                    tracing::warn!(error = %e, "Failed to record system event");
+                }
             }
             Ok(CompanionCommand::Think) => {
                 let db = &companion.db;

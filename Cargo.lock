@@ -8936,6 +8936,7 @@ dependencies = [
  "cpal",
  "crossbeam-channel",
  "rubato",
+ "serde_json",
  "serde_yaml",
  "slint",
  "slint-build",
