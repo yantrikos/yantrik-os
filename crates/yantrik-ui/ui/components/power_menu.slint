@@ -1,0 +1,181 @@
+// Power Menu — overlay modal for system power actions.
+// Lock, Suspend, Restart, Shut Down.
+// Follows the QuickSettings overlay pattern (backdrop + centered card).
+
+import { Theme } from "../theme.slint";
+
+export component PowerMenu inherits Rectangle {
+    in-out property <bool> is-open: false;
+
+    callback power-action(string);
+    callback close();
+
+    width: 100%;
+    height: 100%;
+
+    // Backdrop (click to close)
+    if root.is-open : TouchArea {
+        width: 100%;
+        height: 100%;
+        clicked => { root.is-open = false; root.close(); }
+
+        Rectangle {
+            width: 100%;
+            height: 100%;
+            background: Theme.overlay-backdrop;
+        }
+    }
+
+    // Centered card
+    if root.is-open : Rectangle {
+        x: (parent.width - 320px) / 2;
+        y: (parent.height - card-layout.preferred-height) / 2;
+        width: 320px;
+        height: card-layout.preferred-height;
+        background: Theme.bg-elevated;
+        border-radius: 16px;
+        border-width: 1px;
+        border-color: Theme.border-subtle;
+        drop-shadow-blur: 24px;
+        drop-shadow-color: Theme.overlay-shadow;
+
+        // Block click-through
+        TouchArea { width: 100%; height: 100%; }
+
+        card-layout := VerticalLayout {
+            padding: 16px;
+            spacing: 4px;
+
+            // Header
+            Text {
+                text: "Power";
+                color: Theme.text-primary;
+                font-size: Theme.font-title;
+                font-weight: 500;
+                horizontal-alignment: center;
+            }
+
+            Rectangle { height: 8px; }
+
+            // Lock
+            TouchArea {
+                height: 48px;
+                clicked => { root.power-action("lock"); root.is-open = false; root.close(); }
+
+                Rectangle {
+                    width: 100%; height: 100%;
+                    border-radius: 10px;
+                    background: parent.has-hover ? Theme.hover-fill : transparent;
+
+                    HorizontalLayout {
+                        padding-left: 16px;
+                        spacing: 14px;
+
+                        Text {
+                            text: "\u{1f512}";
+                            font-size: 18px;
+                            vertical-alignment: center;
+                        }
+                        Text {
+                            text: "Lock";
+                            color: Theme.text-primary;
+                            font-size: Theme.font-body;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+            }
+
+            // Suspend
+            TouchArea {
+                height: 48px;
+                clicked => { root.power-action("suspend"); root.is-open = false; root.close(); }
+
+                Rectangle {
+                    width: 100%; height: 100%;
+                    border-radius: 10px;
+                    background: parent.has-hover ? Theme.hover-fill : transparent;
+
+                    HorizontalLayout {
+                        padding-left: 16px;
+                        spacing: 14px;
+
+                        Text {
+                            text: "\u{1f4a4}";
+                            font-size: 18px;
+                            vertical-alignment: center;
+                        }
+                        Text {
+                            text: "Suspend";
+                            color: Theme.text-primary;
+                            font-size: Theme.font-body;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+            }
+
+            Rectangle { height: 1px; background: Theme.separator; }
+
+            // Restart
+            TouchArea {
+                height: 48px;
+                clicked => { root.power-action("restart"); root.is-open = false; root.close(); }
+
+                Rectangle {
+                    width: 100%; height: 100%;
+                    border-radius: 10px;
+                    background: parent.has-hover ? Theme.hover-fill : transparent;
+
+                    HorizontalLayout {
+                        padding-left: 16px;
+                        spacing: 14px;
+
+                        Text {
+                            text: "\u{1f504}";
+                            font-size: 18px;
+                            vertical-alignment: center;
+                        }
+                        Text {
+                            text: "Restart";
+                            color: Theme.text-primary;
+                            font-size: Theme.font-body;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+            }
+
+            // Shut Down (destructive)
+            TouchArea {
+                height: 48px;
+                clicked => { root.power-action("shutdown"); root.is-open = false; root.close(); }
+
+                Rectangle {
+                    width: 100%; height: 100%;
+                    border-radius: 10px;
+                    background: parent.has-hover ? Theme.hover-fill : transparent;
+
+                    HorizontalLayout {
+                        padding-left: 16px;
+                        spacing: 14px;
+
+                        Text {
+                            text: "\u{23fb}";
+                            color: Theme.color-emotional;
+                            font-size: 18px;
+                            vertical-alignment: center;
+                        }
+                        Text {
+                            text: "Shut Down";
+                            color: Theme.color-emotional;
+                            font-size: Theme.font-body;
+                            font-weight: 500;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

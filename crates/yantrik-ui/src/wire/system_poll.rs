@@ -9,7 +9,7 @@ use slint::{ComponentHandle, Timer, TimerMode};
 use slint::{ModelRc, VecModel};
 
 use crate::app_context::AppContext;
-use crate::{cards, features, lock, system_context, App, ProcessData};
+use crate::{cards, features, lock, system_context, windows, App, DockItem, ProcessData, WindowItem};
 
 /// Wire the system poll timer.
 pub fn wire(ui: &App, ctx: &AppContext) {
@@ -162,7 +162,43 @@ pub fn wire(ui: &App, ctx: &AppContext) {
             }
         }
 
-        // 4c. Update system context for LLM prompt injection
+        // 4c. Update dock running indicators + window list
+        if let Some(ui) = ui_weak.upgrade() {
+            if ui.get_current_screen() == 1 {
+                let wins = windows::list_windows();
+
+                // Update dock items with running state
+                let default_items: &[(&str, &str, &str)] = &[
+                    ("terminal", "Terminal", ">_"),
+                    ("browser", "Browser", "W"),
+                    ("files", "Files", "F"),
+                    ("settings", "Settings", "*"),
+                ];
+                let dock: Vec<DockItem> = default_items
+                    .iter()
+                    .map(|(id, label, icon)| DockItem {
+                        app_id: (*id).into(),
+                        label: (*label).into(),
+                        icon_char: (*icon).into(),
+                        is_running: wins.iter().any(|w| w.app_id == *id),
+                    })
+                    .collect();
+                ui.set_dock_items(ModelRc::new(VecModel::from(dock)));
+
+                // Update window list for switcher
+                let win_items: Vec<WindowItem> = wins
+                    .iter()
+                    .map(|w| WindowItem {
+                        title: w.title.clone().into(),
+                        app_id: w.app_id.clone().into(),
+                        icon_char: w.icon_char.clone().into(),
+                    })
+                    .collect();
+                ui.set_window_list(ModelRc::new(VecModel::from(win_items)));
+            }
+        }
+
+        // 4d. Update system context for LLM prompt injection
         bridge.set_system_context(system_context::format_system_context(&snap));
 
         // 5. Score and display urges
@@ -219,6 +255,32 @@ fn handle_keybind(ui: &App, action: &str) {
                         .as_secs()
                 ))
                 .spawn();
+        }
+        "power-menu" => {
+            if ui.get_current_screen() == 1 {
+                ui.set_power_menu_open(!ui.get_power_menu_open());
+            }
+        }
+        "app-grid" => {
+            if ui.get_current_screen() == 1 {
+                ui.set_app_grid_open(!ui.get_app_grid_open());
+            }
+        }
+        "window-switcher" => {
+            if ui.get_current_screen() == 1 {
+                // Refresh window list immediately before showing
+                let wins = windows::list_windows();
+                let items: Vec<WindowItem> = wins
+                    .iter()
+                    .map(|w| WindowItem {
+                        title: w.title.clone().into(),
+                        app_id: w.app_id.clone().into(),
+                        icon_char: w.icon_char.clone().into(),
+                    })
+                    .collect();
+                ui.set_window_list(ModelRc::new(VecModel::from(items)));
+                ui.set_window_switcher_open(!ui.get_window_switcher_open());
+            }
         }
         other => {
             tracing::debug!(action = other, "Unknown keybind action");

@@ -3,7 +3,7 @@
 //   6=memory, 7=settings, 8=files, 9=notifications, 10=system.
 // The AI IS the shell — Intent Lens is the primary interaction.
 
-import { Theme } from "theme.slint";
+import { Theme, ThemeMode } from "theme.slint";
 import { BootScreen } from "boot.slint";
 import { OnboardingScreen } from "onboarding.slint";
 import { DesktopScreen } from "desktop.slint";
@@ -21,8 +21,11 @@ import { UrgeCardData } from "components/glance_card.slint";
 import { LensResult } from "components/intent_lens.slint";
 import { WhisperCardItem } from "components/whisper_card.slint";
 import { ClipboardEntryData } from "components/clipboard_panel.slint";
+import { AppGridItem } from "components/app_grid.slint";
+import { WindowItem } from "components/window_switcher.slint";
+import { DockItem } from "components/app_dock.slint";
 
-export { MessageData, UrgeCardData, BondData, OpinionData, SharedRefData, MemoryItem, LensResult, WhisperCardItem, FileEntry, NotificationData, ProcessData, ClipboardEntryData }
+export { ThemeMode, MessageData, UrgeCardData, BondData, OpinionData, SharedRefData, MemoryItem, LensResult, WhisperCardItem, FileEntry, NotificationData, ProcessData, ClipboardEntryData, AppGridItem, WindowItem, DockItem }
 
 export component App inherits Window {
     title: "Yantrik OS";
@@ -101,6 +104,23 @@ export component App inherits Window {
     in-out property <bool> clip-panel-open: false;
     in property <[ClipboardEntryData]> clip-panel-entries: [];
     callback clipboard-paste(int);
+
+    // Power menu state
+    in-out property <bool> power-menu-open: false;
+    callback power-action(string);
+
+    // App grid state
+    in-out property <bool> app-grid-open: false;
+    in property <[AppGridItem]> grid-apps: [];
+    callback grid-launch-app(string);
+
+    // Window switcher state
+    in-out property <bool> window-switcher-open: false;
+    in property <[WindowItem]> window-list: [];
+    callback switch-window(string);
+
+    // Dock items (for running indicators)
+    in property <[DockItem]> dock-items: [];
 
     // Quick Settings state
     in-out property <bool> quick-settings-open: false;
@@ -265,6 +285,19 @@ export component App inherits Window {
             clip-panel-open <=> root.clip-panel-open;
             clip-panel-entries: root.clip-panel-entries;
             clipboard-paste(idx) => { root.clipboard-paste(idx); }
+            // Power menu
+            power-menu-open <=> root.power-menu-open;
+            power-action(action) => { root.power-action(action); }
+            // App grid
+            app-grid-open <=> root.app-grid-open;
+            grid-apps: root.grid-apps;
+            grid-launch-app(app-id) => { root.grid-launch-app(app-id); }
+            // Window switcher
+            window-switcher-open <=> root.window-switcher-open;
+            window-list: root.window-list;
+            switch-window(title) => { root.switch-window(title); }
+            // Dock items
+            dock-items: root.dock-items;
             // Quick Settings
             quick-settings-open <=> root.quick-settings-open;
             brightness-level <=> root.brightness-level;
@@ -431,7 +464,7 @@ export component App inherits Window {
             border-color: Theme.amber-dim;
             opacity: 0.95;
             drop-shadow-blur: 16px;
-            drop-shadow-color: #00000060;
+            drop-shadow-color: Theme.overlay-backdrop;
 
             TouchArea {
                 clicked => { root.show-notification = false; }

@@ -46,6 +46,9 @@ mod onboarding;
 mod streaming;
 mod system_context;
 mod voice;
+// NOTE: #[allow(dead_code)] required to avoid rustc 1.93.1 ICE in check_mod_deathness.
+#[allow(dead_code)]
+mod windows;
 mod wire;
 
 slint::include_modules!();

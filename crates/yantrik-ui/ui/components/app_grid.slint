@@ -1,0 +1,135 @@
+// App Grid — full-screen app launcher overlay.
+// Shows all installed apps in a scrollable grid.
+// Triggered by Super+A or dock gesture.
+
+import { Theme } from "../theme.slint";
+import { ListView } from "std-widgets.slint";
+
+export struct AppGridItem {
+    app-id: string,
+    name: string,
+    icon-char: string,
+}
+
+export component AppGrid inherits Rectangle {
+    in-out property <bool> is-open: false;
+    in property <[AppGridItem]> apps: [];
+
+    callback launch-app(string);
+    callback close();
+
+    width: 100%;
+    height: 100%;
+
+    // Backdrop (click to close)
+    if root.is-open : TouchArea {
+        width: 100%;
+        height: 100%;
+        clicked => { root.is-open = false; root.close(); }
+
+        Rectangle {
+            width: 100%;
+            height: 100%;
+            background: Theme.overlay-backdrop;
+        }
+    }
+
+    // Centered panel
+    if root.is-open : Rectangle {
+        x: (parent.width - 720px) / 2;
+        y: (parent.height - panel-height) / 2;
+        property <length> panel-height: min(root.apps.length * 52px + 120px, parent.height - 80px);
+        width: 720px;
+        height: panel-height;
+        background: Theme.bg-elevated;
+        border-radius: 16px;
+        border-width: 1px;
+        border-color: Theme.border-subtle;
+        drop-shadow-blur: 32px;
+        drop-shadow-color: Theme.overlay-shadow;
+        clip: true;
+
+        // Block click-through
+        TouchArea { width: 100%; height: 100%; }
+
+        VerticalLayout {
+            padding: 20px;
+            spacing: 12px;
+
+            // Header
+            Text {
+                text: "Applications";
+                color: Theme.text-primary;
+                font-size: Theme.font-title;
+                font-weight: 500;
+                horizontal-alignment: center;
+            }
+
+            Text {
+                text: root.apps.length + " apps installed";
+                color: Theme.text-dim;
+                font-size: Theme.font-small;
+                horizontal-alignment: center;
+            }
+
+            Rectangle { height: 1px; background: Theme.separator; }
+
+            // Scrollable app list
+            ListView {
+                vertical-stretch: 1;
+
+                for app[idx] in root.apps : TouchArea {
+                    height: 52px;
+                    clicked => {
+                        root.launch-app(app.app-id);
+                        root.is-open = false;
+                        root.close();
+                    }
+
+                    Rectangle {
+                        width: 100%;
+                        height: 100%;
+                        border-radius: 10px;
+                        background: parent.has-hover ? Theme.hover-fill : transparent;
+
+                        HorizontalLayout {
+                            padding-left: 14px;
+                            padding-right: 14px;
+                            spacing: 14px;
+
+                            // Icon badge
+                            Rectangle {
+                                width: 36px;
+                                height: 36px;
+                                y: (parent.height - 36px) / 2;
+                                border-radius: 10px;
+                                background: Theme.bg-card;
+                                border-width: 1px;
+                                border-color: Theme.border-subtle;
+
+                                Text {
+                                    text: app.icon-char;
+                                    color: Theme.cyan;
+                                    font-size: 16px;
+                                    font-weight: 700;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                            }
+
+                            // App name
+                            Text {
+                                text: app.name;
+                                color: Theme.text-primary;
+                                font-size: Theme.font-body;
+                                vertical-alignment: center;
+                                horizontal-stretch: 1;
+                                overflow: elide;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

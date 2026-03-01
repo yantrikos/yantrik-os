@@ -71,7 +71,7 @@ export component LockScreen inherits Rectangle {
                 border-radius: Theme.radius-card;
                 background: Theme.bg-input;
                 border-width: 1px;
-                border-color: root.error-text != "" ? #e86b6b80 : Theme.text-dim;
+                border-color: root.error-text != "" ? Theme.color-emotional : Theme.text-dim;
 
                 pin-input := TextInput {
                     x: 16px;
@@ -94,7 +94,7 @@ export component LockScreen inherits Rectangle {
         // Error text
         if root.error-text != "" : Text {
             text: root.error-text;
-            color: #e86b6b;
+            color: Theme.color-emotional;
             font-size: Theme.font-small;
             horizontal-alignment: center;
         }

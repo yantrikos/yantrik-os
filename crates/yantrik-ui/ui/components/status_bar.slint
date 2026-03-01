@@ -18,16 +18,17 @@ export component StatusBar inherits Rectangle {
     callback queue-clicked();
     callback whisper-hint-clicked();
     callback settings-tapped();
+    callback power-pressed();
 
     height: Theme.status-bar-height;
-    background: @linear-gradient(180deg, #0c0b10 0%, #08081a 100%);
+    background: @linear-gradient(180deg, Theme.bg-surface 0%, Theme.bg-deep 100%);
 
     // Bottom glow line (Firelight signature — brighter)
     Rectangle {
         y: parent.height - 1px;
         width: 100%;
         height: 1px;
-        background: @linear-gradient(90deg, transparent 5%, #5ac8d460 50%, transparent 95%);
+        background: @linear-gradient(90deg, transparent 5%, Theme.cyan-glow 50%, transparent 95%);
     }
 
     // Glow bloom behind the line
@@ -35,7 +36,7 @@ export component StatusBar inherits Rectangle {
         y: parent.height - 3px;
         width: 100%;
         height: 6px;
-        background: @linear-gradient(90deg, transparent 10%, #5ac8d418 50%, transparent 90%);
+        background: @linear-gradient(90deg, transparent 10%, Theme.tint-cyan 50%, transparent 90%);
     }
 
     HorizontalLayout {
@@ -117,10 +118,25 @@ export component StatusBar inherits Rectangle {
             }
         }
 
-        // ── Right: Pending count + WiFi + Battery ──
+        // ── Right: Power + Pending count + WiFi + Battery ──
         HorizontalLayout {
             spacing: 12px;
             alignment: end;
+
+            // Power button
+            TouchArea {
+                width: 20px;
+                height: Theme.status-bar-height;
+                clicked => { root.power-pressed(); }
+
+                Text {
+                    text: "\u{23fb}";
+                    color: parent.has-hover ? Theme.text-primary : Theme.text-dim;
+                    font-size: 12px;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
 
             // Whisper hint badge (low-pressure urges)
             if root.whisper-hint-count > 0 : TouchArea {

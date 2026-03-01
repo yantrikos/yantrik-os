@@ -20,17 +20,20 @@
 //
 //   Intent Lens: overlays center-screen when Super pressed
 
-import { Theme } from "theme.slint";
+import { Theme, ThemeMode } from "theme.slint";
 import { ParticleField } from "components/particle_field.slint";
 import { Orb } from "components/orb.slint";
 import { StatusBar } from "components/status_bar.slint";
-import { AppDock } from "components/app_dock.slint";
+import { AppDock, DockItem } from "components/app_dock.slint";
 import { IntentLens, LensResult } from "components/intent_lens.slint";
 import { MessageData } from "components/message_bubble.slint";
 import { UrgeCardData } from "components/glance_card.slint";
 import { WhisperCardStack, WhisperCardItem } from "components/whisper_card.slint";
 import { QuickSettings } from "components/quick_settings.slint";
 import { ClipboardPanel, ClipboardEntryData } from "components/clipboard_panel.slint";
+import { PowerMenu } from "components/power_menu.slint";
+import { AppGrid, AppGridItem } from "components/app_grid.slint";
+import { WindowSwitcher, WindowItem } from "components/window_switcher.slint";
 
 export component DesktopScreen inherits Rectangle {
     // Status bar state
@@ -82,6 +85,23 @@ export component DesktopScreen inherits Rectangle {
     in property <[ClipboardEntryData]> clip-panel-entries: [];
     callback clipboard-paste(int);
 
+    // Power menu
+    in-out property <bool> power-menu-open: false;
+    callback power-action(string);
+
+    // App grid
+    in-out property <bool> app-grid-open: false;
+    in property <[AppGridItem]> grid-apps: [];
+    callback grid-launch-app(string);
+
+    // Window switcher
+    in-out property <bool> window-switcher-open: false;
+    in property <[WindowItem]> window-list: [];
+    callback switch-window(string);
+
+    // Dock items (settable from Rust for running indicators)
+    in property <[DockItem]> dock-items: [];
+
     // Focus mode (Workspace Morph)
     in-out property <bool> focus-mode: false;
     in property <string> focus-remaining: "";
@@ -119,6 +139,7 @@ export component DesktopScreen inherits Rectangle {
         queue-clicked => { root.lens-open = true; root.open-lens(); }
         whisper-hint-clicked => { root.whisper-hint-clicked(); }
         settings-tapped => { root.quick-settings-open = !root.quick-settings-open; }
+        power-pressed => { root.power-menu-open = !root.power-menu-open; }
     }
 
     // ── Layer 2: Desktop content area ──
@@ -128,44 +149,49 @@ export component DesktopScreen inherits Rectangle {
         height: root.height - Theme.status-bar-height;
         clip: true;
 
-        // ── Deep space backdrop ──
-        // Base gradient (not flat black — subtle blue-black depth)
-        Rectangle {
+        // ── Deep space backdrop (dark mode) ──
+        if ThemeMode.dark : Rectangle {
             width: 100%; height: 100%;
-            background: @radial-gradient(circle, #0a0a18 0%, #06060e 50%, #030306 100%);
+            // Base gradient (not flat black — subtle blue-black depth)
+            Rectangle {
+                width: 100%; height: 100%;
+                background: @radial-gradient(circle, #0a0a18 0%, #06060e 50%, #030306 100%);
+            }
+            // Nebula wash — upper right (cool cyan)
+            Rectangle {
+                x: parent.width * 0.6;
+                y: -parent.height * 0.05;
+                width: 550px; height: 450px;
+                border-radius: 225px;
+                background: @radial-gradient(circle, #5ac8d40e 0%, #5ac8d406 40%, transparent 70%);
+            }
+            // Nebula wash — lower left (warm amber)
+            Rectangle {
+                x: -50px;
+                y: parent.height * 0.5;
+                width: 500px; height: 400px;
+                border-radius: 200px;
+                background: @radial-gradient(circle, #d4a5740e 0%, #d4a57406 40%, transparent 70%);
+            }
+            // Nebula wash — center (subtle purple)
+            Rectangle {
+                x: parent.width * 0.28;
+                y: parent.height * 0.2;
+                width: 700px; height: 500px;
+                border-radius: 250px;
+                background: @radial-gradient(circle, #c48bd408 0%, transparent 60%);
+            }
+            // Vignette overlay — darkens edges for depth
+            Rectangle {
+                width: 100%; height: 100%;
+                background: @radial-gradient(circle, transparent 25%, #00000030 60%, #00000070 100%);
+            }
         }
 
-        // Nebula wash — upper right (cool cyan)
-        Rectangle {
-            x: parent.width * 0.6;
-            y: -parent.height * 0.05;
-            width: 550px; height: 450px;
-            border-radius: 225px;
-            background: @radial-gradient(circle, #5ac8d40e 0%, #5ac8d406 40%, transparent 70%);
-        }
-
-        // Nebula wash — lower left (warm amber)
-        Rectangle {
-            x: -50px;
-            y: parent.height * 0.5;
-            width: 500px; height: 400px;
-            border-radius: 200px;
-            background: @radial-gradient(circle, #d4a5740e 0%, #d4a57406 40%, transparent 70%);
-        }
-
-        // Nebula wash — center (subtle purple)
-        Rectangle {
-            x: parent.width * 0.28;
-            y: parent.height * 0.2;
-            width: 700px; height: 500px;
-            border-radius: 250px;
-            background: @radial-gradient(circle, #c48bd408 0%, transparent 60%);
-        }
-
-        // Vignette overlay — darkens edges for depth
-        Rectangle {
+        // ── Light mode backdrop ──
+        if !ThemeMode.dark : Rectangle {
             width: 100%; height: 100%;
-            background: @radial-gradient(circle, transparent 25%, #00000030 60%, #00000070 100%);
+            background: @radial-gradient(circle, #f0f0f4 0%, #e4e4ec 50%, #d8d8e0 100%);
         }
 
         // Particle field (neurons + nebula clouds)
@@ -253,7 +279,7 @@ export component DesktopScreen inherits Rectangle {
                     border-radius: 18px;
                     border-width: 1px;
                     border-color: Theme.text-dim;
-                    background: parent.has-hover ? #ffffff10 : transparent;
+                    background: parent.has-hover ? Theme.hover-fill-strong : transparent;
 
                     Text {
                         text: "End Focus";
@@ -296,6 +322,12 @@ export component DesktopScreen inherits Rectangle {
         AppDock {
             y: parent.height - self.height;
             width: 100%;
+            items: root.dock-items.length > 0 ? root.dock-items : [
+                { app-id: "terminal", label: "Terminal", icon-char: ">_", is-running: false },
+                { app-id: "browser",  label: "Browser",  icon-char: "W",  is-running: false },
+                { app-id: "files",    label: "Files",    icon-char: "F",  is-running: false },
+                { app-id: "settings", label: "Settings", icon-char: "*",  is-running: false },
+            ];
             launch-app(app-id) => { root.launch-app(app-id); }
             anchor-pressed => {
                 root.lens-open = !root.lens-open;
@@ -319,6 +351,35 @@ export component DesktopScreen inherits Rectangle {
         brightness-changed(val) => { root.brightness-changed(val); }
         volume-changed(val) => { root.volume-changed(val); }
         close => { root.quick-settings-open = false; }
+    }
+
+    // ── Layer 2.52: Power menu overlay ──
+    PowerMenu {
+        width: 100%;
+        height: 100%;
+        is-open <=> root.power-menu-open;
+        power-action(action) => { root.power-action(action); }
+        close => { root.power-menu-open = false; }
+    }
+
+    // ── Layer 2.53: App grid overlay ──
+    AppGrid {
+        width: 100%;
+        height: 100%;
+        is-open <=> root.app-grid-open;
+        apps: root.grid-apps;
+        launch-app(app-id) => { root.grid-launch-app(app-id); }
+        close => { root.app-grid-open = false; }
+    }
+
+    // ── Layer 2.54: Window switcher overlay ──
+    WindowSwitcher {
+        width: 100%;
+        height: 100%;
+        is-open <=> root.window-switcher-open;
+        windows: root.window-list;
+        switch-window(title) => { root.switch-window(title); }
+        close => { root.window-switcher-open = false; }
     }
 
     // ── Layer 2.55: Clipboard history panel ──

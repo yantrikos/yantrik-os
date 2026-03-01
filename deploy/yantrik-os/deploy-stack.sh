@@ -81,6 +81,24 @@ apk add -q \
 
 echo "  Installed: labwc, foot, mako, dbus, eudev, mesa, fonts, seatd, gcompat, wayland"
 
+# Build wlrctl (window management CLI for Wayland)
+if ! command -v wlrctl >/dev/null 2>&1; then
+    echo "  Building wlrctl (Wayland window management)..."
+    apk add -q build-base wayland-dev wayland-protocols meson ninja scdoc
+    cd /tmp
+    if [ ! -d wlrctl ]; then
+        wget -q -O wlrctl.tar.gz "https://git.sr.ht/~brocellous/wlrctl/archive/main.tar.gz"
+        mkdir -p wlrctl && tar xzf wlrctl.tar.gz -C wlrctl --strip-components=1
+    fi
+    cd wlrctl
+    meson setup build --prefix=/usr/local 2>/dev/null || true
+    ninja -C build 2>/dev/null && ninja -C build install 2>/dev/null
+    cd /tmp && rm -rf wlrctl wlrctl.tar.gz
+    echo "  wlrctl installed at $(which wlrctl 2>/dev/null || echo '/usr/local/bin/wlrctl')"
+else
+    echo "  wlrctl already installed"
+fi
+
 # Install optional desktop apps (non-fatal if unavailable)
 apk add -q thunar 2>/dev/null && echo "  Installed: thunar (file manager)" || echo "  thunar not available, skipping"
 apk add -q firefox-esr 2>/dev/null && echo "  Installed: firefox-esr (browser)" || echo "  firefox-esr not available, skipping"
@@ -135,6 +153,15 @@ addgroup "$YANTRIK_USER" input 2>/dev/null || true
 
 mkdir -p "$BIN_DIR" "$DATA_DIR" "$MODEL_DIR" "$LOG_DIR" \
     "$MODEL_DIR/llm" "$MODEL_DIR/embedder" "$MODEL_DIR/whisper"
+
+# Sudoers for power commands (poweroff, reboot, zzz) without password
+apk add -q sudo 2>/dev/null || true
+cat > /etc/sudoers.d/yantrik-power <<SUDOERS
+# Yantrik OS — allow power commands without password
+$YANTRIK_USER ALL=(ALL) NOPASSWD: /sbin/poweroff, /sbin/reboot, /usr/sbin/zzz
+SUDOERS
+chmod 440 /etc/sudoers.d/yantrik-power
+echo "  Sudoers: power commands (poweroff, reboot, zzz) configured"
 
 # ── Step 3: Deploy binary ──
 echo "[3/8] Deploying Yantrik binary..."

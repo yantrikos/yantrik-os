@@ -1,49 +1,64 @@
 // Firelight Design Tokens — warm amber + electric cyan on deep black.
 // A sci-fi neural aesthetic: the companion's mind visualized.
+// Supports dark (default) and light modes via ThemeMode.dark toggle.
+
+export global ThemeMode {
+    in-out property <bool> dark: true;
+}
 
 export global Theme {
     // Backgrounds
-    out property <color> bg-deep: #050508;
-    out property <color> bg-surface: #0c0b10;
-    out property <color> bg-card: #12111a;
-    out property <color> bg-elevated: #1a1824;
-    out property <color> bg-input: #0e0d14;
-    out property <color> bg-selected: #181624;   // keyboard selection highlight
+    out property <color> bg-deep:     ThemeMode.dark ? #050508 : #f5f5f7;
+    out property <color> bg-surface:  ThemeMode.dark ? #0c0b10 : #eaeaec;
+    out property <color> bg-card:     ThemeMode.dark ? #12111a : #ffffff;
+    out property <color> bg-elevated: ThemeMode.dark ? #1a1824 : #ffffff;
+    out property <color> bg-input:    ThemeMode.dark ? #0e0d14 : #f0f0f4;
+    out property <color> bg-selected: ThemeMode.dark ? #181624 : #e8e6f0;
 
     // Amber palette (warmth, companion presence)
-    out property <color> amber: #d4a574;
-    out property <color> amber-light: #e8c496;
-    out property <color> amber-dim: #a07a50;
-    out property <color> amber-glow: #d4a57460;
-    out property <color> amber-glow-strong: #d4a574b0;
+    out property <color> amber:             ThemeMode.dark ? #d4a574 : #8a6030;
+    out property <color> amber-light:       ThemeMode.dark ? #e8c496 : #a07840;
+    out property <color> amber-dim:         ThemeMode.dark ? #a07a50 : #c4a070;
+    out property <color> amber-glow:        ThemeMode.dark ? #d4a57460 : #d4a57430;
+    out property <color> amber-glow-strong: ThemeMode.dark ? #d4a574b0 : #d4a57460;
 
     // Cyan palette (neural, electric, data)
-    out property <color> cyan: #5ac8d4;
-    out property <color> cyan-light: #7ee0e8;
-    out property <color> cyan-dim: #3a8a94;
-    out property <color> cyan-glow: #5ac8d450;
-    out property <color> cyan-glow-strong: #5ac8d480;
+    out property <color> cyan:             ThemeMode.dark ? #5ac8d4 : #1a8a94;
+    out property <color> cyan-light:       ThemeMode.dark ? #7ee0e8 : #40a8b4;
+    out property <color> cyan-dim:         ThemeMode.dark ? #3a8a94 : #80c8d0;
+    out property <color> cyan-glow:        ThemeMode.dark ? #5ac8d450 : #5ac8d430;
+    out property <color> cyan-glow-strong: ThemeMode.dark ? #5ac8d480 : #5ac8d450;
 
     // Holographic blue palette (Cortana-inspired orb)
-    out property <color> holo-blue: #4ab8f0;
-    out property <color> holo-blue-light: #6ed0ff;
-    out property <color> holo-blue-dim: #2a7ab0;
-    out property <color> holo-blue-glow: #4ab8f050;
-    out property <color> holo-core: #80e0ff;
-    out property <color> holo-edge: #2060a040;
+    out property <color> holo-blue:       ThemeMode.dark ? #4ab8f0 : #2080c0;
+    out property <color> holo-blue-light: ThemeMode.dark ? #6ed0ff : #50a0d0;
+    out property <color> holo-blue-dim:   ThemeMode.dark ? #2a7ab0 : #80c0e0;
+    out property <color> holo-blue-glow:  ThemeMode.dark ? #4ab8f050 : #4ab8f030;
+    out property <color> holo-core:       ThemeMode.dark ? #80e0ff : #40b0d0;
+    out property <color> holo-edge:       ThemeMode.dark ? #2060a040 : #2060a020;
 
     // Instinct colors
-    out property <color> color-pattern: #c48bd4;
-    out property <color> color-reminder: #8be86b;
-    out property <color> color-emotional: #e86b6b;
-    out property <color> color-check-in: #d4a03c;
-    out property <color> color-follow-up: #6bb8e8;
-    out property <color> color-conflict: #e8a06b;
+    out property <color> color-pattern:   ThemeMode.dark ? #c48bd4 : #9040a0;
+    out property <color> color-reminder:  ThemeMode.dark ? #8be86b : #40a020;
+    out property <color> color-emotional: ThemeMode.dark ? #e86b6b : #c04040;
+    out property <color> color-check-in:  ThemeMode.dark ? #d4a03c : #a07020;
+    out property <color> color-follow-up: ThemeMode.dark ? #6bb8e8 : #2080b0;
+    out property <color> color-conflict:  ThemeMode.dark ? #e8a06b : #c07030;
 
     // Text
-    out property <color> text-primary: #e0e4ec;
-    out property <color> text-secondary: #7a8494;
-    out property <color> text-dim: #3e4454;
+    out property <color> text-primary:   ThemeMode.dark ? #e0e4ec : #1a1c20;
+    out property <color> text-secondary: ThemeMode.dark ? #7a8494 : #5a6474;
+    out property <color> text-dim:       ThemeMode.dark ? #3e4454 : #a0a8b4;
+
+    // Overlay utility tokens (replace hardcoded opacity hex colors)
+    out property <color> overlay-backdrop:  ThemeMode.dark ? #00000060 : #00000030;
+    out property <color> overlay-shadow:    ThemeMode.dark ? #00000080 : #00000040;
+    out property <color> border-subtle:     ThemeMode.dark ? #ffffff08 : #00000008;
+    out property <color> separator:         ThemeMode.dark ? #ffffff08 : #0000000c;
+    out property <color> hover-fill:        ThemeMode.dark ? #ffffff08 : #00000008;
+    out property <color> hover-fill-strong: ThemeMode.dark ? #ffffff10 : #00000010;
+    out property <color> tint-cyan:         ThemeMode.dark ? #5ac8d420 : #1a8a9a18;
+    out property <color> tint-amber:        ThemeMode.dark ? #d4a57418 : #b0784018;
 
     // Typography
     out property <length> font-body: 15px;
@@ -73,9 +88,9 @@ export global Theme {
     out property <length> lens-result-height: 48px;
 
     // Result type colors
-    out property <color> color-do: #d4a574;       // amber — actions
-    out property <color> color-find: #5ac8d4;     // cyan — entities/files
-    out property <color> color-ask: #c4a050;      // muted gold — reasoning
-    out property <color> color-memory: #a07a50;   // dim amber — memories
-    out property <color> color-setting: #7a8494;  // gray — settings
+    out property <color> color-do:      ThemeMode.dark ? #d4a574 : #8a6030;
+    out property <color> color-find:    ThemeMode.dark ? #5ac8d4 : #1a8a94;
+    out property <color> color-ask:     ThemeMode.dark ? #c4a050 : #8a7020;
+    out property <color> color-memory:  ThemeMode.dark ? #a07a50 : #806030;
+    out property <color> color-setting: ThemeMode.dark ? #7a8494 : #5a6474;
 }

@@ -4,7 +4,7 @@
 
 import { Theme } from "../theme.slint";
 
-struct DockItem {
+export struct DockItem {
     app-id: string,
     label: string,
     icon-char: string,
@@ -118,7 +118,7 @@ export component AppDock inherits Rectangle {
                     border-radius: 10px;
                     background: is-hovered ? Theme.bg-elevated : Theme.bg-card;
                     border-width: 1px;
-                    border-color: is-hovered ? Theme.cyan-dim : #ffffff08;
+                    border-color: is-hovered ? Theme.cyan-dim : Theme.border-subtle;
                     drop-shadow-blur: is-hovered ? 6px : 0;
                     drop-shadow-color: Theme.cyan-glow;
 

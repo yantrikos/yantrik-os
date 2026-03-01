@@ -1,0 +1,117 @@
+// Window Switcher — overlay showing running windows.
+// Centered horizontal strip. Each window = icon + truncated title.
+// Triggered by Super+Tab.
+
+import { Theme } from "../theme.slint";
+
+export struct WindowItem {
+    title: string,
+    app-id: string,
+    icon-char: string,
+}
+
+export component WindowSwitcher inherits Rectangle {
+    in-out property <bool> is-open: false;
+    in property <[WindowItem]> windows: [];
+
+    callback switch-window(string);
+    callback close();
+
+    width: 100%;
+    height: 100%;
+
+    // Backdrop (click to close)
+    if root.is-open : TouchArea {
+        width: 100%;
+        height: 100%;
+        clicked => { root.is-open = false; root.close(); }
+
+        Rectangle {
+            width: 100%;
+            height: 100%;
+            background: Theme.overlay-backdrop;
+        }
+    }
+
+    // Centered horizontal strip
+    if root.is-open : Rectangle {
+        x: (parent.width - strip-width) / 2;
+        y: (parent.height - 120px) / 2;
+        property <length> strip-width: min(root.windows.length * 106px + 20px, parent.width - 80px);
+        width: max(300px, strip-width);
+        height: 120px;
+        background: Theme.bg-elevated;
+        border-radius: 16px;
+        border-width: 1px;
+        border-color: Theme.border-subtle;
+        drop-shadow-blur: 24px;
+        drop-shadow-color: Theme.overlay-shadow;
+        clip: true;
+
+        // Block click-through
+        TouchArea { width: 100%; height: 100%; }
+
+        HorizontalLayout {
+            padding: 10px;
+            spacing: 6px;
+            alignment: center;
+
+            // Empty state
+            if root.windows.length == 0 : Text {
+                text: "No windows open";
+                color: Theme.text-dim;
+                font-size: Theme.font-body;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+
+            for win[idx] in root.windows : TouchArea {
+                width: 96px;
+                height: 96px;
+                clicked => {
+                    root.switch-window(win.title);
+                    root.is-open = false;
+                    root.close();
+                }
+
+                Rectangle {
+                    property <bool> is-hovered: parent.has-hover;
+                    width: 96px;
+                    height: 96px;
+                    border-radius: 12px;
+                    background: is-hovered ? Theme.bg-selected : Theme.bg-card;
+                    border-width: is-hovered ? 1px : 0;
+                    border-color: Theme.cyan-dim;
+
+                    animate background { duration: 100ms; }
+
+                    VerticalLayout {
+                        alignment: center;
+                        spacing: 6px;
+                        padding: 8px;
+
+                        // Icon
+                        Text {
+                            text: win.icon-char;
+                            color: is-hovered ? Theme.cyan : Theme.text-secondary;
+                            font-size: 24px;
+                            font-weight: 700;
+                            horizontal-alignment: center;
+
+                            animate color { duration: 100ms; }
+                        }
+
+                        // Title (truncated)
+                        Text {
+                            text: win.title;
+                            color: Theme.text-primary;
+                            font-size: 10px;
+                            horizontal-alignment: center;
+                            overflow: elide;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

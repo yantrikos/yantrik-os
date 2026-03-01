@@ -48,7 +48,7 @@ export component IntentLens inherits Rectangle {
     // Full overlay — click outside to close
     width: 100%;
     height: 100%;
-    background: is-open ? #00000060 : transparent;
+    background: is-open ? Theme.overlay-backdrop : transparent;
     visible: is-open;
 
     animate background { duration: 150ms; }
@@ -69,10 +69,10 @@ export component IntentLens inherits Rectangle {
         border-radius: 16px;
         background: Theme.bg-surface;
         border-width: 1px;
-        border-color: #ffffff0a;
+        border-color: Theme.border-subtle;
         clip: true;
         drop-shadow-blur: 32px;
-        drop-shadow-color: #000000a0;
+        drop-shadow-color: Theme.overlay-shadow;
         opacity: root.is-open ? 1.0 : 0.0;
 
         animate y { duration: 200ms; easing: ease-out; }
@@ -171,7 +171,7 @@ export component IntentLens inherits Rectangle {
                         border-radius: 4px;
                         background: Theme.bg-card;
                         border-width: 1px;
-                        border-color: #ffffff08;
+                        border-color: Theme.border-subtle;
 
                         Text {
                             text: "esc";
@@ -188,7 +188,7 @@ export component IntentLens inherits Rectangle {
                     y: parent.height - 1px;
                     width: 100%;
                     height: 1px;
-                    background: #ffffff08;
+                    background: Theme.separator;
                 }
             }
 
@@ -238,14 +238,14 @@ export component IntentLens inherits Rectangle {
                             spacing: 8px;
                             alignment: center;
 
-                            Rectangle { horizontal-stretch: 1; height: 1px; background: #ffffff08; }
+                            Rectangle { horizontal-stretch: 1; height: 1px; background: Theme.separator; }
                             Text {
                                 text: result.title;
                                 color: Theme.text-dim;
                                 font-size: 9px;
                                 letter-spacing: 1px;
                             }
-                            Rectangle { horizontal-stretch: 1; height: 1px; background: #ffffff08; }
+                            Rectangle { horizontal-stretch: 1; height: 1px; background: Theme.separator; }
                         }
                     }
 
@@ -268,7 +268,7 @@ export component IntentLens inherits Rectangle {
                             : is-hovered ? Theme.bg-card
                             : transparent;
                         border-width: is-sel ? 1px : 0;
-                        border-color: is-sel ? #ffffff10 : transparent;
+                        border-color: is-sel ? Theme.hover-fill-strong : transparent;
 
                         animate background { duration: 100ms; }
 
@@ -333,7 +333,7 @@ export component IntentLens inherits Rectangle {
                                 height: 18px;
                                 y: (parent.height - 18px) / 2;
                                 border-radius: 4px;
-                                background: #ffffff08;
+                                background: Theme.hover-fill;
 
                                 Text {
                                     text: "↵";
@@ -441,7 +441,7 @@ export component IntentLens inherits Rectangle {
 
                     Rectangle {
                         y: 0; width: 100%; height: 1px;
-                        background: #ffffff08;
+                        background: Theme.separator;
                     }
 
                     HorizontalLayout {
@@ -480,7 +480,7 @@ export component IntentLens inherits Rectangle {
                             border-radius: 16px;
                             background: Theme.bg-input;
                             border-width: 1px;
-                            border-color: chat-input.has-focus ? Theme.cyan-dim : #ffffff0c;
+                            border-color: chat-input.has-focus ? Theme.cyan-dim : Theme.border-subtle;
                             forward-focus: chat-input;
 
                             animate border-color { duration: 200ms; }

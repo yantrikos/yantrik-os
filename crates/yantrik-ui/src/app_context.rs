@@ -18,7 +18,7 @@ use crate::clipboard;
 use crate::features;
 use crate::notifications;
 use crate::system_context;
-use crate::{App, MessageData, UrgeCardData, WhisperCardItem};
+use crate::{App, ThemeMode, MessageData, UrgeCardData, WhisperCardItem};
 
 /// All shared state needed by wire modules.
 pub struct AppContext {
@@ -38,6 +38,9 @@ pub struct AppContext {
 impl AppContext {
     /// Initialize all shared state. Moves setup logic that used to live in main().
     pub fn init(config: CompanionConfig, ui: &App) -> Self {
+        // Theme mode (dark by default)
+        ui.global::<ThemeMode>().set_dark(true);
+
         // Boot status + greeting
         ui.set_boot_status("remembering...".into());
         ui.set_greeting_text(time_of_day_greeting().into());

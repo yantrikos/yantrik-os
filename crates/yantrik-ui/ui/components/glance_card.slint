@@ -21,7 +21,7 @@ export component GlanceCard inherits Rectangle {
     border-radius: Theme.radius-card;
     background: Theme.bg-card;
     border-width: 1px;
-    border-color: #ffffff08;
+    border-color: Theme.border-subtle;
     clip: true;
 
     // Left border glow accent
@@ -76,7 +76,7 @@ export component GlanceCard inherits Rectangle {
                     height: 18px;
                     width: instinct-text.preferred-width + 12px;
                     border-radius: 9px;
-                    background: #ffffff08;
+                    background: Theme.hover-fill;
 
                     instinct-text := Text {
                         text: data.instinct-name;

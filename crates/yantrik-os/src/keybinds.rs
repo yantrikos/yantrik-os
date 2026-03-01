@@ -64,6 +64,21 @@ pub const DEFAULT_KEYBINDS: &[Keybind] = &[
         description: "Take screenshot",
     },
     Keybind {
+        key: "W-S-q",
+        action: "power-menu",
+        description: "Power menu",
+    },
+    Keybind {
+        key: "W-a",
+        action: "app-grid",
+        description: "App grid",
+    },
+    Keybind {
+        key: "W-Tab",
+        action: "window-switcher",
+        description: "Window switcher",
+    },
+    Keybind {
         key: "A-Tab",
         action: "next-window",
         description: "Switch window",
