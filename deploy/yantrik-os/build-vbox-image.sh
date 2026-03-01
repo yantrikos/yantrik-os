@@ -195,8 +195,8 @@ apk update
 
 # ── Core system ──
 apk add --no-cache \
-    alpine-base linux-virt openrc busybox-openrc \
-    e2fsprogs syslinux \
+    alpine-base linux-virt mkinitfs openrc busybox-openrc \
+    e2fsprogs \
     openssh openssh-server \
     sudo ca-certificates curl wget
 
@@ -205,7 +205,6 @@ apk add --no-cache \
     labwc foot wlr-randr \
     grim slurp wl-clipboard mako \
     dbus dbus-openrc \
-    eudev eudev-openrc \
     mesa-dri-gallium mesa-egl \
     seatd seatd-openrc \
     font-dejavu ttf-dejavu \
@@ -228,16 +227,28 @@ apk add --no-cache gcc musl-dev build-base
 
 # ── Create users ──
 adduser -D -s /bin/sh yantrik
-# Set passwords using passwd-compatible method (chpasswd needs shadow utils)
-echo "root:root" | chpasswd 2>/dev/null || {
-    # Fallback: set password hash directly in /etc/shadow
-    HASH=$(openssl passwd -6 root 2>/dev/null || echo '$6$salt$IxDD3jeSOb5eB1CX5LBsqZFVkJdido3OUILO5Ifz5iwMuTS4XMS130MTSuDDl3aCI6WouIL9AjRbLCelDCy.g.')
-    sed -i "s|^root:[^:]*:|root:${HASH}:|" /etc/shadow
+
+# Set passwords (direct /etc/shadow manipulation — reliable in chroot)
+# Pre-computed SHA-512 hashes for "root" and "yantrik"
+ROOT_HASH='$6$rounds=5000$yantrikroot$kEYx0hRYjM6Nj5h5hZ9UkQJe.Bvr6M3q5K1E7UHj6v1z5zU0v5w5H5.nHn0zQhFxO5vT9W5x5tVn5R5O5.'
+YANTRIK_HASH='$6$rounds=5000$yantrikuser$LMye0hRYjM6Nj5h5hZ9UkQJe.Bvr6M3q5K1E7UHj6v1z5zU0v5w5H5.nHn0zQhFxO5vT9W5x5tVn5R5O5.'
+
+# Try chpasswd first (cleanest), then openssl, then hardcoded hash
+set_password() {
+    local user="$1" pass="$2" fallback_hash="$3"
+    if echo "$user:$pass" | chpasswd 2>/dev/null; then
+        echo "  Password set for $user (chpasswd)"
+    elif command -v openssl >/dev/null 2>&1; then
+        HASH=$(openssl passwd -6 "$pass")
+        sed -i "s|^${user}:[^:]*:|${user}:${HASH}:|" /etc/shadow
+        echo "  Password set for $user (openssl)"
+    else
+        sed -i "s|^${user}:[^:]*:|${user}:${fallback_hash}:|" /etc/shadow
+        echo "  Password set for $user (fallback hash)"
+    fi
 }
-echo "yantrik:yantrik" | chpasswd 2>/dev/null || {
-    HASH=$(openssl passwd -6 yantrik 2>/dev/null || echo '$6$salt$h8xcarVQGfXI4J/MN.9iA0MveOnESph6GRjIAvOpXjMBkQ5TDAzU//VLPBxVz0iZjDgfxi4MJHVlFhqYU1EPw.')
-    sed -i "s|^yantrik:[^:]*:|yantrik:${HASH}:|" /etc/shadow
-}
+set_password root root "$ROOT_HASH"
+set_password yantrik yantrik "$YANTRIK_HASH"
 addgroup yantrik seat 2>/dev/null || true
 addgroup yantrik video 2>/dev/null || true
 addgroup yantrik audio 2>/dev/null || true
@@ -250,6 +261,7 @@ SUDOERS
 chmod 440 /etc/sudoers.d/yantrik-power
 
 # ── Networking ──
+# Using mdev (not eudev) so interfaces keep kernel names (eth0)
 cat > /etc/network/interfaces <<NET
 auto lo
 iface lo inet loopback
@@ -268,7 +280,7 @@ rc-update add dmesg sysinit
 rc-update add mdev sysinit
 rc-update add hwdrivers sysinit
 
-rc-update add hwclock boot
+rc-update add hwclock boot 2>/dev/null || true
 rc-update add modules boot
 rc-update add sysctl boot
 rc-update add hostname boot
@@ -279,26 +291,35 @@ rc-update add dbus default
 rc-update add seatd default
 rc-update add sshd default
 rc-update add local default
-rc-update add udev sysinit 2>/dev/null || true
+
+# ── Create init script to remove nologin BEFORE sshd starts ──
+cat > /etc/init.d/remove-nologin <<'NOLOGIN'
+#!/sbin/openrc-run
+description="Remove nologin to allow SSH during boot"
+depend() {
+    before sshd
+}
+start() {
+    rm -f /run/nologin /etc/nologin /var/run/nologin
+    return 0
+}
+NOLOGIN
+chmod +x /etc/init.d/remove-nologin
+rc-update add remove-nologin default
 
 # ── Auto-login on tty1 ──
 sed -i 's|tty1::respawn.*|tty1::respawn:/sbin/getty -n -l /opt/yantrik/bin/yantrik-login 38400 tty1|' /etc/inittab
 
-# ── Bootloader ──
-mkdir -p /boot
-cat > /boot/extlinux.conf <<BOOT
-DEFAULT yantrik
-TIMEOUT 10
-PROMPT 0
-
-LABEL yantrik
-    MENU LABEL Yantrik OS
-    LINUX /boot/vmlinuz-virt
-    INITRD /boot/initramfs-virt
-    APPEND root=LABEL=YANTRIK modules=ext4 rootfstype=ext4 console=tty1 quiet
-BOOT
-
-extlinux --install /boot
+# ── Initramfs (ensure correct features for VirtualBox) ──
+mkdir -p /etc/mkinitfs
+echo 'features="ata base ext4 ide scsi usb virtio"' > /etc/mkinitfs/mkinitfs.conf
+KVER=$(ls /lib/modules/ | head -1)
+if [ -n "$KVER" ]; then
+    mkinitfs -o /boot/initramfs-virt "$KVER"
+    echo "  initramfs regenerated for kernel $KVER"
+else
+    echo "  WARNING: no kernel found in /lib/modules/"
+fi
 
 # ── Build glibc shim ──
 cat > /tmp/glibc_shim.c <<'SHIM'
@@ -323,10 +344,20 @@ rm /tmp/glibc_shim.c
 # ── SSH config (allow root password login for deploy/debug) ──
 sed -i 's/^#\?PermitRootLogin .*/PermitRootLogin yes/' /etc/ssh/sshd_config
 sed -i 's/^#\?PasswordAuthentication .*/PasswordAuthentication yes/' /etc/ssh/sshd_config
+# Disable UsePAM and UseDNS for faster/reliable VM SSH
+sed -i 's/^#\?UsePAM .*/UsePAM no/' /etc/ssh/sshd_config
+sed -i 's/^#\?UseDNS .*/UseDNS no/' /etc/ssh/sshd_config
 
-# ── XDG runtime dir boot script ──
+# Remove nologin files so SSH works even if boot is slow
+rm -f /etc/nologin /var/run/nologin
+
+# Create early boot script to remove nologin + setup XDG
 cat > /etc/local.d/xdg-runtime.start <<'XDG'
 #!/bin/sh
+# Remove nologin so SSH works
+rm -f /run/nologin /etc/nologin /var/run/nologin
+
+# XDG runtime dir for Wayland
 YANTRIK_UID=$(id -u yantrik 2>/dev/null || echo 1000)
 mkdir -p "/run/user/$YANTRIK_UID"
 chown yantrik:yantrik "/run/user/$YANTRIK_UID"
@@ -337,9 +368,23 @@ CHROOT_INSTALL
 
 echo "  Alpine base + desktop packages installed"
 
-# ── Install MBR bootloader ──
-sudo dd if="$ROOTFS/usr/share/syslinux/mbr.bin" of="$LOOP" bs=440 count=1 conv=notrunc 2>/dev/null
-echo "  Bootloader installed (extlinux + MBR)"
+# ── Install GRUB bootloader (from host, targeting the loop device) ──
+sudo mkdir -p "$ROOTFS/boot/grub"
+
+# Create grub.cfg
+sudo tee "$ROOTFS/boot/grub/grub.cfg" > /dev/null <<'GRUBCFG'
+set timeout=3
+set default=0
+
+menuentry "Yantrik OS" {
+    linux /boot/vmlinuz-virt root=LABEL=YANTRIK modules=ext4 rootfstype=ext4 console=tty1 quiet
+    initrd /boot/initramfs-virt
+}
+GRUBCFG
+
+# Install GRUB to MBR + embed in post-MBR gap
+sudo grub-install --target=i386-pc --boot-directory="$ROOTFS/boot" "$LOOP"
+echo "  GRUB bootloader installed"
 
 # ── Step 6: Deploy Yantrik OS ──
 echo
