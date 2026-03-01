@@ -76,7 +76,7 @@ apk add -q \
     speech-dispatcher \
     ca-certificates \
     gcc musl-dev \
-    grim slurp jq bc diffutils
+    grim slurp wl-clipboard jq bc diffutils
 
 echo "  Installed: labwc, foot, dbus, eudev, mesa, fonts, seatd, gcompat, wayland"
 
@@ -291,20 +291,23 @@ WLR_LIBINPUT_NO_DEVICES=1
 SLINT_BACKEND=winit
 ENV
 
-# labwc autostart — launch yantrik-ui as fullscreen desktop shell
+# labwc autostart — launch yantrik-ui + foot server
 cat > "$LABWC_DIR/autostart" <<'AUTOSTART'
 #!/bin/sh
+# Start Foot terminal server (for footclient + scrollback pipe)
+foot --server &
+
 # Start Yantrik OS desktop shell
 /opt/yantrik/bin/yantrik-ui /opt/yantrik/config.yaml >> /opt/yantrik/logs/yantrik-os.log 2>&1 &
 AUTOSTART
 chmod +x "$LABWC_DIR/autostart"
 
-# labwc rc.xml — window rules and key bindings
+# labwc rc.xml — window rules, tiling, and key bindings
 cat > "$LABWC_DIR/rc.xml" <<'RCXML'
 <?xml version="1.0" encoding="UTF-8"?>
 <labwc_config>
   <core>
-    <gap>0</gap>
+    <gap>4</gap>
   </core>
 
   <theme>
@@ -315,20 +318,80 @@ cat > "$LABWC_DIR/rc.xml" <<'RCXML'
   </theme>
 
   <keyboard>
-    <!-- Alt+Tab window switching -->
+    <!-- ── Window switching ── -->
     <keybind key="A-Tab">
       <action name="NextWindow" />
     </keybind>
-
-    <!-- Alt+F4 close window -->
     <keybind key="A-F4">
       <action name="Close" />
     </keybind>
 
-    <!-- Super key launches terminal (quick access) -->
-    <keybind key="Super_L">
+    <!-- ── Terminal: Super+T ── -->
+    <keybind key="W-t">
       <action name="Execute">
         <command>foot</command>
+      </action>
+    </keybind>
+
+    <!-- ── Window tiling ── -->
+    <!-- Super+Left: snap to left half -->
+    <keybind key="W-Left">
+      <action name="MoveToEdge" direction="left" />
+      <action name="SnapToEdge" direction="left" />
+    </keybind>
+    <!-- Super+Right: snap to right half -->
+    <keybind key="W-Right">
+      <action name="MoveToEdge" direction="right" />
+      <action name="SnapToEdge" direction="right" />
+    </keybind>
+    <!-- Super+Up: maximize -->
+    <keybind key="W-Up">
+      <action name="Maximize" />
+    </keybind>
+    <!-- Super+Down: restore/unmaximize -->
+    <keybind key="W-Down">
+      <action name="UnMaximize" />
+    </keybind>
+
+    <!-- ── Quadrant tiling: Super+1/2/3/4 ── -->
+    <!-- Super+1: top-left quadrant -->
+    <keybind key="W-1">
+      <action name="MoveTo" x="0" y="0" />
+      <action name="ResizeTo" width="50%" height="50%" />
+    </keybind>
+    <!-- Super+2: top-right quadrant -->
+    <keybind key="W-2">
+      <action name="MoveTo" x="50%" y="0" />
+      <action name="ResizeTo" width="50%" height="50%" />
+    </keybind>
+    <!-- Super+3: bottom-left quadrant -->
+    <keybind key="W-3">
+      <action name="MoveTo" x="0" y="50%" />
+      <action name="ResizeTo" width="50%" height="50%" />
+    </keybind>
+    <!-- Super+4: bottom-right quadrant -->
+    <keybind key="W-4">
+      <action name="MoveTo" x="50%" y="50%" />
+      <action name="ResizeTo" width="50%" height="50%" />
+    </keybind>
+
+    <!-- ── Screenshot: PrtSc ── -->
+    <keybind key="Print">
+      <action name="Execute">
+        <command>sh -c 'mkdir -p ~/Pictures/Screenshots &amp;&amp; grim ~/Pictures/Screenshots/$(date +%Y%m%d_%H%M%S).png &amp;&amp; wl-copy &lt; ~/Pictures/Screenshots/$(ls -t ~/Pictures/Screenshots/ | head -1)'</command>
+      </action>
+    </keybind>
+    <!-- Shift+PrtSc: region select screenshot -->
+    <keybind key="S-Print">
+      <action name="Execute">
+        <command>sh -c 'mkdir -p ~/Pictures/Screenshots &amp;&amp; grim -g "$(slurp)" ~/Pictures/Screenshots/$(date +%Y%m%d_%H%M%S).png'</command>
+      </action>
+    </keybind>
+
+    <!-- ── Foot scrollback dump (for "fix this error") ── -->
+    <keybind key="W-e">
+      <action name="Execute">
+        <command>sh -c 'footclient --print-scrollback > /tmp/yantrik-scrollback.txt 2>/dev/null || true'</command>
       </action>
     </keybind>
   </keyboard>
@@ -341,6 +404,60 @@ cat > "$LABWC_DIR/rc.xml" <<'RCXML'
   </windowRules>
 </labwc_config>
 RCXML
+
+# Foot terminal configuration
+FOOT_DIR="/home/$YANTRIK_USER/.config/foot"
+mkdir -p "$FOOT_DIR"
+
+cat > "$FOOT_DIR/foot.ini" <<'FOOTINI'
+# Yantrik OS — Foot terminal configuration
+# Theme: Firelight (dark cyan on deep purple-black)
+
+[main]
+font=DejaVu Sans Mono:size=11
+pad=8x4
+shell=/bin/ash
+term=foot
+dpi-aware=no
+
+[scrollback]
+lines=10000
+
+[cursor]
+style=beam
+blink=yes
+
+[mouse]
+hide-when-typing=yes
+
+[colors]
+# Firelight theme — matches Yantrik status bar palette
+background=0c0b10
+foreground=c8c8d0
+regular0=1a1a2e    # black (deep bg)
+regular1=e86b6b    # red (emotional)
+regular2=5ac8a0    # green (growth)
+regular3=d4a04a    # yellow/amber (thinking)
+regular4=5ac8d4    # blue (cyan/trust)
+regular5=a87bd4    # magenta (creative)
+regular6=5ac8d4    # cyan (primary accent)
+regular7=c8c8d0    # white (secondary text)
+bright0=2e2e48     # bright black
+bright1=f09090     # bright red
+bright2=7ee0c0     # bright green
+bright3=e0c070     # bright yellow
+bright4=80d8e8     # bright blue
+bright5=c0a0e0     # bright magenta
+bright6=80d8e8     # bright cyan
+bright7=e0e0e8     # bright white
+
+[key-bindings]
+# Super+Shift+S: dump scrollback to file (for "fix this error" tool)
+pipe-scrollback=[sh -c "cat > /tmp/yantrik-scrollback.txt"]  Control+Shift+s
+FOOTINI
+
+chown -R "$YANTRIK_USER:$YANTRIK_USER" "$FOOT_DIR"
+echo "  foot config written to $FOOT_DIR/"
 
 chown -R "$YANTRIK_USER:$YANTRIK_USER" "$LABWC_DIR"
 
