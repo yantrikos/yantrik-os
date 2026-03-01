@@ -63,7 +63,7 @@ impl CompanionService {
 
         let urge_queue = UrgeQueue::new(db.conn(), config.urges.clone());
         let instincts = instincts::load_instincts(&config.instincts);
-        let registry = tools::build_registry();
+        let registry = tools::build_registry(&config);
 
         // Load current bond state
         let bond_state = BondTracker::get_state(db.conn());

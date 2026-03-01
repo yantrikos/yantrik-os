@@ -1,5 +1,6 @@
-//! Git tools — git_status, git_log, git_diff, git_clone.
-//! Read-heavy: most operations are Safe. Only clone writes to disk.
+//! Git tools — git_status, git_log, git_diff, git_clone, git_branch,
+//! git_commit, git_show, git_stash, git_diff_file.
+//! Read-heavy: most operations are Safe. Clone/commit/stash write to disk.
 
 use super::{Tool, ToolContext, ToolRegistry, PermissionLevel, validate_path};
 
@@ -9,6 +10,10 @@ pub fn register(reg: &mut ToolRegistry) {
     reg.register(Box::new(GitDiffTool));
     reg.register(Box::new(GitCloneTool));
     reg.register(Box::new(GitBranchTool));
+    reg.register(Box::new(GitCommitTool));
+    reg.register(Box::new(GitShowTool));
+    reg.register(Box::new(GitStashTool));
+    reg.register(Box::new(GitDiffFileTool));
 }
 
 /// Run a git command in a validated directory.
@@ -281,6 +286,210 @@ impl Tool for GitBranchTool {
             run_git(&expanded, &["branch", "-a", "-v"])
         } else {
             run_git(&expanded, &["branch", "-v"])
+        }
+    }
+}
+
+// ── Git Commit ──
+
+pub struct GitCommitTool;
+
+impl Tool for GitCommitTool {
+    fn name(&self) -> &'static str { "git_commit" }
+    fn permission(&self) -> PermissionLevel { PermissionLevel::Standard }
+    fn category(&self) -> &'static str { "git" }
+
+    fn definition(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "function",
+            "function": {
+                "name": "git_commit",
+                "description": "Commit changes in a git repository.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "description": "Repository path"},
+                        "message": {"type": "string", "description": "Commit message"},
+                        "stage_all": {"type": "boolean", "description": "Stage all changes before committing (git add -A)"}
+                    },
+                    "required": ["path", "message"]
+                }
+            }
+        })
+    }
+
+    fn execute(&self, _ctx: &ToolContext, args: &serde_json::Value) -> String {
+        let path = args.get("path").and_then(|v| v.as_str()).unwrap_or_default();
+        let message = args.get("message").and_then(|v| v.as_str()).unwrap_or_default();
+        let stage_all = args.get("stage_all").and_then(|v| v.as_bool()).unwrap_or(false);
+
+        if path.is_empty() || message.is_empty() {
+            return "Error: path and message are required".to_string();
+        }
+        let expanded = match validate_path(path) {
+            Ok(p) => p,
+            Err(e) => return format!("Error: {e}"),
+        };
+
+        // Stage all if requested
+        if stage_all {
+            let stage_result = run_git(&expanded, &["add", "-A"]);
+            if stage_result.contains("Error") {
+                return format!("Failed to stage: {}", stage_result);
+            }
+        }
+
+        run_git(&expanded, &["commit", "-m", message])
+    }
+}
+
+// ── Git Show ──
+
+pub struct GitShowTool;
+
+impl Tool for GitShowTool {
+    fn name(&self) -> &'static str { "git_show" }
+    fn permission(&self) -> PermissionLevel { PermissionLevel::Safe }
+    fn category(&self) -> &'static str { "git" }
+
+    fn definition(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "function",
+            "function": {
+                "name": "git_show",
+                "description": "Show details of a specific git commit.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "description": "Repository path"},
+                        "commit": {"type": "string", "description": "Commit ref (hash, HEAD, tag, etc.)"}
+                    },
+                    "required": ["path", "commit"]
+                }
+            }
+        })
+    }
+
+    fn execute(&self, _ctx: &ToolContext, args: &serde_json::Value) -> String {
+        let path = args.get("path").and_then(|v| v.as_str()).unwrap_or_default();
+        let commit = args.get("commit").and_then(|v| v.as_str()).unwrap_or_default();
+
+        if path.is_empty() || commit.is_empty() {
+            return "Error: path and commit are required".to_string();
+        }
+        let expanded = match validate_path(path) {
+            Ok(p) => p,
+            Err(e) => return format!("Error: {e}"),
+        };
+
+        // Validate commit ref: only alphanumeric + ^~/ allowed
+        if !commit.chars().all(|c| c.is_ascii_alphanumeric() || c == '^' || c == '~') {
+            return "Error: invalid commit ref (only alphanumeric, ^, ~ allowed)".to_string();
+        }
+
+        let out = run_git(&expanded, &["show", "--stat", commit]);
+        if out.len() > 3000 {
+            format!("{}...\n(truncated, {} chars)", &out[..3000], out.len())
+        } else {
+            out
+        }
+    }
+}
+
+// ── Git Stash ──
+
+pub struct GitStashTool;
+
+impl Tool for GitStashTool {
+    fn name(&self) -> &'static str { "git_stash" }
+    fn permission(&self) -> PermissionLevel { PermissionLevel::Standard }
+    fn category(&self) -> &'static str { "git" }
+
+    fn definition(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "function",
+            "function": {
+                "name": "git_stash",
+                "description": "Manage git stash (push, pop, or list).",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "description": "Repository path"},
+                        "action": {
+                            "type": "string",
+                            "description": "Stash action: push, pop, or list",
+                            "enum": ["push", "pop", "list"]
+                        }
+                    },
+                    "required": ["path", "action"]
+                }
+            }
+        })
+    }
+
+    fn execute(&self, _ctx: &ToolContext, args: &serde_json::Value) -> String {
+        let path = args.get("path").and_then(|v| v.as_str()).unwrap_or_default();
+        let action = args.get("action").and_then(|v| v.as_str()).unwrap_or_default();
+
+        if path.is_empty() || action.is_empty() {
+            return "Error: path and action are required".to_string();
+        }
+        let expanded = match validate_path(path) {
+            Ok(p) => p,
+            Err(e) => return format!("Error: {e}"),
+        };
+
+        match action {
+            "push" | "pop" | "list" => run_git(&expanded, &["stash", action]),
+            _ => format!("Error: invalid stash action '{}' (use push, pop, or list)", action),
+        }
+    }
+}
+
+// ── Git Diff File ──
+
+pub struct GitDiffFileTool;
+
+impl Tool for GitDiffFileTool {
+    fn name(&self) -> &'static str { "git_diff_file" }
+    fn permission(&self) -> PermissionLevel { PermissionLevel::Safe }
+    fn category(&self) -> &'static str { "git" }
+
+    fn definition(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "function",
+            "function": {
+                "name": "git_diff_file",
+                "description": "Show diff for a specific file in a git repository.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "description": "Repository path"},
+                        "file": {"type": "string", "description": "File path relative to the repository root"}
+                    },
+                    "required": ["path", "file"]
+                }
+            }
+        })
+    }
+
+    fn execute(&self, _ctx: &ToolContext, args: &serde_json::Value) -> String {
+        let path = args.get("path").and_then(|v| v.as_str()).unwrap_or_default();
+        let file = args.get("file").and_then(|v| v.as_str()).unwrap_or_default();
+
+        if path.is_empty() || file.is_empty() {
+            return "Error: path and file are required".to_string();
+        }
+        let expanded = match validate_path(path) {
+            Ok(p) => p,
+            Err(e) => return format!("Error: {e}"),
+        };
+
+        let out = run_git(&expanded, &["diff", "--", file]);
+        if out.len() > 3000 {
+            format!("{}...\n(truncated, {} chars)", &out[..3000], out.len())
+        } else {
+            out
         }
     }
 }

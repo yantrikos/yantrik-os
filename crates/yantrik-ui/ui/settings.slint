@@ -37,6 +37,10 @@ export component SettingsScreen inherits Rectangle {
     in property <string> version-text: "0.1.0";
     in property <int> notification-count: 0;
 
+    // Appearance
+    in-out property <bool> dark-mode: true;
+    callback toggle-dark-mode();
+
     callback back-pressed();
     callback navigate-to(int);
 
@@ -85,6 +89,94 @@ export component SettingsScreen inherits Rectangle {
                 padding: 20px;
                 spacing: 16px;
                 alignment: start;
+
+                // ── Appearance section ──
+                Text {
+                    text: "APPEARANCE";
+                    color: Theme.text-dim;
+                    font-size: 11px;
+                    letter-spacing: 2px;
+                }
+
+                Rectangle {
+                    background: Theme.bg-card;
+                    border-radius: Theme.radius-card;
+                    height: 48px;
+
+                    HorizontalLayout {
+                        padding-left: 14px;
+                        padding-right: 14px;
+
+                        Text {
+                            text: "Theme";
+                            color: Theme.text-secondary;
+                            font-size: Theme.font-body;
+                            horizontal-stretch: 1;
+                            vertical-alignment: center;
+                        }
+
+                        // Pill toggle: Dark / Light
+                        TouchArea {
+                            width: 100px;
+                            height: 32px;
+                            clicked => { root.toggle-dark-mode(); }
+
+                            Rectangle {
+                                width: 100px;
+                                height: 30px;
+                                y: (parent.height - self.height) / 2;
+                                border-radius: 15px;
+                                background: Theme.bg-input;
+                                border-width: 1px;
+                                border-color: root.dark-mode ? Theme.cyan-dim : Theme.amber-dim;
+
+                                // Sliding pill indicator
+                                Rectangle {
+                                    x: root.dark-mode ? 2px : 50px;
+                                    y: 2px;
+                                    width: 48px;
+                                    height: 26px;
+                                    border-radius: 13px;
+                                    background: root.dark-mode ? Theme.cyan-dim : Theme.amber-dim;
+
+                                    animate x { duration: 150ms; easing: ease-out; }
+                                    animate background { duration: 150ms; }
+                                }
+
+                                HorizontalLayout {
+                                    // Dark label
+                                    Rectangle {
+                                        width: 50px;
+                                        Text {
+                                            text: "Dark";
+                                            color: root.dark-mode ? Theme.cyan : Theme.text-dim;
+                                            font-size: 11px;
+                                            font-weight: root.dark-mode ? 600 : 400;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+
+                                            animate color { duration: 150ms; }
+                                        }
+                                    }
+                                    // Light label
+                                    Rectangle {
+                                        width: 50px;
+                                        Text {
+                                            text: "Light";
+                                            color: root.dark-mode ? Theme.text-dim : Theme.amber;
+                                            font-size: 11px;
+                                            font-weight: root.dark-mode ? 400 : 600;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+
+                                            animate color { duration: 150ms; }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
 
                 // ── Account section ──
                 Text {

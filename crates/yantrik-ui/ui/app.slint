@@ -3,7 +3,7 @@
 //   6=memory, 7=settings, 8=files, 9=notifications, 10=system.
 // The AI IS the shell — Intent Lens is the primary interaction.
 
-import { Theme, ThemeMode } from "theme.slint";
+import { Theme, ThemeMode, ThemeOverrides } from "theme.slint";
 import { BootScreen } from "boot.slint";
 import { OnboardingScreen } from "onboarding.slint";
 import { DesktopScreen } from "desktop.slint";
@@ -25,7 +25,7 @@ import { AppGridItem } from "components/app_grid.slint";
 import { WindowItem } from "components/window_switcher.slint";
 import { DockItem } from "components/app_dock.slint";
 
-export { ThemeMode, MessageData, UrgeCardData, BondData, OpinionData, SharedRefData, MemoryItem, LensResult, WhisperCardItem, FileEntry, NotificationData, ProcessData, ClipboardEntryData, AppGridItem, WindowItem, DockItem }
+export { ThemeMode, ThemeOverrides, MessageData, UrgeCardData, BondData, OpinionData, SharedRefData, MemoryItem, LensResult, WhisperCardItem, FileEntry, NotificationData, ProcessData, ClipboardEntryData, AppGridItem, WindowItem, DockItem }
 
 export component App inherits Window {
     title: "Yantrik OS";
@@ -158,6 +158,8 @@ export component App inherits Window {
     in property <string> settings-llm-backend: "candle";
     in property <string> settings-llm-api-url: "";
     in property <string> settings-llm-api-model: "";
+    in-out property <bool> settings-dark-mode: true;
+    callback toggle-dark-mode();
 
     // File browser state (screen 8)
     in property <string> file-browser-path: "~";
@@ -382,6 +384,8 @@ export component App inherits Window {
             memory-count: root.memory-count;
             version-text: root.settings-version;
             notification-count: root.notification-unread-count;
+            dark-mode <=> root.settings-dark-mode;
+            toggle-dark-mode => { root.toggle-dark-mode(); }
             back-pressed => {
                 root.current-screen = 1;
                 root.navigate(1);

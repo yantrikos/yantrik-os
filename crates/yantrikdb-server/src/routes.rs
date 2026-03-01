@@ -1,12 +1,16 @@
-//! HTTP route handlers — 1:1 mapping from the Python FastAPI service.
+//! HTTP route handlers — companion API + OpenAI-compatible endpoints.
 
+use std::convert::Infallible;
 use std::sync::Arc;
 
 use axum::extract::State;
 use axum::http::StatusCode;
+use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
+use tokio::sync::mpsc;
+use tokio_stream::wrappers::ReceiverStream;
 
 use crate::AppState;
 
@@ -54,6 +58,9 @@ pub fn routes() -> Router<AppStateRef> {
         .route("/urges/{urge_id}/suppress", post(suppress_urge))
         .route("/personality", get(get_personality))
         .route("/history", get(get_history))
+        // OpenAI-compatible endpoints
+        .route("/v1/chat/completions", post(oai_chat_completions))
+        .route("/v1/models", get(oai_models))
 }
 
 // ── Handlers ─────────────────────────────────────────────
@@ -214,4 +221,202 @@ async fn get_history(
         .collect();
 
     Ok(Json(result))
+}
+
+// ── OpenAI-compatible types ─────────────────────────────
+
+use axum::response::IntoResponse;
+
+#[derive(Deserialize)]
+struct OaiChatRequest {
+    #[serde(default)]
+    model: String,
+    messages: Vec<OaiMessage>,
+    #[serde(default)]
+    stream: bool,
+    #[serde(default = "default_oai_max_tokens")]
+    #[allow(dead_code)]
+    max_tokens: usize,
+    #[serde(default = "default_oai_temperature")]
+    #[allow(dead_code)]
+    temperature: f64,
+}
+
+fn default_oai_max_tokens() -> usize {
+    512
+}
+fn default_oai_temperature() -> f64 {
+    0.7
+}
+
+#[derive(Deserialize)]
+struct OaiMessage {
+    role: String,
+    content: String,
+}
+
+// ── OpenAI-compatible handlers ──────────────────────────
+
+async fn oai_models() -> Json<serde_json::Value> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    Json(serde_json::json!({
+        "object": "list",
+        "data": [{
+            "id": "yantrik",
+            "object": "model",
+            "created": now,
+            "owned_by": "yantrik-os"
+        }]
+    }))
+}
+
+async fn oai_chat_completions(
+    State(state): State<AppStateRef>,
+    Json(req): Json<OaiChatRequest>,
+) -> Result<axum::response::Response, StatusCode> {
+    let user_text = req
+        .messages
+        .iter()
+        .rev()
+        .find(|m| m.role == "user")
+        .map(|m| m.content.clone())
+        .unwrap_or_default();
+
+    if user_text.is_empty() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    let model_name = if req.model.is_empty() {
+        "yantrik".to_string()
+    } else {
+        req.model.clone()
+    };
+
+    let request_id = format!("chatcmpl-{:x}", rand_id());
+
+    if req.stream {
+        oai_stream(state, user_text, model_name, request_id).await
+    } else {
+        oai_blocking(state, user_text, model_name, request_id).await
+    }
+}
+
+/// Non-streaming: collect all tokens, return a single completion object.
+async fn oai_blocking(
+    state: AppStateRef,
+    user_text: String,
+    model: String,
+    id: String,
+) -> Result<axum::response::Response, StatusCode> {
+    let result = tokio::task::spawn_blocking(move || {
+        let mut service = match state.service.lock() {
+            Ok(s) => s,
+            Err(_) => return Err(StatusCode::SERVICE_UNAVAILABLE),
+        };
+        let response = service.handle_message(&user_text);
+        Ok(response.message)
+    })
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let content = result?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    let body = serde_json::json!({
+        "id": id,
+        "object": "chat.completion",
+        "created": now,
+        "model": model,
+        "choices": [{
+            "index": 0,
+            "message": {
+                "role": "assistant",
+                "content": content,
+            },
+            "finish_reason": "stop"
+        }],
+        "usage": {
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+        }
+    });
+
+    Ok(Json(body).into_response())
+}
+
+/// Streaming: SSE with delta chunks (OpenAI wire format).
+async fn oai_stream(
+    state: AppStateRef,
+    user_text: String,
+    model: String,
+    id: String,
+) -> Result<axum::response::Response, StatusCode> {
+    let (tx, rx) = mpsc::channel::<Result<Event, Infallible>>(64);
+    let model_clone = model.clone();
+    let id_clone = id.clone();
+
+    tokio::task::spawn_blocking(move || {
+        let mut service = match state.service.lock() {
+            Ok(s) => s,
+            Err(_) => {
+                let _ = tx.blocking_send(Ok(Event::default().data(
+                    serde_json::json!({
+                        "error": { "message": "Service busy", "type": "server_error" }
+                    })
+                    .to_string(),
+                )));
+                return;
+            }
+        };
+
+        service.handle_message_streaming(&user_text, |token| {
+            if token == "__DONE__" {
+                return;
+            }
+            let chunk = serde_json::json!({
+                "id": id_clone,
+                "object": "chat.completion.chunk",
+                "model": model_clone,
+                "choices": [{
+                    "index": 0,
+                    "delta": { "content": token },
+                    "finish_reason": serde_json::Value::Null,
+                }]
+            });
+            let _ = tx.blocking_send(Ok(Event::default().data(chunk.to_string())));
+        });
+
+        // Final chunk with finish_reason + [DONE] sentinel
+        let done_chunk = serde_json::json!({
+            "id": id_clone,
+            "object": "chat.completion.chunk",
+            "model": model_clone,
+            "choices": [{
+                "index": 0,
+                "delta": {},
+                "finish_reason": "stop",
+            }]
+        });
+        let _ = tx.blocking_send(Ok(Event::default().data(done_chunk.to_string())));
+        let _ = tx.blocking_send(Ok(Event::default().data("[DONE]".to_string())));
+    });
+
+    let stream = ReceiverStream::new(rx);
+    let sse = Sse::new(stream).keep_alive(KeepAlive::default());
+    Ok(sse.into_response())
+}
+
+/// Pseudo-random ID for completion responses.
+fn rand_id() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos() as u64
 }

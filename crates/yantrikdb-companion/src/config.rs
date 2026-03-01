@@ -486,6 +486,16 @@ impl Default for VoiceConfig {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct HomeAssistantConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub base_url: Option<String>,
+    #[serde(default)]
+    pub token: Option<String>,
+}
+
 /// Top-level companion configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompanionConfig {
@@ -517,6 +527,8 @@ pub struct CompanionConfig {
     pub narrative: NarrativeConfig,
     #[serde(default)]
     pub voice: VoiceConfig,
+    #[serde(default)]
+    pub home_assistant: HomeAssistantConfig,
 }
 
 fn default_user_name() -> String {
@@ -540,6 +552,7 @@ impl Default for CompanionConfig {
             evolution: EvolutionConfig::default(),
             narrative: NarrativeConfig::default(),
             voice: VoiceConfig::default(),
+            home_assistant: HomeAssistantConfig::default(),
         }
     }
 }

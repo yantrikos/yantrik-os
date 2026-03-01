@@ -14,6 +14,7 @@ mod dock;
 mod lens;
 mod navigate;
 mod power;
+pub mod settings;
 mod system_poll;
 mod timers;
 mod voice_mode;
@@ -34,6 +35,7 @@ pub fn wire_all(ui: &App, ctx: &AppContext) {
     app_grid::wire(ui, ctx);
     window_switcher::wire(ui, ctx);
     voice_mode::wire(ui, ctx);
+    settings::wire(ui, ctx);
     system_poll::wire(ui, ctx);
     callbacks::wire(ui, ctx);
 }

@@ -1,36 +1,60 @@
 // Firelight Design Tokens — warm amber + electric cyan on deep black.
 // A sci-fi neural aesthetic: the companion's mind visualized.
 // Supports dark (default) and light modes via ThemeMode.dark toggle.
+// Community themes can override key tokens via ThemeOverrides global.
 
 export global ThemeMode {
     in-out property <bool> dark: true;
 }
 
+// Community theme overrides — set from ~/.config/yantrik/theme-override.yaml.
+// When enabled, these override the 10 key color tokens in Theme.
+export global ThemeOverrides {
+    in-out property <bool> enabled: false;
+    in-out property <color> bg-deep-override:     #050508;
+    in-out property <color> bg-surface-override:   #0c0b10;
+    in-out property <color> bg-card-override:      #12111a;
+    in-out property <color> bg-elevated-override:  #1a1824;
+    in-out property <color> amber-override:        #d4a574;
+    in-out property <color> cyan-override:         #5ac8d4;
+    in-out property <color> text-primary-override: #e0e4ec;
+    in-out property <color> text-secondary-override: #7a8494;
+    in-out property <color> text-dim-override:     #3e4454;
+    in-out property <color> accent-override:       #4ab8f0;
+}
+
 export global Theme {
-    // Backgrounds
-    out property <color> bg-deep:     ThemeMode.dark ? #050508 : #f5f5f7;
-    out property <color> bg-surface:  ThemeMode.dark ? #0c0b10 : #eaeaec;
-    out property <color> bg-card:     ThemeMode.dark ? #12111a : #ffffff;
-    out property <color> bg-elevated: ThemeMode.dark ? #1a1824 : #ffffff;
+    // Backgrounds — override-aware
+    out property <color> bg-deep:     ThemeOverrides.enabled ? ThemeOverrides.bg-deep-override
+        : (ThemeMode.dark ? #050508 : #f5f5f7);
+    out property <color> bg-surface:  ThemeOverrides.enabled ? ThemeOverrides.bg-surface-override
+        : (ThemeMode.dark ? #0c0b10 : #eaeaec);
+    out property <color> bg-card:     ThemeOverrides.enabled ? ThemeOverrides.bg-card-override
+        : (ThemeMode.dark ? #12111a : #ffffff);
+    out property <color> bg-elevated: ThemeOverrides.enabled ? ThemeOverrides.bg-elevated-override
+        : (ThemeMode.dark ? #1a1824 : #ffffff);
     out property <color> bg-input:    ThemeMode.dark ? #0e0d14 : #f0f0f4;
     out property <color> bg-selected: ThemeMode.dark ? #181624 : #e8e6f0;
 
-    // Amber palette (warmth, companion presence)
-    out property <color> amber:             ThemeMode.dark ? #d4a574 : #8a6030;
+    // Amber palette — override-aware primary
+    out property <color> amber:             ThemeOverrides.enabled ? ThemeOverrides.amber-override
+        : (ThemeMode.dark ? #d4a574 : #8a6030);
     out property <color> amber-light:       ThemeMode.dark ? #e8c496 : #a07840;
     out property <color> amber-dim:         ThemeMode.dark ? #a07a50 : #c4a070;
     out property <color> amber-glow:        ThemeMode.dark ? #d4a57460 : #d4a57430;
     out property <color> amber-glow-strong: ThemeMode.dark ? #d4a574b0 : #d4a57460;
 
-    // Cyan palette (neural, electric, data)
-    out property <color> cyan:             ThemeMode.dark ? #5ac8d4 : #1a8a94;
+    // Cyan palette — override-aware primary
+    out property <color> cyan:             ThemeOverrides.enabled ? ThemeOverrides.cyan-override
+        : (ThemeMode.dark ? #5ac8d4 : #1a8a94);
     out property <color> cyan-light:       ThemeMode.dark ? #7ee0e8 : #40a8b4;
     out property <color> cyan-dim:         ThemeMode.dark ? #3a8a94 : #80c8d0;
     out property <color> cyan-glow:        ThemeMode.dark ? #5ac8d450 : #5ac8d430;
     out property <color> cyan-glow-strong: ThemeMode.dark ? #5ac8d480 : #5ac8d450;
 
-    // Holographic blue palette (Cortana-inspired orb)
-    out property <color> holo-blue:       ThemeMode.dark ? #4ab8f0 : #2080c0;
+    // Holographic blue palette — accent-aware
+    out property <color> holo-blue:       ThemeOverrides.enabled ? ThemeOverrides.accent-override
+        : (ThemeMode.dark ? #4ab8f0 : #2080c0);
     out property <color> holo-blue-light: ThemeMode.dark ? #6ed0ff : #50a0d0;
     out property <color> holo-blue-dim:   ThemeMode.dark ? #2a7ab0 : #80c0e0;
     out property <color> holo-blue-glow:  ThemeMode.dark ? #4ab8f050 : #4ab8f030;
@@ -45,10 +69,13 @@ export global Theme {
     out property <color> color-follow-up: ThemeMode.dark ? #6bb8e8 : #2080b0;
     out property <color> color-conflict:  ThemeMode.dark ? #e8a06b : #c07030;
 
-    // Text
-    out property <color> text-primary:   ThemeMode.dark ? #e0e4ec : #1a1c20;
-    out property <color> text-secondary: ThemeMode.dark ? #7a8494 : #5a6474;
-    out property <color> text-dim:       ThemeMode.dark ? #3e4454 : #a0a8b4;
+    // Text — override-aware
+    out property <color> text-primary:   ThemeOverrides.enabled ? ThemeOverrides.text-primary-override
+        : (ThemeMode.dark ? #e0e4ec : #1a1c20);
+    out property <color> text-secondary: ThemeOverrides.enabled ? ThemeOverrides.text-secondary-override
+        : (ThemeMode.dark ? #7a8494 : #5a6474);
+    out property <color> text-dim:       ThemeOverrides.enabled ? ThemeOverrides.text-dim-override
+        : (ThemeMode.dark ? #3e4454 : #a0a8b4);
 
     // Overlay utility tokens (replace hardcoded opacity hex colors)
     out property <color> overlay-backdrop:  ThemeMode.dark ? #00000060 : #00000030;

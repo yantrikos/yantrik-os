@@ -3,7 +3,7 @@
 //! Each tool category lives in its own file and registers tools via
 //! `register(&mut ToolRegistry)`. Mirrors the instincts pattern.
 //!
-//! Categories (25 modules, 88+ tools):
+//! Categories (32 modules, 116+ tools):
 //! - memory:     remember, recall, relate, set_reminder, introspect, form_opinion, create_inside_joke, check_bond
 //! - desktop:    open_url, read_clipboard, write_clipboard, list_files, read_file, run_command
 //! - files:      write_file, manage_files, search_files, file_info
@@ -22,7 +22,7 @@
 //! - encoding:   base64_encode, base64_decode, url_encode, json_format
 //! - disk:       disk_usage, mount_info, dir_size
 //! - wallpaper:  set_wallpaper
-//! - git:        git_status, git_log, git_diff, git_clone, git_branch
+//! - git:        git_status, git_log, git_diff, git_clone, git_branch, git_commit, git_show, git_stash, git_diff_file
 //! - weather:    get_weather
 //! - calculator: calculate, unit_convert
 //! - window:     list_windows, focus_window, close_window
@@ -31,6 +31,14 @@
 //! - networking: network_interfaces, network_ping, network_traceroute, network_ports, network_dns, network_dns_set, network_vpn_status
 //! - terminal:   read_terminal_buffer
 //! - workspace:  save_workspace, recall_workspace
+//! - knowledge:  search_fix_history, search_by_timeframe, summarize_work_session
+//! - terminal_analysis: detect_terminal_errors, search_terminal_history, explain_last_error
+//! - project:    detect_projects, set_active_project, get_project_context
+//! - docker:     docker_ps, docker_images, docker_logs, docker_start, docker_stop, docker_exec
+//! - ssh:        ssh_list_hosts, ssh_check_host, ssh_run
+//! - artifacts:  generate_fix_summary, list_fixes, read_fix
+//! - home_assistant: ha_get_state, ha_call_service, ha_list_entities
+//! - plugin:     (dynamic — loaded from ~/.config/yantrik/plugins/*.yaml)
 
 pub mod memory;
 pub mod desktop;
@@ -59,7 +67,16 @@ pub mod antivirus;
 pub mod networking;
 pub mod terminal;
 pub mod workspace;
+pub mod knowledge;
+pub mod terminal_analysis;
+pub mod project;
+pub mod docker;
+pub mod ssh;
+pub mod artifacts;
+pub mod home_assistant;
+pub mod plugin;
 
+use crate::config::CompanionConfig;
 use yantrikdb_core::YantrikDB;
 
 // ── Permission Level ──
@@ -228,7 +245,7 @@ fn summarize_json(val: &serde_json::Value) -> String {
 // ── Factory (mirrors load_instincts) ──
 
 /// Build the full tool registry with all categories.
-pub fn build_registry() -> ToolRegistry {
+pub fn build_registry(config: &CompanionConfig) -> ToolRegistry {
     let mut reg = ToolRegistry::new();
     memory::register(&mut reg);
     desktop::register(&mut reg);
@@ -257,6 +274,27 @@ pub fn build_registry() -> ToolRegistry {
     networking::register(&mut reg);
     terminal::register(&mut reg);
     workspace::register(&mut reg);
+    knowledge::register(&mut reg);
+    terminal_analysis::register(&mut reg);
+    project::register(&mut reg);
+    docker::register(&mut reg);
+    ssh::register(&mut reg);
+    artifacts::register(&mut reg);
+
+    // Conditionally register Home Assistant tools
+    let ha = &config.home_assistant;
+    if ha.enabled {
+        if let (Some(base_url), Some(token)) = (&ha.base_url, &ha.token) {
+            home_assistant::register(&mut reg, base_url, token);
+            tracing::info!("Home Assistant tools registered ({})", base_url);
+        } else {
+            tracing::warn!("Home Assistant enabled but base_url or token missing — skipping");
+        }
+    }
+
+    // Load YAML plugins from ~/.config/yantrik/plugins/
+    plugin::load_plugins(&mut reg);
+
     reg
 }
 

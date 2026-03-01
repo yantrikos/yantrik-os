@@ -18,7 +18,7 @@ use crate::clipboard;
 use crate::features;
 use crate::notifications;
 use crate::system_context;
-use crate::{App, ThemeMode, MessageData, UrgeCardData, WhisperCardItem};
+use crate::{App, ThemeMode, ThemeOverrides, MessageData, UrgeCardData, WhisperCardItem};
 
 /// All shared state needed by wire modules.
 pub struct AppContext {
@@ -38,8 +38,13 @@ pub struct AppContext {
 impl AppContext {
     /// Initialize all shared state. Moves setup logic that used to live in main().
     pub fn init(config: CompanionConfig, ui: &App) -> Self {
-        // Theme mode (dark by default)
-        ui.global::<ThemeMode>().set_dark(true);
+        // Theme mode (load persisted preference, default dark)
+        let dark = crate::wire::settings::load_theme_preference();
+        ui.global::<ThemeMode>().set_dark(dark);
+        ui.set_settings_dark_mode(dark);
+
+        // Community theme overrides
+        load_theme_overrides(ui);
 
         // Boot status + greeting
         ui.set_boot_status("remembering...".into());
@@ -189,5 +194,102 @@ pub fn time_of_day_greeting() -> String {
         12..=17 => "Good afternoon".to_string(),
         18..=21 => "Good evening".to_string(),
         _ => "Good night".to_string(),
+    }
+}
+
+/// Load community theme overrides from ~/.config/yantrik/theme-override.yaml.
+///
+/// YAML format:
+/// ```yaml
+/// name: "Nord"
+/// enabled: true
+/// bg_deep: "#2e3440"
+/// bg_surface: "#3b4252"
+/// bg_card: "#434c5e"
+/// bg_elevated: "#4c566a"
+/// amber: "#ebcb8b"
+/// cyan: "#88c0d0"
+/// text_primary: "#eceff4"
+/// text_secondary: "#d8dee9"
+/// text_dim: "#4c566a"
+/// accent: "#81a1c1"
+/// ```
+fn load_theme_overrides(ui: &App) {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/root".to_string());
+    let path = format!("{}/.config/yantrik/theme-override.yaml", home);
+
+    let content = match std::fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(_) => return, // No override file — use defaults
+    };
+
+    // Parse YAML manually (simple key: value pairs)
+    let mut enabled = false;
+    let mut colors: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        if let Some((key, val)) = trimmed.split_once(':') {
+            let key = key.trim();
+            let val = val.trim().trim_matches('"');
+            if key == "enabled" {
+                enabled = val == "true";
+            } else if val.starts_with('#') && key != "name" {
+                colors.insert(key.to_string(), val.to_string());
+            }
+        }
+    }
+
+    if !enabled {
+        return;
+    }
+
+    let overrides = ui.global::<ThemeOverrides>();
+    overrides.set_enabled(true);
+
+    let set_color = |key: &str, setter: &dyn Fn(slint::Color)| {
+        if let Some(hex) = colors.get(key) {
+            if let Some(color) = parse_hex_color(hex) {
+                setter(color);
+            }
+        }
+    };
+
+    set_color("bg_deep", &|c| overrides.set_bg_deep_override(c));
+    set_color("bg_surface", &|c| overrides.set_bg_surface_override(c));
+    set_color("bg_card", &|c| overrides.set_bg_card_override(c));
+    set_color("bg_elevated", &|c| overrides.set_bg_elevated_override(c));
+    set_color("amber", &|c| overrides.set_amber_override(c));
+    set_color("cyan", &|c| overrides.set_cyan_override(c));
+    set_color("text_primary", &|c| overrides.set_text_primary_override(c));
+    set_color("text_secondary", &|c| overrides.set_text_secondary_override(c));
+    set_color("text_dim", &|c| overrides.set_text_dim_override(c));
+    set_color("accent", &|c| overrides.set_accent_override(c));
+
+    tracing::info!(
+        tokens = colors.len(),
+        "Community theme override loaded"
+    );
+}
+
+/// Parse a hex color string (#RRGGBB or #RRGGBBAA) into a slint::Color.
+fn parse_hex_color(hex: &str) -> Option<slint::Color> {
+    let hex = hex.trim_start_matches('#');
+    if hex.len() == 6 {
+        let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
+        let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
+        let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
+        Some(slint::Color::from_rgb_u8(r, g, b))
+    } else if hex.len() == 8 {
+        let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
+        let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
+        let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
+        let a = u8::from_str_radix(&hex[6..8], 16).ok()?;
+        Some(slint::Color::from_argb_u8(a, r, g, b))
+    } else {
+        None
     }
 }
