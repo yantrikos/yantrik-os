@@ -29,6 +29,7 @@
 //! - firewall:   firewall_status, firewall_list_rules, firewall_allow_port, firewall_block_port, firewall_block_ip, firewall_enable, firewall_disable
 //! - antivirus:  antivirus_scan, antivirus_status, antivirus_update, antivirus_quarantine
 //! - networking: network_interfaces, network_ping, network_traceroute, network_ports, network_dns, network_dns_set, network_vpn_status
+//! - terminal:   read_terminal_buffer
 
 pub mod memory;
 pub mod desktop;
@@ -55,6 +56,7 @@ pub mod window;
 pub mod firewall;
 pub mod antivirus;
 pub mod networking;
+pub mod terminal;
 
 use yantrikdb_core::YantrikDB;
 
@@ -251,6 +253,7 @@ pub fn build_registry() -> ToolRegistry {
     firewall::register(&mut reg);
     antivirus::register(&mut reg);
     networking::register(&mut reg);
+    terminal::register(&mut reg);
     reg
 }
 

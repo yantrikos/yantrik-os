@@ -966,6 +966,22 @@ fn match_tool_intents(lower: &str, original: &str) -> Vec<LensResult> {
         });
     }
 
+    // ── Terminal / Fix Error (the killer feature) ──
+    if lower.starts_with("fix") || lower.contains("error") || lower.contains("what went wrong")
+        || lower.starts_with("debug") || lower.starts_with("why did")
+        || lower.contains("terminal output") || lower.contains("scrollback")
+        || lower.contains("what happened") || lower == "help"
+    {
+        // "fix this", "fix this error", "what went wrong", "debug this"
+        results.push(LensResult {
+            result_type: "tool".into(),
+            title: "Fix this error".into(),
+            subtitle: "Read terminal output and diagnose the problem".into(),
+            icon_char: "!".into(),
+            action_id: "tool:Read the terminal scrollback buffer with read_terminal_buffer, analyze any errors or failures you find, explain what went wrong, and suggest a fix.".into(),
+        });
+    }
+
     // ── Notification ──
     if lower.starts_with("notify ") || lower.starts_with("send notification") {
         let msg = lower
