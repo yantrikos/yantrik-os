@@ -408,7 +408,15 @@ echo "  Binary installed"
 # Copy config
 if [ "$BACKEND" = "ollama" ]; then
     sudo cp "$CONFIG_DIR/yantrik-ollama.yaml" "$ROOTFS/opt/yantrik/config.yaml"
-    echo "  Config: Ollama backend (LLM on host GPU via API)"
+    # VBox NAT gateway (10.0.2.2) is often blocked by Windows Firewall.
+    # Use the host's LAN IP instead — works reliably with VBox NAT.
+    HOST_IP=$(ip route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") print $(i+1)}')
+    if [ -n "$HOST_IP" ] && [ "$HOST_IP" != "10.0.2.2" ]; then
+        sudo sed -i "s|http://10.0.2.2:11434|http://${HOST_IP}:11434|g" "$ROOTFS/opt/yantrik/config.yaml"
+        echo "  Config: Ollama backend → host at $HOST_IP:11434"
+    else
+        echo "  Config: Ollama backend (LLM on host GPU via API)"
+    fi
 else
     sudo cp "$CONFIG_DIR/yantrik-os.yaml" "$ROOTFS/opt/yantrik/config.yaml"
     echo "  Config: Candle backend (LLM in-process)"
