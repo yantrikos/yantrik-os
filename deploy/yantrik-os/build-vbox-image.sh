@@ -209,6 +209,7 @@ apk add --no-cache \
     seatd seatd-openrc \
     font-dejavu ttf-dejavu \
     libinput wayland-libs-egl wayland-libs-client wayland-libs-cursor \
+    eudev \
     alsa-utils alsa-lib speech-dispatcher \
     gcompat pciutils jq bc diffutils
 
@@ -261,7 +262,10 @@ SUDOERS
 chmod 440 /etc/sudoers.d/yantrik-power
 
 # ── Networking ──
-# Using mdev (not eudev) so interfaces keep kernel names (eth0)
+# eudev is required for libinput device discovery (udev_enumerate_scan_devices)
+# Prevent eudev from renaming eth0 → enp0s3 (keep kernel names)
+mkdir -p /etc/udev/rules.d
+echo 'SUBSYSTEM=="net", ACTION=="add", ATTR{type}=="1", NAME="eth0"' > /etc/udev/rules.d/80-net-name.rules
 cat > /etc/network/interfaces <<NET
 auto lo
 iface lo inet loopback
@@ -277,7 +281,8 @@ echo "LABEL=YANTRIK / ext4 defaults,noatime 1 1" > /etc/fstab
 # ── Enable services ──
 rc-update add devfs sysinit
 rc-update add dmesg sysinit
-rc-update add mdev sysinit
+rc-update add udev boot
+rc-update add udev-trigger boot
 rc-update add hwdrivers sysinit
 
 rc-update add hwclock boot 2>/dev/null || true
