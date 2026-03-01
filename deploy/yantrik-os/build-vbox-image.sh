@@ -467,7 +467,7 @@ sudo chmod +x "$LABWC_DIR/autostart"
 sudo tee "$LABWC_DIR/rc.xml" > /dev/null <<'RCXML'
 <?xml version="1.0" encoding="UTF-8"?>
 <labwc_config>
-  <core><gap>4</gap></core>
+  <core><gap>0</gap></core>
   <theme><titlebar><font name="DejaVu Sans" size="10" /></titlebar></theme>
   <keyboard>
     <keybind key="A-Tab"><action name="NextWindow" /></keybind>
@@ -486,7 +486,10 @@ sudo tee "$LABWC_DIR/rc.xml" > /dev/null <<'RCXML'
     </keybind>
   </keyboard>
   <windowRules>
-    <windowRule identifier="yantrik-ui"><action name="Maximize" /></windowRule>
+    <windowRule identifier="yantrik-ui">
+      <serverDecoration>no</serverDecoration>
+      <action name="ToggleFullscreen" />
+    </windowRule>
   </windowRules>
 </labwc_config>
 RCXML
