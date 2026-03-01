@@ -24,9 +24,9 @@ llm:
   backend: "ollama"
   api_base_url: "http://10.0.2.2:11434/v1"   # QEMU host gateway
   api_model: "qwen2.5:3b-instruct-q4_K_M"
-  max_tokens: 512
+  max_tokens: 1024
   temperature: 0.7
-  max_context_tokens: 4096
+  max_context_tokens: 16384
 
 server:
   host: "0.0.0.0"
