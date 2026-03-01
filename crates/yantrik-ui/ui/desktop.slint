@@ -30,6 +30,7 @@ import { MessageData } from "components/message_bubble.slint";
 import { UrgeCardData } from "components/glance_card.slint";
 import { WhisperCardStack, WhisperCardItem } from "components/whisper_card.slint";
 import { QuickSettings } from "components/quick_settings.slint";
+import { ClipboardPanel, ClipboardEntryData } from "components/clipboard_panel.slint";
 
 export component DesktopScreen inherits Rectangle {
     // Status bar state
@@ -75,6 +76,11 @@ export component DesktopScreen inherits Rectangle {
     callback toggle-wifi();
     callback brightness-changed(int);
     callback volume-changed(int);
+
+    // Clipboard panel
+    in-out property <bool> clip-panel-open: false;
+    in property <[ClipboardEntryData]> clip-panel-entries: [];
+    callback clipboard-paste(int);
 
     // Focus mode (Workspace Morph)
     in-out property <bool> focus-mode: false;
@@ -313,6 +319,16 @@ export component DesktopScreen inherits Rectangle {
         brightness-changed(val) => { root.brightness-changed(val); }
         volume-changed(val) => { root.volume-changed(val); }
         close => { root.quick-settings-open = false; }
+    }
+
+    // ── Layer 2.55: Clipboard history panel ──
+    ClipboardPanel {
+        width: 100%;
+        height: 100%;
+        is-open <=> root.clip-panel-open;
+        entries: root.clip-panel-entries;
+        paste-entry(idx) => { root.clipboard-paste(idx); }
+        close => { root.clip-panel-open = false; }
     }
 
     // ── Layer 2.6: Whisper Cards (floating, top-right) ──

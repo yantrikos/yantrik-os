@@ -20,8 +20,9 @@ import { MessageData } from "components/message_bubble.slint";
 import { UrgeCardData } from "components/glance_card.slint";
 import { LensResult } from "components/intent_lens.slint";
 import { WhisperCardItem } from "components/whisper_card.slint";
+import { ClipboardEntryData } from "components/clipboard_panel.slint";
 
-export { MessageData, UrgeCardData, BondData, OpinionData, SharedRefData, MemoryItem, LensResult, WhisperCardItem, FileEntry, NotificationData, ProcessData }
+export { MessageData, UrgeCardData, BondData, OpinionData, SharedRefData, MemoryItem, LensResult, WhisperCardItem, FileEntry, NotificationData, ProcessData, ClipboardEntryData }
 
 export component App inherits Window {
     title: "Yantrik OS";
@@ -95,6 +96,11 @@ export component App inherits Window {
     // Whisper Cards (floating notifications)
     in property <[WhisperCardItem]> whisper-cards: [];
     in property <int> whisper-hint-count: 0;
+
+    // Clipboard panel state
+    in-out property <bool> clip-panel-open: false;
+    in property <[ClipboardEntryData]> clip-panel-entries: [];
+    callback clipboard-paste(int);
 
     // Quick Settings state
     in-out property <bool> quick-settings-open: false;
@@ -250,6 +256,10 @@ export component App inherits Window {
             whisper-card-dismissed(id) => { root.whisper-card-dismissed(id); }
             whisper-card-action(id) => { root.whisper-card-action(id); }
             whisper-hint-clicked => { root.whisper-hint-clicked(); }
+            // Clipboard panel
+            clip-panel-open <=> root.clip-panel-open;
+            clip-panel-entries: root.clip-panel-entries;
+            clipboard-paste(idx) => { root.clipboard-paste(idx); }
             // Quick Settings
             quick-settings-open <=> root.quick-settings-open;
             brightness-level <=> root.brightness-level;

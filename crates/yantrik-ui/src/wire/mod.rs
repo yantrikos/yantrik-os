@@ -8,6 +8,7 @@
 
 mod callbacks;
 mod chat;
+mod clipboard;
 mod dock;
 mod lens;
 mod navigate;
@@ -22,6 +23,7 @@ use crate::App;
 pub fn wire_all(ui: &App, ctx: &AppContext) {
     timers::wire(ui, ctx);
     chat::wire(ui, ctx);
+    clipboard::wire(ui, ctx);
     lens::wire(ui, ctx);
     navigate::wire(ui, ctx);
     dock::wire(ui, ctx);
