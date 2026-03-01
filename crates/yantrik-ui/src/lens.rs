@@ -982,6 +982,20 @@ fn match_tool_intents(lower: &str, original: &str) -> Vec<LensResult> {
         });
     }
 
+    // ── Workspace / Session resume ──
+    if lower.contains("where was i") || lower.contains("what was i doing")
+        || lower.starts_with("resume") || lower.contains("last session")
+        || lower.contains("what was i working") || lower.contains("pick up where")
+    {
+        results.push(LensResult {
+            result_type: "tool".into(),
+            title: "Resume last session".into(),
+            subtitle: "Recall what you were working on".into(),
+            icon_char: "R".into(),
+            action_id: "tool:Use recall_workspace to find my last workspace snapshot, then summarize what I was working on and suggest how to resume.".into(),
+        });
+    }
+
     // ── Notification ──
     if lower.starts_with("notify ") || lower.starts_with("send notification") {
         let msg = lower

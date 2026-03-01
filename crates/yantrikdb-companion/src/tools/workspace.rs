@@ -1,0 +1,171 @@
+//! Workspace tools — save and recall session state.
+//!
+//! Captures terminal CWDs, git branches, recent commands, and open windows.
+//! Stores as episodic memories in YantrikDB for cross-session continuity.
+
+use super::{Tool, ToolContext, ToolRegistry, PermissionLevel};
+
+pub fn register(reg: &mut ToolRegistry) {
+    reg.register(Box::new(SaveWorkspaceTool));
+    reg.register(Box::new(RecallWorkspaceTool));
+}
+
+// ── Save Workspace ──
+
+pub struct SaveWorkspaceTool;
+
+impl Tool for SaveWorkspaceTool {
+    fn name(&self) -> &'static str { "save_workspace" }
+    fn permission(&self) -> PermissionLevel { PermissionLevel::Standard }
+    fn category(&self) -> &'static str { "workspace" }
+
+    fn definition(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "function",
+            "function": {
+                "name": "save_workspace",
+                "description": "Save a snapshot of the current workspace state — terminal directories, git branches, recent commands. Call this when the user is logging out, shutting down, or switching contexts.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "note": {
+                            "type": "string",
+                            "description": "Optional note about what the user was working on"
+                        }
+                    }
+                }
+            }
+        })
+    }
+
+    fn execute(&self, ctx: &ToolContext, args: &serde_json::Value) -> String {
+        let note = args.get("note").and_then(|v| v.as_str()).unwrap_or("");
+        let mut parts = Vec::new();
+
+        // Collect terminal CWDs from /proc
+        if let Ok(entries) = std::fs::read_dir("/proc") {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if name.chars().all(|c| c.is_ascii_digit()) {
+                    let comm_path = format!("/proc/{}/comm", name);
+                    let cwd_path = format!("/proc/{}/cwd", name);
+                    if let Ok(comm) = std::fs::read_to_string(&comm_path) {
+                        let comm = comm.trim();
+                        if matches!(comm, "ash" | "bash" | "zsh" | "fish" | "sh") {
+                            if let Ok(cwd) = std::fs::read_link(&cwd_path) {
+                                parts.push(format!("terminal:{} in {}", comm, cwd.display()));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Collect git info from common project dirs
+        let home = std::env::var("HOME").unwrap_or_default();
+        for dir in &["projects", "code", "src", "repos", "dev"] {
+            let base = format!("{}/{}", home, dir);
+            if let Ok(entries) = std::fs::read_dir(&base) {
+                for entry in entries.flatten().take(10) {
+                    let git_head = entry.path().join(".git/HEAD");
+                    if git_head.exists() {
+                        if let Ok(head) = std::fs::read_to_string(&git_head) {
+                            let branch = head
+                                .strip_prefix("ref: refs/heads/")
+                                .unwrap_or(&head)
+                                .trim();
+                            parts.push(format!(
+                                "git:{} on branch {}",
+                                entry.file_name().to_string_lossy(),
+                                branch
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+
+        // Recent shell commands
+        for hist_file in &[".ash_history", ".bash_history", ".zsh_history"] {
+            let path = format!("{}/{}", home, hist_file);
+            if let Ok(content) = std::fs::read_to_string(&path) {
+                let recent: Vec<&str> = content.lines().rev().take(10).collect();
+                if !recent.is_empty() {
+                    let recent: Vec<&str> = recent.into_iter().rev().collect();
+                    parts.push(format!("recent_commands:{}", recent.join(" | ")));
+                    break;
+                }
+            }
+        }
+
+        // Build the snapshot text
+        let snapshot = if parts.is_empty() && note.is_empty() {
+            "Workspace snapshot: no active terminals or projects detected.".to_string()
+        } else {
+            let mut text = String::from("Workspace snapshot:\n");
+            for p in &parts {
+                text.push_str(&format!("  {}\n", p));
+            }
+            if !note.is_empty() {
+                text.push_str(&format!("  note: {}\n", note));
+            }
+            text
+        };
+
+        // Store in memory as episodic event with high importance
+        match ctx.db.record_text(
+            &snapshot,
+            "episodic",
+            0.8, // high importance for session state
+            0.0,
+            604800.0, // 1 week TTL
+            &serde_json::json!({"type": "workspace_snapshot"}),
+            "default",
+            0.9,
+            "work",
+            "system",
+            None,
+        ) {
+            Ok(rid) => format!("Workspace saved (memory #{rid}). {}", snapshot),
+            Err(e) => format!("Failed to save workspace: {e}"),
+        }
+    }
+}
+
+// ── Recall Workspace ──
+
+pub struct RecallWorkspaceTool;
+
+impl Tool for RecallWorkspaceTool {
+    fn name(&self) -> &'static str { "recall_workspace" }
+    fn permission(&self) -> PermissionLevel { PermissionLevel::Safe }
+    fn category(&self) -> &'static str { "workspace" }
+
+    fn definition(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "function",
+            "function": {
+                "name": "recall_workspace",
+                "description": "Recall the last saved workspace snapshot — what the user was working on, which directories, git branches, and recent commands. Use this when resuming a session or when the user asks 'where was I?' or 'what was I doing?'.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {}
+                }
+            }
+        })
+    }
+
+    fn execute(&self, ctx: &ToolContext, _args: &serde_json::Value) -> String {
+        match ctx.db.recall_text("workspace snapshot", 3) {
+            Ok(results) if !results.is_empty() => {
+                let mut text = String::from("Recent workspace snapshots:\n");
+                for (i, r) in results.iter().enumerate() {
+                    text.push_str(&format!("\n--- Session {} ---\n{}\n", i + 1, r.text));
+                }
+                text
+            }
+            Ok(_) => "No workspace snapshots found. This might be your first session.".to_string(),
+            Err(e) => format!("Failed to recall workspace: {e}"),
+        }
+    }
+}

@@ -57,10 +57,12 @@ fn wire_morning_brief(ui: &App, ctx: &AppContext) {
             return;
         }
         let prompt = concat!(
-            "You just started up. Give me a short morning brief (3-4 sentences max). ",
+            "You just started up. Give me a short morning brief (3-5 sentences max). ",
+            "First use recall_workspace to check if I have a previous session snapshot. ",
             "Mention: the time of day, any system status worth noting from your context ",
-            "(battery, memory, disk, network), and one friendly/encouraging line. ",
-            "Be concise and warm — this is the first thing I see when I log in. ",
+            "(battery, memory, disk, network), and if you found a workspace snapshot, ",
+            "briefly mention what I was last working on. End with something warm. ",
+            "Be concise — this is the first thing I see when I log in. ",
             "Do NOT use bullet points or headers. Just natural sentences."
         );
         tracing::info!("Generating morning brief");
