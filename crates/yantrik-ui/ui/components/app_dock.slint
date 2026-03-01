@@ -1,6 +1,7 @@
-// App dock — auto-hiding 48px bottom edge.
-// 4px amber glow trigger at bottom. Reveals on hover. Hides after 2s.
-// Pinned apps + running indicators. For switching, not launching.
+// App dock — centered floating glass bar (Windows 11 style).
+// Hovering 8px above bottom edge. Glass background with holographic glow.
+// Icons lift on hover with glow. Auto-hides after 2s of no interaction.
+// Anchor orb at center — holographic mini-orb.
 
 import { Theme } from "../theme.slint";
 
@@ -25,33 +26,54 @@ export component AppDock inherits Rectangle {
     // Dock visibility state
     in-out property <bool> dock-visible: false;
     property <float> hide-timer-phase: 0;
+    property <float> glow-phase: 0;
 
-    height: dock-visible ? Theme.dock-height : 4px;
+    height: dock-visible ? 60px : 6px;
     background: transparent;
     clip: true;
 
-    animate height { duration: 150ms; easing: ease-out; }
+    animate height { duration: 200ms; easing: ease-out; }
 
-    // Bottom edge glow trigger (always visible, 4px)
+    // Glow animation
+    Timer {
+        interval: 16ms;
+        running: true;
+        triggered => {
+            glow-phase = mod(glow-phase + 0.002, 1.0);
+        }
+    }
+
+    // Bottom edge glow trigger (always visible — holographic line)
     Rectangle {
-        y: parent.height - 4px;
+        y: parent.height - 6px;
         width: 100%;
-        height: 4px;
-        background: @linear-gradient(90deg,
-            transparent 20%,
-            Theme.amber-glow 50%,
-            transparent 80%
-        );
-        opacity: dock-visible ? 0.0 : 0.6;
+        height: 6px;
+        background: transparent;
 
-        animate opacity { duration: 200ms; }
+        // Center glow line
+        Rectangle {
+            x: (parent.width - 400px) / 2;
+            width: 400px;
+            y: 2px;
+            height: 2px;
+            border-radius: 1px;
+            background: @linear-gradient(90deg,
+                transparent 0%,
+                Theme.amber-glow 20%,
+                Theme.cyan-glow 50%,
+                Theme.amber-glow 80%,
+                transparent 100%
+            );
+            opacity: dock-visible ? 0.0 : (0.4 + 0.2 * sin(glow-phase * 6.2832 * 1rad));
+
+            animate opacity { duration: 200ms; }
+        }
     }
 
     // Hover detection area (at the very bottom)
     TouchArea {
         width: 100%;
         height: 100%;
-        // Show dock on hover
         moved => {
             root.dock-visible = true;
             root.hide-timer-phase = 0;
@@ -71,20 +93,69 @@ export component AppDock inherits Rectangle {
         }
     }
 
-    // Dock surface (only visible when revealed)
+    // Dock surface — centered floating glass pill
     if dock-visible : Rectangle {
-        width: 100%;
-        height: Theme.dock-height;
-        y: parent.height - Theme.dock-height;
-        background: Theme.bg-surface;
+        property <int> item-count: root.items.length;
+        // Each icon is 44px + 12px spacing, plus anchor (44px) + separator (20px)
+        property <length> dock-width: max(280px, item-count * 56px + 64px + 24px);
+        x: (parent.width - dock-width) / 2;
+        width: dock-width;
+        height: 52px;
+        y: parent.height - 58px;
+        border-radius: 16px;
+        clip: true;
 
-        // Top glow line
+        // Glass background layers
         Rectangle {
-            y: 0;
+            width: 100%; height: 100%;
+            border-radius: 16px;
+            background: @linear-gradient(180deg,
+                #12111a90 0%,
+                #0c0b10a0 50%,
+                #080810b0 100%
+            );
+        }
+
+        // Glass border (holographic edge)
+        Rectangle {
+            width: 100%; height: 100%;
+            border-radius: 16px;
+            border-width: 1px;
+            border-color: @linear-gradient(180deg,
+                #ffffff14 0%,
+                #ffffff08 50%,
+                #ffffff04 100%
+            );
+            background: transparent;
+        }
+
+        // Top highlight (glass reflection)
+        Rectangle {
+            x: 16px; y: 1px;
+            width: parent.width - 32px;
+            height: 1px;
+            border-radius: 0.5px;
+            background: @linear-gradient(90deg,
+                transparent 0%,
+                #ffffff10 30%,
+                #ffffff18 50%,
+                #ffffff10 70%,
+                transparent 100%
+            );
+        }
+
+        // Bottom glow
+        Rectangle {
+            y: parent.height - 1px;
             width: 100%;
             height: 1px;
-            background: @linear-gradient(90deg, transparent 0%, Theme.cyan-glow 50%, transparent 100%);
+            background: @linear-gradient(90deg, transparent 10%, Theme.cyan-glow 50%, transparent 90%);
+            opacity: 0.5;
         }
+
+        // Shadow
+        drop-shadow-blur: 24px;
+        drop-shadow-color: #00000060;
 
         // Reset hide timer on hover
         TouchArea {
@@ -95,13 +166,15 @@ export component AppDock inherits Rectangle {
 
         HorizontalLayout {
             alignment: center;
-            spacing: 20px;
-            padding-top: 4px;
-            padding-bottom: 4px;
+            spacing: 12px;
+            padding-left: 12px;
+            padding-right: 12px;
+            padding-top: 6px;
+            padding-bottom: 6px;
 
             for item[idx] in root.items : TouchArea {
                 width: 44px;
-                height: 40px;
+                height: 44px;
                 property <bool> hovered: self.has-hover;
                 clicked => {
                     root.launch-app(item.app-id);
@@ -109,90 +182,116 @@ export component AppDock inherits Rectangle {
                 }
                 moved => { root.hide-timer-phase = 0; }
 
+                // Icon container — lifts on hover
                 Rectangle {
                     property <bool> is-hovered: parent.hovered;
-                    width: Theme.dock-icon-size;
-                    height: Theme.dock-icon-size;
+                    width: 40px;
+                    height: 40px;
                     x: (parent.width - self.width) / 2;
-                    y: 0;
-                    border-radius: 10px;
-                    background: is-hovered ? Theme.bg-elevated : Theme.bg-card;
+                    y: is-hovered ? -4px : 0;
+                    border-radius: 12px;
+                    background: is-hovered
+                        ? @radial-gradient(circle, #5ac8d418 0%, #12111a 100%)
+                        : Theme.bg-card;
                     border-width: 1px;
-                    border-color: is-hovered ? Theme.cyan-dim : Theme.border-subtle;
-                    drop-shadow-blur: is-hovered ? 6px : 0;
+                    border-color: is-hovered ? Theme.cyan-dim : #ffffff08;
+                    drop-shadow-blur: is-hovered ? 12px : 0;
                     drop-shadow-color: Theme.cyan-glow;
 
-                    animate background { duration: 120ms; }
-                    animate border-color { duration: 120ms; }
-                    animate drop-shadow-blur { duration: 120ms; }
+                    animate y { duration: 150ms; easing: ease-out; }
+                    animate background { duration: 150ms; }
+                    animate border-color { duration: 150ms; }
+                    animate drop-shadow-blur { duration: 150ms; }
 
                     Text {
                         text: item.icon-char;
                         color: parent.is-hovered ? Theme.cyan : Theme.text-secondary;
-                        font-size: 14px;
+                        font-size: 15px;
                         font-weight: 700;
                         horizontal-alignment: center;
                         vertical-alignment: center;
 
-                        animate color { duration: 120ms; }
+                        animate color { duration: 150ms; }
                     }
                 }
 
-                // Running indicator dot
+                // Running indicator dot + glow
                 if item.is-running : Rectangle {
-                    width: 3px;
-                    height: 3px;
-                    x: (parent.width - 3px) / 2;
-                    y: Theme.dock-icon-size + 2px;
-                    border-radius: 1.5px;
+                    width: 4px;
+                    height: 4px;
+                    x: (parent.width - 4px) / 2;
+                    y: 42px;
+                    border-radius: 2px;
                     background: Theme.cyan;
-                    drop-shadow-blur: 2px;
+                    drop-shadow-blur: 4px;
                     drop-shadow-color: Theme.cyan-glow;
                 }
             }
 
-            // Separator
+            // Glass separator
             Rectangle {
                 width: 1px;
-                height: 28px;
-                y: 6px;
-                background: Theme.text-dim;
-                opacity: 0.2;
+                height: 32px;
+                y: 4px;
+                background: @linear-gradient(180deg,
+                    transparent 0%,
+                    #ffffff18 50%,
+                    transparent 100%
+                );
             }
 
-            // Anchor orb button — opens Lens
+            // Anchor orb button — holographic mini-orb
             TouchArea {
                 width: 44px;
-                height: 40px;
+                height: 44px;
                 clicked => { root.anchor-pressed(); }
                 moved => { root.hide-timer-phase = 0; }
 
                 Rectangle {
-                    width: Theme.dock-icon-size;
-                    height: Theme.dock-icon-size;
+                    width: 40px;
+                    height: 40px;
                     x: (parent.width - self.width) / 2;
-                    y: 0;
-                    border-radius: self.width / 2;
+                    y: parent.has-hover ? -4px : 0;
+                    border-radius: 20px;
                     background: @radial-gradient(circle,
                         Theme.amber-glow-strong 0%,
-                        Theme.amber-glow 60%,
-                        transparent 100%
+                        Theme.amber-glow 40%,
+                        #12111a80 100%
                     );
                     border-width: 1px;
                     border-color: Theme.amber-dim;
+                    drop-shadow-blur: parent.has-hover ? 14px : 8px;
+                    drop-shadow-color: Theme.amber-glow;
 
-                    // Mini core
+                    animate y { duration: 150ms; easing: ease-out; }
+                    animate drop-shadow-blur { duration: 150ms; }
+
+                    // Mini holographic core
                     Rectangle {
-                        x: (parent.width - 16px) / 2;
-                        y: (parent.height - 16px) / 2;
-                        width: 16px;
-                        height: 16px;
-                        border-radius: 8px;
+                        x: (parent.width - 18px) / 2;
+                        y: (parent.height - 18px) / 2;
+                        width: 18px;
+                        height: 18px;
+                        border-radius: 9px;
                         background: @radial-gradient(circle,
-                            Theme.amber-light 0%,
+                            #ffffff30 0%,
+                            Theme.amber-light 30%,
                             Theme.amber 60%,
                             Theme.cyan-dim 100%
                         );
+                    }
+
+                    // Orbital ring
+                    Rectangle {
+                        x: (parent.width - 32px) / 2;
+                        y: (parent.height - 14px) / 2;
+                        width: 32px;
+                        height: 14px;
+                        border-radius: 16px;
+                        border-width: 0.5px;
+                        border-color: Theme.amber-dim;
+                        background: transparent;
+                        opacity: 0.4 + 0.2 * sin(glow-phase * 6.2832 * 1rad);
                     }
                 }
             }

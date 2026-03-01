@@ -1,6 +1,5 @@
-// Quick Settings — slide-down panel from status bar.
-// WiFi status, volume, brightness controls, battery info.
-// Overlays on top of the desktop when toggled.
+// Quick Settings — glassmorphic slide-down panel.
+// Holographic WiFi toggle, glowing sliders, battery visualization.
 
 import { Theme } from "../theme.slint";
 
@@ -18,7 +17,6 @@ export component QuickSettings inherits Rectangle {
     callback volume-changed(int);
     callback close();
 
-    // Eat clicks when open so they don't reach desktop behind
     width: 100%;
     height: 100%;
 
@@ -35,64 +33,120 @@ export component QuickSettings inherits Rectangle {
         }
     }
 
-    // Panel — top center, slides down
+    // Panel — glassmorphic, slides down from status bar
     if root.is-open : Rectangle {
-        x: (parent.width - 360px) / 2;
+        x: (parent.width - 380px) / 2;
         y: Theme.status-bar-height;
-        width: 360px;
+        width: 380px;
         height: qs-content.preferred-height;
-        background: Theme.bg-elevated;
         border-radius: 0px;
-        border-bottom-left-radius: 16px;
-        border-bottom-right-radius: 16px;
+        border-bottom-left-radius: 20px;
+        border-bottom-right-radius: 20px;
+        clip: true;
+
+        // Glass background
+        background: @linear-gradient(180deg,
+            #12111ae0 0%,
+            #0c0b10d0 50%,
+            #080810c0 100%
+        );
+
+        // Glass border
         border-width: 1px;
-        border-color: Theme.border-subtle;
-        drop-shadow-blur: 24px;
-        drop-shadow-color: Theme.overlay-shadow;
+        border-color: @linear-gradient(180deg,
+            #ffffff14 0%,
+            #ffffff08 100%
+        );
+
+        drop-shadow-blur: 32px;
+        drop-shadow-color: #00000060;
+
+        // Bottom holographic edge
+        Rectangle {
+            y: parent.height - 1px;
+            width: 100%;
+            height: 1px;
+            background: @linear-gradient(90deg,
+                transparent 10%,
+                Theme.cyan-glow 50%,
+                transparent 90%
+            );
+            opacity: 0.4;
+        }
 
         qs-content := VerticalLayout {
-            padding: 16px;
-            spacing: 14px;
+            padding: 20px;
+            spacing: 16px;
 
-            // ── WiFi toggle ──
+            // -- WiFi toggle --
             HorizontalLayout {
-                spacing: 12px;
+                spacing: 14px;
 
-                // WiFi toggle button
                 TouchArea {
-                    width: 64px;
-                    height: 52px;
+                    width: 68px;
+                    height: 56px;
                     clicked => { root.toggle-wifi(); }
 
                     Rectangle {
                         width: 100%;
                         height: 100%;
-                        border-radius: 12px;
-                        background: root.wifi-connected ? Theme.tint-cyan : Theme.bg-card;
+                        border-radius: 14px;
+                        background: root.wifi-connected
+                            ? @linear-gradient(135deg, #5ac8d418 0%, #5ac8d408 100%)
+                            : @linear-gradient(135deg, #12111a 0%, #0c0b10 100%);
                         border-width: 1px;
-                        border-color: root.wifi-connected ? Theme.cyan-dim : Theme.text-dim;
+                        border-color: root.wifi-connected ? Theme.cyan-dim : #ffffff08;
+                        drop-shadow-blur: root.wifi-connected ? 8px : 0;
+                        drop-shadow-color: Theme.cyan-glow;
 
                         VerticalLayout {
                             alignment: center;
-                            spacing: 2px;
+                            spacing: 3px;
 
-                            Text {
-                                text: root.wifi-connected ? "◉" : "○";
-                                color: root.wifi-connected ? Theme.cyan : Theme.text-dim;
-                                font-size: 18px;
-                                horizontal-alignment: center;
+                            // WiFi icon (concentric arcs)
+                            Rectangle {
+                                width: 22px; height: 18px;
+                                x: (parent.width - 22px) / 2;
+                                background: transparent;
+
+                                Rectangle {
+                                    x: 3px; y: 0;
+                                    width: 16px; height: 16px;
+                                    border-radius: 8px;
+                                    border-width: 2px;
+                                    border-color: root.wifi-connected ? Theme.cyan : Theme.text-dim;
+                                    background: transparent;
+                                    opacity: root.wifi-connected ? 0.8 : 0.3;
+                                }
+                                Rectangle {
+                                    x: 6px; y: 5px;
+                                    width: 10px; height: 10px;
+                                    border-radius: 5px;
+                                    border-width: 2px;
+                                    border-color: root.wifi-connected ? Theme.cyan : Theme.text-dim;
+                                    background: transparent;
+                                    opacity: root.wifi-connected ? 0.6 : 0.2;
+                                }
+                                Rectangle {
+                                    x: 9px; y: 11px;
+                                    width: 4px; height: 4px;
+                                    border-radius: 2px;
+                                    background: root.wifi-connected ? Theme.cyan : Theme.text-dim;
+                                    drop-shadow-blur: root.wifi-connected ? 4px : 0;
+                                    drop-shadow-color: Theme.cyan-glow;
+                                }
                             }
                             Text {
                                 text: "WiFi";
                                 color: root.wifi-connected ? Theme.text-primary : Theme.text-dim;
                                 font-size: 9px;
+                                font-weight: 600;
                                 horizontal-alignment: center;
                             }
                         }
                     }
                 }
 
-                // WiFi info
                 VerticalLayout {
                     alignment: center;
                     horizontal-stretch: 1;
@@ -112,15 +166,15 @@ export component QuickSettings inherits Rectangle {
                 }
             }
 
-            Rectangle { height: 1px; background: Theme.separator; }
+            Rectangle { height: 1px; background: #ffffff08; }
 
-            // ── Brightness slider ──
+            // -- Brightness slider --
             VerticalLayout {
-                spacing: 6px;
+                spacing: 8px;
 
                 HorizontalLayout {
                     Text {
-                        text: "☀ Brightness";
+                        text: "\u{2600} Brightness";
                         color: Theme.text-secondary;
                         font-size: Theme.font-small;
                         horizontal-stretch: 1;
@@ -128,12 +182,12 @@ export component QuickSettings inherits Rectangle {
                     }
                     Text {
                         text: root.brightness-level + "%";
-                        color: Theme.text-dim;
+                        color: Theme.amber;
                         font-size: Theme.font-small;
+                        font-weight: 600;
                     }
                 }
 
-                // Slider track
                 TouchArea {
                     width: 100%;
                     height: 28px;
@@ -155,39 +209,41 @@ export component QuickSettings inherits Rectangle {
                         width: 100%;
                         height: 6px;
                         border-radius: 3px;
-                        background: Theme.bg-deep;
+                        background: #0808100a;
 
-                        // Fill
                         Rectangle {
                             width: max(0px, parent.width * root.brightness-level / 100);
                             height: 100%;
                             border-radius: 3px;
-                            background: Theme.amber;
+                            background: @linear-gradient(90deg, Theme.amber-dim 0%, Theme.amber 100%);
+                            drop-shadow-blur: 4px;
+                            drop-shadow-color: Theme.amber-glow;
                         }
 
-                        // Thumb
                         Rectangle {
-                            x: max(0px, min(parent.width - 14px,
-                                parent.width * root.brightness-level / 100 - 7px));
-                            y: -4px;
-                            width: 14px;
-                            height: 14px;
-                            border-radius: 7px;
+                            x: max(0px, min(parent.width - 16px,
+                                parent.width * root.brightness-level / 100 - 8px));
+                            y: -5px;
+                            width: 16px;
+                            height: 16px;
+                            border-radius: 8px;
                             background: Theme.amber;
-                            drop-shadow-blur: 4px;
+                            border-width: 2px;
+                            border-color: Theme.amber-light;
+                            drop-shadow-blur: 8px;
                             drop-shadow-color: Theme.amber-glow;
                         }
                     }
                 }
             }
 
-            // ── Volume slider ──
+            // -- Volume slider --
             VerticalLayout {
-                spacing: 6px;
+                spacing: 8px;
 
                 HorizontalLayout {
                     Text {
-                        text: "♪ Volume";
+                        text: "\u{266a} Volume";
                         color: Theme.text-secondary;
                         font-size: Theme.font-small;
                         horizontal-stretch: 1;
@@ -195,12 +251,12 @@ export component QuickSettings inherits Rectangle {
                     }
                     Text {
                         text: root.volume-level + "%";
-                        color: Theme.text-dim;
+                        color: Theme.cyan;
                         font-size: Theme.font-small;
+                        font-weight: 600;
                     }
                 }
 
-                // Slider track
                 TouchArea {
                     width: 100%;
                     height: 28px;
@@ -222,44 +278,46 @@ export component QuickSettings inherits Rectangle {
                         width: 100%;
                         height: 6px;
                         border-radius: 3px;
-                        background: Theme.bg-deep;
+                        background: #0808100a;
 
-                        // Fill
                         Rectangle {
                             width: max(0px, parent.width * root.volume-level / 100);
                             height: 100%;
                             border-radius: 3px;
-                            background: Theme.cyan;
+                            background: @linear-gradient(90deg, Theme.cyan-dim 0%, Theme.cyan 100%);
+                            drop-shadow-blur: 4px;
+                            drop-shadow-color: Theme.cyan-glow;
                         }
 
-                        // Thumb
                         Rectangle {
-                            x: max(0px, min(parent.width - 14px,
-                                parent.width * root.volume-level / 100 - 7px));
-                            y: -4px;
-                            width: 14px;
-                            height: 14px;
-                            border-radius: 7px;
+                            x: max(0px, min(parent.width - 16px,
+                                parent.width * root.volume-level / 100 - 8px));
+                            y: -5px;
+                            width: 16px;
+                            height: 16px;
+                            border-radius: 8px;
                             background: Theme.cyan;
-                            drop-shadow-blur: 4px;
+                            border-width: 2px;
+                            border-color: Theme.cyan-light;
+                            drop-shadow-blur: 8px;
                             drop-shadow-color: Theme.cyan-glow;
                         }
                     }
                 }
             }
 
-            Rectangle { height: 1px; background: Theme.separator; }
+            Rectangle { height: 1px; background: #ffffff08; }
 
-            // ── Battery info ──
+            // -- Battery info — holographic --
             HorizontalLayout {
-                spacing: 8px;
+                spacing: 10px;
 
-                // Battery icon
+                // Battery icon with glow fill
                 Rectangle {
-                    width: 28px;
-                    height: 14px;
-                    y: (parent.height - 14px) / 2;
-                    border-radius: 3px;
+                    width: 32px;
+                    height: 16px;
+                    y: (parent.height - 16px) / 2;
+                    border-radius: 4px;
                     border-width: 1px;
                     border-color: root.battery-level <= 20 ? Theme.color-emotional : Theme.text-dim;
 
@@ -267,16 +325,19 @@ export component QuickSettings inherits Rectangle {
                         x: 2px; y: 2px;
                         width: max(0px, (parent.width - 6px) * root.battery-level / 100);
                         height: parent.height - 6px;
-                        border-radius: 1px;
+                        border-radius: 2px;
                         background: root.battery-charging ? Theme.cyan :
                                     root.battery-level <= 20 ? Theme.color-emotional :
                                     root.battery-level <= 50 ? Theme.amber : Theme.cyan;
+                        drop-shadow-blur: 4px;
+                        drop-shadow-color: root.battery-charging ? Theme.cyan-glow :
+                                           root.battery-level <= 20 ? #e86b6b40 :
+                                           Theme.amber-glow;
                     }
 
-                    // Nub
                     Rectangle {
                         x: parent.width;
-                        y: 3px;
+                        y: 4px;
                         width: 2px;
                         height: parent.height - 8px;
                         border-radius: 1px;
@@ -287,7 +348,7 @@ export component QuickSettings inherits Rectangle {
 
                 Text {
                     text: root.battery-level + "%" +
-                          (root.battery-charging ? " — Charging" : "");
+                          (root.battery-charging ? " \u{2014} Charging" : "");
                     color: root.battery-level <= 20 ? Theme.color-emotional : Theme.text-primary;
                     font-size: Theme.font-body;
                     horizontal-stretch: 1;

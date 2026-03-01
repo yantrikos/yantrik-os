@@ -1,6 +1,6 @@
-// Status bar — 24px minimal top edge.
-// Anchor dot (AI state) + clock + pending count + battery/network.
-// The anchor dot is the always-visible AI presence indicator.
+// Status bar — 28px holographic top edge.
+// Glassmorphic glass panel with breathing AI anchor, scanning glow line,
+// holographic indicators. The neural network's always-visible spine.
 
 import { Theme } from "../theme.slint";
 
@@ -21,9 +21,38 @@ export component StatusBar inherits Rectangle {
     callback power-pressed();
 
     height: Theme.status-bar-height;
-    background: @linear-gradient(180deg, Theme.bg-surface 0%, Theme.bg-deep 100%);
 
-    // Bottom glow line (Firelight signature — brighter)
+    // Glass background — translucent with depth
+    background: @linear-gradient(180deg,
+        #0c0b1090 0%,
+        #0608100a 100%
+    );
+
+    // Animated scan phase
+    property <float> scan-phase: 0;
+    Timer {
+        interval: 16ms;
+        running: true;
+        triggered => {
+            scan-phase = mod(scan-phase + 0.002, 1.0);
+        }
+    }
+
+    // Top edge highlight (glass rim)
+    Rectangle {
+        y: 0;
+        width: 100%;
+        height: 1px;
+        background: @linear-gradient(90deg,
+            transparent 5%,
+            #ffffff08 30%,
+            #ffffff10 50%,
+            #ffffff08 70%,
+            transparent 95%
+        );
+    }
+
+    // Bottom glow line (holographic signature — animated)
     Rectangle {
         y: parent.height - 1px;
         width: 100%;
@@ -33,25 +62,40 @@ export component StatusBar inherits Rectangle {
 
     // Glow bloom behind the line
     Rectangle {
-        y: parent.height - 3px;
+        y: parent.height - 4px;
         width: 100%;
-        height: 6px;
+        height: 8px;
         background: @linear-gradient(90deg, transparent 10%, Theme.tint-cyan 50%, transparent 90%);
     }
 
-    HorizontalLayout {
-        padding-left: 12px;
-        padding-right: 12px;
+    // Scanning glow sweep — subtle holographic scanner
+    Rectangle {
+        y: parent.height - 2px;
+        x: parent.width * scan-phase - parent.width * 0.15;
+        width: parent.width * 0.15;
+        height: 2px;
+        background: @linear-gradient(90deg,
+            transparent 0%,
+            Theme.cyan 40%,
+            Theme.holo-core 70%,
+            transparent 100%
+        );
+        opacity: 0.5;
+    }
 
-        // ── Left: Anchor dot + Clock ──
+    HorizontalLayout {
+        padding-left: 14px;
+        padding-right: 14px;
+
+        // -- Left: Anchor dot + Clock --
         HorizontalLayout {
             horizontal-stretch: 1;
             spacing: 10px;
             alignment: start;
 
-            // Anchor dot — 16px AI state indicator
+            // Anchor dot — holographic AI state indicator
             TouchArea {
-                width: 20px;
+                width: 24px;
                 height: Theme.status-bar-height;
                 clicked => { root.anchor-clicked(); }
 
@@ -66,11 +110,11 @@ export component StatusBar inherits Rectangle {
                     }
 
                     // Outer glow ring (breathing)
-                    x: (parent.width - 16px) / 2;
-                    y: (parent.height - 16px) / 2;
-                    width: 16px;
-                    height: 16px;
-                    border-radius: 8px;
+                    x: (parent.width - 18px) / 2;
+                    y: (parent.height - 18px) / 2;
+                    width: 18px;
+                    height: 18px;
+                    border-radius: 9px;
                     background: transparent;
                     border-width: root.companion-status == "thinking" ? 2px : 1px;
                     border-color: !root.companion-online ? Theme.color-emotional :
@@ -79,7 +123,7 @@ export component StatusBar inherits Rectangle {
                                   Theme.cyan-dim;
                     opacity: !root.companion-online ? 0.6
                         : 0.4 + 0.3 * sin(breath-phase * 6.2832 * 1rad);
-                    drop-shadow-blur: root.companion-status == "thinking" ? 6px : 3px;
+                    drop-shadow-blur: root.companion-status == "thinking" ? 8px : 4px;
                     drop-shadow-color: !root.companion-online ? #e86b6b40 :
                                        root.companion-status == "thinking" ? Theme.amber-glow : Theme.cyan-glow;
 
@@ -98,43 +142,72 @@ export component StatusBar inherits Rectangle {
                                     root.companion-status == "thinking" ? Theme.amber :
                                     root.companion-status == "listening" ? Theme.cyan-light :
                                     Theme.cyan;
-                        drop-shadow-blur: 4px;
+                        drop-shadow-blur: 6px;
                         drop-shadow-color: !root.companion-online ? #e86b6b40 :
                                            root.companion-status == "thinking" ? Theme.amber-glow : Theme.cyan-glow;
 
                         animate background { duration: 300ms; }
                     }
+
+                    // Secondary orbit dot (visible when thinking)
+                    Rectangle {
+                        property <float> orbit: breath-phase;
+                        x: parent.width / 2 + 7px * cos(orbit * 6.2832 * 3.0 * 1rad) - 1.5px;
+                        y: parent.height / 2 + 7px * sin(orbit * 6.2832 * 3.0 * 1rad) - 1.5px;
+                        width: 3px;
+                        height: 3px;
+                        border-radius: 1.5px;
+                        background: Theme.amber;
+                        opacity: root.companion-status == "thinking" ? 0.7 : 0;
+                        drop-shadow-blur: 4px;
+                        drop-shadow-color: Theme.amber-glow;
+
+                        animate opacity { duration: 200ms; }
+                    }
                 }
             }
 
-            // Clock
+            // Clock — holographic numerals
             Text {
                 text: root.clock-text;
                 color: Theme.text-secondary;
                 font-size: 12px;
-                font-weight: 500;
-                letter-spacing: 1px;
+                font-weight: 600;
+                letter-spacing: 2px;
                 vertical-alignment: center;
             }
         }
 
-        // ── Right: Power + Pending count + WiFi + Battery ──
+        // -- Right: Power + Pending count + WiFi + Battery --
         HorizontalLayout {
-            spacing: 12px;
+            spacing: 14px;
             alignment: end;
 
-            // Power button
+            // Power button — holographic
             TouchArea {
-                width: 20px;
+                width: 22px;
                 height: Theme.status-bar-height;
                 clicked => { root.power-pressed(); }
 
-                Text {
-                    text: "\u{23fb}";
-                    color: parent.has-hover ? Theme.text-primary : Theme.text-dim;
-                    font-size: 12px;
-                    horizontal-alignment: center;
-                    vertical-alignment: center;
+                Rectangle {
+                    x: (parent.width - 16px) / 2;
+                    y: (parent.height - 16px) / 2;
+                    width: 16px;
+                    height: 16px;
+                    border-radius: 8px;
+                    background: transparent;
+                    border-width: 1px;
+                    border-color: parent.has-hover ? Theme.text-secondary : Theme.text-dim;
+
+                    animate border-color { duration: 120ms; }
+
+                    Text {
+                        text: "\u{23fb}";
+                        color: Theme.text-dim;
+                        font-size: 9px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
                 }
             }
 
@@ -145,11 +218,13 @@ export component StatusBar inherits Rectangle {
                 clicked => { root.whisper-hint-clicked(); }
 
                 whisper-badge := Rectangle {
-                    width: max(18px, whisper-text.preferred-width + 8px);
+                    width: max(18px, whisper-text.preferred-width + 10px);
                     height: 16px;
                     y: (parent.height - 16px) / 2;
                     border-radius: 8px;
                     background: Theme.cyan-dim;
+                    drop-shadow-blur: 6px;
+                    drop-shadow-color: Theme.cyan-glow;
 
                     whisper-text := Text {
                         text: root.whisper-hint-count;
@@ -169,11 +244,13 @@ export component StatusBar inherits Rectangle {
                 clicked => { root.queue-clicked(); }
 
                 queue-badge := Rectangle {
-                    width: max(18px, queue-text.preferred-width + 8px);
+                    width: max(18px, queue-text.preferred-width + 10px);
                     height: 16px;
                     y: (parent.height - 16px) / 2;
                     border-radius: 8px;
                     background: Theme.amber-dim;
+                    drop-shadow-blur: 6px;
+                    drop-shadow-color: Theme.amber-glow;
 
                     queue-text := Text {
                         text: root.pending-count;
@@ -194,22 +271,51 @@ export component StatusBar inherits Rectangle {
                 HorizontalLayout {
                     spacing: 12px;
 
-                    // WiFi dot (minimal)
+                    // WiFi indicator — holographic rings
                     Rectangle {
-                        width: 8px;
-                        height: 8px;
-                        y: (parent.height - 8px) / 2;
-                        border-radius: 4px;
-                        background: root.wifi-connected ? Theme.cyan-dim : Theme.text-dim;
-                        opacity: root.wifi-connected ? 0.8 : 0.3;
+                        width: 14px;
+                        height: 14px;
+                        y: (parent.height - 14px) / 2;
+                        background: transparent;
+
+                        // Outer arc
+                        Rectangle {
+                            x: 1px; y: 0;
+                            width: 12px; height: 12px;
+                            border-radius: 6px;
+                            border-width: 1px;
+                            border-color: root.wifi-connected ? Theme.cyan : Theme.text-dim;
+                            background: transparent;
+                            opacity: root.wifi-connected ? 0.7 : 0.2;
+                        }
+                        // Inner arc
+                        Rectangle {
+                            x: 3.5px; y: 3px;
+                            width: 7px; height: 7px;
+                            border-radius: 3.5px;
+                            border-width: 1px;
+                            border-color: root.wifi-connected ? Theme.cyan : Theme.text-dim;
+                            background: transparent;
+                            opacity: root.wifi-connected ? 0.6 : 0.15;
+                        }
+                        // Center dot
+                        Rectangle {
+                            x: 5.5px; y: 6px;
+                            width: 3px; height: 3px;
+                            border-radius: 1.5px;
+                            background: root.wifi-connected ? Theme.cyan : Theme.text-dim;
+                            opacity: root.wifi-connected ? 1.0 : 0.3;
+                            drop-shadow-blur: root.wifi-connected ? 3px : 0;
+                            drop-shadow-color: Theme.cyan-glow;
+                        }
                     }
 
-                    // Battery — compact
+                    // Battery — holographic bar
                     HorizontalLayout {
                         spacing: 3px;
 
                         Rectangle {
-                            width: 20px;
+                            width: 22px;
                             height: 10px;
                             y: (parent.height - 10px) / 2;
                             border-radius: 2px;
@@ -225,7 +331,12 @@ export component StatusBar inherits Rectangle {
                                 border-radius: 1px;
                                 background: root.battery-charging ? Theme.cyan :
                                             root.battery-level <= 20 ? Theme.color-emotional :
-                                            Theme.text-dim;
+                                            root.battery-level <= 50 ? Theme.amber :
+                                            Theme.cyan;
+                                drop-shadow-blur: 2px;
+                                drop-shadow-color: root.battery-charging ? Theme.cyan-glow :
+                                                   root.battery-level <= 20 ? #e86b6b40 :
+                                                   Theme.amber-glow;
                             }
 
                             // Terminal nub

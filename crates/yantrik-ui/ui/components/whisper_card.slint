@@ -30,13 +30,18 @@ component WhisperCard inherits Rectangle {
     height: hovered ? 100px : 64px;
     x: card.shown ? 0px : self.width + 20px;
     opacity: card.shown ? card.target-opacity : 0;
-    border-radius: Theme.radius-card;
-    background: Theme.bg-card;
+    border-radius: 16px;
+    // Glassmorphic background
+    background: @linear-gradient(135deg,
+        #12111ae0 0%,
+        #0c0b10d0 50%,
+        #080810c0 100%
+    );
     border-width: 1px;
-    border-color: hovered ? #ffffff18 : #ffffff08;
+    border-color: hovered ? #ffffff18 : #ffffff0a;
     clip: true;
-    drop-shadow-blur: 12px;
-    drop-shadow-color: #00000050;
+    drop-shadow-blur: 20px;
+    drop-shadow-color: #00000060;
 
     animate x { duration: 300ms; easing: ease-out; }
     animate opacity { duration: 250ms; }
