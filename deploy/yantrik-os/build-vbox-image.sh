@@ -639,7 +639,9 @@ fi
     --boot2 none \
     --clipboard-mode bidirectional \
     --draganddrop bidirectional \
-    --uart1 off
+    --uart1 off \
+    --usb on \
+    --mouse usbtablet
 
 # Attach VDI
 "$VBOXMANAGE" storagectl "$VM_NAME" --name "SATA" --add sata --controller IntelAhci
