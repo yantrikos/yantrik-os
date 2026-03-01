@@ -209,7 +209,7 @@ apk add --no-cache \
     seatd seatd-openrc \
     font-dejavu ttf-dejavu \
     libinput wayland-libs-egl wayland-libs-client wayland-libs-cursor \
-    alsa-utils alsa-lib \
+    alsa-utils alsa-lib speech-dispatcher \
     gcompat pciutils jq bc diffutils
 
 # ── Optional desktop apps ──
