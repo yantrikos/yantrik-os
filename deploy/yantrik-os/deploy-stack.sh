@@ -54,11 +54,28 @@ else
     echo "  Community repo already enabled"
 fi
 
+# ── Detect hypervisor ──
+HYPERVISOR="bare"
+if command -v lspci >/dev/null 2>&1; then
+    if lspci 2>/dev/null | grep -qi virtualbox; then
+        HYPERVISOR="vbox"
+    elif lspci 2>/dev/null | grep -qi "virtio\|qemu\|red hat"; then
+        HYPERVISOR="qemu"
+    fi
+elif [ -f /sys/class/dmi/id/product_name ]; then
+    PRODUCT=$(cat /sys/class/dmi/id/product_name 2>/dev/null || true)
+    case "$PRODUCT" in
+        *VirtualBox*) HYPERVISOR="vbox" ;;
+        *QEMU*|*KVM*) HYPERVISOR="qemu" ;;
+    esac
+fi
+echo "Hypervisor: $HYPERVISOR"
+
 # ── Step 1: System packages ──
 echo
 echo "[1/8] Installing system packages..."
 apk update -q
-apk add -q \
+apk add -q pciutils \
     labwc \
     foot \
     dbus dbus-openrc \
@@ -103,6 +120,18 @@ fi
 apk add -q thunar 2>/dev/null && echo "  Installed: thunar (file manager)" || echo "  thunar not available, skipping"
 apk add -q firefox-esr 2>/dev/null && echo "  Installed: firefox-esr (browser)" || echo "  firefox-esr not available, skipping"
 apk add -q distrobox podman 2>/dev/null && echo "  Installed: distrobox + podman (container toolkit)" || echo "  distrobox not available, skipping"
+
+# ── Step 1a: VirtualBox Guest Additions (if running in VBox) ──
+if [ "$HYPERVISOR" = "vbox" ]; then
+    echo "  Installing VirtualBox Guest Additions..."
+    apk add -q virtualbox-guest-additions virtualbox-guest-additions-openrc 2>/dev/null && {
+        rc-update add virtualbox-guest-additions default 2>/dev/null || true
+        modprobe vboxguest 2>/dev/null || true
+        modprobe vboxsf 2>/dev/null || true
+        modprobe vboxvideo 2>/dev/null || true
+        echo "  VBox Guest Additions installed (auto-resize, clipboard, shared folders)"
+    } || echo "  VBox Guest Additions not available in repos, skipping"
+fi
 
 # ── Step 1b: Build glibc compatibility shim ──
 echo "  Building glibc shim..."
@@ -301,24 +330,35 @@ echo "[6/8] Configuring labwc compositor..."
 LABWC_DIR="/home/$YANTRIK_USER/.config/labwc"
 mkdir -p "$LABWC_DIR"
 
-# labwc environment — all QEMU/Wayland env vars
-cat > "$LABWC_DIR/environment" <<'ENV'
-# glibc compat shim (binary built on Ubuntu glibc, running on Alpine musl)
-LD_PRELOAD=/usr/lib/libglibc_shim.so
+# labwc environment — hypervisor-aware Wayland env vars
+{
+    echo "# glibc compat shim (binary built on Ubuntu glibc, running on Alpine musl)"
+    echo "LD_PRELOAD=/usr/lib/libglibc_shim.so"
+    echo ""
+    echo "# Allow software rendering fallback"
+    echo "WLR_RENDERER_ALLOW_SOFTWARE=1"
+    echo ""
+    echo "# Suppress libinput check (VM uses evdev)"
+    echo "WLR_LIBINPUT_NO_DEVICES=1"
+    echo ""
 
-# Use virtio-gpu (card0), not bochs VGA (card1)
-WLR_DRM_DEVICES=/dev/dri/card0
-
-# Allow software rendering fallback (QEMU virtio-gpu)
-WLR_RENDERER_ALLOW_SOFTWARE=1
-
-# Suppress libinput check (QEMU uses evdev)
-WLR_LIBINPUT_NO_DEVICES=1
-
-# Slint backend: 'winit' auto-detects GPU, falls back to software if needed.
-# Use 'winit-software' only if GPU rendering fails completely.
-SLINT_BACKEND=winit
-ENV
+    case "$HYPERVISOR" in
+        qemu)
+            echo "# QEMU: Use virtio-gpu (card0), not bochs VGA (card1)"
+            echo "WLR_DRM_DEVICES=/dev/dri/card0"
+            echo "SLINT_BACKEND=winit"
+            ;;
+        vbox)
+            echo "# VirtualBox: let labwc auto-detect VMSVGA display"
+            echo "WLR_NO_HARDWARE_CURSORS=1"
+            echo "SLINT_BACKEND=winit-software"
+            ;;
+        *)
+            echo "# Bare metal / unknown hypervisor"
+            echo "SLINT_BACKEND=winit"
+            ;;
+    esac
+} > "$LABWC_DIR/environment"
 
 # labwc autostart — launch services + yantrik-ui
 cat > "$LABWC_DIR/autostart" <<'AUTOSTART'
