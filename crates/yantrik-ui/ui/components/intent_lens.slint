@@ -42,6 +42,7 @@ export component IntentLens inherits Rectangle {
 
     // Internal state
     in-out property <string> input-text: "";
+    in-out property <int> selected-index: 0;   // keyboard-navigable cursor
 
     // Full overlay — click outside to close
     width: 100%;
@@ -138,7 +139,16 @@ export component IntentLens inherits Rectangle {
                             text <=> root.input-text;
                             accepted => {
                                 if root.input-text != "" {
-                                    root.submit-query(root.input-text);
+                                    // Dual-mode: Enter selects the highlighted result.
+                                    // If results exist, execute the selected one (default: first).
+                                    // This means "firefox"→Enter launches Firefox, not sends to AI.
+                                    if root.results.length > 0 {
+                                        root.result-selected(
+                                            root.results[clamp(root.selected-index, 0, root.results.length - 1)].action-id
+                                        );
+                                    } else {
+                                        root.submit-query(root.input-text);
+                                    }
                                 }
                             }
                         }
@@ -212,17 +222,52 @@ export component IntentLens inherits Rectangle {
                 padding: 4px;
                 padding-bottom: 8px;
 
-                for result[idx] in root.results : TouchArea {
-                    height: Theme.lens-result-height;
-                    property <bool> hovered: self.has-hover;
-                    clicked => { root.result-selected(result.action-id); }
+                for result[idx] in root.results : Rectangle {
+                    height: result.result-type == "divider" ? 24px : Theme.lens-result-height;
+                    property <bool> row-selected: idx == root.selected-index;
+
+                    // ── Divider row ──
+                    if result.result-type == "divider" : Rectangle {
+                        width: 100%;
+                        height: 24px;
+
+                        HorizontalLayout {
+                            padding-left: 16px;
+                            padding-right: 16px;
+                            spacing: 8px;
+                            alignment: center;
+
+                            Rectangle { horizontal-stretch: 1; height: 1px; background: #ffffff08; }
+                            Text {
+                                text: result.title;
+                                color: Theme.text-dim;
+                                font-size: 9px;
+                                letter-spacing: 1px;
+                            }
+                            Rectangle { horizontal-stretch: 1; height: 1px; background: #ffffff08; }
+                        }
+                    }
+
+                    // ── Normal result row ──
+                    if result.result-type != "divider" : TouchArea {
+                        height: Theme.lens-result-height;
+                        property <bool> hovered: self.has-hover;
+                        clicked => {
+                            root.selected-index = idx;
+                            root.result-selected(result.action-id);
+                        }
 
                     Rectangle {
                         property <bool> is-hovered: parent.hovered;
+                        property <bool> is-sel: row-selected;
                         width: 100%;
                         height: Theme.lens-result-height;
                         border-radius: 8px;
-                        background: is-hovered ? Theme.bg-card : transparent;
+                        background: is-sel ? Theme.bg-selected
+                            : is-hovered ? Theme.bg-card
+                            : transparent;
+                        border-width: is-sel ? 1px : 0;
+                        border-color: is-sel ? #ffffff10 : transparent;
 
                         animate background { duration: 100ms; }
 
@@ -280,9 +325,27 @@ export component IntentLens inherits Rectangle {
                                     overflow: elide;
                                 }
                             }
-                        }
-                    }
-                }
+
+                            // "Enter" hint on selected result
+                            if row-selected : Rectangle {
+                                width: 36px;
+                                height: 18px;
+                                y: (parent.height - 18px) / 2;
+                                border-radius: 4px;
+                                background: #ffffff08;
+
+                                Text {
+                                    text: "↵";
+                                    color: Theme.text-dim;
+                                    font-size: 12px;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        } // HorizontalLayout
+                    } // Rectangle (result card)
+                    } // TouchArea (normal result)
+                } // for loop container
 
                 // Empty state
                 if root.results.length == 0 && root.input-text == "" : Rectangle {
@@ -453,6 +516,50 @@ export component IntentLens inherits Rectangle {
                     }
                 }
             }
+        }
+    }
+
+    // Reset selection when results change
+    changed results => { root.selected-index = 0; }
+
+    // Keyboard navigation — Up/Down/Tab move selection, Escape closes.
+    // Skips divider rows automatically.
+    key-handler := FocusScope {
+        width: 0; height: 0;
+        key-pressed(event) => {
+            if event.text == Key.DownArrow || event.text == Key.Tab {
+                if root.results.length > 0 {
+                    root.selected-index = clamp(
+                        root.selected-index + 1, 0, root.results.length - 1
+                    );
+                    // Skip divider
+                    if root.results[root.selected-index].result-type == "divider" {
+                        root.selected-index = clamp(
+                            root.selected-index + 1, 0, root.results.length - 1
+                        );
+                    }
+                }
+                return accept;
+            }
+            if event.text == Key.UpArrow {
+                if root.results.length > 0 {
+                    root.selected-index = clamp(
+                        root.selected-index - 1, 0, root.results.length - 1
+                    );
+                    // Skip divider
+                    if root.results[root.selected-index].result-type == "divider" {
+                        root.selected-index = clamp(
+                            root.selected-index - 1, 0, root.results.length - 1
+                        );
+                    }
+                }
+                return accept;
+            }
+            if event.text == Key.Escape {
+                root.close-lens();
+                return accept;
+            }
+            return reject;
         }
     }
 

@@ -312,9 +312,36 @@ pub fn build_results(
     }
 
     // Smart Intent: NL → tool routing
-    results.extend(match_tool_intents(&lower, query));
+    let tool_results = match_tool_intents(&lower, query);
+
+    // Build AI section: tool intents + free-form AI chat.
+    // If we have instant results above, add a visual separator before AI results.
+    let has_instant = !results.is_empty();
+    let has_ai = !tool_results.is_empty();
+
+    if has_instant && has_ai {
+        // Thin separator — rendered as a non-clickable "divider" result type
+        results.push(LensResult {
+            result_type: "divider".into(),
+            title: "── AI ──".into(),
+            subtitle: SharedString::default(),
+            icon_char: SharedString::default(),
+            action_id: SharedString::default(),
+        });
+    }
+
+    results.extend(tool_results);
 
     // Always offer AI conversation as the last option
+    if has_instant && !has_ai {
+        results.push(LensResult {
+            result_type: "divider".into(),
+            title: "── AI ──".into(),
+            subtitle: SharedString::default(),
+            icon_char: SharedString::default(),
+            action_id: SharedString::default(),
+        });
+    }
     results.push(LensResult {
         result_type: "ask".into(),
         title: SharedString::from(format!("Ask: \"{}\"", query)),
