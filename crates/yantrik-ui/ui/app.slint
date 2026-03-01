@@ -133,6 +133,11 @@ export component App inherits Window {
     in property <string> settings-tool-permission: "sensitive";
     in property <int> settings-auto-lock-secs: 300;
     in property <string> settings-version: "0.1.0";
+    in property <string> settings-ip-address: "";
+    in property <string> settings-display-resolution: "";
+    in property <string> settings-llm-backend: "candle";
+    in property <string> settings-llm-api-url: "";
+    in property <string> settings-llm-api-model: "";
 
     // File browser state (screen 8)
     in property <string> file-browser-path: "~";
@@ -334,6 +339,13 @@ export component App inherits Window {
             max-tokens: root.settings-max-tokens;
             tool-permission: root.settings-tool-permission;
             auto-lock-secs: root.settings-auto-lock-secs;
+            wifi-connected: root.wifi-connected;
+            wifi-ssid: root.sys-wifi-ssid;
+            ip-address: root.settings-ip-address;
+            display-resolution: root.settings-display-resolution;
+            llm-backend: root.settings-llm-backend;
+            llm-api-url: root.settings-llm-api-url;
+            llm-api-model: root.settings-llm-api-model;
             memory-count: root.memory-count;
             version-text: root.settings-version;
             notification-count: root.notification-unread-count;

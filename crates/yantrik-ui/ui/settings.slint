@@ -19,6 +19,19 @@ export component SettingsScreen inherits Rectangle {
     // Security
     in property <int> auto-lock-secs: 300;
 
+    // Network
+    in property <bool> wifi-connected: false;
+    in property <string> wifi-ssid: "";
+    in property <string> ip-address: "";
+
+    // Display
+    in property <string> display-resolution: "";
+
+    // LLM Backend
+    in property <string> llm-backend: "candle";
+    in property <string> llm-api-url: "";
+    in property <string> llm-api-model: "";
+
     // System info
     in property <int> memory-count: 0;
     in property <string> version-text: "0.1.0";
@@ -145,22 +158,67 @@ export component SettingsScreen inherits Rectangle {
 
                         HorizontalLayout {
                             Text {
+                                text: "Backend";
+                                color: Theme.text-secondary;
+                                font-size: Theme.font-body;
+                                horizontal-stretch: 1;
+                            }
+                            Rectangle {
+                                width: backend-tag.preferred-width + 14px;
+                                height: 22px;
+                                border-radius: 6px;
+                                background: root.llm-backend == "api" ? #5ac8d418 : #d4a57418;
+                                border-width: 1px;
+                                border-color: root.llm-backend == "api" ? Theme.cyan-dim : Theme.amber-dim;
+
+                                backend-tag := Text {
+                                    text: root.llm-backend == "api" ? "API" : "Candle";
+                                    color: root.llm-backend == "api" ? Theme.cyan : Theme.amber;
+                                    font-size: 11px;
+                                    font-weight: 600;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+
+                        Rectangle { height: 1px; background: Theme.bg-elevated; }
+
+                        HorizontalLayout {
+                            Text {
                                 text: "Model";
                                 color: Theme.text-secondary;
                                 font-size: Theme.font-body;
                                 horizontal-stretch: 1;
                             }
                             Text {
-                                text: root.model-name;
+                                text: root.llm-backend == "api" && root.llm-api-model != ""
+                                    ? root.llm-api-model : root.model-name;
                                 color: Theme.cyan;
                                 font-size: Theme.font-small;
                             }
                         }
 
-                        Rectangle {
+                        // API endpoint (only shown for API backend)
+                        if root.llm-backend == "api" && root.llm-api-url != "" : Rectangle {
                             height: 1px;
                             background: Theme.bg-elevated;
                         }
+                        if root.llm-backend == "api" && root.llm-api-url != "" : HorizontalLayout {
+                            Text {
+                                text: "Endpoint";
+                                color: Theme.text-secondary;
+                                font-size: Theme.font-body;
+                                horizontal-stretch: 1;
+                            }
+                            Text {
+                                text: root.llm-api-url;
+                                color: Theme.text-dim;
+                                font-size: 11px;
+                            }
+                        }
+
+                        Rectangle { height: 1px; background: Theme.bg-elevated; }
 
                         HorizontalLayout {
                             Text {
@@ -176,10 +234,7 @@ export component SettingsScreen inherits Rectangle {
                             }
                         }
 
-                        Rectangle {
-                            height: 1px;
-                            background: Theme.bg-elevated;
-                        }
+                        Rectangle { height: 1px; background: Theme.bg-elevated; }
 
                         HorizontalLayout {
                             Text {
@@ -195,10 +250,7 @@ export component SettingsScreen inherits Rectangle {
                             }
                         }
 
-                        Rectangle {
-                            height: 1px;
-                            background: Theme.bg-elevated;
-                        }
+                        Rectangle { height: 1px; background: Theme.bg-elevated; }
 
                         HorizontalLayout {
                             Text {
@@ -209,6 +261,90 @@ export component SettingsScreen inherits Rectangle {
                             }
                             Text {
                                 text: root.tool-permission;
+                                color: Theme.text-primary;
+                                font-size: Theme.font-body;
+                            }
+                        }
+                    }
+                }
+
+                // ── Network section ──
+                Text {
+                    text: "NETWORK";
+                    color: Theme.text-dim;
+                    font-size: 11px;
+                    letter-spacing: 2px;
+                }
+
+                Rectangle {
+                    background: Theme.bg-card;
+                    border-radius: Theme.radius-card;
+                    height: net-layout.preferred-height;
+
+                    net-layout := VerticalLayout {
+                        padding: 14px;
+                        spacing: 10px;
+
+                        HorizontalLayout {
+                            Text {
+                                text: "WiFi";
+                                color: Theme.text-secondary;
+                                font-size: Theme.font-body;
+                                horizontal-stretch: 1;
+                            }
+                            Text {
+                                text: root.wifi-connected
+                                    ? (root.wifi-ssid != "" ? root.wifi-ssid : "Connected")
+                                    : "Disconnected";
+                                color: root.wifi-connected ? Theme.cyan : Theme.text-dim;
+                                font-size: Theme.font-body;
+                            }
+                        }
+
+                        Rectangle { height: 1px; background: Theme.bg-elevated; }
+
+                        HorizontalLayout {
+                            Text {
+                                text: "IP address";
+                                color: Theme.text-secondary;
+                                font-size: Theme.font-body;
+                                horizontal-stretch: 1;
+                            }
+                            Text {
+                                text: root.ip-address != "" ? root.ip-address : "—";
+                                color: Theme.text-primary;
+                                font-size: Theme.font-body;
+                            }
+                        }
+                    }
+                }
+
+                // ── Display section ──
+                Text {
+                    text: "DISPLAY";
+                    color: Theme.text-dim;
+                    font-size: 11px;
+                    letter-spacing: 2px;
+                }
+
+                Rectangle {
+                    background: Theme.bg-card;
+                    border-radius: Theme.radius-card;
+                    height: disp-layout.preferred-height;
+
+                    disp-layout := VerticalLayout {
+                        padding: 14px;
+                        spacing: 10px;
+
+                        HorizontalLayout {
+                            Text {
+                                text: "Resolution";
+                                color: Theme.text-secondary;
+                                font-size: Theme.font-body;
+                                horizontal-stretch: 1;
+                            }
+                            Text {
+                                text: root.display-resolution != "" ? root.display-resolution : "auto";
                                 color: Theme.text-primary;
                                 font-size: Theme.font-body;
                             }

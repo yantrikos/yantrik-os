@@ -60,6 +60,43 @@ impl AppContext {
         ui.set_settings_tool_permission(config.tools.max_permission.clone().into());
         ui.set_settings_auto_lock_secs(crate::lock::DEFAULT_IDLE_LOCK_SECS as i32);
 
+        // LLM backend settings
+        ui.set_settings_llm_backend(config.llm.backend.clone().into());
+        if let Some(ref url) = config.llm.resolve_api_base_url() {
+            ui.set_settings_llm_api_url(url.clone().into());
+        }
+        if let Some(ref model) = config.llm.api_model {
+            ui.set_settings_llm_api_model(model.clone().into());
+        }
+
+        // Display resolution (best effort via wlr-randr)
+        if let Ok(output) = std::process::Command::new("wlr-randr").output() {
+            if output.status.success() {
+                let text = String::from_utf8_lossy(&output.stdout);
+                for line in text.lines() {
+                    let trimmed = line.trim();
+                    if trimmed.contains('x')
+                        && trimmed.chars().next().map_or(false, |c| c.is_ascii_digit())
+                    {
+                        if let Some(res) = trimmed.split_whitespace().next() {
+                            ui.set_settings_display_resolution(res.into());
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        // IP address (best effort)
+        if let Ok(output) = std::process::Command::new("hostname").arg("-I").output() {
+            if output.status.success() {
+                let text = String::from_utf8_lossy(&output.stdout);
+                if let Some(ip) = text.split_whitespace().next() {
+                    ui.set_settings_ip_address(ip.into());
+                }
+            }
+        }
+
         // Generate labwc keybind config
         yantrik_os::keybinds::ensure_labwc_config();
 
