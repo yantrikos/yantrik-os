@@ -104,3 +104,79 @@ pub fn start_ai_stream(
     });
     *timer_slot.borrow_mut() = Some(timer);
 }
+
+/// Start a proactive AI stream — only the assistant's response is shown (no user bubble).
+/// Used for morning brief and other proactive messages where the AI speaks first.
+pub fn start_proactive_stream(
+    ui_weak: slint::Weak<App>,
+    bridge: &Arc<CompanionBridge>,
+    hidden_prompt: &str,
+    timer_slot: &Rc<RefCell<Option<Timer>>>,
+) {
+    // Only add assistant bubble (the prompt is hidden from the user)
+    if let Some(ui) = ui_weak.upgrade() {
+        let messages = ui.get_messages();
+        let model = messages
+            .as_any()
+            .downcast_ref::<VecModel<MessageData>>()
+            .unwrap();
+        model.push(MessageData {
+            role: "assistant".into(),
+            content: "".into(),
+            is_streaming: true,
+        });
+        ui.set_is_generating(true);
+        ui.set_is_thinking(true);
+        ui.set_companion_status("thinking".into());
+    }
+
+    let token_rx = bridge.send_message(hidden_prompt.to_string());
+    let timer_handle = timer_slot.clone();
+    let ui_weak_stream = ui_weak.clone();
+
+    let timer = Timer::default();
+    timer.start(TimerMode::Repeated, Duration::from_millis(16), move || {
+        let mut done = false;
+        while let Ok(token) = token_rx.try_recv() {
+            if token == "__DONE__" {
+                done = true;
+                break;
+            }
+            if let Some(ui) = ui_weak_stream.upgrade() {
+                let messages = ui.get_messages();
+                let model = messages
+                    .as_any()
+                    .downcast_ref::<VecModel<MessageData>>()
+                    .unwrap();
+                let count = model.row_count();
+                if count > 0 {
+                    let mut last = model.row_data(count - 1).unwrap();
+                    let mut content = last.content.to_string();
+                    content.push_str(&token);
+                    last.content = SharedString::from(&content);
+                    model.set_row_data(count - 1, last);
+                }
+            }
+        }
+        if done {
+            if let Some(ui) = ui_weak_stream.upgrade() {
+                ui.set_is_generating(false);
+                ui.set_is_thinking(false);
+                ui.set_companion_status("idle".into());
+                let messages = ui.get_messages();
+                let model = messages
+                    .as_any()
+                    .downcast_ref::<VecModel<MessageData>>()
+                    .unwrap();
+                let count = model.row_count();
+                if count > 0 {
+                    let mut last = model.row_data(count - 1).unwrap();
+                    last.is_streaming = false;
+                    model.set_row_data(count - 1, last);
+                }
+            }
+            *timer_handle.borrow_mut() = None;
+        }
+    });
+    *timer_slot.borrow_mut() = Some(timer);
+}

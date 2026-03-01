@@ -1,17 +1,20 @@
-//! Background timers — clock, think cycle, card tick.
+//! Background timers — clock, think cycle, card tick, morning brief.
 
+use std::cell::RefCell;
+use std::rc::Rc;
 use std::time::Duration;
 
 use slint::{ComponentHandle, Timer, TimerMode};
 
 use crate::app_context::{self, AppContext};
-use crate::{cards, App};
+use crate::{cards, streaming, App};
 
 /// Wire all background timers.
 pub fn wire(ui: &App, ctx: &AppContext) {
     wire_clock(ui);
     wire_think(ctx);
     wire_card_tick(ui, ctx);
+    wire_morning_brief(ui, ctx);
 }
 
 /// Clock timer — updates time and greeting every 30 seconds.
@@ -34,6 +37,34 @@ fn wire_think(ctx: &AppContext) {
     let timer = Timer::default();
     timer.start(TimerMode::Repeated, Duration::from_secs(60), move || {
         bridge.think();
+    });
+    std::mem::forget(timer);
+}
+
+/// Morning brief — fires once 5s after boot, proactively greets the user.
+/// The prompt is hidden; only the AI's response appears in chat.
+fn wire_morning_brief(ui: &App, ctx: &AppContext) {
+    let bridge = ctx.bridge.clone();
+    let ui_weak = ui.as_weak();
+    let timer_slot: Rc<RefCell<Option<Timer>>> = Rc::new(RefCell::new(None));
+    let slot = timer_slot.clone();
+
+    let timer = Timer::default();
+    timer.start(TimerMode::SingleShot, Duration::from_secs(5), move || {
+        // Only fire if companion is online
+        if !bridge.is_online() {
+            tracing::info!("Morning brief skipped — companion offline");
+            return;
+        }
+        let prompt = concat!(
+            "You just started up. Give me a short morning brief (3-4 sentences max). ",
+            "Mention: the time of day, any system status worth noting from your context ",
+            "(battery, memory, disk, network), and one friendly/encouraging line. ",
+            "Be concise and warm — this is the first thing I see when I log in. ",
+            "Do NOT use bullet points or headers. Just natural sentences."
+        );
+        tracing::info!("Generating morning brief");
+        streaming::start_proactive_stream(ui_weak.clone(), &bridge, prompt, &slot);
     });
     std::mem::forget(timer);
 }
