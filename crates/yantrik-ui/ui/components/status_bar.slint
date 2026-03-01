@@ -7,6 +7,7 @@ import { Theme } from "../theme.slint";
 export component StatusBar inherits Rectangle {
     in property <string> clock-text: "00:00";
     in property <string> companion-status: "idle";
+    in property <bool> companion-online: true;
     in property <int> battery-level: 100;
     in property <bool> battery-charging: false;
     in property <bool> wifi-connected: false;
@@ -71,12 +72,15 @@ export component StatusBar inherits Rectangle {
                     border-radius: 8px;
                     background: transparent;
                     border-width: root.companion-status == "thinking" ? 2px : 1px;
-                    border-color: root.companion-status == "thinking" ? Theme.amber :
+                    border-color: !root.companion-online ? Theme.color-emotional :
+                                  root.companion-status == "thinking" ? Theme.amber :
                                   root.companion-status == "listening" ? Theme.cyan-light :
                                   Theme.cyan-dim;
-                    opacity: 0.4 + 0.3 * sin(breath-phase * 6.2832 * 1rad);
+                    opacity: !root.companion-online ? 0.6
+                        : 0.4 + 0.3 * sin(breath-phase * 6.2832 * 1rad);
                     drop-shadow-blur: root.companion-status == "thinking" ? 6px : 3px;
-                    drop-shadow-color: root.companion-status == "thinking" ? Theme.amber-glow : Theme.cyan-glow;
+                    drop-shadow-color: !root.companion-online ? #e86b6b40 :
+                                       root.companion-status == "thinking" ? Theme.amber-glow : Theme.cyan-glow;
 
                     animate border-width { duration: 300ms; }
                     animate border-color { duration: 300ms; }
@@ -89,11 +93,13 @@ export component StatusBar inherits Rectangle {
                         width: 8px;
                         height: 8px;
                         border-radius: 4px;
-                        background: root.companion-status == "thinking" ? Theme.amber :
+                        background: !root.companion-online ? Theme.color-emotional :
+                                    root.companion-status == "thinking" ? Theme.amber :
                                     root.companion-status == "listening" ? Theme.cyan-light :
                                     Theme.cyan;
                         drop-shadow-blur: 4px;
-                        drop-shadow-color: root.companion-status == "thinking" ? Theme.amber-glow : Theme.cyan-glow;
+                        drop-shadow-color: !root.companion-online ? #e86b6b40 :
+                                           root.companion-status == "thinking" ? Theme.amber-glow : Theme.cyan-glow;
 
                         animate background { duration: 300ms; }
                     }

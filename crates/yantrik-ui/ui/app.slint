@@ -41,6 +41,7 @@ export component App inherits Window {
     in property <bool> has-urges: false;
     in property <bool> is-speaking: false;
     in property <bool> is-listening: false;
+    in property <bool> companion-online: true;  // LLM backend reachable
 
     // Chat state
     in property <[MessageData]> messages: [];
@@ -222,6 +223,7 @@ export component App inherits Window {
             // Status bar
             clock-text: root.clock-text;
             companion-status: root.companion-status;
+            companion-online: root.companion-online;
             battery-level: root.battery-level;
             battery-charging: root.battery-charging;
             wifi-connected: root.wifi-connected;

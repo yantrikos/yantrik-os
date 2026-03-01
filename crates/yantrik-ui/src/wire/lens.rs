@@ -45,7 +45,8 @@ fn wire_query(ui: &App, ctx: &AppContext) {
                 .unwrap_or_default();
 
             let onboarding = ui.get_onboarding_step();
-            let results = lens::build_results(&query, onboarding, &apps, &clip_entries);
+            let companion_online = ui.get_companion_online();
+            let results = lens::build_results(&query, onboarding, &apps, &clip_entries, companion_online);
             ui.set_lens_results(ModelRc::new(VecModel::from(results)));
         }
     });

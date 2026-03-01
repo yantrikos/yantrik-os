@@ -4,6 +4,9 @@
 //! The worker thread processes them sequentially and pushes
 //! state updates back via slint::invoke_from_event_loop().
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use crossbeam_channel::{Receiver, Sender};
 use yantrikdb_companion::{CompanionConfig, CompanionService};
 use yantrikdb_companion::bond::{BondLevel, BondTracker};
@@ -130,21 +133,31 @@ pub struct UrgeSnapshot {
 pub struct CompanionBridge {
     cmd_tx: Sender<CompanionCommand>,
     worker_handle: Option<std::thread::JoinHandle<()>>,
+    /// Whether the LLM backend responded successfully on the last call.
+    online: Arc<AtomicBool>,
 }
 
 impl CompanionBridge {
     /// Start the companion worker thread.
     pub fn start(config: CompanionConfig, ui_weak: slint::Weak<App>) -> Self {
         let (cmd_tx, cmd_rx) = crossbeam_channel::unbounded();
+        let online = Arc::new(AtomicBool::new(true));
+        let online_w = online.clone();
 
         let worker_handle = std::thread::spawn(move || {
-            worker_loop(config, cmd_rx, ui_weak);
+            worker_loop(config, cmd_rx, ui_weak, online_w);
         });
 
         Self {
             cmd_tx,
             worker_handle: Some(worker_handle),
+            online,
         }
+    }
+
+    /// Whether the LLM backend is reachable.
+    pub fn is_online(&self) -> bool {
+        self.online.load(Ordering::Relaxed)
     }
 
     /// Send a message and get a channel to receive streaming tokens.
@@ -228,13 +241,14 @@ fn worker_loop(
     config: CompanionConfig,
     cmd_rx: Receiver<CompanionCommand>,
     ui_weak: slint::Weak<App>,
+    online: Arc<AtomicBool>,
 ) {
     // Build companion on this thread (owns SQLite connection)
     let mut companion = build_companion(config);
     tracing::info!("Companion worker started");
 
     // Push initial state to UI
-    push_state(&companion, &ui_weak);
+    push_state(&companion, &ui_weak, online.load(Ordering::Relaxed));
 
     loop {
         match cmd_rx.recv() {
@@ -252,16 +266,25 @@ fn worker_loop(
                     token_count += 1;
                     let _ = token_tx.send(token.to_string());
                 });
+
+                // Track whether the LLM backend succeeded
+                let ok = token_count > 0;
+                online.store(ok, Ordering::Relaxed);
+                if !ok {
+                    tracing::warn!("LLM backend appears offline (no tokens or error)");
+                }
+
                 tracing::info!(
                     elapsed_ms = start.elapsed().as_millis(),
                     tokens = token_count,
+                    online = ok,
                     "Generation complete"
                 );
                 // Sentinel to indicate generation is done
                 let _ = token_tx.send("__DONE__".to_string());
 
-                // Push updated state
-                push_state(&companion, &ui_weak);
+                // Push updated state (includes online status)
+                push_state(&companion, &ui_weak, ok);
             }
             Ok(CompanionCommand::GetBondState { reply_tx }) => {
                 let bond = BondTracker::get_state(companion.db.conn());
@@ -394,7 +417,7 @@ fn worker_loop(
                 // Push updated urges to Home screen
                 push_urges(&companion, &ui_weak);
 
-                push_state(&companion, &ui_weak);
+                push_state(&companion, &ui_weak, online.load(Ordering::Relaxed));
             }
             Ok(CompanionCommand::Shutdown) | Err(_) => {
                 tracing::info!("Companion worker shutting down");
@@ -405,14 +428,14 @@ fn worker_loop(
 }
 
 /// Push current state to the Slint UI thread.
-fn push_state(companion: &CompanionService, ui_weak: &slint::Weak<App>) {
+fn push_state(companion: &CompanionService, ui_weak: &slint::Weak<App>, companion_online: bool) {
     let snapshot = build_snapshot(companion);
     let weak = ui_weak.clone();
     let _ = slint::invoke_from_event_loop(move || {
         if let Some(ui) = weak.upgrade() {
             ui.set_memory_count(snapshot.memory_count as i32);
-            // Note: is-thinking is managed by main.rs stream timers, not here.
             ui.set_has_urges(snapshot.has_pending_urges);
+            ui.set_companion_online(companion_online);
         }
     });
 }

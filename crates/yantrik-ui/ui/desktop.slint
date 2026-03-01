@@ -35,6 +35,7 @@ export component DesktopScreen inherits Rectangle {
     // Status bar state
     in property <string> clock-text: "00:00";
     in property <string> companion-status: "idle";
+    in property <bool> companion-online: true;
     in property <int> battery-level: 100;
     in property <bool> battery-charging: false;
     in property <bool> wifi-connected: false;
@@ -102,6 +103,7 @@ export component DesktopScreen inherits Rectangle {
         animate opacity { duration: 300ms; }
         clock-text: root.clock-text;
         companion-status: root.companion-status;
+        companion-online: root.companion-online;
         battery-level: root.battery-level;
         battery-charging: root.battery-charging;
         wifi-connected: root.wifi-connected;
@@ -328,6 +330,7 @@ export component DesktopScreen inherits Rectangle {
         is-thinking: root.is-thinking;
         results: root.lens-results;
         companion-status: root.companion-status;
+        companion-online: root.companion-online;
         chat-mode: root.lens-chat-mode;
         messages: root.messages;
         is-generating: root.is-generating;

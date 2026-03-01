@@ -104,11 +104,13 @@ pub fn resolve_action(action_id: &str, installed_apps: &[DesktopEntry]) -> LensA
 /// Build the full list of Lens results for a given query.
 /// `installed_apps` is the scanned .desktop entries (may be empty on first boot).
 /// `clip_history` is the recent clipboard entries (newest first).
+/// `companion_online` — when false, AI-dependent results (ask, tool, memory) are hidden.
 pub fn build_results(
     query: &str,
     onboarding_step: i32,
     installed_apps: &[DesktopEntry],
     clip_history: &[(usize, ClipEntry)],
+    companion_online: bool,
 ) -> Vec<LensResult> {
     let lower = query.to_lowercase();
     let mut results = Vec::new();
@@ -298,57 +300,59 @@ pub fn build_results(
         });
     }
 
-    // Memory search: "remember", "what do you know about"
-    if lower.starts_with("remember") || lower.contains("you know about")
-        || lower.starts_with("recall ")
-    {
+    // ── AI-dependent results (hidden when companion is offline) ──
+    if companion_online {
+        // Memory search: "remember", "what do you know about"
+        if lower.starts_with("remember") || lower.contains("you know about")
+            || lower.starts_with("recall ")
+        {
+            results.push(LensResult {
+                result_type: "memory".into(),
+                title: SharedString::from(format!("Search memories: \"{}\"", query)),
+                subtitle: "Search Yantrik's memory".into(),
+                icon_char: "🧠".into(),
+                action_id: SharedString::from(format!("memory:{}", query)),
+            });
+        }
+
+        // Smart Intent: NL → tool routing
+        let tool_results = match_tool_intents(&lower, query);
+
+        // Build AI section: tool intents + free-form AI chat.
+        // If we have instant results above, add a visual separator before AI results.
+        let has_instant = !results.is_empty();
+        let has_ai = !tool_results.is_empty();
+
+        if has_instant && has_ai {
+            results.push(LensResult {
+                result_type: "divider".into(),
+                title: "── AI ──".into(),
+                subtitle: SharedString::default(),
+                icon_char: SharedString::default(),
+                action_id: SharedString::default(),
+            });
+        }
+
+        results.extend(tool_results);
+
+        // Always offer AI conversation as the last option
+        if has_instant && !has_ai {
+            results.push(LensResult {
+                result_type: "divider".into(),
+                title: "── AI ──".into(),
+                subtitle: SharedString::default(),
+                icon_char: SharedString::default(),
+                action_id: SharedString::default(),
+            });
+        }
         results.push(LensResult {
-            result_type: "memory".into(),
-            title: SharedString::from(format!("Search memories: \"{}\"", query)),
-            subtitle: "Search Yantrik's memory".into(),
-            icon_char: "🧠".into(),
-            action_id: SharedString::from(format!("memory:{}", query)),
+            result_type: "ask".into(),
+            title: SharedString::from(format!("Ask: \"{}\"", query)),
+            subtitle: "Send to Yantrik AI".into(),
+            icon_char: "?".into(),
+            action_id: SharedString::from(format!("ask:{}", query)),
         });
     }
-
-    // Smart Intent: NL → tool routing
-    let tool_results = match_tool_intents(&lower, query);
-
-    // Build AI section: tool intents + free-form AI chat.
-    // If we have instant results above, add a visual separator before AI results.
-    let has_instant = !results.is_empty();
-    let has_ai = !tool_results.is_empty();
-
-    if has_instant && has_ai {
-        // Thin separator — rendered as a non-clickable "divider" result type
-        results.push(LensResult {
-            result_type: "divider".into(),
-            title: "── AI ──".into(),
-            subtitle: SharedString::default(),
-            icon_char: SharedString::default(),
-            action_id: SharedString::default(),
-        });
-    }
-
-    results.extend(tool_results);
-
-    // Always offer AI conversation as the last option
-    if has_instant && !has_ai {
-        results.push(LensResult {
-            result_type: "divider".into(),
-            title: "── AI ──".into(),
-            subtitle: SharedString::default(),
-            icon_char: SharedString::default(),
-            action_id: SharedString::default(),
-        });
-    }
-    results.push(LensResult {
-        result_type: "ask".into(),
-        title: SharedString::from(format!("Ask: \"{}\"", query)),
-        subtitle: "Send to Yantrik AI".into(),
-        icon_char: "?".into(),
-        action_id: SharedString::from(format!("ask:{}", query)),
-    });
 
     results
 }
