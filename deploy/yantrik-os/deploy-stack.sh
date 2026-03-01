@@ -76,13 +76,15 @@ apk add -q \
     speech-dispatcher \
     ca-certificates \
     gcc musl-dev \
-    grim slurp wl-clipboard jq bc diffutils
+    grim slurp wl-clipboard jq bc diffutils \
+    mako
 
-echo "  Installed: labwc, foot, dbus, eudev, mesa, fonts, seatd, gcompat, wayland"
+echo "  Installed: labwc, foot, mako, dbus, eudev, mesa, fonts, seatd, gcompat, wayland"
 
 # Install optional desktop apps (non-fatal if unavailable)
 apk add -q thunar 2>/dev/null && echo "  Installed: thunar (file manager)" || echo "  thunar not available, skipping"
 apk add -q firefox-esr 2>/dev/null && echo "  Installed: firefox-esr (browser)" || echo "  firefox-esr not available, skipping"
+apk add -q distrobox podman 2>/dev/null && echo "  Installed: distrobox + podman (container toolkit)" || echo "  distrobox not available, skipping"
 
 # ── Step 1b: Build glibc compatibility shim ──
 echo "  Building glibc shim..."
@@ -291,11 +293,14 @@ WLR_LIBINPUT_NO_DEVICES=1
 SLINT_BACKEND=winit
 ENV
 
-# labwc autostart — launch yantrik-ui + foot server
+# labwc autostart — launch services + yantrik-ui
 cat > "$LABWC_DIR/autostart" <<'AUTOSTART'
 #!/bin/sh
 # Start Foot terminal server (for footclient + scrollback pipe)
 foot --server &
+
+# Start mako notification daemon
+mako &
 
 # Start Yantrik OS desktop shell
 /opt/yantrik/bin/yantrik-ui /opt/yantrik/config.yaml >> /opt/yantrik/logs/yantrik-os.log 2>&1 &
@@ -462,6 +467,43 @@ echo "  foot config written to $FOOT_DIR/"
 chown -R "$YANTRIK_USER:$YANTRIK_USER" "$LABWC_DIR"
 
 echo "  labwc config written to $LABWC_DIR/"
+
+# Mako notification daemon configuration (Firelight theme)
+MAKO_DIR="/home/$YANTRIK_USER/.config/mako"
+mkdir -p "$MAKO_DIR"
+
+cat > "$MAKO_DIR/config" <<'MAKOCONF'
+# Yantrik OS — Mako notification config (Firelight theme)
+font=DejaVu Sans 11
+background-color=#0c0b10e6
+text-color=#c8c8d0
+border-color=#5ac8d460
+border-size=1
+border-radius=8
+padding=12
+margin=12
+width=360
+height=120
+default-timeout=8000
+max-visible=3
+layer=overlay
+anchor=top-right
+
+[urgency=critical]
+background-color=#1a0a0ae6
+border-color=#e86b6b80
+default-timeout=0
+MAKOCONF
+
+chown -R "$YANTRIK_USER:$YANTRIK_USER" "$MAKO_DIR"
+echo "  mako config written to $MAKO_DIR/"
+
+# Distrobox default container (if installed)
+if command -v distrobox >/dev/null 2>&1; then
+    echo "  Setting up default distrobox Ubuntu container..."
+    su -l "$YANTRIK_USER" -c 'distrobox create --name ubuntu --image ubuntu:24.04 --yes 2>/dev/null' || true
+    echo "  distrobox Ubuntu container created (use: distrobox enter ubuntu)"
+fi
 
 # ── Step 7: Enable system services ──
 echo "[7/8] Configuring services..."

@@ -966,6 +966,62 @@ fn match_tool_intents(lower: &str, original: &str) -> Vec<LensResult> {
         });
     }
 
+    // ── Sysadmin NL queries ──
+    // "what's using port X", "why is CPU high", "clean up Docker"
+    if lower.contains("port ") && (lower.contains("using") || lower.contains("listening")
+        || lower.contains("what's on") || lower.contains("who's on"))
+    {
+        let port = extract_number(lower).unwrap_or(0);
+        let query = if port > 0 {
+            format!("Check what process is using port {}. Use run_command to run: ss -tlnp | grep {}", port, port)
+        } else {
+            "List all listening network ports. Use run_command to run: ss -tlnp".to_string()
+        };
+        results.push(LensResult {
+            result_type: "tool".into(),
+            title: SharedString::from(if port > 0 { format!("What's on port {}", port) } else { "Listening ports".to_string() }),
+            subtitle: "Check network port usage".into(),
+            icon_char: "N".into(),
+            action_id: SharedString::from(format!("tool:{}", query)),
+        });
+    }
+
+    if lower.contains("cpu") && (lower.contains("high") || lower.contains("why") || lower.contains("hot")
+        || lower.contains("slow") || lower.contains("100"))
+    {
+        results.push(LensResult {
+            result_type: "tool".into(),
+            title: "Diagnose high CPU".into(),
+            subtitle: "Find what's consuming CPU".into(),
+            icon_char: "C".into(),
+            action_id: "tool:List running processes sorted by CPU usage, identify what's consuming the most CPU, and suggest what to do about it.".into(),
+        });
+    }
+
+    if lower.contains("docker") && (lower.contains("clean") || lower.contains("prune")
+        || lower.contains("unused") || lower.contains("space"))
+    {
+        results.push(LensResult {
+            result_type: "tool".into(),
+            title: "Clean up Docker".into(),
+            subtitle: "Remove unused containers, images, volumes".into(),
+            icon_char: "D".into(),
+            action_id: "tool:Show Docker disk usage with run_command 'docker system df', then suggest cleanup steps.".into(),
+        });
+    }
+
+    if lower.contains("ip") && (lower.starts_with("what") || lower.starts_with("my ") || lower.contains("my ip"))
+        || lower == "ip address" || lower == "ip addr"
+    {
+        results.push(LensResult {
+            result_type: "tool".into(),
+            title: "My IP address".into(),
+            subtitle: "Show network interfaces and IPs".into(),
+            icon_char: "N".into(),
+            action_id: "tool:Show my network interfaces and IP addresses.".into(),
+        });
+    }
+
     // ── Terminal / Fix Error (the killer feature) ──
     if lower.starts_with("fix") || lower.contains("error") || lower.contains("what went wrong")
         || lower.starts_with("debug") || lower.starts_with("why did")
