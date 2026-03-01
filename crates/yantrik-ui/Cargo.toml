@@ -8,9 +8,13 @@ description = "Yantrik OS desktop shell — Slint native UI"
 name = "yantrik-ui"
 path = "src/main.rs"
 
+[[bin]]
+name = "test-brain"
+path = "src/bin/test_brain.rs"
+
 [dependencies]
 yantrikdb-companion = { path = "../yantrikdb-companion" }
-yantrikdb-ml = { git = "https://github.com/spranab/yantrikdb.git" }
+yantrikdb-ml = { git = "https://github.com/spranab/yantrikdb.git", features = ["api-llm"] }
 yantrikdb-core = { git = "https://github.com/spranab/yantrikdb.git" }
 yantrik-os = { path = "../yantrik-os" }
 slint = { version = "1.9", features = ["renderer-software"] }

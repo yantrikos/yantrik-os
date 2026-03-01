@@ -1,8 +1,11 @@
-# Yantrik OS — Device Configuration
-# Deploy to /opt/yantrik/config.yaml on the device / VM.
+# Yantrik OS — Ollama API Backend Configuration
+# Deploy to /opt/yantrik/config.yaml on the QEMU VM.
 #
-# Single-binary mode: LLM + embeddings run in-process via Candle.
-# No external servers, no cloud, no network calls.
+# Uses Ollama running on the host machine via QEMU's gateway (10.0.2.2).
+# The LLM runs on the host GPU; only embeddings run in-process.
+#
+# To use on host directly (not QEMU), change api_base_url to:
+#   http://localhost:11434/v1
 
 user_name: "Pranab"
 
@@ -17,49 +20,27 @@ personality:
     You can see system events (battery, network, files, processes)
     and proactively help when something needs attention.
 
-# LLM configuration.
-#
-# Backend options:
-#   In-process:  candle (default), llamacpp
-#   API servers:  ollama, openai, deepseek, claude, vllm, api (generic)
-#
-# For API backends, set api_model (required) and api_key (if needed).
-# api_base_url is auto-resolved for named providers (ollama, openai, deepseek, claude).
-# For vllm/api, set api_base_url explicitly.
 llm:
-  backend: "candle"
-  # API backend settings (uncomment to use):
-  # api_base_url: "http://localhost:11434/v1"  # auto-resolved for named providers
-  # api_model: "qwen2.5:3b-instruct-q4_K_M"
-  # api_key: null
-  model_dir: "/opt/yantrik/models/llm"
-  hub_repo: "Qwen/Qwen2.5-3B-Instruct-GGUF"
-  hub_gguf: "qwen2.5-3b-instruct-q4_k_m.gguf"
-  hub_tokenizer: "Qwen/Qwen2.5-3B-Instruct"
+  backend: "ollama"
+  api_base_url: "http://10.0.2.2:11434/v1"   # QEMU host gateway
+  api_model: "qwen2.5:3b-instruct-q4_K_M"
   max_tokens: 512
   temperature: 0.7
   max_context_tokens: 4096
 
-# REST API (for debug / external clients)
 server:
   host: "0.0.0.0"
   port: 8340
 
-# YantrikDB memory engine
 yantrikdb:
   db_path: "/opt/yantrik/data/memory.db"
   embedding_dim: 384
-  # Local embedder model directory (contains model files)
-  # If omitted, downloads all-MiniLM-L6-v2 from HuggingFace on first run.
   embedder_model_dir: "/opt/yantrik/models/embedder"
 
 conversation:
   max_history_turns: 10
   session_timeout_minutes: 30
 
-# Tool calling — enabled for 3B model (reliable tool use).
-# max_permission: safe | standard | sensitive | dangerous
-# Default "sensitive" allows everything except destructive ops (file delete, shutdown).
 tools:
   enabled: true
   max_tool_rounds: 3
@@ -99,8 +80,6 @@ narrative:
   update_interval_interactions: 10
   max_tokens: 300
 
-# System observer — watches battery, network, files, processes.
-# Set mock: true for QEMU dev (fakes events on timers).
 system:
   mock: false
   watch_dirs:
@@ -112,10 +91,8 @@ system:
 
 voice:
   enabled: true
-  # Whisper STT — in-process via Candle
   whisper_model: "openai/whisper-tiny"
   whisper_model_dir: "/opt/yantrik/models/whisper"
-  # Piper TTS
   piper_voice: "en_US-lessac-medium"
   silence_threshold: 0.01
   silence_duration_ms: 800

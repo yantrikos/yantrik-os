@@ -18,7 +18,7 @@
 set -euo pipefail
 
 # ── Configuration ──
-RAM="4G"
+RAM="8G"
 CPUS=4
 SSH_PORT=2222
 WEB_PORT=8340
@@ -163,7 +163,7 @@ $QEMU_BIN \
     -device virtio-gpu-pci \
     $DISPLAY_ARGS \
     -device virtio-keyboard-pci \
-    -device virtio-mouse-pci \
+    -device qemu-xhci -device usb-tablet \
     -device virtio-net-pci,netdev=net0 \
     -netdev user,id=net0,hostfwd=tcp::${SSH_PORT}-:22,hostfwd=tcp::${WEB_PORT}-:8340,hostfwd=tcp::${VNC_PORT}-:5900 \
     -device virtio-rng-pci \

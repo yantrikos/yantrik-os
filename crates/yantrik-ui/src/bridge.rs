@@ -8,7 +8,8 @@ use crossbeam_channel::{Receiver, Sender};
 use yantrikdb_companion::{CompanionConfig, CompanionService};
 use yantrikdb_companion::bond::{BondLevel, BondTracker};
 use yantrikdb_companion::evolution::Evolution;
-use yantrikdb_ml::{CandleEmbedder, CandleLLM, GGUFFiles};
+use yantrikdb_ml::{CandleEmbedder, CandleLLM, GGUFFiles, LLMBackend};
+use yantrikdb_ml::ApiLLM;
 
 use slint::{ModelRc, VecModel};
 
@@ -496,17 +497,30 @@ fn build_companion(config: CompanionConfig) -> CompanionService {
             .expect("failed to load embedder from hub")
     };
 
-    // Load LLM
-    let llm = if let Some(ref dir) = config.llm.model_dir {
-        tracing::info!(dir, "Loading LLM from directory");
-        CandleLLM::from_dir(std::path::Path::new(dir))
-            .expect("failed to load LLM from directory")
+    // Load LLM — select backend based on config
+    let llm: Box<dyn LLMBackend> = if config.llm.is_api_backend() {
+        // API backend (Ollama, OpenAI, DeepSeek, vLLM, etc.)
+        let base_url = config.llm.resolve_api_base_url()
+            .expect("api_base_url required for API backend (set it or use a named provider like 'ollama')");
+        let model = config.llm.api_model.as_deref()
+            .expect("api_model required for API backend");
+        tracing::info!(
+            backend = config.llm.backend,
+            base_url = %base_url,
+            model,
+            "Using API LLM backend"
+        );
+        Box::new(ApiLLM::new(base_url, config.llm.api_key.clone(), model))
+    } else if let Some(ref dir) = config.llm.model_dir {
+        tracing::info!(dir, "Loading Candle LLM from directory");
+        Box::new(CandleLLM::from_dir(std::path::Path::new(dir))
+            .expect("failed to load LLM from directory"))
     } else if let (Some(ref gguf), Some(ref tok)) =
         (&config.llm.gguf_path, &config.llm.tokenizer_path)
     {
-        tracing::info!(gguf, tok, "Loading LLM from explicit paths");
-        CandleLLM::from_gguf(std::path::Path::new(gguf), std::path::Path::new(tok))
-            .expect("failed to load LLM")
+        tracing::info!(gguf, tok, "Loading Candle LLM from explicit paths");
+        Box::new(CandleLLM::from_gguf(std::path::Path::new(gguf), std::path::Path::new(tok))
+            .expect("failed to load LLM"))
     } else {
         tracing::info!(
             repo = config.llm.hub_repo,
@@ -519,7 +533,7 @@ fn build_companion(config: CompanionConfig) -> CompanionService {
             &config.llm.hub_tokenizer,
         )
         .expect("failed to download LLM");
-        CandleLLM::from_gguf(&files.gguf, &files.tokenizer).expect("failed to load LLM")
+        Box::new(CandleLLM::from_gguf(&files.gguf, &files.tokenizer).expect("failed to load LLM"))
     };
 
     // Create YantrikDB
@@ -534,5 +548,5 @@ fn build_companion(config: CompanionConfig) -> CompanionService {
         "Companion initialized"
     );
 
-    CompanionService::new(db, Box::new(llm), config)
+    CompanionService::new(db, llm, config)
 }

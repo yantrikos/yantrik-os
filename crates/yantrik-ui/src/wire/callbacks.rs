@@ -59,10 +59,11 @@ fn wire_lock(ui: &App) {
 fn wire_onboarding(ui: &App) {
     let ui_weak = ui.as_weak();
     ui.on_onboarding_ready(move || {
+        onboarding::write_marker();
         if let Some(ui) = ui_weak.upgrade() {
             ui.set_lens_open(true);
         }
-        tracing::info!("Onboarding: user ready, opening Lens");
+        tracing::info!("Onboarding complete — marker written, opening Lens");
     });
 
     ui.on_onboarding_skip(move || {

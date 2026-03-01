@@ -43,6 +43,8 @@ export component DesktopScreen inherits Rectangle {
     // Companion state
     in property <bool> is-thinking: false;
     in property <bool> has-urges: false;
+    in property <bool> is-speaking: false;
+    in property <bool> is-listening: false;
     in property <string> greeting-text: "Hello";
     in property <int> memory-count: 0;
 
@@ -277,6 +279,8 @@ export component DesktopScreen inherits Rectangle {
                 size-px: 80;
                 is-thinking: root.is-thinking;
                 has-urges: root.has-urges;
+                is-speaking: root.is-speaking;
+                is-listening: root.is-listening;
             }
         }
 

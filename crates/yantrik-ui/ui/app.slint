@@ -39,6 +39,8 @@ export component App inherits Window {
     in property <int> memory-count: 0;
     in property <bool> is-thinking: false;
     in property <bool> has-urges: false;
+    in property <bool> is-speaking: false;
+    in property <bool> is-listening: false;
 
     // Chat state
     in property <[MessageData]> messages: [];
@@ -227,6 +229,8 @@ export component App inherits Window {
             // Companion
             is-thinking: root.is-thinking;
             has-urges: root.has-urges;
+            is-speaking: root.is-speaking;
+            is-listening: root.is-listening;
             greeting-text: root.greeting-text;
             memory-count: root.memory-count;
             // Intent Lens

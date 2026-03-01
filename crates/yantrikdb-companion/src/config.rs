@@ -34,6 +34,31 @@ impl Default for PersonalityConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LLMConfig {
+    /// LLM backend / provider name.
+    ///
+    /// In-process backends:
+    ///   - `"candle"` — Candle GGUF (default, GPU via CUDA/Metal)
+    ///   - `"llamacpp"` — llama.cpp via llama-cpp-2 crate
+    ///
+    /// API backends (OpenAI-compatible — set api_model, optionally api_key):
+    ///   - `"ollama"` — Ollama (default: http://localhost:11434/v1)
+    ///   - `"openai"` — OpenAI (default: https://api.openai.com/v1)
+    ///   - `"deepseek"` — DeepSeek (default: https://api.deepseek.com)
+    ///   - `"claude"` — Anthropic Claude via OpenAI-compat proxy
+    ///   - `"vllm"` — vLLM server (set api_base_url)
+    ///   - `"api"` — generic OpenAI-compatible (set api_base_url)
+    #[serde(default = "default_backend")]
+    pub backend: String,
+    /// Base URL override for API backends.
+    /// If omitted, uses the provider's default URL.
+    #[serde(default)]
+    pub api_base_url: Option<String>,
+    /// Model name for API backends (e.g. "qwen2.5:3b-instruct", "gpt-4o", "deepseek-chat").
+    #[serde(default)]
+    pub api_model: Option<String>,
+    /// API key (required for OpenAI/Claude/DeepSeek, optional for Ollama/vLLM).
+    #[serde(default)]
+    pub api_key: Option<String>,
     /// Path to GGUF model file (for in-process inference).
     #[serde(default)]
     pub gguf_path: Option<String>,
@@ -60,6 +85,9 @@ pub struct LLMConfig {
     pub max_context_tokens: usize,
 }
 
+fn default_backend() -> String {
+    "candle".to_string()
+}
 fn default_hub_repo() -> String {
     "Qwen/Qwen2.5-0.5B-Instruct-GGUF".to_string()
 }
@@ -82,6 +110,10 @@ fn default_max_context_tokens() -> usize {
 impl Default for LLMConfig {
     fn default() -> Self {
         Self {
+            backend: default_backend(),
+            api_base_url: None,
+            api_model: None,
+            api_key: None,
             gguf_path: None,
             tokenizer_path: None,
             model_dir: None,
@@ -91,6 +123,29 @@ impl Default for LLMConfig {
             max_tokens: default_max_tokens(),
             temperature: default_temperature(),
             max_context_tokens: default_max_context_tokens(),
+        }
+    }
+}
+
+impl LLMConfig {
+    /// Returns true if this backend uses an external API (not in-process).
+    pub fn is_api_backend(&self) -> bool {
+        !matches!(self.backend.as_str(), "candle" | "llamacpp")
+    }
+
+    /// Resolve the API base URL from the backend/provider name.
+    /// Uses `api_base_url` if set, otherwise returns the provider's default.
+    pub fn resolve_api_base_url(&self) -> Option<String> {
+        if let Some(ref url) = self.api_base_url {
+            return Some(url.clone());
+        }
+        match self.backend.as_str() {
+            "ollama" => Some("http://localhost:11434/v1".to_string()),
+            "openai" => Some("https://api.openai.com/v1".to_string()),
+            "deepseek" => Some("https://api.deepseek.com".to_string()),
+            "claude" => Some("https://api.anthropic.com/v1".to_string()),
+            "api" | "vllm" => None, // must be set explicitly
+            _ => None,
         }
     }
 }

@@ -286,8 +286,9 @@ WLR_RENDERER_ALLOW_SOFTWARE=1
 # Suppress libinput check (QEMU uses evdev)
 WLR_LIBINPUT_NO_DEVICES=1
 
-# Force Slint software renderer (no OpenGL/EGL needed)
-SLINT_BACKEND=winit-software
+# Slint backend: 'winit' auto-detects GPU, falls back to software if needed.
+# Use 'winit-software' only if GPU rendering fails completely.
+SLINT_BACKEND=winit
 ENV
 
 # labwc autostart — launch yantrik-ui as fullscreen desktop shell

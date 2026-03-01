@@ -1,155 +1,582 @@
-// Breathing orb — the companion's visual heartbeat.
-// Enhanced with orbital rings, particle orbits, and dual-tone glow.
-// Pulsates 4s cycle (1.0-1.08 scale). Faster when thinking (1.5s).
-// Orbital ring when proactive urges pending.
+// Holographic AI Core — Cortana-inspired sci-fi orb.
+// 14-layer holographic design: energy pulses, containment rings,
+// scanning line, data streams, particle swarm, translucent blue core.
+// Phase-driven from a single 16ms timer. All effects sync to companion state.
+//
+// States:
+//   idle        → slow 4s cycle, calm blue hologram
+//   thinking    → 2.8x faster, tighter orbits, brighter streams
+//   has-urges   → amber accent ring pulses
+//   speaking    → warm amber tint overlay
+//   listening   → subtle green-cyan tint
 
 import { Theme } from "../theme.slint";
 
 export component Orb inherits Rectangle {
     in property <bool> is-thinking: false;
     in property <bool> has-urges: false;
+    in property <bool> is-speaking: false;
+    in property <bool> is-listening: false;
     in property <float> size-px: 120;
 
     width: 1px * size-px;
     height: 1px * size-px;
     background: transparent;
 
-    // Animation phase (0.0 -> 1.0, loops)
+    // Master animation phase (0.0 → 1.0, loops)
     property <float> phase: 0;
+    // Secondary phase for independent slow effects
+    property <float> phase2: 0;
 
     Timer {
         interval: 16ms;
         running: true;
         triggered => {
             phase = mod(phase + (is-thinking ? 0.007 : 0.0025), 1.0);
+            phase2 = mod(phase2 + 0.0012, 1.0);
         }
     }
 
-    // Outer ambient glow (cyan tint, large)
+    // ═══════════════════════════════════════════
+    // Layer 0: Energy Pulse Rings (3 expanding circles)
+    // Emanate from center and fade as they grow.
+    // ═══════════════════════════════════════════
+
+    // Pulse A
     Rectangle {
-        x: -parent.width * 0.6;
-        y: -parent.height * 0.6;
-        width: parent.width * 2.2;
-        height: parent.height * 2.2;
+        property <float> t: mod(phase * 3.0, 1.0);
+        property <float> scale: 0.8 + 0.8 * t;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        width: parent.width * scale;
+        height: parent.height * scale;
+        border-radius: self.width / 2;
+        border-width: 1px;
+        border-color: Theme.holo-blue-dim;
+        background: transparent;
+        opacity: 0.35 * (1.0 - t);
+    }
+
+    // Pulse B (offset by 0.33)
+    Rectangle {
+        property <float> t: mod(phase * 3.0 + 0.33, 1.0);
+        property <float> scale: 0.8 + 0.8 * t;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        width: parent.width * scale;
+        height: parent.height * scale;
+        border-radius: self.width / 2;
+        border-width: 1px;
+        border-color: Theme.holo-blue-dim;
+        background: transparent;
+        opacity: 0.35 * (1.0 - t);
+    }
+
+    // Pulse C (offset by 0.66)
+    Rectangle {
+        property <float> t: mod(phase * 3.0 + 0.66, 1.0);
+        property <float> scale: 0.8 + 0.8 * t;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        width: parent.width * scale;
+        height: parent.height * scale;
+        border-radius: self.width / 2;
+        border-width: 1px;
+        border-color: Theme.holo-blue-dim;
+        background: transparent;
+        opacity: 0.35 * (1.0 - t);
+    }
+
+    // ═══════════════════════════════════════════
+    // Layer 1: Containment Field (3 elliptical cages)
+    // Overlapping ellipses suggest geometric containment.
+    // ═══════════════════════════════════════════
+
+    // Cage ring — wide horizontal
+    Rectangle {
+        property <float> breathe: 1.0 + 0.03 * sin(phase2 * 6.2832 * 1rad);
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        width: parent.width * 1.35 * breathe;
+        height: parent.height * 0.4 * breathe;
+        border-radius: self.width / 2;
+        border-width: 0.5px;
+        border-color: Theme.holo-blue-dim;
+        background: transparent;
+        opacity: 0.12 + 0.06 * sin(phase2 * 4.712 * 1rad);
+    }
+
+    // Cage ring — wide vertical
+    Rectangle {
+        property <float> breathe: 1.0 + 0.03 * cos(phase2 * 6.2832 * 1rad);
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        width: parent.width * 0.4 * breathe;
+        height: parent.height * 1.35 * breathe;
+        border-radius: self.width / 2;
+        border-width: 0.5px;
+        border-color: Theme.holo-blue-dim;
+        background: transparent;
+        opacity: 0.10 + 0.05 * cos(phase2 * 5.341 * 1rad);
+    }
+
+    // Cage ring — near-circular
+    Rectangle {
+        property <float> breathe: 1.0 + 0.02 * sin(phase2 * 4.398 * 1rad);
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        width: parent.width * 1.15 * breathe;
+        height: parent.height * 1.1 * breathe;
+        border-radius: self.width / 2;
+        border-width: 0.5px;
+        border-color: Theme.cyan-dim;
+        background: transparent;
+        opacity: 0.08 + 0.04 * sin(phase2 * 3.770 * 1rad);
+    }
+
+    // ═══════════════════════════════════════════
+    // Layer 2: Scanning Line
+    // Thin line sweeps vertically through the orb.
+    // ═══════════════════════════════════════════
+
+    Rectangle {
+        property <float> scan-pos: 0.5 + 0.45 * sin(phase * 6.2832 * 1rad);
+        x: parent.width * 0.1;
+        y: parent.height * scan-pos - 0.5px;
+        width: parent.width * 0.8;
+        height: 1px;
+        background: @linear-gradient(90deg,
+            transparent 0%,
+            Theme.holo-blue-light 20%,
+            Theme.holo-core 50%,
+            Theme.holo-blue-light 80%,
+            transparent 100%
+        );
+        opacity: 0.3 + 0.15 * sin(phase * 12.566 * 1rad);
+        drop-shadow-blur: 4px;
+        drop-shadow-color: Theme.holo-blue-glow;
+    }
+
+    // ═══════════════════════════════════════════
+    // Layer 3: Data Streams (8 vertical lines)
+    // Thin flickering lines simulating data flow.
+    // ═══════════════════════════════════════════
+
+    // Stream 1
+    Rectangle {
+        x: parent.width * 0.25; y: parent.height * 0.25;
+        width: 1px; height: parent.height * (is-thinking ? 0.55 : 0.35);
+        background: Theme.holo-blue;
+        opacity: 0.15 + 0.2 * sin(phase * 18.850 * 1rad);
+    }
+    // Stream 2
+    Rectangle {
+        x: parent.width * 0.38; y: parent.height * 0.18;
+        width: 1px; height: parent.height * (is-thinking ? 0.6 : 0.4);
+        background: Theme.holo-blue-light;
+        opacity: 0.12 + 0.18 * sin(phase * 22.0 * 1rad + 1.0 * 1rad);
+    }
+    // Stream 3
+    Rectangle {
+        x: parent.width * 0.52; y: parent.height * 0.2;
+        width: 1px; height: parent.height * (is-thinking ? 0.58 : 0.38);
+        background: Theme.cyan;
+        opacity: 0.1 + 0.2 * sin(phase * 15.708 * 1rad + 2.0 * 1rad);
+    }
+    // Stream 4
+    Rectangle {
+        x: parent.width * 0.65; y: parent.height * 0.22;
+        width: 1px; height: parent.height * (is-thinking ? 0.55 : 0.35);
+        background: Theme.holo-blue;
+        opacity: 0.15 + 0.15 * sin(phase * 20.0 * 1rad + 3.0 * 1rad);
+    }
+    // Stream 5
+    Rectangle {
+        x: parent.width * 0.75; y: parent.height * 0.28;
+        width: 1px; height: parent.height * (is-thinking ? 0.5 : 0.3);
+        background: Theme.holo-blue-light;
+        opacity: 0.1 + 0.2 * sin(phase * 17.0 * 1rad + 0.5 * 1rad);
+    }
+    // Stream 6 (only at larger sizes)
+    if size-px >= 100 : Rectangle {
+        x: parent.width * 0.18; y: parent.height * 0.3;
+        width: 1px; height: parent.height * (is-thinking ? 0.45 : 0.28);
+        background: Theme.cyan;
+        opacity: 0.1 + 0.15 * sin(phase * 24.0 * 1rad + 4.0 * 1rad);
+    }
+    // Stream 7 (only at larger sizes)
+    if size-px >= 100 : Rectangle {
+        x: parent.width * 0.82; y: parent.height * 0.26;
+        width: 1px; height: parent.height * (is-thinking ? 0.48 : 0.3);
+        background: Theme.holo-blue;
+        opacity: 0.12 + 0.18 * sin(phase * 19.0 * 1rad + 5.0 * 1rad);
+    }
+    // Stream 8 (only at larger sizes)
+    if size-px >= 100 : Rectangle {
+        x: parent.width * 0.45; y: parent.height * 0.15;
+        width: 1px; height: parent.height * (is-thinking ? 0.65 : 0.45);
+        background: Theme.holo-core;
+        opacity: 0.08 + 0.15 * sin(phase * 21.0 * 1rad + 1.5 * 1rad);
+    }
+
+    // ═══════════════════════════════════════════
+    // Layer 4: Outer Ambient Glow (deep blue + cyan)
+    // Two-layer glow for holographic depth.
+    // ═══════════════════════════════════════════
+
+    // Deep blue foundation glow
+    Rectangle {
+        x: -parent.width * 0.75;
+        y: -parent.height * 0.75;
+        width: parent.width * 2.5;
+        height: parent.height * 2.5;
         border-radius: self.width / 2;
         background: @radial-gradient(circle,
-            #5ac8d430 0%,
-            #5ac8d418 30%,
-            transparent 60%
+            #2060a020 0%,
+            #2060a010 30%,
+            transparent 55%
+        );
+        opacity: 0.6 + 0.2 * sin(phase2 * 6.2832 * 1rad);
+    }
+
+    // Cyan/blue holographic glow
+    Rectangle {
+        x: -parent.width * 0.65;
+        y: -parent.height * 0.65;
+        width: parent.width * 2.3;
+        height: parent.height * 2.3;
+        border-radius: self.width / 2;
+        background: @radial-gradient(circle,
+            #4ab8f025 0%,
+            #4ab8f012 30%,
+            transparent 55%
         );
         opacity: 0.5 + 0.3 * sin(phase * 6.2832 * 1rad);
     }
 
-    // Inner amber glow
+    // ═══════════════════════════════════════════
+    // Layer 5: Inner Holographic Glow
+    // Intermediate glow between outer and core.
+    // ═══════════════════════════════════════════
+
     Rectangle {
-        x: -parent.width * 0.35;
-        y: -parent.height * 0.35;
-        width: parent.width * 1.7;
-        height: parent.height * 1.7;
+        x: -parent.width * 0.3;
+        y: -parent.height * 0.3;
+        width: parent.width * 1.6;
+        height: parent.height * 1.6;
         border-radius: self.width / 2;
         background: @radial-gradient(circle,
-            Theme.amber-glow-strong 0%,
-            Theme.amber-glow 30%,
-            transparent 55%
+            Theme.holo-blue-glow 0%,
+            #4ab8f018 35%,
+            transparent 60%
         );
-        opacity: 0.6 + 0.35 * sin(phase * 6.2832 * 1rad);
+        opacity: 0.55 + 0.3 * sin(phase * 6.2832 * 1rad + 1.571 * 1rad);
     }
 
-    // Orbital ring 1 — horizontal ellipse (breathing)
+    // ═══════════════════════════════════════════
+    // Layer 6: Orbital Ring System (4 rings)
+    // Thin holographic rings at different orientations.
+    // ═══════════════════════════════════════════
+
+    // Ring A — wide horizontal
     Rectangle {
-        property <float> ring-scale: 1.0 + 0.05 * sin(phase * 6.2832 * 1rad);
+        property <float> s: 1.0 + 0.04 * sin(phase * 6.2832 * 1rad);
         x: (parent.width - self.width) / 2;
         y: (parent.height - self.height) / 2;
-        width: parent.width * 1.15 * ring-scale;
-        height: parent.height * 0.35 * ring-scale;
+        width: parent.width * 1.2 * s;
+        height: parent.height * 0.35 * s;
         border-radius: self.width / 2;
-        border-width: 1px;
+        border-width: 0.5px;
+        border-color: Theme.holo-blue;
+        background: transparent;
+        opacity: 0.25 + 0.15 * sin(phase * 4.712 * 1rad);
+    }
+
+    // Ring B — wide vertical
+    Rectangle {
+        property <float> s: 1.0 + 0.04 * cos(phase * 6.2832 * 1rad);
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        width: parent.width * 0.3 * s;
+        height: parent.height * 1.25 * s;
+        border-radius: self.width / 2;
+        border-width: 0.5px;
+        border-color: Theme.holo-blue-dim;
+        background: transparent;
+        opacity: 0.2 + 0.12 * cos(phase * 5.341 * 1rad);
+    }
+
+    // Ring C — diagonal-ish (offset phase)
+    Rectangle {
+        property <float> s: 1.0 + 0.035 * sin(phase * 6.2832 * 1rad + 1.571 * 1rad);
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        width: parent.width * 1.05 * s;
+        height: parent.height * 0.5 * s;
+        border-radius: self.width / 2;
+        border-width: 0.5px;
         border-color: Theme.cyan-dim;
         background: transparent;
-        opacity: 0.2 + 0.15 * sin(phase * 4.712 * 1rad);
+        opacity: 0.18 + 0.1 * sin(phase * 7.854 * 1rad);
     }
 
-    // Orbital ring 2 — vertical ellipse (counter-breathing)
+    // Ring D — near-circular, slow independent phase
     Rectangle {
-        property <float> ring-scale: 1.0 + 0.04 * cos(phase * 6.2832 * 1rad);
+        property <float> s: 1.0 + 0.025 * sin(phase2 * 6.2832 * 1rad);
         x: (parent.width - self.width) / 2;
         y: (parent.height - self.height) / 2;
-        width: parent.width * 0.3 * ring-scale;
-        height: parent.height * 1.2 * ring-scale;
+        width: parent.width * 0.92 * s;
+        height: parent.height * 0.88 * s;
         border-radius: self.width / 2;
-        border-width: 1px;
-        border-color: Theme.amber-dim;
+        border-width: 0.5px;
+        border-color: Theme.holo-blue;
         background: transparent;
-        opacity: 0.15 + 0.12 * cos(phase * 5.341 * 1rad);
+        opacity: 0.15 + 0.08 * sin(phase2 * 4.398 * 1rad);
     }
 
-    // Core orb — dual gradient (amber center, cyan rim)
+    // ═══════════════════════════════════════════
+    // Layer 7: Core Orb — translucent holographic sphere
+    // Uses oversized rectangle + gradient fade so the visible area
+    // is a perfect circle (avoids software renderer border-radius issues).
+    // ═══════════════════════════════════════════
+
+    // Main core glow (oversized, gradient fades to circle)
     Rectangle {
-        property <float> scale: 1.0 + 0.08 * sin(phase * 6.2832 * 1rad);
+        property <float> scale: 1.0 + 0.06 * sin(phase * 6.2832 * 1rad);
         x: (parent.width - self.width) / 2;
         y: (parent.height - self.height) / 2;
-        width: parent.width * 0.75 * scale;
-        height: parent.height * 0.75 * scale;
-        border-radius: self.width / 2;
+        width: parent.width * 1.0 * scale;
+        height: parent.height * 1.0 * scale;
         background: @radial-gradient(circle,
-            Theme.amber-light 0%,
-            Theme.amber 50%,
-            Theme.cyan-dim 100%
+            Theme.holo-core 0%,
+            Theme.holo-blue 18%,
+            Theme.holo-blue-dim 32%,
+            #2a7ab030 42%,
+            transparent 52%
         );
-        drop-shadow-blur: 40px;
-        drop-shadow-color: #d4a57480;
+        opacity: 0.9;
+        drop-shadow-blur: 50px;
+        drop-shadow-color: #4ab8f060;
     }
 
-    // Inner highlight (specular)
+    // Core inner bright spot
     Rectangle {
-        property <float> scale: 1.0 + 0.08 * sin(phase * 6.2832 * 1rad);
-        x: (parent.width - self.width) / 2 - parent.width * 0.05;
-        y: (parent.height - self.height) / 2 - parent.height * 0.05;
-        width: parent.width * 0.35 * scale;
-        height: parent.height * 0.35 * scale;
-        border-radius: self.width / 2;
+        property <float> scale: 1.0 + 0.06 * sin(phase * 6.2832 * 1rad);
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        width: parent.width * 0.6 * scale;
+        height: parent.height * 0.6 * scale;
         background: @radial-gradient(circle,
-            #ffffff20 0%,
-            transparent 70%
+            #ffffff30 0%,
+            #80e0ff20 30%,
+            transparent 60%
         );
     }
 
-    // Orbiting particle 1 (cyan dot circling the orb)
+    // ═══════════════════════════════════════════
+    // Layer 8: Inner Data Grid (3x3 flickering cells)
+    // Only visible at large sizes (>=120px).
+    // ═══════════════════════════════════════════
+
+    if size-px >= 120 : Rectangle {
+        property <float> scale: 1.0 + 0.06 * sin(phase * 6.2832 * 1rad);
+        property <length> cell: 1px * size-px * 0.065;
+        property <length> gap: 1px * size-px * 0.04;
+        property <length> grid-w: cell * 3 + gap * 2;
+        x: (parent.width - grid-w * scale) / 2;
+        y: (parent.height - grid-w * scale) / 2;
+        width: grid-w * scale;
+        height: grid-w * scale;
+        background: transparent;
+
+        // Row 1
+        Rectangle { x: 0; y: 0; width: cell; height: cell; border-radius: cell / 2;
+            background: #ffffff0a; opacity: 0.05 + 0.1 * sin(phase * 25.0 * 1rad); }
+        Rectangle { x: cell + gap; y: 0; width: cell; height: cell; border-radius: cell / 2;
+            background: #80e0ff0a; opacity: 0.04 + 0.08 * sin(phase * 19.0 * 1rad + 1.0 * 1rad); }
+        Rectangle { x: (cell + gap) * 2; y: 0; width: cell; height: cell; border-radius: cell / 2;
+            background: #ffffff0a; opacity: 0.05 + 0.09 * sin(phase * 22.0 * 1rad + 2.0 * 1rad); }
+        // Row 2
+        Rectangle { x: 0; y: cell + gap; width: cell; height: cell; border-radius: cell / 2;
+            background: #80e0ff0a; opacity: 0.04 + 0.09 * sin(phase * 17.0 * 1rad + 3.0 * 1rad); }
+        Rectangle { x: cell + gap; y: cell + gap; width: cell; height: cell; border-radius: cell / 2;
+            background: #ffffff0c; opacity: 0.06 + 0.1 * sin(phase * 28.0 * 1rad); }
+        Rectangle { x: (cell + gap) * 2; y: cell + gap; width: cell; height: cell; border-radius: cell / 2;
+            background: #80e0ff0a; opacity: 0.04 + 0.08 * sin(phase * 23.0 * 1rad + 4.0 * 1rad); }
+        // Row 3
+        Rectangle { x: 0; y: (cell + gap) * 2; width: cell; height: cell; border-radius: cell / 2;
+            background: #ffffff0a; opacity: 0.05 + 0.08 * sin(phase * 20.0 * 1rad + 5.0 * 1rad); }
+        Rectangle { x: cell + gap; y: (cell + gap) * 2; width: cell; height: cell; border-radius: cell / 2;
+            background: #80e0ff0a; opacity: 0.04 + 0.09 * sin(phase * 26.0 * 1rad + 1.5 * 1rad); }
+        Rectangle { x: (cell + gap) * 2; y: (cell + gap) * 2; width: cell; height: cell; border-radius: cell / 2;
+            background: #ffffff0a; opacity: 0.05 + 0.1 * sin(phase * 21.0 * 1rad + 3.5 * 1rad); }
+    }
+
+    // ═══════════════════════════════════════════
+    // Layer 9: Specular Highlight (blue-tinted)
+    // ═══════════════════════════════════════════
+
     Rectangle {
-        property <length> orbit-r: parent.width * 0.55;
-        x: parent.width / 2 + orbit-r * cos(phase * 6.2832 * 2.0 * 1rad) - 2px;
-        y: parent.height / 2 + orbit-r * sin(phase * 6.2832 * 2.0 * 1rad) * 0.4 - 2px;
+        property <float> scale: 1.0 + 0.06 * sin(phase * 6.2832 * 1rad);
+        x: (parent.width - self.width) / 2 - parent.width * 0.06;
+        y: (parent.height - self.height) / 2 - parent.height * 0.06;
+        width: parent.width * 0.28 * scale;
+        height: parent.height * 0.28 * scale;
+        border-radius: self.width / 2;
+        background: @radial-gradient(circle,
+            #c0f0ff18 0%,
+            transparent 50%
+        );
+    }
+
+    // ═══════════════════════════════════════════
+    // Layer 10: Particle Swarm (8 orbiting particles)
+    // ═══════════════════════════════════════════
+
+    // Particle 1 — cyan, fast inner orbit
+    Rectangle {
+        property <length> r: parent.width * 0.48;
+        x: parent.width / 2 + r * cos(phase * 6.2832 * 2.0 * 1rad) - 2px;
+        y: parent.height / 2 + r * sin(phase * 6.2832 * 2.0 * 1rad) * 0.4 - 2px;
         width: 4px; height: 4px; border-radius: 2px;
-        background: Theme.cyan;
+        background: Theme.holo-blue-light;
         opacity: 0.5 + 0.3 * sin(phase * 12.566 * 1rad);
+        drop-shadow-blur: 8px;
+        drop-shadow-color: Theme.holo-blue-glow;
+    }
+
+    // Particle 2 — cyan, medium orbit, opposite direction
+    Rectangle {
+        property <length> r: parent.width * 0.55;
+        x: parent.width / 2 + r * cos(phase * 6.2832 * -1.5 * 1rad + 3.14 * 1rad) - 1.5px;
+        y: parent.height / 2 + r * sin(phase * 6.2832 * -1.5 * 1rad + 3.14 * 1rad) * 0.35 - 1.5px;
+        width: 3px; height: 3px; border-radius: 1.5px;
+        background: Theme.holo-blue;
+        opacity: 0.4 + 0.3 * sin(phase * 9.425 * 1rad);
+        drop-shadow-blur: 6px;
+        drop-shadow-color: Theme.holo-blue-glow;
+    }
+
+    // Particle 3 — blue, large slow orbit
+    Rectangle {
+        property <length> r: parent.width * 0.62;
+        x: parent.width / 2 + r * cos(phase * 6.2832 * 1.2 * 1rad + 1.047 * 1rad) - 2.5px;
+        y: parent.height / 2 + r * sin(phase * 6.2832 * 1.2 * 1rad + 1.047 * 1rad) * 0.45 - 2.5px;
+        width: 5px; height: 5px; border-radius: 2.5px;
+        background: Theme.holo-blue;
+        opacity: 0.35 + 0.25 * sin(phase * 7.540 * 1rad);
+        drop-shadow-blur: 10px;
+        drop-shadow-color: #4ab8f040;
+    }
+
+    // Particle 4 — cyan, fast tight orbit
+    Rectangle {
+        property <length> r: parent.width * 0.42;
+        x: parent.width / 2 + r * cos(phase * 6.2832 * 2.5 * 1rad + 2.094 * 1rad) - 1.5px;
+        y: parent.height / 2 + r * sin(phase * 6.2832 * 2.5 * 1rad + 2.094 * 1rad) * 0.5 - 1.5px;
+        width: 3px; height: 3px; border-radius: 1.5px;
+        background: Theme.cyan-light;
+        opacity: 0.4 + 0.3 * sin(phase * 15.708 * 1rad);
         drop-shadow-blur: 6px;
         drop-shadow-color: Theme.cyan-glow;
     }
 
-    // Orbiting particle 2 (amber dot, opposite direction)
+    // Particle 5 — blue, wide elliptical orbit
     Rectangle {
-        property <length> orbit-r: parent.width * 0.5;
-        x: parent.width / 2 + orbit-r * cos(phase * 6.2832 * -1.5 * 1rad + 3.14 * 1rad) - 1.5px;
-        y: parent.height / 2 + orbit-r * sin(phase * 6.2832 * -1.5 * 1rad + 3.14 * 1rad) * 0.35 - 1.5px;
-        width: 3px; height: 3px; border-radius: 1.5px;
-        background: Theme.amber;
-        opacity: 0.4 + 0.3 * sin(phase * 9.425 * 1rad);
-        drop-shadow-blur: 4px;
-        drop-shadow-color: Theme.amber-glow;
+        property <length> r: parent.width * 0.58;
+        x: parent.width / 2 + r * cos(phase * 6.2832 * 1.8 * 1rad + 4.189 * 1rad) - 2px;
+        y: parent.height / 2 + r * sin(phase * 6.2832 * 1.8 * 1rad + 4.189 * 1rad) * 0.3 - 2px;
+        width: 4px; height: 4px; border-radius: 2px;
+        background: Theme.holo-blue-light;
+        opacity: 0.3 + 0.25 * sin(phase * 11.310 * 1rad);
+        drop-shadow-blur: 8px;
+        drop-shadow-color: Theme.holo-blue-glow;
     }
 
-    // Proactive urge ring (pulses when urges pending)
+    // Particle 6 — amber accent, fast tight
     Rectangle {
-        x: -parent.width * 0.08;
-        y: -parent.height * 0.08;
-        width: parent.width * 1.16;
-        height: parent.height * 1.16;
+        property <length> r: parent.width * 0.4;
+        x: parent.width / 2 + r * cos(phase * 6.2832 * -2.2 * 1rad + 0.785 * 1rad) - 1.5px;
+        y: parent.height / 2 + r * sin(phase * 6.2832 * -2.2 * 1rad + 0.785 * 1rad) * 0.45 - 1.5px;
+        width: 3px; height: 3px; border-radius: 1.5px;
+        background: has-urges ? Theme.amber : Theme.holo-blue;
+        opacity: 0.35 + 0.3 * sin(phase * 13.195 * 1rad);
+        drop-shadow-blur: 5px;
+        drop-shadow-color: has-urges ? Theme.amber-glow : Theme.holo-blue-glow;
+    }
+
+    // Particle 7 — amber accent, medium orbit (only large sizes)
+    if size-px >= 120 : Rectangle {
+        property <length> r: parent.width * 0.52;
+        x: parent.width / 2 + r * cos(phase * 6.2832 * 1.7 * 1rad + 5.236 * 1rad) - 2px;
+        y: parent.height / 2 + r * sin(phase * 6.2832 * 1.7 * 1rad + 5.236 * 1rad) * 0.38 - 2px;
+        width: 4px; height: 4px; border-radius: 2px;
+        background: has-urges ? Theme.amber-light : Theme.cyan;
+        opacity: 0.3 + 0.25 * sin(phase * 8.796 * 1rad);
+        drop-shadow-blur: 7px;
+        drop-shadow-color: has-urges ? Theme.amber-glow : Theme.cyan-glow;
+    }
+
+    // Particle 8 — blue, large distant orbit (only large sizes)
+    if size-px >= 120 : Rectangle {
+        property <length> r: parent.width * 0.68;
+        x: parent.width / 2 + r * cos(phase * 6.2832 * 0.8 * 1rad + 3.665 * 1rad) - 3px;
+        y: parent.height / 2 + r * sin(phase * 6.2832 * 0.8 * 1rad + 3.665 * 1rad) * 0.4 - 3px;
+        width: 6px; height: 6px; border-radius: 3px;
+        background: Theme.holo-blue-dim;
+        opacity: 0.25 + 0.2 * sin(phase * 5.655 * 1rad);
+        drop-shadow-blur: 12px;
+        drop-shadow-color: #4ab8f030;
+    }
+
+    // ═══════════════════════════════════════════
+    // Layer 11: Proactive Urge Ring (amber accent)
+    // ═══════════════════════════════════════════
+
+    Rectangle {
+        x: -parent.width * 0.06;
+        y: -parent.height * 0.06;
+        width: parent.width * 1.12;
+        height: parent.height * 1.12;
         border-radius: self.width / 2;
-        border-width: has-urges ? 2px : 0;
+        border-width: has-urges ? 1.5px : 0;
         border-color: Theme.amber;
         opacity: has-urges ? 0.3 + 0.5 * sin(phase * 9.425 * 1rad) : 0;
         background: transparent;
-        drop-shadow-blur: has-urges ? 12px : 0;
+        drop-shadow-blur: has-urges ? 10px : 0;
         drop-shadow-color: Theme.amber-glow;
+    }
+
+    // ═══════════════════════════════════════════
+    // Layer 12: State Color Overlay
+    // Subtle tint based on companion state.
+    // ═══════════════════════════════════════════
+
+    // Speaking: warm amber wash
+    Rectangle {
+        x: -parent.width * 0.15;
+        y: -parent.height * 0.15;
+        width: parent.width * 1.3;
+        height: parent.height * 1.3;
+        border-radius: self.width / 2;
+        background: @radial-gradient(circle,
+            #d4a57420 0%,
+            transparent 60%
+        );
+        opacity: is-speaking ? 0.6 + 0.3 * sin(phase * 6.2832 * 1rad) : 0;
+    }
+
+    // Listening: subtle green-cyan tint
+    Rectangle {
+        x: -parent.width * 0.1;
+        y: -parent.height * 0.1;
+        width: parent.width * 1.2;
+        height: parent.height * 1.2;
+        border-radius: self.width / 2;
+        background: @radial-gradient(circle,
+            #40e0c020 0%,
+            transparent 55%
+        );
+        opacity: is-listening ? 0.5 + 0.2 * sin(phase * 9.425 * 1rad) : 0;
     }
 }
