@@ -8,6 +8,7 @@ use yantrikdb_core::YantrikDB;
 use yantrikdb_ml::{ChatMessage, GenerationConfig, LLMBackend};
 
 use crate::bond::BondTracker;
+use crate::sanitize;
 
 const EXTRACTION_PROMPT: &str = r#"You are a memory extraction assistant. Given a conversation exchange, decide what to remember.
 
@@ -88,8 +89,8 @@ pub fn extract_and_learn(
         return;
     }
 
-    // Record memory
-    let memory_text = parsed
+    // Record memory — with validation to prevent poisoning
+    let raw_memory_text = parsed
         .get("memory_text")
         .and_then(|v| v.as_str())
         .unwrap_or_default();
@@ -97,22 +98,22 @@ pub fn extract_and_learn(
         .get("memory_type")
         .and_then(|v| v.as_str())
         .unwrap_or("episodic");
-    let importance = parsed
-        .get("importance")
-        .and_then(|v| v.as_f64())
-        .unwrap_or(0.5);
-    let valence = parsed
-        .get("valence")
-        .and_then(|v| v.as_f64())
-        .unwrap_or(0.0);
-    let domain = parsed
+    let importance = sanitize::clamp_importance(
+        parsed.get("importance").and_then(|v| v.as_f64()).unwrap_or(0.5)
+    );
+    let valence = sanitize::clamp_valence(
+        parsed.get("valence").and_then(|v| v.as_f64()).unwrap_or(0.0)
+    );
+    let raw_domain = parsed
         .get("domain")
         .and_then(|v| v.as_str())
         .unwrap_or("general");
+    let domain = sanitize::validate_domain(raw_domain);
 
-    if !memory_text.is_empty() {
+    // Validate memory text — reject injection attempts
+    if let Some(memory_text) = sanitize::validate_memory_text(raw_memory_text) {
         match db.record_text(
-            memory_text,
+            &memory_text,
             memory_type,
             importance,
             valence,
@@ -129,17 +130,23 @@ pub fn extract_and_learn(
         }
     }
 
-    // Record entity relationships
+    // Record entity relationships — with validation
     if let Some(entities) = parsed.get("entities").and_then(|v| v.as_array()) {
-        for entity in entities {
-            let source = entity.get("source").and_then(|v| v.as_str()).unwrap_or("");
-            let target = entity.get("target").and_then(|v| v.as_str()).unwrap_or("");
-            let rel = entity
+        // Cap entity count to prevent flooding
+        for entity in entities.iter().take(5) {
+            let source_raw = entity.get("source").and_then(|v| v.as_str()).unwrap_or("");
+            let target_raw = entity.get("target").and_then(|v| v.as_str()).unwrap_or("");
+            let rel_raw = entity
                 .get("relationship")
                 .and_then(|v| v.as_str())
                 .unwrap_or("related_to");
 
-            if !source.is_empty() && !target.is_empty() {
+            // Validate each field for injection patterns
+            if let (Some(source), Some(target), Some(rel)) = (
+                sanitize::validate_entity_field(source_raw),
+                sanitize::validate_entity_field(target_raw),
+                sanitize::validate_entity_field(rel_raw),
+            ) {
                 if let Err(e) = db.relate(source, target, rel, 1.0) {
                     tracing::debug!("Failed to record entity relation: {e}");
                 }
@@ -221,22 +228,21 @@ fn reflect_on_exchange(
         return;
     }
 
-    let reflection_text = parsed
+    let raw_reflection = parsed
         .get("reflection_text")
         .and_then(|v| v.as_str())
         .unwrap_or_default();
-    let importance = parsed
-        .get("importance")
-        .and_then(|v| v.as_f64())
-        .unwrap_or(0.3);
-    let valence = parsed
-        .get("valence")
-        .and_then(|v| v.as_f64())
-        .unwrap_or(0.0);
+    let importance = sanitize::clamp_importance(
+        parsed.get("importance").and_then(|v| v.as_f64()).unwrap_or(0.3)
+    );
+    let valence = sanitize::clamp_valence(
+        parsed.get("valence").and_then(|v| v.as_f64()).unwrap_or(0.0)
+    );
 
-    if !reflection_text.is_empty() {
+    // Validate reflection text — reject injection attempts
+    if let Some(reflection_text) = sanitize::validate_memory_text(raw_reflection) {
         match db.record_text(
-            reflection_text,
+            &reflection_text,
             "semantic",
             importance,
             valence,

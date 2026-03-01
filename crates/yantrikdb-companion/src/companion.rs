@@ -17,6 +17,8 @@ use crate::evolution::Evolution;
 use crate::instincts::{self, Instinct};
 use crate::learning;
 use crate::narrative::Narrative;
+use crate::sanitize;
+use crate::security::SecurityGuard;
 use crate::tools::{self, ToolContext, ToolRegistry, parse_permission};
 use crate::types::{AgentResponse, CompanionState, ProactiveMessage};
 use crate::urges::UrgeQueue;
@@ -51,6 +53,9 @@ pub struct CompanionService {
 
     // Tool registry — modular tool store
     registry: ToolRegistry,
+
+    // Security — self-evolving adaptive defense
+    guard: SecurityGuard,
 }
 
 impl CompanionService {
@@ -64,6 +69,7 @@ impl CompanionService {
         let urge_queue = UrgeQueue::new(db.conn(), config.urges.clone());
         let instincts = instincts::load_instincts(&config.instincts);
         let registry = tools::build_registry(&config);
+        let guard = SecurityGuard::new(&db);
 
         // Load current bond state
         let bond_state = BondTracker::get_state(db.conn());
@@ -87,11 +93,22 @@ impl CompanionService {
             bond_level_changed: false,
             system_context: String::new(),
             registry,
+            guard,
         }
     }
 
     /// The 9-step message pipeline.
     pub fn handle_message(&mut self, user_text: &str) -> AgentResponse {
+        // Step 0: SecurityGuard — check user input for injection
+        if let Some(warning) = self.guard.check_input(user_text, &self.db) {
+            return AgentResponse {
+                message: warning,
+                memories_recalled: 0,
+                urges_delivered: vec![],
+                tool_calls_made: vec![],
+            };
+        }
+
         // Step 1: Check session timeout
         self.check_session_timeout();
 
@@ -216,10 +233,16 @@ impl CompanionService {
                 tool_calls_made.push(call.name.clone());
                 let result = self.registry.execute(&ctx, &call.name, &call.arguments);
 
-                // Add tool result as user message (tool response)
+                // SecurityGuard: check tool result for data poisoning
+                self.guard.check_tool_result(&call.name, &result, &self.db);
+
+                // Sanitize tool result before feeding back to LLM
+                let safe_result = sanitize::sanitize_tool_result(&result);
+
                 messages.push(ChatMessage::user(format!(
-                    "Tool result for {}: {result}",
-                    call.name
+                    "<data:tool_result name=\"{}\">{}",
+                    sanitize::escape_for_prompt(&call.name),
+                    safe_result,
                 )));
             }
 
@@ -236,6 +259,9 @@ impl CompanionService {
 
         // Clean up tool call XML from final response
         response_text = extract_text_content(&response_text);
+
+        // SecurityGuard: filter output for sensitive info leaks
+        response_text = self.guard.check_response(&response_text, &self.db);
 
         // Update conversation history
         self.conversation_history
@@ -316,6 +342,17 @@ impl CompanionService {
     where
         F: FnMut(&str),
     {
+        // Step 0: SecurityGuard — check user input for injection
+        if let Some(warning) = self.guard.check_input(user_text, &self.db) {
+            on_token(&warning);
+            return AgentResponse {
+                message: warning,
+                memories_recalled: 0,
+                urges_delivered: vec![],
+                tool_calls_made: vec![],
+            };
+        }
+
         // Steps 1-6 are identical to handle_message
         self.check_session_timeout();
 
@@ -416,9 +453,17 @@ impl CompanionService {
                         tool_calls_made.push(call.name.clone());
                         let result =
                             self.registry.execute(&ctx, &call.name, &call.arguments);
+
+                        // SecurityGuard: check tool result for data poisoning
+                        self.guard.check_tool_result(&call.name, &result, &self.db);
+
+                        // Sanitize tool result before feeding back to LLM
+                        let safe_result = sanitize::sanitize_tool_result(&result);
+
                         messages.push(ChatMessage::user(format!(
-                            "Tool result for {}: {result}",
-                            call.name
+                            "<data:tool_result name=\"{}\">{}",
+                            sanitize::escape_for_prompt(&call.name),
+                            safe_result,
                         )));
                     }
 
@@ -447,6 +492,9 @@ impl CompanionService {
             response_text = "I'm here. How can I help?".to_string();
         }
         response_text = extract_text_content(&response_text);
+
+        // SecurityGuard: filter output for sensitive info leaks
+        response_text = self.guard.check_response(&response_text, &self.db);
 
         // Update conversation history
         self.conversation_history.push(ChatMessage::user(user_text));
@@ -579,6 +627,8 @@ impl CompanionService {
     /// Update the system context string (battery, network, etc.)
     /// that gets injected into the LLM system prompt.
     pub fn set_system_context(&mut self, ctx: String) {
+        // Check for injection patterns in system context (comes from D-Bus/sysinfo)
+        sanitize::check_and_warn(&ctx, "system_context");
         self.system_context = ctx;
     }
 

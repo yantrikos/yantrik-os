@@ -23,6 +23,8 @@ pub mod evolution;
 pub mod instincts;
 pub mod learning;
 pub mod narrative;
+pub mod sanitize;
+pub mod security;
 pub mod tools;
 pub mod types;
 pub mod urges;

@@ -334,6 +334,11 @@ impl Tool for RunCommandTool {
             return "Error: shell metacharacters (|;&`$><) are not allowed".to_string();
         }
 
+        // Block harmful commands (defense-in-depth even with allowlist)
+        if let Some(reason) = crate::sanitize::detect_harmful_command(command) {
+            return format!("Error: blocked — {reason}");
+        }
+
         match std::process::Command::new("sh")
             .arg("-c")
             .arg(command)

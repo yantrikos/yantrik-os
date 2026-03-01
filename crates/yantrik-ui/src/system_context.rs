@@ -11,10 +11,11 @@ pub fn format_system_context(snap: &yantrik_os::SystemSnapshot) -> String {
     let charge_str = if snap.battery_charging { " (charging)" } else { "" };
     parts.push(format!("Battery: {}%{}", snap.battery_level, charge_str));
 
-    // Network
+    // Network — sanitize SSID (WiFi names are attacker-controlled in public spaces)
     if snap.network_connected {
-        let ssid = snap.network_ssid.as_deref().unwrap_or("connected");
-        parts.push(format!("WiFi: {}", ssid));
+        let raw_ssid = snap.network_ssid.as_deref().unwrap_or("connected");
+        let safe_ssid: String = raw_ssid.chars().filter(|c| !c.is_control()).take(32).collect();
+        parts.push(format!("WiFi: {}", safe_ssid));
     } else {
         parts.push("WiFi: disconnected".to_string());
     }
@@ -29,9 +30,11 @@ pub fn format_system_context(snap: &yantrik_os::SystemSnapshot) -> String {
         parts.push(format!("RAM: {}/{}MB ({:.0}%)", used_mb, total_mb, snap.memory_usage_percent()));
     }
 
-    // Running processes (top 5 by name)
+    // Running processes (top 5 by name) — sanitize process names
     if !snap.running_processes.is_empty() {
-        let names: Vec<&str> = snap.running_processes.iter().take(5).map(|p| p.name.as_str()).collect();
+        let names: Vec<String> = snap.running_processes.iter().take(5)
+            .map(|p| p.name.chars().filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_' || *c == '.').take(30).collect())
+            .collect();
         parts.push(format!("Apps: {}", names.join(", ")));
     }
 
@@ -67,48 +70,63 @@ pub fn event_to_memory(event: &yantrik_os::SystemEvent) -> Option<(String, Strin
         }
         SystemEvent::NetworkChanged { connected, ssid, .. } => {
             let text = if *connected {
-                format!("Connected to network{}", ssid.as_ref().map(|s| format!(" '{}'", s)).unwrap_or_default())
+                let safe_ssid = ssid.as_ref()
+                    .map(|s| {
+                        let clean: String = s.chars().filter(|c| !c.is_control()).take(32).collect();
+                        format!(" '{}'", clean)
+                    })
+                    .unwrap_or_default();
+                format!("Connected to network{}", safe_ssid)
             } else {
                 "Network disconnected".into()
             };
             Some((text, "system/network".into(), 0.4))
         }
         SystemEvent::NotificationReceived { app, summary, .. } => {
+            // Sanitize notification content — D-Bus notifications are untrusted external input.
+            // Truncate and strip control chars to prevent injection via crafted notification.
+            let safe_app: String = app.chars().filter(|c| !c.is_control()).take(50).collect();
+            let safe_summary: String = summary.chars().filter(|c| !c.is_control()).take(100).collect();
             Some((
-                format!("Notification from {}: {}", app, summary),
+                format!("Notification from {}: {}", safe_app, safe_summary),
                 "system/notification".into(),
                 0.5,
             ))
         }
         SystemEvent::FileChanged { path, kind } => {
+            // Truncate file paths to prevent oversized memory entries
+            let safe_path: String = path.chars().take(200).collect();
             let action = match kind {
                 yantrik_os::FileChangeKind::Created => "created",
                 yantrik_os::FileChangeKind::Modified => "modified",
                 yantrik_os::FileChangeKind::Deleted => "deleted",
                 yantrik_os::FileChangeKind::Renamed { to } => {
+                    let safe_to: String = to.chars().take(200).collect();
                     return Some((
-                        format!("File renamed: {} → {}", path, to),
+                        format!("File renamed: {} → {}", safe_path, safe_to),
                         "system/files".into(),
                         0.3,
                     ));
                 }
             };
             Some((
-                format!("File {}: {}", action, path),
+                format!("File {}: {}", action, safe_path),
                 "system/files".into(),
                 0.3,
             ))
         }
         SystemEvent::ProcessStarted { name, .. } => {
+            let safe_name: String = name.chars().filter(|c| !c.is_control()).take(50).collect();
             Some((
-                format!("App opened: {}", name),
+                format!("App opened: {}", safe_name),
                 "system/process".into(),
                 0.2,
             ))
         }
         SystemEvent::ProcessStopped { name, .. } => {
+            let safe_name: String = name.chars().filter(|c| !c.is_control()).take(50).collect();
             Some((
-                format!("App closed: {}", name),
+                format!("App closed: {}", safe_name),
                 "system/process".into(),
                 0.2,
             ))

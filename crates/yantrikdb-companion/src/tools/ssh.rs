@@ -277,6 +277,11 @@ impl Tool for SshRunTool {
             return "Error: command is required".to_string();
         }
 
+        // Block harmful commands on remote hosts
+        if let Some(reason) = crate::sanitize::detect_harmful_command(command) {
+            return format!("Error: blocked — {reason}");
+        }
+
         match std::process::Command::new("ssh")
             .args([
                 "-o", "BatchMode=yes",

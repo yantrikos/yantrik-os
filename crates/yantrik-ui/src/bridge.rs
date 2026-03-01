@@ -373,17 +373,31 @@ fn worker_loop(
                 let _ = reply_tx.send(snapshots);
             }
             Ok(CompanionCommand::RecordSystemEvent { text, domain, importance }) => {
+                // Sanitize system event data before storing as memory.
+                // System events come from D-Bus/inotify — external input.
+                let safe_text: String = text.chars()
+                    .filter(|c| !c.is_control() || *c == '\n')
+                    .take(500)
+                    .collect();
+                let safe_importance = importance.clamp(0.0, 1.0);
+                // Validate domain — only allow known prefixes
+                let safe_domain = if domain.starts_with("system/") {
+                    domain
+                } else {
+                    "system/general".to_string()
+                };
+
                 if let Err(e) = companion.db.record_text(
-                    &text,
-                    "episodic",     // system events are episodic memories
-                    importance,
-                    0.0,            // neutral valence
-                    604800.0,       // 7-day half-life
+                    &safe_text,
+                    "episodic",
+                    safe_importance,
+                    0.0,
+                    604800.0,
                     &serde_json::json!({}),
                     "default",
-                    0.9,            // high certainty (we observed it)
-                    &domain,
-                    "system",       // source = system observer
+                    0.9,
+                    &safe_domain,
+                    "system",
                     None,
                 ) {
                     tracing::warn!(error = %e, "Failed to record system event");

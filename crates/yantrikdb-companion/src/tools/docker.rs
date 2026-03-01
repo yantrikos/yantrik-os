@@ -281,6 +281,11 @@ impl Tool for DockerExecTool {
             return "Error: command is required".to_string();
         }
 
+        // Block harmful commands even inside containers
+        if let Some(reason) = crate::sanitize::detect_harmful_command(command) {
+            return format!("Error: blocked — {reason}");
+        }
+
         let out = run_docker(&["exec", container, "sh", "-c", command]);
         truncate(&out, 3000)
     }

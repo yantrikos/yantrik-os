@@ -319,6 +319,12 @@ const BLOCKED_SEGMENTS: &[&str] = &[
 
 /// Validate a path is safe for the AI to access.
 /// Returns the expanded, validated path or an error string.
+///
+/// Defense layers:
+/// 1. Block `..` traversal
+/// 2. Block known sensitive path segments
+/// 3. Restrict to $HOME or /tmp
+/// 4. Resolve symlinks and re-validate the canonical path
 pub fn validate_path(path: &str) -> Result<String, String> {
     let expanded = expand_home(path);
 
@@ -327,7 +333,7 @@ pub fn validate_path(path: &str) -> Result<String, String> {
         return Err("Path traversal (..) is not allowed".to_string());
     }
 
-    // Check against blocked segments
+    // Check against blocked segments (pre-resolution check)
     for blocked in BLOCKED_SEGMENTS {
         if expanded.contains(blocked) {
             return Err(format!("Access to '{blocked}' is not allowed"));
@@ -338,6 +344,58 @@ pub fn validate_path(path: &str) -> Result<String, String> {
     let home = std::env::var("HOME").unwrap_or_default();
     if !expanded.starts_with(&home) && !expanded.starts_with("/tmp") {
         return Err("Path must be under your home directory or /tmp".to_string());
+    }
+
+    // Resolve symlinks: if the path exists, canonicalize and re-validate.
+    // This prevents symlink-based bypass (e.g. ~/link -> ~/.ssh/).
+    let canon_path = std::path::Path::new(&expanded);
+    if canon_path.exists() {
+        match canon_path.canonicalize() {
+            Ok(resolved) => {
+                let resolved_str = resolved.to_string_lossy().to_string();
+                // Re-check blocked segments on the resolved (real) path
+                for blocked in BLOCKED_SEGMENTS {
+                    if resolved_str.contains(blocked) {
+                        return Err(format!(
+                            "Access denied: path resolves to protected location ({})",
+                            blocked
+                        ));
+                    }
+                }
+                // Re-check home/tmp constraint on resolved path
+                if !resolved_str.starts_with(&home) && !resolved_str.starts_with("/tmp") {
+                    return Err(
+                        "Access denied: path resolves outside your home directory".to_string()
+                    );
+                }
+            }
+            Err(_) => {
+                // Can't resolve — path might have broken symlinks, allow the
+                // original expanded path (already validated above)
+            }
+        }
+    }
+    // For parent directory: if writing a new file, check the parent is safe
+    else if let Some(parent) = canon_path.parent() {
+        if parent.exists() {
+            if let Ok(resolved_parent) = parent.canonicalize() {
+                let rp = resolved_parent.to_string_lossy().to_string();
+                for blocked in BLOCKED_SEGMENTS {
+                    if rp.contains(blocked) {
+                        return Err(format!(
+                            "Access denied: parent directory resolves to protected location ({})",
+                            blocked
+                        ));
+                    }
+                }
+                if !rp.starts_with(&home) && !rp.starts_with("/tmp") {
+                    return Err(
+                        "Access denied: parent directory resolves outside your home directory"
+                            .to_string(),
+                    );
+                }
+            }
+        }
     }
 
     Ok(expanded)
