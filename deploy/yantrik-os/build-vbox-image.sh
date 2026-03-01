@@ -468,26 +468,17 @@ sudo tee "$LABWC_DIR/rc.xml" > /dev/null <<'RCXML'
 <?xml version="1.0" encoding="UTF-8"?>
 <labwc_config>
   <core><gap>0</gap></core>
-  <theme><titlebar><font name="DejaVu Sans" size="10" /></titlebar></theme>
+  <theme><titlebar><height>0</height></titlebar></theme>
   <keyboard>
     <keybind key="A-Tab"><action name="NextWindow" /></keybind>
     <keybind key="A-F4"><action name="Close" /></keybind>
     <keybind key="W-t">
       <action name="Execute"><command>foot</command></action>
     </keybind>
-    <keybind key="W-Left"><action name="SnapToEdge" direction="left" /></keybind>
-    <keybind key="W-Right"><action name="SnapToEdge" direction="right" /></keybind>
-    <keybind key="W-Up"><action name="Maximize" /></keybind>
-    <keybind key="W-Down"><action name="UnMaximize" /></keybind>
-    <keybind key="Print">
-      <action name="Execute">
-        <command>sh -c 'mkdir -p ~/Pictures/Screenshots &amp;&amp; grim ~/Pictures/Screenshots/$(date +%Y%m%d_%H%M%S).png'</command>
-      </action>
-    </keybind>
   </keyboard>
   <windowRules>
-    <windowRule identifier="yantrik-ui">
-      <serverDecoration>no</serverDecoration>
+    <windowRule title="Yantrik*">
+      <action name="ToggleDecorations" />
       <action name="ToggleFullscreen" />
     </windowRule>
   </windowRules>
