@@ -1,0 +1,250 @@
+// Media Player — audio playback with transport controls.
+// Screen 13. Opens from file browser when clicking audio files.
+// Uses mpv as backend via IPC socket.
+
+import { Theme } from "theme.slint";
+
+export component MediaPlayer inherits Rectangle {
+    background: Theme.bg-deep;
+
+    in property <string> track-name: "";
+    in property <string> track-path: "";
+    in property <bool> is-playing: false;
+    in property <float> progress: 0.0;       // 0.0–1.0
+    in property <string> time-current: "0:00";
+    in property <string> time-total: "0:00";
+
+    callback back-pressed();
+    callback play-pause();
+    callback stop();
+    callback seek(float);
+
+    VerticalLayout {
+        spacing: 0px;
+
+        // Header
+        Rectangle {
+            height: 56px;
+            background: Theme.bg-surface;
+
+            HorizontalLayout {
+                padding-left: 12px;
+                padding-right: 12px;
+                alignment: start;
+                spacing: 12px;
+
+                TouchArea {
+                    width: Theme.touch-target;
+                    height: Theme.touch-target;
+                    clicked => { root.back-pressed(); }
+                    Text {
+                        text: "←";
+                        color: Theme.text-secondary;
+                        font-size: 22px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+
+                Text {
+                    text: "Now Playing";
+                    color: Theme.text-primary;
+                    font-size: Theme.font-title;
+                    font-weight: 600;
+                    vertical-alignment: center;
+                }
+            }
+        }
+
+        // Separator
+        Rectangle { height: 1px; background: Theme.separator; }
+
+        // Content — centered layout
+        Rectangle {
+            background: Theme.bg-deep;
+
+            VerticalLayout {
+                alignment: center;
+                spacing: 24px;
+                padding: 32px;
+
+                // Pulsing orb visualization
+                Rectangle {
+                    width: 160px;
+                    height: 160px;
+                    x: (parent.width - 160px) / 2;
+
+                    property <float> pulse-phase: 0;
+                    Timer {
+                        interval: 16ms;
+                        running: root.is-playing;
+                        triggered => {
+                            parent.pulse-phase = mod(parent.pulse-phase + 0.03, 1.0);
+                        }
+                    }
+
+                    // Outer glow
+                    Rectangle {
+                        width: 160px;
+                        height: 160px;
+                        border-radius: 80px;
+                        background: @radial-gradient(circle,
+                            Theme.cyan-glow 0%,
+                            transparent 70%
+                        );
+                        opacity: root.is-playing
+                            ? 0.5 + 0.3 * sin(parent.pulse-phase * 6.2832 * 1rad)
+                            : 0.2;
+                    }
+
+                    // Inner core
+                    Rectangle {
+                        x: 30px; y: 30px;
+                        width: 100px;
+                        height: 100px;
+                        border-radius: 50px;
+                        background: @radial-gradient(circle,
+                            Theme.cyan 0%,
+                            Theme.cyan-dim 60%,
+                            Theme.bg-surface 100%
+                        );
+                        opacity: root.is-playing ? 0.9 : 0.4;
+
+                        Text {
+                            text: root.is-playing ? "♪" : "♫";
+                            color: Theme.text-primary;
+                            font-size: 36px;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+
+                // Track name
+                Text {
+                    text: root.track-name;
+                    color: Theme.text-primary;
+                    font-size: 20px;
+                    font-weight: 500;
+                    horizontal-alignment: center;
+                    overflow: elide;
+                }
+
+                // Progress bar
+                Rectangle {
+                    height: 32px;
+                    width: parent.width - 64px;
+                    x: 32px;
+
+                    HorizontalLayout {
+                        spacing: 12px;
+
+                        Text {
+                            text: root.time-current;
+                            color: Theme.text-dim;
+                            font-size: Theme.font-small;
+                            vertical-alignment: center;
+                            width: 40px;
+                        }
+
+                        // Track bar
+                        TouchArea {
+                            height: 32px;
+                            clicked => {
+                                root.seek(self.mouse-x / self.width);
+                            }
+
+                            Rectangle {
+                                y: 13px;
+                                height: 6px;
+                                border-radius: 3px;
+                                background: Theme.bg-elevated;
+
+                                // Filled portion
+                                Rectangle {
+                                    width: parent.width * root.progress;
+                                    height: 100%;
+                                    border-radius: 3px;
+                                    background: Theme.cyan;
+                                }
+
+                                // Thumb
+                                Rectangle {
+                                    x: parent.width * root.progress - 6px;
+                                    y: -3px;
+                                    width: 12px;
+                                    height: 12px;
+                                    border-radius: 6px;
+                                    background: Theme.cyan-light;
+                                }
+                            }
+                        }
+
+                        Text {
+                            text: root.time-total;
+                            color: Theme.text-dim;
+                            font-size: Theme.font-small;
+                            vertical-alignment: center;
+                            width: 40px;
+                            horizontal-alignment: right;
+                        }
+                    }
+                }
+
+                // Transport controls
+                HorizontalLayout {
+                    alignment: center;
+                    spacing: 32px;
+
+                    // Stop button
+                    TouchArea {
+                        width: 56px;
+                        height: 56px;
+                        clicked => { root.stop(); }
+
+                        Rectangle {
+                            width: 56px;
+                            height: 56px;
+                            border-radius: 28px;
+                            background: parent.has-hover ? Theme.hover-fill-strong : Theme.hover-fill;
+                            border-width: 1px;
+                            border-color: Theme.border-subtle;
+
+                            Text {
+                                text: "■";
+                                color: Theme.text-secondary;
+                                font-size: 20px;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+
+                    // Play/Pause button
+                    TouchArea {
+                        width: 72px;
+                        height: 72px;
+                        clicked => { root.play-pause(); }
+
+                        Rectangle {
+                            width: 72px;
+                            height: 72px;
+                            border-radius: 36px;
+                            background: Theme.cyan;
+                            drop-shadow-blur: root.is-playing ? 16px : 0px;
+                            drop-shadow-color: Theme.cyan-glow;
+
+                            Text {
+                                text: root.is-playing ? "⏸" : "▶";
+                                color: Theme.bg-deep;
+                                font-size: 28px;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

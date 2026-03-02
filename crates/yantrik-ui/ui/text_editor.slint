@@ -1,0 +1,123 @@
+// Text Editor — simple text editing with save.
+// Screen 12. Opens from file browser or "Editor" dock icon.
+
+import { Theme } from "theme.slint";
+import { TextEdit } from "std-widgets.slint";
+
+export component TextEditorScreen inherits Rectangle {
+    background: Theme.bg-deep;
+
+    in property <string> file-name: "untitled";
+    in-out property <string> file-content: "";
+    in property <bool> is-modified: false;
+    in property <bool> is-readonly: false;
+
+    callback back-pressed();
+    callback save-file();
+    callback content-changed(string);
+
+    VerticalLayout {
+        spacing: 0px;
+
+        // Header
+        Rectangle {
+            height: 56px;
+            background: Theme.bg-surface;
+
+            HorizontalLayout {
+                padding-left: 12px;
+                padding-right: 12px;
+                alignment: space-between;
+
+                // Left: back + filename + modified indicator
+                HorizontalLayout {
+                    spacing: 8px;
+                    alignment: start;
+
+                    TouchArea {
+                        width: Theme.touch-target;
+                        height: Theme.touch-target;
+                        clicked => { root.back-pressed(); }
+                        Text {
+                            text: "←";
+                            color: Theme.text-secondary;
+                            font-size: 22px;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
+
+                    Text {
+                        text: root.file-name;
+                        color: Theme.text-primary;
+                        font-size: Theme.font-title;
+                        font-weight: 600;
+                        vertical-alignment: center;
+                        overflow: elide;
+                        max-width: 300px;
+                    }
+
+                    if root.is-modified : Text {
+                        text: "●";
+                        color: Theme.amber;
+                        font-size: 14px;
+                        vertical-alignment: center;
+                    }
+
+                    if root.is-readonly : Text {
+                        text: "[read-only]";
+                        color: Theme.text-dim;
+                        font-size: Theme.font-small;
+                        vertical-alignment: center;
+                    }
+                }
+
+                // Right: save button
+                if !root.is-readonly : TouchArea {
+                    width: 80px;
+                    height: 36px;
+                    clicked => { root.save-file(); }
+
+                    Rectangle {
+                        width: 80px;
+                        height: 36px;
+                        border-radius: 8px;
+                        background: root.is-modified
+                            ? Theme.cyan
+                            : (parent.has-hover ? Theme.hover-fill-strong : Theme.hover-fill);
+                        border-width: root.is-modified ? 0px : 1px;
+                        border-color: Theme.border-subtle;
+
+                        Text {
+                            text: "Save";
+                            color: root.is-modified ? Theme.bg-deep : Theme.text-secondary;
+                            font-size: 14px;
+                            font-weight: root.is-modified ? 600 : 400;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Separator
+        Rectangle { height: 1px; background: Theme.separator; }
+
+        // Editor area
+        Rectangle {
+            background: Theme.bg-deep;
+
+            TextEdit {
+                width: 100%;
+                height: 100%;
+                text <=> root.file-content;
+                read-only: root.is-readonly;
+                font-size: 14px;
+                edited(text) => {
+                    root.content-changed(text);
+                }
+            }
+        }
+    }
+}
