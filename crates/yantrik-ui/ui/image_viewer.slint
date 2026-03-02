@@ -11,7 +11,6 @@ export component ImageViewer inherits Rectangle {
     in property <string> counter-text: "";   // e.g. "3 / 12"
     in-out property <bool> fit-contain: true; // true=contain, false=cover
 
-    callback back-pressed();
     callback nav-prev();
     callback nav-next();
     callback toggle-fit();
@@ -19,48 +18,30 @@ export component ImageViewer inherits Rectangle {
     VerticalLayout {
         spacing: 0px;
 
-        // Header
+        // Toolbar (filename + counter + fit toggle)
         Rectangle {
-            height: 56px;
+            height: 40px;
             background: Theme.bg-surface;
 
             HorizontalLayout {
-                padding-left: 12px;
+                padding-left: 16px;
                 padding-right: 12px;
                 alignment: space-between;
 
-                // Left: back + filename
-                HorizontalLayout {
-                    spacing: 12px;
-                    alignment: start;
-
-                    TouchArea {
-                        width: Theme.touch-target;
-                        height: Theme.touch-target;
-                        clicked => { root.back-pressed(); }
-                        Text {
-                            text: "←";
-                            color: Theme.text-secondary;
-                            font-size: 22px;
-                            horizontal-alignment: center;
-                            vertical-alignment: center;
-                        }
-                    }
-
-                    Text {
-                        text: root.file-name;
-                        color: Theme.text-primary;
-                        font-size: Theme.font-title;
-                        font-weight: 600;
-                        vertical-alignment: center;
-                        overflow: elide;
-                        max-width: 300px;
-                    }
+                // Left: filename
+                Text {
+                    text: root.file-name;
+                    color: Theme.text-primary;
+                    font-size: 14px;
+                    font-weight: 500;
+                    vertical-alignment: center;
+                    overflow: elide;
+                    horizontal-stretch: 1;
                 }
 
                 // Right: counter + fit toggle
                 HorizontalLayout {
-                    spacing: 16px;
+                    spacing: 12px;
                     alignment: end;
 
                     Text {
@@ -71,12 +52,10 @@ export component ImageViewer inherits Rectangle {
                     }
 
                     TouchArea {
-                        width: Theme.touch-target;
-                        height: Theme.touch-target;
+                        width: 32px;
+                        height: 32px;
                         clicked => { root.toggle-fit(); }
                         Rectangle {
-                            width: 32px;
-                            height: 32px;
                             border-radius: 6px;
                             background: parent.has-hover ? Theme.hover-fill-strong : transparent;
                             Text {

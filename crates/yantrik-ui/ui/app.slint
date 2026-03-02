@@ -28,6 +28,7 @@ import { ClipboardEntryData } from "components/clipboard_panel.slint";
 import { AppGridItem } from "components/app_grid.slint";
 import { WindowItem } from "components/window_switcher.slint";
 import { DockItem } from "components/app_dock.slint";
+import { WindowFrame } from "components/window_frame.slint";
 
 export { ThemeMode, ThemeOverrides, MessageData, UrgeCardData, BondData, OpinionData, SharedRefData, MemoryItem, LensResult, WhisperCardItem, FileEntry, BreadcrumbSegment, NotificationData, ProcessData, ClipboardEntryData, AppGridItem, WindowItem, DockItem }
 
@@ -39,6 +40,9 @@ export component App inherits Window {
     // Screen state: 0=boot, 1=desktop, 2=onboarding, 3=lock, 4=bond, 5=personality,
     //   6=memory, 7=settings, 8=files, 9=notifications, 10=system
     in-out property <int> current-screen: 0;
+
+    // Window chrome state (shared across all windowed screens)
+    in-out property <bool> window-maximized: true;
 
     // Boot state
     in property <string> boot-status: "remembering...";
@@ -372,181 +376,307 @@ export component App inherits Window {
             close-lens => { root.close-lens(); }
         }
 
+        // ═══ Windowed app screens (4-13) — wrapped in WindowFrame ═══
+
         // Bond screen
-        if current-screen == 4 : BondScreen {
-            width: 100%; height: 100%;
-            data: root.bond-data;
-            back-pressed => {
-                root.current-screen = 1;
-                root.navigate(1);
+        if current-screen == 4 : WindowFrame {
+            x: root.window-maximized ? 0px : parent.width * 0.05;
+            y: root.window-maximized ? 0px : parent.height * 0.04;
+            width: root.window-maximized ? parent.width : parent.width * 0.90;
+            height: root.window-maximized ? parent.height : parent.height * 0.92;
+            is-maximized <=> root.window-maximized;
+            icon-char: "♥";
+            icon-color: Theme.color-emotional;
+            title: "Bond";
+            close => { root.current-screen = 1; root.navigate(1); }
+            minimize => { root.current-screen = 1; root.navigate(1); }
+            animate x, y, width, height { duration: 200ms; easing: ease-out; }
+
+            BondScreen {
+                width: 100%; height: 100%;
+                data: root.bond-data;
+                back-pressed => {
+                    root.current-screen = 1;
+                    root.navigate(1);
+                }
             }
         }
 
         // Personality screen
-        if current-screen == 5 : PersonalityScreen {
-            width: 100%; height: 100%;
-            formality: root.formality;
-            humor-ratio: root.humor-ratio;
-            opinion-strength: root.opinion-strength;
-            question-ratio: root.question-ratio;
-            opinions: root.opinions;
-            shared-refs: root.shared-refs;
-            back-pressed => {
-                root.current-screen = 1;
-                root.navigate(1);
+        if current-screen == 5 : WindowFrame {
+            x: root.window-maximized ? 0px : parent.width * 0.05;
+            y: root.window-maximized ? 0px : parent.height * 0.04;
+            width: root.window-maximized ? parent.width : parent.width * 0.90;
+            height: root.window-maximized ? parent.height : parent.height * 0.92;
+            is-maximized <=> root.window-maximized;
+            icon-char: "✧";
+            icon-color: Theme.color-pattern;
+            title: "Personality";
+            close => { root.current-screen = 1; root.navigate(1); }
+            minimize => { root.current-screen = 1; root.navigate(1); }
+            animate x, y, width, height { duration: 200ms; easing: ease-out; }
+
+            PersonalityScreen {
+                width: 100%; height: 100%;
+                formality: root.formality;
+                humor-ratio: root.humor-ratio;
+                opinion-strength: root.opinion-strength;
+                question-ratio: root.question-ratio;
+                opinions: root.opinions;
+                shared-refs: root.shared-refs;
+                back-pressed => {
+                    root.current-screen = 1;
+                    root.navigate(1);
+                }
             }
         }
 
         // Memory browser
-        if current-screen == 6 : MemoryBrowser {
-            width: 100%; height: 100%;
-            results: root.memory-results;
-            is-searching: root.is-searching-memories;
-            total-memories: root.memory-count;
-            search(query) => { root.search-memories(query); }
-            back-pressed => {
-                root.current-screen = 1;
-                root.navigate(1);
+        if current-screen == 6 : WindowFrame {
+            x: root.window-maximized ? 0px : parent.width * 0.05;
+            y: root.window-maximized ? 0px : parent.height * 0.04;
+            width: root.window-maximized ? parent.width : parent.width * 0.90;
+            height: root.window-maximized ? parent.height : parent.height * 0.92;
+            is-maximized <=> root.window-maximized;
+            icon-char: "◈";
+            icon-color: Theme.amber;
+            title: "Memory";
+            close => { root.current-screen = 1; root.navigate(1); }
+            minimize => { root.current-screen = 1; root.navigate(1); }
+            animate x, y, width, height { duration: 200ms; easing: ease-out; }
+
+            MemoryBrowser {
+                width: 100%; height: 100%;
+                results: root.memory-results;
+                is-searching: root.is-searching-memories;
+                total-memories: root.memory-count;
+                search(query) => { root.search-memories(query); }
+                back-pressed => {
+                    root.current-screen = 1;
+                    root.navigate(1);
+                }
             }
         }
 
         // Settings screen
-        if current-screen == 7 : SettingsScreen {
-            width: 100%; height: 100%;
-            user-name: root.settings-user-name;
-            companion-name: root.settings-companion-name;
-            model-name: root.settings-model-name;
-            max-context: root.settings-max-context;
-            max-tokens: root.settings-max-tokens;
-            tool-permission: root.settings-tool-permission;
-            auto-lock-secs: root.settings-auto-lock-secs;
-            wifi-connected: root.wifi-connected;
-            wifi-ssid: root.sys-wifi-ssid;
-            ip-address: root.settings-ip-address;
-            display-resolution: root.settings-display-resolution;
-            llm-backend: root.settings-llm-backend;
-            llm-api-url: root.settings-llm-api-url;
-            llm-api-model: root.settings-llm-api-model;
-            memory-count: root.memory-count;
-            version-text: root.settings-version;
-            notification-count: root.notification-unread-count;
-            dark-mode <=> root.settings-dark-mode;
-            toggle-dark-mode => { root.toggle-dark-mode(); }
-            back-pressed => {
-                root.current-screen = 1;
-                root.navigate(1);
-            }
-            navigate-to(screen) => {
-                root.current-screen = screen;
-                root.navigate(screen);
+        if current-screen == 7 : WindowFrame {
+            x: root.window-maximized ? 0px : parent.width * 0.05;
+            y: root.window-maximized ? 0px : parent.height * 0.04;
+            width: root.window-maximized ? parent.width : parent.width * 0.90;
+            height: root.window-maximized ? parent.height : parent.height * 0.92;
+            is-maximized <=> root.window-maximized;
+            icon-char: "⚙";
+            icon-color: Theme.text-secondary;
+            title: "Settings";
+            close => { root.current-screen = 1; root.navigate(1); }
+            minimize => { root.current-screen = 1; root.navigate(1); }
+            animate x, y, width, height { duration: 200ms; easing: ease-out; }
+
+            SettingsScreen {
+                width: 100%; height: 100%;
+                user-name: root.settings-user-name;
+                companion-name: root.settings-companion-name;
+                model-name: root.settings-model-name;
+                max-context: root.settings-max-context;
+                max-tokens: root.settings-max-tokens;
+                tool-permission: root.settings-tool-permission;
+                auto-lock-secs: root.settings-auto-lock-secs;
+                wifi-connected: root.wifi-connected;
+                wifi-ssid: root.sys-wifi-ssid;
+                ip-address: root.settings-ip-address;
+                display-resolution: root.settings-display-resolution;
+                llm-backend: root.settings-llm-backend;
+                llm-api-url: root.settings-llm-api-url;
+                llm-api-model: root.settings-llm-api-model;
+                memory-count: root.memory-count;
+                version-text: root.settings-version;
+                notification-count: root.notification-unread-count;
+                dark-mode <=> root.settings-dark-mode;
+                toggle-dark-mode => { root.toggle-dark-mode(); }
+                back-pressed => {
+                    root.current-screen = 1;
+                    root.navigate(1);
+                }
+                navigate-to(screen) => {
+                    root.current-screen = screen;
+                    root.navigate(screen);
+                }
             }
         }
 
         // File browser
-        if current-screen == 8 : FileBrowser {
-            width: 100%; height: 100%;
-            current-path: root.file-browser-path;
-            entries: root.file-browser-entries;
-            is-loading: root.file-browser-loading;
-            breadcrumbs: root.file-breadcrumbs;
-            has-clipboard: root.file-has-clipboard;
-            show-hidden <=> root.file-show-hidden;
-            back-pressed => {
-                root.current-screen = 1;
-                root.navigate(1);
+        if current-screen == 8 : WindowFrame {
+            x: root.window-maximized ? 0px : parent.width * 0.05;
+            y: root.window-maximized ? 0px : parent.height * 0.04;
+            width: root.window-maximized ? parent.width : parent.width * 0.90;
+            height: root.window-maximized ? parent.height : parent.height * 0.92;
+            is-maximized <=> root.window-maximized;
+            icon-char: "F";
+            icon-color: Theme.cyan;
+            title: "Files";
+            close => { root.current-screen = 1; root.navigate(1); }
+            minimize => { root.current-screen = 1; root.navigate(1); }
+            animate x, y, width, height { duration: 200ms; easing: ease-out; }
+
+            FileBrowser {
+                width: 100%; height: 100%;
+                current-path: root.file-browser-path;
+                entries: root.file-browser-entries;
+                is-loading: root.file-browser-loading;
+                breadcrumbs: root.file-breadcrumbs;
+                has-clipboard: root.file-has-clipboard;
+                show-hidden <=> root.file-show-hidden;
+                navigate-dir(name) => { root.file-navigate-dir(name); }
+                open-file(name) => { root.file-open(name); }
+                go-up => { root.file-go-up(); }
+                navigate-to-path(p) => { root.file-navigate-to-path(p); }
+                toggle-hidden => { root.file-toggle-hidden(); }
+                file-delete(name) => { root.file-delete(name); }
+                file-rename(old, new) => { root.file-rename(old, new); }
+                file-copy(name) => { root.file-copy(name); }
+                file-cut(name) => { root.file-cut(name); }
+                file-paste => { root.file-paste(); }
+                create-folder(name) => { root.file-create-folder(name); }
             }
-            navigate-dir(name) => { root.file-navigate-dir(name); }
-            open-file(name) => { root.file-open(name); }
-            go-up => { root.file-go-up(); }
-            navigate-to-path(p) => { root.file-navigate-to-path(p); }
-            toggle-hidden => { root.file-toggle-hidden(); }
-            file-delete(name) => { root.file-delete(name); }
-            file-rename(old, new) => { root.file-rename(old, new); }
-            file-copy(name) => { root.file-copy(name); }
-            file-cut(name) => { root.file-cut(name); }
-            file-paste => { root.file-paste(); }
-            create-folder(name) => { root.file-create-folder(name); }
         }
 
         // Notification Center
-        if current-screen == 9 : NotificationCenter {
-            width: 100%; height: 100%;
-            notifications: root.notification-list;
-            unread-count: root.notification-unread-count;
-            back-pressed => {
-                root.current-screen = 1;
-                root.navigate(1);
+        if current-screen == 9 : WindowFrame {
+            x: root.window-maximized ? 0px : parent.width * 0.05;
+            y: root.window-maximized ? 0px : parent.height * 0.04;
+            width: root.window-maximized ? parent.width : parent.width * 0.90;
+            height: root.window-maximized ? parent.height : parent.height * 0.92;
+            is-maximized <=> root.window-maximized;
+            icon-char: "N";
+            icon-color: Theme.color-follow-up;
+            title: "Notifications";
+            close => { root.current-screen = 1; root.navigate(1); }
+            minimize => { root.current-screen = 1; root.navigate(1); }
+            animate x, y, width, height { duration: 200ms; easing: ease-out; }
+
+            NotificationCenter {
+                width: 100%; height: 100%;
+                notifications: root.notification-list;
+                unread-count: root.notification-unread-count;
+                back-pressed => {
+                    root.current-screen = 1;
+                    root.navigate(1);
+                }
+                clear-all => { root.notification-clear-all(); }
+                mark-all-read => { root.notification-mark-all-read(); }
+                notification-tapped(id) => { root.notification-tapped(id); }
             }
-            clear-all => { root.notification-clear-all(); }
-            mark-all-read => { root.notification-mark-all-read(); }
-            notification-tapped(id) => { root.notification-tapped(id); }
         }
 
         // System Dashboard
-        if current-screen == 10 : SystemDashboard {
-            width: 100%; height: 100%;
-            cpu-usage: root.sys-cpu-usage;
-            memory-usage: root.sys-memory-usage;
-            memory-text: root.sys-memory-text;
-            battery-level: root.battery-level;
-            battery-charging: root.battery-charging;
-            wifi-connected: root.wifi-connected;
-            wifi-ssid: root.sys-wifi-ssid;
-            wifi-signal: root.sys-wifi-signal;
-            uptime-text: root.sys-uptime-text;
-            top-processes: root.sys-top-processes;
-            back-pressed => {
-                root.current-screen = 1;
-                root.navigate(1);
+        if current-screen == 10 : WindowFrame {
+            x: root.window-maximized ? 0px : parent.width * 0.05;
+            y: root.window-maximized ? 0px : parent.height * 0.04;
+            width: root.window-maximized ? parent.width : parent.width * 0.90;
+            height: root.window-maximized ? parent.height : parent.height * 0.92;
+            is-maximized <=> root.window-maximized;
+            icon-char: "◉";
+            icon-color: Theme.color-reminder;
+            title: "System";
+            close => { root.current-screen = 1; root.navigate(1); }
+            minimize => { root.current-screen = 1; root.navigate(1); }
+            animate x, y, width, height { duration: 200ms; easing: ease-out; }
+
+            SystemDashboard {
+                width: 100%; height: 100%;
+                cpu-usage: root.sys-cpu-usage;
+                memory-usage: root.sys-memory-usage;
+                memory-text: root.sys-memory-text;
+                battery-level: root.battery-level;
+                battery-charging: root.battery-charging;
+                wifi-connected: root.wifi-connected;
+                wifi-ssid: root.sys-wifi-ssid;
+                wifi-signal: root.sys-wifi-signal;
+                uptime-text: root.sys-uptime-text;
+                top-processes: root.sys-top-processes;
+                back-pressed => {
+                    root.current-screen = 1;
+                    root.navigate(1);
+                }
             }
         }
 
         // Image Viewer
-        if current-screen == 11 : ImageViewer {
-            width: 100%; height: 100%;
-            current-image: root.viewer-image;
-            file-name: root.viewer-file-name;
-            counter-text: root.viewer-counter;
-            fit-contain <=> root.viewer-fit-contain;
-            back-pressed => {
-                root.current-screen = 8;
-                root.navigate(8);
+        if current-screen == 11 : WindowFrame {
+            x: root.window-maximized ? 0px : parent.width * 0.05;
+            y: root.window-maximized ? 0px : parent.height * 0.04;
+            width: root.window-maximized ? parent.width : parent.width * 0.90;
+            height: root.window-maximized ? parent.height : parent.height * 0.92;
+            is-maximized <=> root.window-maximized;
+            icon-char: "▣";
+            icon-color: #6a2d6a;
+            title: "Image Viewer";
+            close => { root.current-screen = 8; root.navigate(8); }
+            minimize => { root.current-screen = 1; root.navigate(1); }
+            animate x, y, width, height { duration: 200ms; easing: ease-out; }
+
+            ImageViewer {
+                width: 100%; height: 100%;
+                current-image: root.viewer-image;
+                file-name: root.viewer-file-name;
+                counter-text: root.viewer-counter;
+                fit-contain <=> root.viewer-fit-contain;
+                nav-prev => { root.viewer-nav-prev(); }
+                nav-next => { root.viewer-nav-next(); }
+                toggle-fit => { root.viewer-toggle-fit(); }
             }
-            nav-prev => { root.viewer-nav-prev(); }
-            nav-next => { root.viewer-nav-next(); }
-            toggle-fit => { root.viewer-toggle-fit(); }
         }
 
         // Text Editor
-        if current-screen == 12 : TextEditorScreen {
-            width: 100%; height: 100%;
-            file-name: root.editor-file-name;
-            file-content <=> root.editor-file-content;
-            is-modified: root.editor-is-modified;
-            is-readonly: root.editor-is-readonly;
-            back-pressed => {
-                root.current-screen = 8;
-                root.navigate(8);
+        if current-screen == 12 : WindowFrame {
+            x: root.window-maximized ? 0px : parent.width * 0.05;
+            y: root.window-maximized ? 0px : parent.height * 0.04;
+            width: root.window-maximized ? parent.width : parent.width * 0.90;
+            height: root.window-maximized ? parent.height : parent.height * 0.92;
+            is-maximized <=> root.window-maximized;
+            icon-char: "≡";
+            icon-color: #3a4a6a;
+            title: "Editor";
+            close => { root.current-screen = 8; root.navigate(8); }
+            minimize => { root.current-screen = 1; root.navigate(1); }
+            animate x, y, width, height { duration: 200ms; easing: ease-out; }
+
+            TextEditorScreen {
+                width: 100%; height: 100%;
+                file-name: root.editor-file-name;
+                file-content <=> root.editor-file-content;
+                is-modified: root.editor-is-modified;
+                is-readonly: root.editor-is-readonly;
+                save-file => { root.editor-save(); }
+                content-changed(text) => { root.editor-content-changed(text); }
             }
-            save-file => { root.editor-save(); }
-            content-changed(text) => { root.editor-content-changed(text); }
         }
 
         // Media Player
-        if current-screen == 13 : MediaPlayer {
-            width: 100%; height: 100%;
-            track-name: root.player-track-name;
-            is-playing: root.player-is-playing;
-            progress: root.player-progress;
-            time-current: root.player-time-current;
-            time-total: root.player-time-total;
-            back-pressed => {
-                root.current-screen = 8;
-                root.navigate(8);
+        if current-screen == 13 : WindowFrame {
+            x: root.window-maximized ? 0px : parent.width * 0.05;
+            y: root.window-maximized ? 0px : parent.height * 0.04;
+            width: root.window-maximized ? parent.width : parent.width * 0.90;
+            height: root.window-maximized ? parent.height : parent.height * 0.92;
+            is-maximized <=> root.window-maximized;
+            icon-char: "♪";
+            icon-color: #6a5a2d;
+            title: "Now Playing";
+            close => { root.current-screen = 8; root.navigate(8); }
+            minimize => { root.current-screen = 1; root.navigate(1); }
+            animate x, y, width, height { duration: 200ms; easing: ease-out; }
+
+            MediaPlayer {
+                width: 100%; height: 100%;
+                track-name: root.player-track-name;
+                is-playing: root.player-is-playing;
+                progress: root.player-progress;
+                time-current: root.player-time-current;
+                time-total: root.player-time-total;
+                play-pause => { root.player-play-pause(); }
+                stop => { root.player-stop(); }
+                seek(pos) => { root.player-seek(pos); }
             }
-            play-pause => { root.player-play-pause(); }
-            stop => { root.player-stop(); }
-            seek(pos) => { root.player-seek(pos); }
         }
 
         // Voice overlay

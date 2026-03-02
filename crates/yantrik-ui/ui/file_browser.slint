@@ -1,5 +1,6 @@
 // File browser — visual file navigation with operations.
-// Screen 8. List view, breadcrumb path, file ops, hidden toggle.
+// Screen 8. Breadcrumb path, colored icons, file operations.
+// Wrapped in WindowFrame by app.slint — no internal header needed.
 
 import { Theme } from "theme.slint";
 import { ListView, LineEdit } from "std-widgets.slint";
@@ -18,7 +19,7 @@ export struct BreadcrumbSegment {
 }
 
 export component FileBrowser inherits Rectangle {
-    background: Theme.bg-deep;
+    background: transparent;
 
     in property <string> current-path: "~";
     in property <[FileEntry]> entries: [];
@@ -28,7 +29,7 @@ export component FileBrowser inherits Rectangle {
     in-out property <bool> show-hidden: false;
     in-out property <int> selected-index: -1;
 
-    // Dialogs
+    // Dialog state
     property <bool> show-rename-dialog: false;
     property <string> rename-old-name: "";
     property <string> rename-new-name: "";
@@ -37,7 +38,6 @@ export component FileBrowser inherits Rectangle {
     property <bool> show-new-folder-dialog: false;
     property <string> new-folder-name: "";
 
-    callback back-pressed();
     callback navigate-dir(string);
     callback open-file(string);
     callback go-up();
@@ -53,125 +53,30 @@ export component FileBrowser inherits Rectangle {
     VerticalLayout {
         spacing: 0px;
 
-        // ── Header with toolbar ──
-        Rectangle {
-            height: 56px;
-            background: Theme.bg-surface;
-
-            HorizontalLayout {
-                padding-left: 12px;
-                padding-right: 12px;
-                alignment: space-between;
-                spacing: 8px;
-
-                // Left: back + title
-                HorizontalLayout {
-                    spacing: 12px;
-                    alignment: start;
-
-                    TouchArea {
-                        width: Theme.touch-target;
-                        height: Theme.touch-target;
-                        clicked => { root.back-pressed(); }
-                        Text {
-                            text: "←";
-                            color: Theme.text-secondary;
-                            font-size: 22px;
-                            horizontal-alignment: center;
-                            vertical-alignment: center;
-                        }
-                    }
-
-                    Text {
-                        text: "Files";
-                        color: Theme.text-primary;
-                        font-size: Theme.font-title;
-                        font-weight: 600;
-                        vertical-alignment: center;
-                    }
-                }
-
-                // Right: toolbar buttons
-                HorizontalLayout {
-                    spacing: 4px;
-                    alignment: end;
-
-                    // New folder
-                    TouchArea {
-                        width: 36px; height: 36px;
-                        clicked => {
-                            root.new-folder-name = "";
-                            root.show-new-folder-dialog = true;
-                        }
-                        Rectangle {
-                            border-radius: 6px;
-                            background: parent.has-hover ? Theme.bg-elevated : transparent;
-                            Text {
-                                text: "+";
-                                color: Theme.cyan;
-                                font-size: 20px;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
-                            }
-                        }
-                    }
-
-                    // Paste (only when clipboard has content)
-                    if root.has-clipboard : TouchArea {
-                        width: 36px; height: 36px;
-                        clicked => { root.file-paste(); }
-                        Rectangle {
-                            border-radius: 6px;
-                            background: parent.has-hover ? Theme.bg-elevated : transparent;
-                            Text {
-                                text: "📋";
-                                font-size: 16px;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
-                            }
-                        }
-                    }
-
-                    // Toggle hidden
-                    TouchArea {
-                        width: 36px; height: 36px;
-                        clicked => { root.toggle-hidden(); }
-                        Rectangle {
-                            border-radius: 6px;
-                            background: parent.has-hover ? Theme.bg-elevated : transparent;
-                            Text {
-                                text: root.show-hidden ? "◉" : "◎";
-                                color: root.show-hidden ? Theme.cyan : Theme.text-dim;
-                                font-size: 18px;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // ── Breadcrumb path bar ──
+        // ── Breadcrumb bar with integrated toolbar ──
         Rectangle {
             height: 40px;
             background: Theme.bg-surface;
 
             HorizontalLayout {
-                padding-left: 16px;
-                padding-right: 16px;
+                padding-left: 12px;
+                padding-right: 8px;
                 spacing: 4px;
 
                 // Up button
                 TouchArea {
                     width: 32px; height: 32px;
                     clicked => { root.go-up(); }
-                    Text {
-                        text: "↑";
-                        color: Theme.text-secondary;
-                        font-size: 18px;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
+                    Rectangle {
+                        border-radius: 6px;
+                        background: parent.has-hover ? Theme.bg-elevated : transparent;
+                        Text {
+                            text: "↑";
+                            color: Theme.text-secondary;
+                            font-size: 18px;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
                     }
                 }
 
@@ -205,8 +110,73 @@ export component FileBrowser inherits Rectangle {
                         }
                     }
                 }
+
+                // Spacer
+                Rectangle { horizontal-stretch: 1; }
+
+                // Toolbar buttons (right side)
+                HorizontalLayout {
+                    spacing: 2px;
+                    alignment: end;
+
+                    // New folder
+                    TouchArea {
+                        width: 32px; height: 32px;
+                        clicked => {
+                            root.new-folder-name = "";
+                            root.show-new-folder-dialog = true;
+                        }
+                        Rectangle {
+                            border-radius: 6px;
+                            background: parent.has-hover ? Theme.bg-elevated : transparent;
+                            Text {
+                                text: "+";
+                                color: Theme.cyan;
+                                font-size: 18px;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+
+                    // Paste (only when clipboard has content)
+                    if root.has-clipboard : TouchArea {
+                        width: 32px; height: 32px;
+                        clicked => { root.file-paste(); }
+                        Rectangle {
+                            border-radius: 6px;
+                            background: parent.has-hover ? Theme.bg-elevated : transparent;
+                            Text {
+                                text: "📋";
+                                font-size: 14px;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+
+                    // Toggle hidden
+                    TouchArea {
+                        width: 32px; height: 32px;
+                        clicked => { root.toggle-hidden(); }
+                        Rectangle {
+                            border-radius: 6px;
+                            background: parent.has-hover ? Theme.bg-elevated : transparent;
+                            Text {
+                                text: root.show-hidden ? "◉" : "◎";
+                                color: root.show-hidden ? Theme.cyan : Theme.text-dim;
+                                font-size: 16px;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                }
             }
         }
+
+        // Separator
+        Rectangle { height: 1px; background: Theme.separator; }
 
         // ── File list ──
         ListView {
@@ -215,7 +185,7 @@ export component FileBrowser inherits Rectangle {
             for entry[idx] in entries : Rectangle {
                 height: 48px;
                 background: idx == root.selected-index ? Theme.bg-elevated :
-                    (file-touch.has-hover ? #1a1924 : Theme.bg-deep);
+                    (file-touch.has-hover ? #1a1924 : transparent);
 
                 // Left border highlight on selected
                 if idx == root.selected-index : Rectangle {
@@ -232,7 +202,6 @@ export component FileBrowser inherits Rectangle {
                             root.navigate-dir(entry.name);
                         } else {
                             if root.selected-index == idx {
-                                // Second click on same file → open it
                                 root.selected-index = -1;
                                 root.open-file(entry.name);
                             } else {
@@ -247,14 +216,30 @@ export component FileBrowser inherits Rectangle {
                     padding-right: 8px;
                     spacing: 12px;
 
-                    // Icon
-                    Text {
-                        text: entry.icon-char;
-                        color: entry.is-dir ? Theme.cyan : Theme.text-dim;
-                        font-size: 18px;
+                    // Colored icon badge
+                    Rectangle {
                         width: 28px;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
+                        height: 28px;
+                        border-radius: 6px;
+                        background: entry.is-dir ? Theme.cyan-dim :
+                            entry.icon-char == "◇" ? #2d6a4f :
+                            entry.icon-char == "≡" ? #3a4a6a :
+                            entry.icon-char == "▣" ? #6a2d6a :
+                            entry.icon-char == "♪" ? #6a5a2d :
+                            entry.icon-char == "▶" ? #6a2d3a :
+                            entry.icon-char == "▤" ? #4a4a3a :
+                            entry.icon-char == "▧" ? #6a2d2d :
+                            entry.icon-char == "⚙" ? #2d4a6a :
+                            entry.icon-char == "·" ? #3a3a3a :
+                            Theme.bg-elevated;
+
+                        Text {
+                            text: entry.icon-char;
+                            color: #ffffffd0;
+                            font-size: 14px;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
                     }
 
                     // Name

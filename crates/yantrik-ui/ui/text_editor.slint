@@ -12,49 +12,35 @@ export component TextEditorScreen inherits Rectangle {
     in property <bool> is-modified: false;
     in property <bool> is-readonly: false;
 
-    callback back-pressed();
     callback save-file();
     callback content-changed(string);
 
     VerticalLayout {
         spacing: 0px;
 
-        // Header
+        // Toolbar (filename + modified indicator + save button)
         Rectangle {
-            height: 56px;
+            height: 40px;
             background: Theme.bg-surface;
 
             HorizontalLayout {
-                padding-left: 12px;
+                padding-left: 16px;
                 padding-right: 12px;
                 alignment: space-between;
 
-                // Left: back + filename + modified indicator
+                // Left: filename + status
                 HorizontalLayout {
                     spacing: 8px;
                     alignment: start;
-
-                    TouchArea {
-                        width: Theme.touch-target;
-                        height: Theme.touch-target;
-                        clicked => { root.back-pressed(); }
-                        Text {
-                            text: "←";
-                            color: Theme.text-secondary;
-                            font-size: 22px;
-                            horizontal-alignment: center;
-                            vertical-alignment: center;
-                        }
-                    }
+                    horizontal-stretch: 1;
 
                     Text {
                         text: root.file-name;
                         color: Theme.text-primary;
-                        font-size: Theme.font-title;
-                        font-weight: 600;
+                        font-size: 14px;
+                        font-weight: 500;
                         vertical-alignment: center;
                         overflow: elide;
-                        max-width: 300px;
                     }
 
                     if root.is-modified : Text {
@@ -74,13 +60,13 @@ export component TextEditorScreen inherits Rectangle {
 
                 // Right: save button
                 if !root.is-readonly : TouchArea {
-                    width: 80px;
-                    height: 36px;
+                    width: 72px;
+                    height: 32px;
                     clicked => { root.save-file(); }
 
                     Rectangle {
-                        width: 80px;
-                        height: 36px;
+                        width: 72px;
+                        height: 32px;
                         border-radius: 8px;
                         background: root.is-modified
                             ? Theme.cyan
@@ -91,7 +77,7 @@ export component TextEditorScreen inherits Rectangle {
                         Text {
                             text: "Save";
                             color: root.is-modified ? Theme.bg-deep : Theme.text-secondary;
-                            font-size: 14px;
+                            font-size: 13px;
                             font-weight: root.is-modified ? 600 : 400;
                             horizontal-alignment: center;
                             vertical-alignment: center;

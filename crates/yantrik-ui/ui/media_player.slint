@@ -14,52 +14,11 @@ export component MediaPlayer inherits Rectangle {
     in property <string> time-current: "0:00";
     in property <string> time-total: "0:00";
 
-    callback back-pressed();
     callback play-pause();
     callback stop();
     callback seek(float);
 
-    VerticalLayout {
-        spacing: 0px;
-
-        // Header
-        Rectangle {
-            height: 56px;
-            background: Theme.bg-surface;
-
-            HorizontalLayout {
-                padding-left: 12px;
-                padding-right: 12px;
-                alignment: start;
-                spacing: 12px;
-
-                TouchArea {
-                    width: Theme.touch-target;
-                    height: Theme.touch-target;
-                    clicked => { root.back-pressed(); }
-                    Text {
-                        text: "←";
-                        color: Theme.text-secondary;
-                        font-size: 22px;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
-                    }
-                }
-
-                Text {
-                    text: "Now Playing";
-                    color: Theme.text-primary;
-                    font-size: Theme.font-title;
-                    font-weight: 600;
-                    vertical-alignment: center;
-                }
-            }
-        }
-
-        // Separator
-        Rectangle { height: 1px; background: Theme.separator; }
-
-        // Content — centered layout
+    // Content — centered layout
         Rectangle {
             background: Theme.bg-deep;
 
@@ -246,5 +205,4 @@ export component MediaPlayer inherits Rectangle {
                 }
             }
         }
-    }
 }
