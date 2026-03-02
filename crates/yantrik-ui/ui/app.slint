@@ -1,6 +1,7 @@
 // Yantrik OS — AI-native desktop shell.
 // Screen states: 0=boot, 1=desktop, 2=onboarding, 3=lock, 4=bond, 5=personality,
-//   6=memory, 7=settings, 8=files, 9=notifications, 10=system.
+//   6=memory, 7=settings, 8=files, 9=notifications, 10=system,
+//   11=image_viewer, 12=text_editor, 13=media_player.
 // The AI IS the shell — Intent Lens is the primary interaction.
 
 import { Theme, ThemeMode, ThemeOverrides } from "theme.slint";
@@ -16,6 +17,9 @@ import { FileBrowser, FileEntry } from "file_browser.slint";
 import { NotificationCenter, NotificationData } from "notification_center.slint";
 import { SystemDashboard, ProcessData } from "system_dashboard.slint";
 import { VoiceOverlay } from "voice_overlay.slint";
+import { ImageViewer } from "image_viewer.slint";
+import { TextEditorScreen } from "text_editor.slint";
+import { MediaPlayer } from "media_player.slint";
 import { MessageData } from "components/message_bubble.slint";
 import { UrgeCardData } from "components/glance_card.slint";
 import { LensResult } from "components/intent_lens.slint";
@@ -65,6 +69,8 @@ export component App inherits Window {
     in-out property <bool> lens-open: false;
     in property <[LensResult]> lens-results: [];
     in property <bool> lens-chat-mode: false;
+    in property <[LensResult]> lens-suggestions: [];
+    in property <[LensResult]> lens-recents: [];
 
     // Bond state
     in property <BondData> bond-data: {
@@ -185,6 +191,33 @@ export component App inherits Window {
     in property <int> sys-wifi-signal: 0;
     in property <[ProcessData]> sys-top-processes: [];
 
+    // Image Viewer state (screen 11)
+    in property <image> viewer-image;
+    in property <string> viewer-file-name: "";
+    in property <string> viewer-counter: "";
+    in-out property <bool> viewer-fit-contain: true;
+    callback viewer-nav-prev();
+    callback viewer-nav-next();
+    callback viewer-toggle-fit();
+
+    // Text Editor state (screen 12)
+    in property <string> editor-file-name: "untitled";
+    in-out property <string> editor-file-content: "";
+    in property <bool> editor-is-modified: false;
+    in property <bool> editor-is-readonly: false;
+    callback editor-save();
+    callback editor-content-changed(string);
+
+    // Media Player state (screen 13)
+    in property <string> player-track-name: "";
+    in property <bool> player-is-playing: false;
+    in property <float> player-progress: 0.0;
+    in property <string> player-time-current: "0:00";
+    in property <string> player-time-total: "0:00";
+    callback player-play-pause();
+    callback player-stop();
+    callback player-seek(float);
+
     // Onboarding state (0=not onboarding, 1=step:terminal, 2=step:focus, 3=done)
     in-out property <int> onboarding-step: 0;
     callback onboarding-ready();
@@ -272,6 +305,8 @@ export component App inherits Window {
             lens-open <=> root.lens-open;
             lens-results: root.lens-results;
             lens-chat-mode: root.lens-chat-mode;
+            lens-suggestions: root.lens-suggestions;
+            lens-recents: root.lens-recents;
             // Chat
             messages: root.messages;
             is-generating: root.is-generating;
@@ -442,6 +477,54 @@ export component App inherits Window {
                 root.current-screen = 1;
                 root.navigate(1);
             }
+        }
+
+        // Image Viewer
+        if current-screen == 11 : ImageViewer {
+            width: 100%; height: 100%;
+            current-image: root.viewer-image;
+            file-name: root.viewer-file-name;
+            counter-text: root.viewer-counter;
+            fit-contain <=> root.viewer-fit-contain;
+            back-pressed => {
+                root.current-screen = 8;
+                root.navigate(8);
+            }
+            nav-prev => { root.viewer-nav-prev(); }
+            nav-next => { root.viewer-nav-next(); }
+            toggle-fit => { root.viewer-toggle-fit(); }
+        }
+
+        // Text Editor
+        if current-screen == 12 : TextEditorScreen {
+            width: 100%; height: 100%;
+            file-name: root.editor-file-name;
+            file-content <=> root.editor-file-content;
+            is-modified: root.editor-is-modified;
+            is-readonly: root.editor-is-readonly;
+            back-pressed => {
+                root.current-screen = 8;
+                root.navigate(8);
+            }
+            save-file => { root.editor-save(); }
+            content-changed(text) => { root.editor-content-changed(text); }
+        }
+
+        // Media Player
+        if current-screen == 13 : MediaPlayer {
+            width: 100%; height: 100%;
+            track-name: root.player-track-name;
+            is-playing: root.player-is-playing;
+            progress: root.player-progress;
+            time-current: root.player-time-current;
+            time-total: root.player-time-total;
+            back-pressed => {
+                root.current-screen = 8;
+                root.navigate(8);
+            }
+            play-pause => { root.player-play-pause(); }
+            stop => { root.player-stop(); }
+            seek(pos) => { root.player-seek(pos); }
         }
 
         // Voice overlay

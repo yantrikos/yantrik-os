@@ -11,11 +11,14 @@ mod callbacks;
 mod chat;
 mod clipboard;
 mod dock;
+pub mod image_viewer;
 mod lens;
+pub mod media_player;
 mod navigate;
 mod power;
 pub mod settings;
 mod system_poll;
+pub mod text_editor;
 mod timers;
 mod voice_mode;
 mod window_switcher;
@@ -37,5 +40,8 @@ pub fn wire_all(ui: &App, ctx: &AppContext) {
     voice_mode::wire(ui, ctx);
     settings::wire(ui, ctx);
     system_poll::wire(ui, ctx);
+    image_viewer::wire(ui, ctx);
+    text_editor::wire(ui, ctx);
+    media_player::wire(ui, ctx);
     callbacks::wire(ui, ctx);
 }

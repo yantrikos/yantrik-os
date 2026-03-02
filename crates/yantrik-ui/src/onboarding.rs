@@ -2,6 +2,8 @@
 
 use std::path::PathBuf;
 
+use slint::SharedString;
+
 use super::LensResult;
 
 /// Path to the onboarding completion marker file.
@@ -28,6 +30,9 @@ pub fn guide_result(step: i32) -> LensResult {
             subtitle: "Your first command — launch an app".into(),
             icon_char: "▶".into(),
             action_id: "launch:terminal".into(),
+            score: 0.0,
+            is_loading: false,
+            inline_value: SharedString::default(),
         },
         2 => LensResult {
             result_type: "guide".into(),
@@ -35,6 +40,9 @@ pub fn guide_result(step: i32) -> LensResult {
             subtitle: "Watch the desktop transform".into(),
             icon_char: "◎".into(),
             action_id: "setting:focus:300".into(),
+            score: 0.0,
+            is_loading: false,
+            inline_value: SharedString::default(),
         },
         _ => LensResult {
             result_type: "guide".into(),
@@ -42,6 +50,9 @@ pub fn guide_result(step: i32) -> LensResult {
             subtitle: "Explore freely".into(),
             icon_char: "✓".into(),
             action_id: "".into(),
+            score: 0.0,
+            is_loading: false,
+            inline_value: SharedString::default(),
         },
     }
 }

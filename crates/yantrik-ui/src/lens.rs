@@ -11,6 +11,50 @@ use super::LensResult;
 use super::apps::DesktopEntry;
 use super::clipboard::ClipEntry;
 
+/// Construct a LensResult with sensible defaults for the new fields.
+fn lr(
+    result_type: &str,
+    title: impl Into<SharedString>,
+    subtitle: impl Into<SharedString>,
+    icon_char: &str,
+    action_id: impl Into<SharedString>,
+) -> LensResult {
+    LensResult {
+        result_type: result_type.into(),
+        title: title.into(),
+        subtitle: subtitle.into(),
+        icon_char: icon_char.into(),
+        action_id: action_id.into(),
+        score: 0.0,
+        is_loading: false,
+        inline_value: SharedString::default(),
+    }
+}
+
+/// Construct a divider LensResult.
+pub fn lr_divider(title: &str) -> LensResult {
+    lr("divider", title, "", "", "")
+}
+
+/// Construct an inline answer LensResult.
+pub fn answer_result(
+    title: &str,
+    value: &str,
+    icon_char: &str,
+    action_id: &str,
+) -> LensResult {
+    LensResult {
+        result_type: "answer".into(),
+        title: title.into(),
+        subtitle: SharedString::default(),
+        icon_char: icon_char.into(),
+        action_id: action_id.into(),
+        score: 1.0,
+        is_loading: false,
+        inline_value: value.into(),
+    }
+}
+
 /// Known apps (fallback when no .desktop files found).
 pub const KNOWN_APPS: &[(&str, &str, &str)] = &[
     ("terminal", "foot", "Open terminal emulator"),
@@ -126,17 +170,11 @@ pub fn build_results(
         let app_query = lower.strip_prefix("open ").unwrap_or(&lower);
         let matches = super::apps::search(app_query, installed_apps);
         for entry in matches {
-            results.push(LensResult {
-                result_type: "do".into(),
-                title: SharedString::from(format!("Open {}", entry.name)),
-                subtitle: SharedString::from(if entry.comment.is_empty() {
+            results.push(lr("do", SharedString::from(format!("Open {}", entry.name)), SharedString::from(if entry.comment.is_empty() {
                     format!("Launch {}", entry.exec.split_whitespace().next().unwrap_or(&entry.exec))
                 } else {
                     entry.comment.clone()
-                }),
-                icon_char: SharedString::from(&entry.icon_char),
-                action_id: SharedString::from(format!("exec:{}", entry.exec)),
-            });
+                }), &entry.icon_char, SharedString::from(format!("exec:{}", entry.exec))));
         }
     }
 
@@ -144,13 +182,7 @@ pub fn build_results(
     if installed_apps.is_empty() {
         for (app_id, _cmd, desc) in KNOWN_APPS {
             if app_id.contains(&lower) || lower.contains(app_id) || lower.contains("open") {
-                results.push(LensResult {
-                    result_type: "do".into(),
-                    title: SharedString::from(format!("Open {}", capitalize(app_id))),
-                    subtitle: SharedString::from(*desc),
-                    icon_char: "▶".into(),
-                    action_id: SharedString::from(format!("launch:{}", app_id)),
-                });
+                results.push(lr("do", SharedString::from(format!("Open {}", capitalize(app_id))), SharedString::from(*desc), "▶", SharedString::from(format!("launch:{}", app_id))));
             }
         }
     }
@@ -164,13 +196,7 @@ pub fn build_results(
                     "https://duckduckgo.com/?q={}",
                     rest.replace(' ', "+")
                 );
-                results.push(LensResult {
-                    result_type: "do".into(),
-                    title: SharedString::from(format!("Search: \"{}\"", rest)),
-                    subtitle: "Open in browser".into(),
-                    icon_char: "🔍".into(),
-                    action_id: SharedString::from(format!("url:{}", search_url)),
-                });
+                results.push(lr("do", SharedString::from(format!("Search: \"{}\"", rest)), "Open in browser", "🔍", SharedString::from(format!("url:{}", search_url))));
                 break;
             }
         }
@@ -191,13 +217,7 @@ pub fn build_results(
             query.to_string()
         };
         if !url.is_empty() {
-            results.push(LensResult {
-                result_type: "do".into(),
-                title: SharedString::from(format!("Open {}", &url)),
-                subtitle: "Open in browser".into(),
-                icon_char: "🌐".into(),
-                action_id: SharedString::from(format!("url:{}", url)),
-            });
+            results.push(lr("do", SharedString::from(format!("Open {}", &url)), "Open in browser", "🌐", SharedString::from(format!("url:{}", url))));
         }
     }
 
@@ -206,23 +226,11 @@ pub fn build_results(
         || lower.starts_with("what did i copy") || lower.contains("clipboard history")
         || lower.contains("paste history") || lower.starts_with("copied")
     {
-        results.push(LensResult {
-            result_type: "do".into(),
-            title: "Read clipboard".into(),
-            subtitle: "Show current clipboard".into(),
-            icon_char: "📋".into(),
-            action_id: "clipboard:read".into(),
-        });
+        results.push(lr("do", "Read clipboard", "Show current clipboard", "📋", "clipboard:read"));
 
         // Show clipboard history entries
         for &(index, ref entry) in clip_history.iter().take(6) {
-            results.push(LensResult {
-                result_type: "clipboard".into(),
-                title: SharedString::from(entry.preview()),
-                subtitle: SharedString::from(entry.time_ago()),
-                icon_char: "C".into(),
-                action_id: SharedString::from(format!("clipboard:paste:{}", index)),
-            });
+            results.push(lr("clipboard", SharedString::from(entry.preview()), SharedString::from(entry.time_ago()), "C", SharedString::from(format!("clipboard:paste:{}", index))));
         }
     }
 
@@ -240,13 +248,7 @@ pub fn build_results(
             ""
         };
         if !dir.is_empty() {
-            results.push(LensResult {
-                result_type: "find".into(),
-                title: SharedString::from(format!("Browse {}", dir)),
-                subtitle: "List directory contents".into(),
-                icon_char: "📁".into(),
-                action_id: SharedString::from(format!("files:{}", dir)),
-            });
+            results.push(lr("find", SharedString::from(format!("Browse {}", dir)), "List directory contents", "📁", SharedString::from(format!("files:{}", dir))));
         }
     }
 
@@ -254,50 +256,26 @@ pub fn build_results(
     if lower == "files" || lower == "browse" || lower == "browse files"
         || lower == "file manager" || lower == "file browser"
     {
-        results.push(LensResult {
-            result_type: "find".into(),
-            title: "Open File Browser".into(),
-            subtitle: "Browse files on this device".into(),
-            icon_char: "📁".into(),
-            action_id: "navigate:files".into(),
-        });
+        results.push(lr("find", "Open File Browser", "Browse files on this device", "📁", "navigate:files"));
     }
 
     // Setting matches: "focus", "timer", "settings"
     if lower.contains("focus") || lower.contains("timer") {
         let focus_secs = parse_focus_duration(&lower);
         let focus_mins = focus_secs / 60;
-        results.push(LensResult {
-            result_type: "setting".into(),
-            title: SharedString::from(format!("Focus for {} min", focus_mins)),
-            subtitle: "Dim desktop, suppress notifications".into(),
-            icon_char: "◎".into(),
-            action_id: SharedString::from(format!("setting:focus:{}", focus_secs)),
-        });
+        results.push(lr("setting", SharedString::from(format!("Focus for {} min", focus_mins)), "Dim desktop, suppress notifications", "◎", SharedString::from(format!("setting:focus:{}", focus_secs))));
     }
 
     // Settings: "settings", "preferences", "config"
     if lower == "settings" || lower == "preferences" || lower == "config"
         || lower == "configuration" || lower.starts_with("setting")
     {
-        results.push(LensResult {
-            result_type: "setting".into(),
-            title: "Settings".into(),
-            subtitle: "Open system settings".into(),
-            icon_char: "⚙".into(),
-            action_id: "navigate:settings".into(),
-        });
+        results.push(lr("setting", "Settings", "Open system settings", "⚙", "navigate:settings"));
     }
 
     // Lock screen: "lock", "lock screen"
     if lower == "lock" || lower == "lock screen" || lower == "lock the screen" {
-        results.push(LensResult {
-            result_type: "setting".into(),
-            title: "Lock screen".into(),
-            subtitle: "Lock the desktop".into(),
-            icon_char: "🔒".into(),
-            action_id: "setting:lock".into(),
-        });
+        results.push(lr("setting", "Lock screen", "Lock the desktop", "🔒", "setting:lock"));
     }
 
     // ── AI-dependent results (hidden when companion is offline) ──
@@ -306,13 +284,7 @@ pub fn build_results(
         if lower.starts_with("remember") || lower.contains("you know about")
             || lower.starts_with("recall ")
         {
-            results.push(LensResult {
-                result_type: "memory".into(),
-                title: SharedString::from(format!("Search memories: \"{}\"", query)),
-                subtitle: "Search Yantrik's memory".into(),
-                icon_char: "🧠".into(),
-                action_id: SharedString::from(format!("memory:{}", query)),
-            });
+            results.push(lr("memory", SharedString::from(format!("Search memories: \"{}\"", query)), "Search Yantrik's memory", "🧠", SharedString::from(format!("memory:{}", query))));
         }
 
         // Smart Intent: NL → tool routing
@@ -324,37 +296,399 @@ pub fn build_results(
         let has_ai = !tool_results.is_empty();
 
         if has_instant && has_ai {
-            results.push(LensResult {
-                result_type: "divider".into(),
-                title: "── AI ──".into(),
-                subtitle: SharedString::default(),
-                icon_char: SharedString::default(),
-                action_id: SharedString::default(),
-            });
+            results.push(lr("divider", "── AI ──", "", "", ""));
         }
 
         results.extend(tool_results);
 
         // Always offer AI conversation as the last option
         if has_instant && !has_ai {
-            results.push(LensResult {
-                result_type: "divider".into(),
-                title: "── AI ──".into(),
-                subtitle: SharedString::default(),
-                icon_char: SharedString::default(),
-                action_id: SharedString::default(),
-            });
+            results.push(lr("divider", "── AI ──", "", "", ""));
         }
-        results.push(LensResult {
-            result_type: "ask".into(),
-            title: SharedString::from(format!("Ask: \"{}\"", query)),
-            subtitle: "Send to Yantrik AI".into(),
-            icon_char: "?".into(),
-            action_id: SharedString::from(format!("ask:{}", query)),
-        });
+        results.push(lr("ask", SharedString::from(format!("Ask: \"{}\"", query)), "Send to Yantrik AI", "?", SharedString::from(format!("ask:{}", query))));
     }
 
     results
+}
+
+// ── Smart Ranking ──
+
+/// Apply frecency and context boosting to results, then sort by composite score.
+/// This wraps `build_results()` with intelligent ranking.
+pub fn apply_smart_ranking(
+    results: &mut Vec<LensResult>,
+    query: &str,
+    frecency: &crate::frecency::FrecencyStore,
+    running_processes: &[yantrik_os::ProcessInfo],
+) {
+    let lower = query.to_lowercase();
+
+    for r in results.iter_mut() {
+        // Skip dividers and answers
+        if r.result_type == "divider" || r.result_type == "answer" {
+            continue;
+        }
+
+        let mut score: f64 = 0.0;
+
+        // Base match quality score
+        let title_lower = r.title.to_lowercase();
+        if title_lower == lower {
+            score += 1.0; // exact match
+        } else if title_lower.starts_with(&lower) {
+            score += 0.8; // starts with
+        } else if title_lower.contains(&lower) {
+            score += 0.6; // contains
+        } else {
+            score += 0.4; // fuzzy / tool match
+        }
+
+        // Frecency boost (0.0 - 0.3)
+        let frecency_score = frecency.score(r.action_id.as_str());
+        score += (frecency_score / 100.0).min(0.3); // Normalize: 100 frecency → 0.3 boost
+
+        // Context boost: running apps get a bump
+        if r.result_type == "do" || r.action_id.starts_with("exec:") || r.action_id.starts_with("launch:") {
+            let action_lower = r.action_id.to_lowercase();
+            let is_running = running_processes.iter().any(|p| {
+                action_lower.contains(&p.name.to_lowercase())
+            });
+            if is_running {
+                score += 0.15;
+            }
+        }
+
+        r.score = score as f32;
+    }
+
+    // Sort results by score (descending), but preserve dividers in-place
+    // Strategy: extract non-divider results, sort them, rebuild with dividers
+    let divider_positions: Vec<(usize, LensResult)> = results
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| r.result_type == "divider")
+        .map(|(i, r)| (i, r.clone()))
+        .collect();
+
+    if divider_positions.is_empty() {
+        // No dividers — simple sort
+        results.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+    } else {
+        // Sort within sections (between dividers)
+        // Find section boundaries
+        let mut sections: Vec<(usize, usize)> = Vec::new();
+        let mut start = 0;
+        for &(div_pos, _) in &divider_positions {
+            if start < div_pos {
+                sections.push((start, div_pos));
+            }
+            start = div_pos + 1;
+        }
+        if start < results.len() {
+            sections.push((start, results.len()));
+        }
+
+        // Sort each section independently
+        for (s, e) in sections {
+            results[s..e].sort_by(|a, b| {
+                b.score
+                    .partial_cmp(&a.score)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+        }
+    }
+}
+
+// ── Context Suggestions (empty-query experience) ──
+
+/// Build contextual suggestions based on time, system state, running apps, and notifications.
+/// This fires when the Lens opens with no query — the "ambient awareness" experience.
+pub fn build_context_suggestions(
+    snapshot: &yantrik_os::SystemSnapshot,
+    unread_notifications: usize,
+    companion_online: bool,
+    running_processes: &[yantrik_os::ProcessInfo],
+) -> Vec<LensResult> {
+    let mut results = Vec::new();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let hour = (now / 3600) % 24;
+
+    // 1. Time-of-day suggestion
+    match hour {
+        5..=9 => {
+            if companion_online {
+                results.push(lr(
+                    "context", "Morning brief", "Catch up on what's new", "☀",
+                    "tool:Give me a morning brief. Check my recent memories and system status.",
+                ));
+            }
+        }
+        20..=23 | 0..=4 => {
+            if companion_online {
+                results.push(lr(
+                    "context", "Evening review", "Recap today's activity", "🌙",
+                    "tool:Give me an evening review. Summarize what I worked on today using recall_workspace.",
+                ));
+            }
+        }
+        _ => {}
+    }
+
+    // 2. Battery warning
+    if snapshot.battery_level <= 20 && !snapshot.battery_charging {
+        let msg = format!("Battery {}% — plug in soon", snapshot.battery_level);
+        results.push(lr("context", msg, "Low power warning", "🔋", "system:status"));
+    }
+
+    // 3. High CPU usage
+    if snapshot.cpu_usage_percent > 80.0 {
+        let msg = format!("CPU at {:.0}%", snapshot.cpu_usage_percent);
+        results.push(lr("context", msg, "Something is working hard", "⚡", "system:status"));
+    }
+
+    // 4. Memory pressure
+    if snapshot.memory_total_bytes > 0 {
+        let used_pct = (snapshot.memory_used_bytes as f64 / snapshot.memory_total_bytes as f64) * 100.0;
+        if used_pct > 85.0 {
+            let msg = format!("Memory {:.0}% used", used_pct);
+            results.push(lr("context", msg, "Consider closing some apps", "💾", "system:status"));
+        }
+    }
+
+    // 5. Unread notifications
+    if unread_notifications > 0 {
+        let msg = format!("{} unread notification{}", unread_notifications,
+            if unread_notifications == 1 { "" } else { "s" });
+        results.push(lr("context", msg, "Tap to check", "🔔", "navigate:notifications"));
+    }
+
+    // 6. Running apps as "switch to" suggestions
+    // Look for known GUI apps in the process list
+    let gui_apps: &[(&str, &str)] = &[
+        ("firefox", "Firefox"), ("chromium", "Chromium"), ("foot", "Terminal"),
+        ("thunar", "Files"), ("code", "VS Code"), ("mpv", "Media Player"),
+        ("gimp", "GIMP"), ("libreoffice", "LibreOffice"),
+    ];
+    for (proc_name, label) in gui_apps {
+        if running_processes.iter().any(|p| p.name.contains(proc_name)) {
+            results.push(lr(
+                "context",
+                format!("Switch to {}", label),
+                "Running",
+                "↗",
+                format!("window:{}", proc_name),
+            ));
+        }
+    }
+
+    // 7. Always offer to ask the AI (if online)
+    if companion_online && results.is_empty() {
+        results.push(lr(
+            "context", "What can I help with?", "Ask me anything", "✦",
+            "ask:What can I help you with today?",
+        ));
+    }
+
+    results
+}
+
+/// Convert frecency entries into "recent" LensResult items for the idle state.
+pub fn frecency_to_recents(entries: &[&crate::frecency::FrecencyEntry]) -> Vec<LensResult> {
+    entries
+        .iter()
+        .map(|e| {
+            lr(
+                "recent",
+                &e.title,
+                &e.result_type,
+                &e.icon_char,
+                &e.action_id,
+            )
+        })
+        .collect()
+}
+
+// ── Inline Instant Answers ──
+
+/// Try to produce an inline answer for common queries (math, time, battery, date).
+/// Returns None if the query doesn't match any instant-answer pattern.
+pub fn instant_answer(query: &str, snapshot: &yantrik_os::SystemSnapshot) -> Option<LensResult> {
+    let lower = query.trim().to_lowercase();
+
+    // Time
+    if lower == "time" || lower == "what time" || lower == "what time is it" {
+        let time = crate::app_context::current_time_hhmm();
+        return Some(answer_result("Time", &time, "🕐", ""));
+    }
+
+    // Date
+    if lower == "date" || lower == "what day" || lower == "today" {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let days_since_epoch = now / 86400;
+        // Zeller-ish: compute day-of-week from epoch day (Jan 1 1970 = Thursday = 4)
+        let dow = (days_since_epoch + 4) % 7;
+        let day_names = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+        let day_name = day_names[dow as usize];
+        // Approximate month/day (good enough for display)
+        let date_str = format_epoch_date(now);
+        let val = format!("{}, {}", day_name, date_str);
+        return Some(answer_result("Date", &val, "📅", ""));
+    }
+
+    // Battery
+    if lower == "battery" || lower == "battery level" || lower == "power" {
+        let charging = if snapshot.battery_charging { " (charging)" } else { "" };
+        let val = format!("{}%{}", snapshot.battery_level, charging);
+        return Some(answer_result("Battery", &val, "🔋", "system:status"));
+    }
+
+    // Math: try to evaluate simple expressions
+    if let Some(result) = eval_math(query.trim()) {
+        let val = if result == result.floor() && result.abs() < 1e15 {
+            format!("= {}", result as i64)
+        } else {
+            format!("= {:.6}", result).trim_end_matches('0').trim_end_matches('.').to_string()
+        };
+        return Some(answer_result("Calculate", &val, "🧮", ""));
+    }
+
+    None
+}
+
+/// Format epoch seconds as "Month Day, Year".
+fn format_epoch_date(epoch_secs: u64) -> String {
+    // Civil date from Unix timestamp (no chrono dependency needed)
+    let days = (epoch_secs / 86400) as i64;
+    // Algorithm from Howard Hinnant (http://howardhinnant.github.io/date_algorithms.html)
+    let z = days + 719468;
+    let era = if z >= 0 { z } else { z - 146096 } / 146097;
+    let doe = (z - era * 146097) as u64;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+
+    let month_names = [
+        "", "January", "February", "March", "April", "May", "June",
+        "July", "August", "September", "October", "November", "December",
+    ];
+    let month_name = month_names.get(m as usize).unwrap_or(&"???");
+    format!("{} {}, {}", month_name, d, y)
+}
+
+/// Recursive-descent math evaluator.
+/// Handles: +, -, *, /, ^, %, parentheses, and negative numbers.
+/// Returns None if the input isn't a valid math expression.
+pub fn eval_math(input: &str) -> Option<f64> {
+    // Quick check: must contain at least one operator or parentheses to be math
+    if !input.chars().any(|c| matches!(c, '+' | '-' | '*' | '/' | '^' | '%' | '(' | ')')) {
+        return None;
+    }
+    // Must not contain alphabetic chars (except 'e' for scientific notation)
+    if input.chars().any(|c| c.is_alphabetic() && c != 'e' && c != 'E') {
+        return None;
+    }
+
+    let tokens: Vec<char> = input.chars().filter(|c| !c.is_whitespace()).collect();
+    let mut pos = 0;
+    let result = parse_expr(&tokens, &mut pos)?;
+    // Must have consumed all tokens
+    if pos != tokens.len() {
+        return None;
+    }
+    // Check for NaN/Inf
+    if result.is_nan() || result.is_infinite() {
+        return None;
+    }
+    Some(result)
+}
+
+fn parse_expr(tokens: &[char], pos: &mut usize) -> Option<f64> {
+    let mut left = parse_term(tokens, pos)?;
+    while *pos < tokens.len() {
+        match tokens[*pos] {
+            '+' => { *pos += 1; left += parse_term(tokens, pos)?; }
+            '-' => { *pos += 1; left -= parse_term(tokens, pos)?; }
+            _ => break,
+        }
+    }
+    Some(left)
+}
+
+fn parse_term(tokens: &[char], pos: &mut usize) -> Option<f64> {
+    let mut left = parse_power(tokens, pos)?;
+    while *pos < tokens.len() {
+        match tokens[*pos] {
+            '*' => { *pos += 1; left *= parse_power(tokens, pos)?; }
+            '/' => { *pos += 1; let r = parse_power(tokens, pos)?; if r == 0.0 { return None; } left /= r; }
+            '%' => { *pos += 1; let r = parse_power(tokens, pos)?; if r == 0.0 { return None; } left %= r; }
+            _ => break,
+        }
+    }
+    Some(left)
+}
+
+fn parse_power(tokens: &[char], pos: &mut usize) -> Option<f64> {
+    let base = parse_unary(tokens, pos)?;
+    if *pos < tokens.len() && tokens[*pos] == '^' {
+        *pos += 1;
+        let exp = parse_power(tokens, pos)?; // right-associative
+        Some(base.powf(exp))
+    } else {
+        Some(base)
+    }
+}
+
+fn parse_unary(tokens: &[char], pos: &mut usize) -> Option<f64> {
+    if *pos < tokens.len() && tokens[*pos] == '-' {
+        *pos += 1;
+        Some(-parse_atom(tokens, pos)?)
+    } else {
+        parse_atom(tokens, pos)
+    }
+}
+
+fn parse_atom(tokens: &[char], pos: &mut usize) -> Option<f64> {
+    if *pos >= tokens.len() {
+        return None;
+    }
+    if tokens[*pos] == '(' {
+        *pos += 1;
+        let val = parse_expr(tokens, pos)?;
+        if *pos >= tokens.len() || tokens[*pos] != ')' {
+            return None;
+        }
+        *pos += 1;
+        Some(val)
+    } else {
+        // Parse number
+        let start = *pos;
+        while *pos < tokens.len()
+            && (tokens[*pos].is_ascii_digit() || tokens[*pos] == '.'
+                || ((tokens[*pos] == 'e' || tokens[*pos] == 'E')
+                    && *pos + 1 < tokens.len()))
+        {
+            *pos += 1;
+        }
+        if *pos == start {
+            return None;
+        }
+        let num_str: String = tokens[start..*pos].iter().collect();
+        num_str.parse::<f64>().ok()
+    }
 }
 
 // ── Smart Intent: NL → tool matching ──
@@ -391,33 +725,15 @@ fn match_tool_intents(lower: &str, original: &str) -> Vec<LensResult> {
         } else {
             format!("Weather in {}", capitalize(location))
         };
-        results.push(LensResult {
-            result_type: "tool".into(),
-            title: SharedString::from(title),
-            subtitle: "Current conditions via wttr.in".into(),
-            icon_char: "W".into(),
-            action_id: SharedString::from(format!("tool:{}", query)),
-        });
+        results.push(lr("tool", SharedString::from(title), "Current conditions via wttr.in", "W", SharedString::from(format!("tool:{}", query))));
     }
 
     // ── WiFi ──
     if lower.contains("wifi") || lower.contains("wi-fi") || lower.contains("available networks") {
         if lower.contains("scan") || lower.contains("available") || lower.contains("networks") {
-            results.push(LensResult {
-                result_type: "tool".into(),
-                title: "Scan WiFi networks".into(),
-                subtitle: "Find available wireless networks".into(),
-                icon_char: "~".into(),
-                action_id: "tool:Scan for available WiFi networks.".into(),
-            });
+            results.push(lr("tool", "Scan WiFi networks", "Find available wireless networks", "~", "tool:Scan for available WiFi networks."));
         } else if lower.contains("disconnect") || lower.contains("turn off") {
-            results.push(LensResult {
-                result_type: "tool".into(),
-                title: "Disconnect WiFi".into(),
-                subtitle: "Turn off wireless connection".into(),
-                icon_char: "~".into(),
-                action_id: "tool:Disconnect from WiFi.".into(),
-            });
+            results.push(lr("tool", "Disconnect WiFi", "Turn off wireless connection", "~", "tool:Disconnect from WiFi."));
         } else if lower.contains("connect") {
             let ssid = lower
                 .strip_prefix("connect to wifi ")
@@ -427,67 +743,25 @@ fn match_tool_intents(lower: &str, original: &str) -> Vec<LensResult> {
                 .unwrap_or("")
                 .trim();
             if ssid.is_empty() {
-                results.push(LensResult {
-                    result_type: "tool".into(),
-                    title: "Connect to WiFi".into(),
-                    subtitle: "Scan and connect to a network".into(),
-                    icon_char: "~".into(),
-                    action_id: "tool:Scan WiFi networks so I can pick one to connect to.".into(),
-                });
+                results.push(lr("tool", "Connect to WiFi", "Scan and connect to a network", "~", "tool:Scan WiFi networks so I can pick one to connect to."));
             } else {
-                results.push(LensResult {
-                    result_type: "tool".into(),
-                    title: SharedString::from(format!("Connect to '{}'", ssid)),
-                    subtitle: "Join wireless network".into(),
-                    icon_char: "~".into(),
-                    action_id: SharedString::from(format!("tool:Connect to WiFi network '{}'.", ssid)),
-                });
+                results.push(lr("tool", SharedString::from(format!("Connect to '{}'", ssid)), "Join wireless network", "~", SharedString::from(format!("tool:Connect to WiFi network '{}'.", ssid))));
             }
         } else {
-            results.push(LensResult {
-                result_type: "tool".into(),
-                title: "WiFi status".into(),
-                subtitle: "Show current connection info".into(),
-                icon_char: "~".into(),
-                action_id: "tool:Show my WiFi connection status.".into(),
-            });
+            results.push(lr("tool", "WiFi status", "Show current connection info", "~", "tool:Show my WiFi connection status."));
         }
     }
 
     // ── Bluetooth ──
     if lower.contains("bluetooth") || lower.contains("bt ") || lower.starts_with("bt") {
         if lower.contains("scan") || lower.contains("devices") || lower.contains("find") {
-            results.push(LensResult {
-                result_type: "tool".into(),
-                title: "Scan Bluetooth devices".into(),
-                subtitle: "Find nearby Bluetooth devices".into(),
-                icon_char: "B".into(),
-                action_id: "tool:Scan for nearby Bluetooth devices.".into(),
-            });
+            results.push(lr("tool", "Scan Bluetooth devices", "Find nearby Bluetooth devices", "B", "tool:Scan for nearby Bluetooth devices."));
         } else if lower.contains("pair") {
-            results.push(LensResult {
-                result_type: "tool".into(),
-                title: "Pair Bluetooth device".into(),
-                subtitle: "Enter pairing mode".into(),
-                icon_char: "B".into(),
-                action_id: "tool:Show Bluetooth devices so I can pair one.".into(),
-            });
+            results.push(lr("tool", "Pair Bluetooth device", "Enter pairing mode", "B", "tool:Show Bluetooth devices so I can pair one."));
         } else if lower.contains("disconnect") {
-            results.push(LensResult {
-                result_type: "tool".into(),
-                title: "Disconnect Bluetooth".into(),
-                subtitle: "Disconnect current device".into(),
-                icon_char: "B".into(),
-                action_id: "tool:Show connected Bluetooth devices and disconnect them.".into(),
-            });
+            results.push(lr("tool", "Disconnect Bluetooth", "Disconnect current device", "B", "tool:Show connected Bluetooth devices and disconnect them."));
         } else {
-            results.push(LensResult {
-                result_type: "tool".into(),
-                title: "Bluetooth info".into(),
-                subtitle: "Show paired/connected devices".into(),
-                icon_char: "B".into(),
-                action_id: "tool:Show Bluetooth status and connected devices.".into(),
-            });
+            results.push(lr("tool", "Bluetooth info", "Show paired/connected devices", "B", "tool:Show Bluetooth status and connected devices."));
         }
     }
 
@@ -497,49 +771,19 @@ fn match_tool_intents(lower: &str, original: &str) -> Vec<LensResult> {
         || lower.starts_with("what's playing")
     {
         if lower.contains("mute") && !lower.contains("unmute") {
-            results.push(LensResult {
-                result_type: "tool".into(),
-                title: "Mute audio".into(),
-                subtitle: "Mute system volume".into(),
-                icon_char: "M".into(),
-                action_id: "tool:Mute the system audio.".into(),
-            });
+            results.push(lr("tool", "Mute audio", "Mute system volume", "M", "tool:Mute the system audio."));
         } else if lower.contains("unmute") {
-            results.push(LensResult {
-                result_type: "tool".into(),
-                title: "Unmute audio".into(),
-                subtitle: "Restore system volume".into(),
-                icon_char: "V".into(),
-                action_id: "tool:Unmute the system audio.".into(),
-            });
+            results.push(lr("tool", "Unmute audio", "Restore system volume", "V", "tool:Unmute the system audio."));
         } else if lower.contains("volume") {
             let vol = extract_number(lower);
             if let Some(v) = vol {
                 let v = v.min(100);
-                results.push(LensResult {
-                    result_type: "tool".into(),
-                    title: SharedString::from(format!("Set volume to {}%", v)),
-                    subtitle: "Adjust system volume".into(),
-                    icon_char: "V".into(),
-                    action_id: SharedString::from(format!("tool:Set the system volume to {}%.", v)),
-                });
+                results.push(lr("tool", SharedString::from(format!("Set volume to {}%", v)), "Adjust system volume", "V", SharedString::from(format!("tool:Set the system volume to {}%.", v))));
             } else {
-                results.push(LensResult {
-                    result_type: "tool".into(),
-                    title: "Audio info".into(),
-                    subtitle: "Show volume and audio device info".into(),
-                    icon_char: "V".into(),
-                    action_id: "tool:Show current audio volume and device info.".into(),
-                });
+                results.push(lr("tool", "Audio info", "Show volume and audio device info", "V", "tool:Show current audio volume and device info."));
             }
         } else {
-            results.push(LensResult {
-                result_type: "tool".into(),
-                title: "Audio info".into(),
-                subtitle: "Show volume and audio devices".into(),
-                icon_char: "V".into(),
-                action_id: "tool:Show current audio volume and device info.".into(),
-            });
+            results.push(lr("tool", "Audio info", "Show volume and audio devices", "V", "tool:Show current audio volume and device info."));
         }
     }
 
@@ -547,13 +791,7 @@ fn match_tool_intents(lower: &str, original: &str) -> Vec<LensResult> {
     if lower.contains("screenshot") || lower.contains("screen capture")
         || lower.starts_with("capture screen") || lower.starts_with("take a screen")
     {
-        results.push(LensResult {
-            result_type: "tool".into(),
-            title: "Take screenshot".into(),
-            subtitle: "Capture the current screen".into(),
-            icon_char: "S".into(),
-            action_id: "tool:Take a screenshot of the screen.".into(),
-        });
+        results.push(lr("tool", "Take screenshot", "Capture the current screen", "S", "tool:Take a screenshot of the screen."));
     }
 
     // ── Calculator / Math ──
@@ -571,72 +809,30 @@ fn match_tool_intents(lower: &str, original: &str) -> Vec<LensResult> {
             .unwrap_or(lower)
             .trim();
         if !expr.is_empty() {
-            results.push(LensResult {
-                result_type: "tool".into(),
-                title: SharedString::from(format!("Calculate: {}", expr)),
-                subtitle: "Evaluate expression".into(),
-                icon_char: "=".into(),
-                action_id: SharedString::from(format!("tool:Calculate: {}", expr)),
-            });
+            results.push(lr("tool", SharedString::from(format!("Calculate: {}", expr)), "Evaluate expression", "=", SharedString::from(format!("tool:Calculate: {}", expr))));
         }
     }
 
     // ── Unit conversion ──
     if lower.starts_with("convert ") || lower.contains(" to ") && has_unit_keyword(lower) {
-        results.push(LensResult {
-            result_type: "tool".into(),
-            title: SharedString::from(format!("Convert: {}", original)),
-            subtitle: "Unit conversion".into(),
-            icon_char: "=".into(),
-            action_id: SharedString::from(format!("tool:{}", original)),
-        });
+        results.push(lr("tool", SharedString::from(format!("Convert: {}", original)), "Unit conversion", "=", SharedString::from(format!("tool:{}", original))));
     }
 
     // ── Git ──
     if lower.starts_with("git ") {
         let sub = &lower[4..];
         if sub.starts_with("status") {
-            results.push(LensResult {
-                result_type: "tool".into(),
-                title: "Git status".into(),
-                subtitle: "Show working tree status".into(),
-                icon_char: "G".into(),
-                action_id: "tool:Show the git status of the current repository.".into(),
-            });
+            results.push(lr("tool", "Git status", "Show working tree status", "G", "tool:Show the git status of the current repository."));
         } else if sub.starts_with("log") {
-            results.push(LensResult {
-                result_type: "tool".into(),
-                title: "Git log".into(),
-                subtitle: "Show recent commits".into(),
-                icon_char: "G".into(),
-                action_id: "tool:Show the recent git commit log.".into(),
-            });
+            results.push(lr("tool", "Git log", "Show recent commits", "G", "tool:Show the recent git commit log."));
         } else if sub.starts_with("diff") {
-            results.push(LensResult {
-                result_type: "tool".into(),
-                title: "Git diff".into(),
-                subtitle: "Show uncommitted changes".into(),
-                icon_char: "G".into(),
-                action_id: "tool:Show the current git diff of uncommitted changes.".into(),
-            });
+            results.push(lr("tool", "Git diff", "Show uncommitted changes", "G", "tool:Show the current git diff of uncommitted changes."));
         } else if sub.starts_with("branch") {
-            results.push(LensResult {
-                result_type: "tool".into(),
-                title: "Git branches".into(),
-                subtitle: "List branches".into(),
-                icon_char: "G".into(),
-                action_id: "tool:Show all git branches.".into(),
-            });
+            results.push(lr("tool", "Git branches", "List branches", "G", "tool:Show all git branches."));
         } else if sub.starts_with("clone") {
             let url = sub.strip_prefix("clone ").unwrap_or("").trim();
             if !url.is_empty() {
-                results.push(LensResult {
-                    result_type: "tool".into(),
-                    title: SharedString::from(format!("Git clone {}", url)),
-                    subtitle: "Clone repository".into(),
-                    icon_char: "G".into(),
-                    action_id: SharedString::from(format!("tool:Clone the git repository: {}", url)),
-                });
+                results.push(lr("tool", SharedString::from(format!("Git clone {}", url)), "Clone repository", "G", SharedString::from(format!("tool:Clone the git repository: {}", url))));
             }
         }
     }
@@ -649,13 +845,7 @@ fn match_tool_intents(lower: &str, original: &str) -> Vec<LensResult> {
         if let Some(pkg) = lower.strip_prefix("install ") {
             let pkg = pkg.trim();
             if !pkg.is_empty() {
-                results.push(LensResult {
-                    result_type: "tool".into(),
-                    title: SharedString::from(format!("Install {}", pkg)),
-                    subtitle: "Install system package".into(),
-                    icon_char: "P".into(),
-                    action_id: SharedString::from(format!("tool:Install the package '{}'.", pkg)),
-                });
+                results.push(lr("tool", SharedString::from(format!("Install {}", pkg)), "Install system package", "P", SharedString::from(format!("tool:Install the package '{}'.", pkg))));
             }
         } else if lower.starts_with("uninstall ") || lower.starts_with("remove package") {
             let pkg = lower
@@ -664,24 +854,12 @@ fn match_tool_intents(lower: &str, original: &str) -> Vec<LensResult> {
                 .unwrap_or("")
                 .trim();
             if !pkg.is_empty() {
-                results.push(LensResult {
-                    result_type: "tool".into(),
-                    title: SharedString::from(format!("Remove {}", pkg)),
-                    subtitle: "Uninstall system package".into(),
-                    icon_char: "P".into(),
-                    action_id: SharedString::from(format!("tool:Remove the package '{}'.", pkg)),
-                });
+                results.push(lr("tool", SharedString::from(format!("Remove {}", pkg)), "Uninstall system package", "P", SharedString::from(format!("tool:Remove the package '{}'.", pkg))));
             }
         } else if let Some(pkg) = lower.strip_prefix("search package ").or_else(|| lower.strip_prefix("package search ")) {
             let pkg = pkg.trim();
             if !pkg.is_empty() {
-                results.push(LensResult {
-                    result_type: "tool".into(),
-                    title: SharedString::from(format!("Search packages: {}", pkg)),
-                    subtitle: "Search available packages".into(),
-                    icon_char: "P".into(),
-                    action_id: SharedString::from(format!("tool:Search for packages matching '{}'.", pkg)),
-                });
+                results.push(lr("tool", SharedString::from(format!("Search packages: {}", pkg)), "Search available packages", "P", SharedString::from(format!("tool:Search for packages matching '{}'.", pkg))));
             }
         }
     }
@@ -692,34 +870,16 @@ fn match_tool_intents(lower: &str, original: &str) -> Vec<LensResult> {
         || lower.starts_with("start ") && !lower.contains("focus")
     {
         if lower.contains("list") || lower == "services" {
-            results.push(LensResult {
-                result_type: "tool".into(),
-                title: "List services".into(),
-                subtitle: "Show running system services".into(),
-                icon_char: "D".into(),
-                action_id: "tool:List all running system services.".into(),
-            });
+            results.push(lr("tool", "List services", "Show running system services", "D", "tool:List all running system services."));
         } else if lower.starts_with("restart ") {
             let svc = lower.strip_prefix("restart ").unwrap_or("").trim();
             if !svc.is_empty() && !svc.contains("service") {
-                results.push(LensResult {
-                    result_type: "tool".into(),
-                    title: SharedString::from(format!("Restart {}", svc)),
-                    subtitle: "Restart system service".into(),
-                    icon_char: "D".into(),
-                    action_id: SharedString::from(format!("tool:Restart the service '{}'.", svc)),
-                });
+                results.push(lr("tool", SharedString::from(format!("Restart {}", svc)), "Restart system service", "D", SharedString::from(format!("tool:Restart the service '{}'.", svc))));
             }
         } else if let Some(rest) = lower.strip_prefix("service status ") {
             let svc = rest.trim();
             if !svc.is_empty() {
-                results.push(LensResult {
-                    result_type: "tool".into(),
-                    title: SharedString::from(format!("Status of {}", svc)),
-                    subtitle: "Check service status".into(),
-                    icon_char: "D".into(),
-                    action_id: SharedString::from(format!("tool:Show the status of service '{}'.", svc)),
-                });
+                results.push(lr("tool", SharedString::from(format!("Status of {}", svc)), "Check service status", "D", SharedString::from(format!("tool:Show the status of service '{}'.", svc))));
             }
         }
     }
@@ -732,22 +892,10 @@ fn match_tool_intents(lower: &str, original: &str) -> Vec<LensResult> {
         if lower.starts_with("kill ") {
             let proc = lower.strip_prefix("kill ").unwrap_or("").trim();
             if !proc.is_empty() {
-                results.push(LensResult {
-                    result_type: "tool".into(),
-                    title: SharedString::from(format!("Kill {}", proc)),
-                    subtitle: "Terminate process".into(),
-                    icon_char: "X".into(),
-                    action_id: SharedString::from(format!("tool:Kill the process '{}'.", proc)),
-                });
+                results.push(lr("tool", SharedString::from(format!("Kill {}", proc)), "Terminate process", "X", SharedString::from(format!("tool:Kill the process '{}'.", proc))));
             }
         } else {
-            results.push(LensResult {
-                result_type: "tool".into(),
-                title: "Running processes".into(),
-                subtitle: "List active processes".into(),
-                icon_char: "P".into(),
-                action_id: "tool:List running processes sorted by CPU usage.".into(),
-            });
+            results.push(lr("tool", "Running processes", "List active processes", "P", "tool:List running processes sorted by CPU usage."));
         }
     }
 
@@ -757,13 +905,7 @@ fn match_tool_intents(lower: &str, original: &str) -> Vec<LensResult> {
         || lower.contains("directory size") || lower.contains("mount")
     {
         if lower.contains("mount") {
-            results.push(LensResult {
-                result_type: "tool".into(),
-                title: "Mount info".into(),
-                subtitle: "Show mounted filesystems".into(),
-                icon_char: "H".into(),
-                action_id: "tool:Show mounted filesystems and their info.".into(),
-            });
+            results.push(lr("tool", "Mount info", "Show mounted filesystems", "H", "tool:Show mounted filesystems and their info."));
         } else if lower.contains("dir") || lower.contains("directory") || lower.contains("folder size") {
             let path = extract_path_from_query(lower);
             let query = if path.is_empty() {
@@ -771,21 +913,9 @@ fn match_tool_intents(lower: &str, original: &str) -> Vec<LensResult> {
             } else {
                 format!("Show the size of directory {}.", path)
             };
-            results.push(LensResult {
-                result_type: "tool".into(),
-                title: SharedString::from(if path.is_empty() { "Directory size (~)".to_string() } else { format!("Size of {}", path) }),
-                subtitle: "Calculate directory size".into(),
-                icon_char: "H".into(),
-                action_id: SharedString::from(format!("tool:{}", query)),
-            });
+            results.push(lr("tool", SharedString::from(if path.is_empty() { "Directory size (~)".to_string() } else { format!("Size of {}", path) }), "Calculate directory size", "H", SharedString::from(format!("tool:{}", query))));
         } else {
-            results.push(LensResult {
-                result_type: "find".into(),
-                title: "Disk usage".into(),
-                subtitle: "Show disk space for all partitions".into(),
-                icon_char: "H".into(),
-                action_id: "tool:Show disk space usage for all partitions.".into(),
-            });
+            results.push(lr("find", "Disk usage", "Show disk space for all partitions", "H", "tool:Show disk space usage for all partitions."));
         }
     }
 
@@ -794,21 +924,9 @@ fn match_tool_intents(lower: &str, original: &str) -> Vec<LensResult> {
         || lower.contains("monitors") || lower.contains("screen info")
     {
         if lower.contains("set") || lower.contains("change") {
-            results.push(LensResult {
-                result_type: "tool".into(),
-                title: "Change resolution".into(),
-                subtitle: "Set display resolution".into(),
-                icon_char: "D".into(),
-                action_id: SharedString::from(format!("tool:{}", original)),
-            });
+            results.push(lr("tool", "Change resolution", "Set display resolution", "D", SharedString::from(format!("tool:{}", original))));
         } else {
-            results.push(LensResult {
-                result_type: "tool".into(),
-                title: "Display info".into(),
-                subtitle: "Show connected displays and resolutions".into(),
-                icon_char: "D".into(),
-                action_id: "tool:Show display info — connected monitors and resolutions.".into(),
-            });
+            results.push(lr("tool", "Display info", "Show connected displays and resolutions", "D", "tool:Show display info — connected monitors and resolutions."));
         }
     }
 
@@ -818,21 +936,9 @@ fn match_tool_intents(lower: &str, original: &str) -> Vec<LensResult> {
     {
         let path = extract_path_from_query(lower);
         if path.is_empty() {
-            results.push(LensResult {
-                result_type: "tool".into(),
-                title: "Set wallpaper".into(),
-                subtitle: "Change desktop background".into(),
-                icon_char: "I".into(),
-                action_id: SharedString::from(format!("tool:{}", original)),
-            });
+            results.push(lr("tool", "Set wallpaper", "Change desktop background", "I", SharedString::from(format!("tool:{}", original))));
         } else {
-            results.push(LensResult {
-                result_type: "tool".into(),
-                title: SharedString::from(format!("Set wallpaper: {}", path)),
-                subtitle: "Change desktop background".into(),
-                icon_char: "I".into(),
-                action_id: SharedString::from(format!("tool:Set the wallpaper to {}.", path)),
-            });
+            results.push(lr("tool", SharedString::from(format!("Set wallpaper: {}", path)), "Change desktop background", "I", SharedString::from(format!("tool:Set the wallpaper to {}.", path))));
         }
     }
 
@@ -842,13 +948,7 @@ fn match_tool_intents(lower: &str, original: &str) -> Vec<LensResult> {
         || lower.contains("pretty json") || lower.starts_with("encode ")
         || lower.starts_with("decode ")
     {
-        results.push(LensResult {
-            result_type: "tool".into(),
-            title: SharedString::from(capitalize(original)),
-            subtitle: "Encoding / formatting tool".into(),
-            icon_char: "#".into(),
-            action_id: SharedString::from(format!("tool:{}", original)),
-        });
+        results.push(lr("tool", SharedString::from(capitalize(original)), "Encoding / formatting tool", "#", SharedString::from(format!("tool:{}", original))));
     }
 
     // ── Archive ──
@@ -856,13 +956,7 @@ fn match_tool_intents(lower: &str, original: &str) -> Vec<LensResult> {
         || lower.starts_with("unzip ") || lower.starts_with("untar ")
         || lower.contains("create archive") || lower.contains("make tar")
     {
-        results.push(LensResult {
-            result_type: "tool".into(),
-            title: SharedString::from(capitalize(original)),
-            subtitle: "Archive create/extract".into(),
-            icon_char: "Z".into(),
-            action_id: SharedString::from(format!("tool:{}", original)),
-        });
+        results.push(lr("tool", SharedString::from(capitalize(original)), "Archive create/extract", "Z", SharedString::from(format!("tool:{}", original))));
     }
 
     // ── Window management ──
@@ -870,23 +964,11 @@ fn match_tool_intents(lower: &str, original: &str) -> Vec<LensResult> {
         || lower.starts_with("switch to ") || lower.starts_with("focus ")
     {
         if lower.contains("list") || lower == "windows" {
-            results.push(LensResult {
-                result_type: "tool".into(),
-                title: "List windows".into(),
-                subtitle: "Show all open windows".into(),
-                icon_char: "W".into(),
-                action_id: "tool:List all open windows.".into(),
-            });
+            results.push(lr("tool", "List windows", "Show all open windows", "W", "tool:List all open windows."));
         } else if lower.starts_with("close ") {
             let target = lower.strip_prefix("close ").unwrap_or("").trim();
             if !target.is_empty() && target != "lens" {
-                results.push(LensResult {
-                    result_type: "tool".into(),
-                    title: SharedString::from(format!("Close {}", target)),
-                    subtitle: "Close window".into(),
-                    icon_char: "X".into(),
-                    action_id: SharedString::from(format!("tool:Close the window titled '{}'.", target)),
-                });
+                results.push(lr("tool", SharedString::from(format!("Close {}", target)), "Close window", "X", SharedString::from(format!("tool:Close the window titled '{}'.", target))));
             }
         } else if lower.starts_with("switch to ") || lower.starts_with("focus ") {
             let target = lower
@@ -895,13 +977,7 @@ fn match_tool_intents(lower: &str, original: &str) -> Vec<LensResult> {
                 .unwrap_or("")
                 .trim();
             if !target.is_empty() && target != "mode" && target != "timer" {
-                results.push(LensResult {
-                    result_type: "tool".into(),
-                    title: SharedString::from(format!("Focus {}", target)),
-                    subtitle: "Bring window to front".into(),
-                    icon_char: "W".into(),
-                    action_id: SharedString::from(format!("tool:Focus the window titled '{}'.", target)),
-                });
+                results.push(lr("tool", SharedString::from(format!("Focus {}", target)), "Bring window to front", "W", SharedString::from(format!("tool:Focus the window titled '{}'.", target))));
             }
         }
     }
@@ -911,13 +987,7 @@ fn match_tool_intents(lower: &str, original: &str) -> Vec<LensResult> {
         || lower.starts_with("what day") || lower.starts_with("how long until")
         || lower.starts_with("days until") || lower.starts_with("date calc")
     {
-        results.push(LensResult {
-            result_type: "tool".into(),
-            title: SharedString::from(capitalize(original)),
-            subtitle: "Date/time calculation".into(),
-            icon_char: "T".into(),
-            action_id: SharedString::from(format!("tool:{}", original)),
-        });
+        results.push(lr("tool", SharedString::from(capitalize(original)), "Date/time calculation", "T", SharedString::from(format!("tool:{}", original))));
     }
 
     // ── Network / Download ──
@@ -928,13 +998,7 @@ fn match_tool_intents(lower: &str, original: &str) -> Vec<LensResult> {
             .unwrap_or("")
             .trim();
         if !target.is_empty() {
-            results.push(LensResult {
-                result_type: "tool".into(),
-                title: SharedString::from(format!("Download {}", target)),
-                subtitle: "Download file from URL".into(),
-                icon_char: "D".into(),
-                action_id: SharedString::from(format!("tool:Download the file from {}.", target)),
-            });
+            results.push(lr("tool", SharedString::from(format!("Download {}", target)), "Download file from URL", "D", SharedString::from(format!("tool:Download the file from {}.", target))));
         }
     }
 
@@ -943,13 +1007,7 @@ fn match_tool_intents(lower: &str, original: &str) -> Vec<LensResult> {
         || lower.starts_with("diff ") || lower.starts_with("word count ")
         || lower.starts_with("wc ")
     {
-        results.push(LensResult {
-            result_type: "tool".into(),
-            title: SharedString::from(capitalize(original)),
-            subtitle: "Text/file utility".into(),
-            icon_char: "#".into(),
-            action_id: SharedString::from(format!("tool:{}", original)),
-        });
+        results.push(lr("tool", SharedString::from(capitalize(original)), "Text/file utility", "#", SharedString::from(format!("tool:{}", original))));
     }
 
     // ── System info (extended) ──
@@ -957,13 +1015,7 @@ fn match_tool_intents(lower: &str, original: &str) -> Vec<LensResult> {
         || lower.contains("uptime") || lower == "system info" || lower == "sysinfo"
         || lower.starts_with("system status")
     {
-        results.push(LensResult {
-            result_type: "tool".into(),
-            title: "System info".into(),
-            subtitle: "CPU, RAM, disk, uptime, kernel".into(),
-            icon_char: "I".into(),
-            action_id: "tool:Show detailed system info — CPU, RAM, disk, uptime, kernel.".into(),
-        });
+        results.push(lr("tool", "System info", "CPU, RAM, disk, uptime, kernel", "I", "tool:Show detailed system info — CPU, RAM, disk, uptime, kernel."));
     }
 
     // ── Sysadmin NL queries ──
@@ -977,49 +1029,25 @@ fn match_tool_intents(lower: &str, original: &str) -> Vec<LensResult> {
         } else {
             "List all listening network ports. Use run_command to run: ss -tlnp".to_string()
         };
-        results.push(LensResult {
-            result_type: "tool".into(),
-            title: SharedString::from(if port > 0 { format!("What's on port {}", port) } else { "Listening ports".to_string() }),
-            subtitle: "Check network port usage".into(),
-            icon_char: "N".into(),
-            action_id: SharedString::from(format!("tool:{}", query)),
-        });
+        results.push(lr("tool", SharedString::from(if port > 0 { format!("What's on port {}", port) } else { "Listening ports".to_string() }), "Check network port usage", "N", SharedString::from(format!("tool:{}", query))));
     }
 
     if lower.contains("cpu") && (lower.contains("high") || lower.contains("why") || lower.contains("hot")
         || lower.contains("slow") || lower.contains("100"))
     {
-        results.push(LensResult {
-            result_type: "tool".into(),
-            title: "Diagnose high CPU".into(),
-            subtitle: "Find what's consuming CPU".into(),
-            icon_char: "C".into(),
-            action_id: "tool:List running processes sorted by CPU usage, identify what's consuming the most CPU, and suggest what to do about it.".into(),
-        });
+        results.push(lr("tool", "Diagnose high CPU", "Find what's consuming CPU", "C", "tool:List running processes sorted by CPU usage, identify what's consuming the most CPU, and suggest what to do about it."));
     }
 
     if lower.contains("docker") && (lower.contains("clean") || lower.contains("prune")
         || lower.contains("unused") || lower.contains("space"))
     {
-        results.push(LensResult {
-            result_type: "tool".into(),
-            title: "Clean up Docker".into(),
-            subtitle: "Remove unused containers, images, volumes".into(),
-            icon_char: "D".into(),
-            action_id: "tool:Show Docker disk usage with run_command 'docker system df', then suggest cleanup steps.".into(),
-        });
+        results.push(lr("tool", "Clean up Docker", "Remove unused containers, images, volumes", "D", "tool:Show Docker disk usage with run_command 'docker system df', then suggest cleanup steps."));
     }
 
     if lower.contains("ip") && (lower.starts_with("what") || lower.starts_with("my ") || lower.contains("my ip"))
         || lower == "ip address" || lower == "ip addr"
     {
-        results.push(LensResult {
-            result_type: "tool".into(),
-            title: "My IP address".into(),
-            subtitle: "Show network interfaces and IPs".into(),
-            icon_char: "N".into(),
-            action_id: "tool:Show my network interfaces and IP addresses.".into(),
-        });
+        results.push(lr("tool", "My IP address", "Show network interfaces and IPs", "N", "tool:Show my network interfaces and IP addresses."));
     }
 
     // ── Terminal / Fix Error (the killer feature) ──
@@ -1029,13 +1057,7 @@ fn match_tool_intents(lower: &str, original: &str) -> Vec<LensResult> {
         || lower.contains("what happened") || lower == "help"
     {
         // "fix this", "fix this error", "what went wrong", "debug this"
-        results.push(LensResult {
-            result_type: "tool".into(),
-            title: "Fix this error".into(),
-            subtitle: "Read terminal output and diagnose the problem".into(),
-            icon_char: "!".into(),
-            action_id: "tool:Read the terminal scrollback buffer with read_terminal_buffer, analyze any errors or failures you find, explain what went wrong, and suggest a fix.".into(),
-        });
+        results.push(lr("tool", "Fix this error", "Read terminal output and diagnose the problem", "!", "tool:Read the terminal scrollback buffer with read_terminal_buffer, analyze any errors or failures you find, explain what went wrong, and suggest a fix."));
     }
 
     // ── Workspace / Session resume ──
@@ -1043,13 +1065,7 @@ fn match_tool_intents(lower: &str, original: &str) -> Vec<LensResult> {
         || lower.starts_with("resume") || lower.contains("last session")
         || lower.contains("what was i working") || lower.contains("pick up where")
     {
-        results.push(LensResult {
-            result_type: "tool".into(),
-            title: "Resume last session".into(),
-            subtitle: "Recall what you were working on".into(),
-            icon_char: "R".into(),
-            action_id: "tool:Use recall_workspace to find my last workspace snapshot, then summarize what I was working on and suggest how to resume.".into(),
-        });
+        results.push(lr("tool", "Resume last session", "Recall what you were working on", "R", "tool:Use recall_workspace to find my last workspace snapshot, then summarize what I was working on and suggest how to resume."));
     }
 
     // ── Notification ──
@@ -1060,13 +1076,7 @@ fn match_tool_intents(lower: &str, original: &str) -> Vec<LensResult> {
             .unwrap_or("")
             .trim();
         if !msg.is_empty() {
-            results.push(LensResult {
-                result_type: "tool".into(),
-                title: SharedString::from(format!("Notify: {}", msg)),
-                subtitle: "Send desktop notification".into(),
-                icon_char: "N".into(),
-                action_id: SharedString::from(format!("tool:Send a notification with the message '{}'.", msg)),
-            });
+            results.push(lr("tool", SharedString::from(format!("Notify: {}", msg)), "Send desktop notification", "N", SharedString::from(format!("tool:Send a notification with the message '{}'.", msg))));
         }
     }
 

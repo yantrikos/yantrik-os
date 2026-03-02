@@ -48,6 +48,17 @@ pub fn wire(ui: &App, ctx: &AppContext) {
                 }
                 return;
             }
+            "editor" => {
+                if let Some(ui) = ui_weak.upgrade() {
+                    ui.set_editor_file_name("untitled".into());
+                    ui.set_editor_file_content("".into());
+                    ui.set_editor_is_modified(false);
+                    ui.set_editor_is_readonly(false);
+                    ui.set_current_screen(12);
+                    ui.invoke_navigate(12);
+                }
+                return;
+            }
             _ => {
                 tracing::warn!(app = %app, "Unknown app");
                 return;

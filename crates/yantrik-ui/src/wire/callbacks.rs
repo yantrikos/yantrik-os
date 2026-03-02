@@ -8,6 +8,7 @@ use std::time::Duration;
 use slint::{ComponentHandle, ModelRc, SharedString, Timer, TimerMode, VecModel};
 
 use crate::app_context::AppContext;
+use crate::mime_dispatch::{self, FileAction};
 use crate::{
     bridge, cards, filebrowser, focus, lock, notifications, onboarding, App, FileEntry, MemoryItem,
 };
@@ -105,20 +106,47 @@ fn wire_file_browser(ui: &App, ctx: &AppContext) {
         }
     });
 
-    // Open a file with xdg-open
+    // Open a file — route through mime_dispatch
     let ui_weak = ui.as_weak();
     let bp = browser_path.clone();
+    let iv_state = ctx.image_viewer_state.clone();
+    let ed_path = ctx.editor_file_path.clone();
+    let mp_handle = ctx.media_player.clone();
     ui.on_file_open(move |name| {
-        let name = name.to_string();
+        let name_str = name.to_string();
         let full = {
             let current = bp.borrow();
             let expanded = filebrowser::expand_home(&current);
-            expanded.join(&name)
+            expanded.join(&name_str)
         };
         tracing::info!(path = %full.display(), "Opening file");
-        let _ = std::process::Command::new("xdg-open").arg(&full).spawn();
-        if let Some(ui) = ui_weak.upgrade() {
-            ui.set_current_screen(1);
+
+        match mime_dispatch::classify(&name_str) {
+            FileAction::ImageViewer => {
+                iv_state.borrow_mut().open(&full);
+                if let Some(ui) = ui_weak.upgrade() {
+                    super::image_viewer::load_current_image(&ui, &iv_state.borrow());
+                    ui.set_current_screen(11);
+                    ui.invoke_navigate(11);
+                }
+            }
+            FileAction::TextEditor => {
+                if let Some(ui) = ui_weak.upgrade() {
+                    super::text_editor::load_file(&ui, &full, &ed_path);
+                    ui.set_current_screen(12);
+                    ui.invoke_navigate(12);
+                }
+            }
+            FileAction::AudioPlayer => {
+                if let Some(ui) = ui_weak.upgrade() {
+                    super::media_player::start_playback(&ui, &full, &mp_handle);
+                    ui.set_current_screen(13);
+                    ui.invoke_navigate(13);
+                }
+            }
+            FileAction::External(cmd) => {
+                let _ = std::process::Command::new(&cmd).arg(&full).spawn();
+            }
         }
     });
 

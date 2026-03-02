@@ -16,8 +16,11 @@ use crate::bridge::CompanionBridge;
 use crate::cards::CardManager;
 use crate::clipboard;
 use crate::features;
+use crate::frecency::FrecencyStore;
 use crate::notifications;
 use crate::system_context;
+use crate::wire::image_viewer::ImageViewerState;
+use crate::wire::media_player::MpvHandle;
 use crate::{App, ThemeMode, ThemeOverrides, MessageData, UrgeCardData, WhisperCardItem};
 
 /// All shared state needed by wire modules.
@@ -33,6 +36,10 @@ pub struct AppContext {
     pub system_snapshot: Rc<RefCell<yantrik_os::SystemSnapshot>>,
     pub notification_store: notifications::SharedStore,
     pub voice_config: VoiceConfig,
+    pub image_viewer_state: Rc<RefCell<ImageViewerState>>,
+    pub editor_file_path: Rc<RefCell<String>>,
+    pub media_player: Rc<RefCell<Option<MpvHandle>>>,
+    pub frecency: Rc<RefCell<FrecencyStore>>,
 }
 
 impl AppContext {
@@ -167,6 +174,10 @@ impl AppContext {
             system_snapshot: Rc::new(RefCell::new(yantrik_os::SystemSnapshot::default())),
             notification_store: Rc::new(RefCell::new(notifications::NotificationStore::new())),
             voice_config,
+            image_viewer_state: Rc::new(RefCell::new(ImageViewerState::default())),
+            editor_file_path: Rc::new(RefCell::new(String::new())),
+            media_player: Rc::new(RefCell::new(None)),
+            frecency: Rc::new(RefCell::new(FrecencyStore::load())),
         }
     }
 }

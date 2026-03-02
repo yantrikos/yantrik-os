@@ -114,10 +114,28 @@ export global Theme {
     out property <length> lens-input-height: 52px;
     out property <length> lens-result-height: 48px;
 
+    // Chat side panel
+    out property <length> chat-panel-width: 380px;
+
     // Result type colors
-    out property <color> color-do:      ThemeMode.dark ? #d4a574 : #8a6030;
-    out property <color> color-find:    ThemeMode.dark ? #5ac8d4 : #1a8a94;
-    out property <color> color-ask:     ThemeMode.dark ? #c4a050 : #8a7020;
-    out property <color> color-memory:  ThemeMode.dark ? #a07a50 : #806030;
-    out property <color> color-setting: ThemeMode.dark ? #7a8494 : #5a6474;
+    out property <color> color-do:        ThemeMode.dark ? #d4a574 : #8a6030;
+    out property <color> color-find:      ThemeMode.dark ? #5ac8d4 : #1a8a94;
+    out property <color> color-ask:       ThemeMode.dark ? #c4a050 : #8a7020;
+    out property <color> color-memory:    ThemeMode.dark ? #a07a50 : #806030;
+    out property <color> color-setting:   ThemeMode.dark ? #7a8494 : #5a6474;
+    out property <color> color-tool:      ThemeMode.dark ? #d4a574 : #8a6030;  // same as do
+    out property <color> color-clipboard: ThemeMode.dark ? #7a8494 : #5a6474;  // same as setting
+    out property <color> color-context:   ThemeMode.dark ? #5ac8d4 : #1a8a94;  // cyan — ambient awareness
+    out property <color> color-recent:    ThemeMode.dark ? #4a5464 : #8a9aa4;  // muted steel
+    out property <color> color-answer:    ThemeMode.dark ? #4ab8f0 : #2080c0;  // holographic blue
+
+    // Skeleton shimmer
+    out property <color> color-skeleton:  ThemeMode.dark ? #1a1924 : #e0e0e4;
+    out property <color> shimmer-peak:    ThemeMode.dark ? #22212e : #d0d0d8;
+
+    // Section headers
+    out property <length> section-header-height: 28px;
+
+    // Answer row height
+    out property <length> lens-answer-height: 64px;
 }

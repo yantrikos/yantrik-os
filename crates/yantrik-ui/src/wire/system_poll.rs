@@ -172,6 +172,7 @@ pub fn wire(ui: &App, ctx: &AppContext) {
                     ("terminal", "Terminal", ">_"),
                     ("browser", "Browser", "W"),
                     ("files", "Files", "F"),
+                    ("editor", "Editor", "E"),
                     ("settings", "Settings", "*"),
                 ];
                 let dock: Vec<DockItem> = default_items

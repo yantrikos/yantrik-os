@@ -14,11 +14,15 @@ import { ListView } from "std-widgets.slint";
 
 // A single result in the Intent Feed.
 export struct LensResult {
-    result-type: string,     // "do", "find", "ask", "memory", "setting"
+    result-type: string,     // "do", "find", "ask", "memory", "setting", "tool",
+                             // "clipboard", "divider", "context", "recent", "answer"
     title: string,           // Main display text
     subtitle: string,        // "Why" rationale line
     icon-char: string,       // Single-char badge
     action-id: string,       // Identifier for callback
+    score: float,            // 0.0-1.0 ranking confidence
+    is-loading: bool,        // When true, render as skeleton shimmer
+    inline-value: string,    // For "answer" type: computed value shown prominently
 }
 
 export component IntentLens inherits Rectangle {
@@ -27,6 +31,10 @@ export component IntentLens inherits Rectangle {
     in property <[LensResult]> results: [];
     in property <string> companion-status: "idle";
     in property <bool> companion-online: true;
+
+    // Contextual suggestions (shown when query is empty)
+    in property <[LensResult]> suggestions: [];
+    in property <[LensResult]> recents: [];
 
     // Chat mode (multi-turn conversation within the Lens)
     in property <bool> chat-mode: false;
@@ -45,20 +53,11 @@ export component IntentLens inherits Rectangle {
     in-out property <string> input-text: "";
     in-out property <int> selected-index: 0;   // keyboard-navigable cursor
 
-    // Full overlay — click outside to close
+    // Right-side panel — no full-screen overlay, desktop stays visible
     width: 100%;
     height: 100%;
-    background: is-open ? Theme.overlay-backdrop : transparent;
+    background: transparent;
     visible: is-open;
-
-    animate background { duration: 150ms; }
-
-    // Click outside the lens panel to close
-    TouchArea {
-        width: 100%;
-        height: 100%;
-        clicked => { root.close-lens(); }
-    }
 
     // Holographic scan phase
     property <float> lens-glow-phase: 0;
@@ -70,66 +69,52 @@ export component IntentLens inherits Rectangle {
         }
     }
 
-    // The Lens panel — centered glassmorphic container
+    // Click-outside area (left side only, not covering the panel)
+    TouchArea {
+        x: 0;
+        y: 0;
+        width: root.width - Theme.chat-panel-width;
+        height: root.height;
+        clicked => { root.close-lens(); }
+    }
+
+    // The Lens panel — right-docked glassmorphic side panel
     Rectangle {
-        x: (root.width - Theme.lens-width) / 2;
-        y: root.is-open ? root.height * 0.16 : root.height * 0.22;
-        width: Theme.lens-width;
-        height: min(lens-content.preferred-height, root.height * 0.65);
-        border-radius: 20px;
+        x: root.is-open ? root.width - Theme.chat-panel-width : root.width;
+        y: 0;
+        width: Theme.chat-panel-width;
+        height: root.height;
+        border-radius: 0;
         clip: true;
         opacity: root.is-open ? 1.0 : 0.0;
 
-        animate y { duration: 200ms; easing: ease-out; }
+        animate x { duration: 200ms; easing: ease-out; }
         animate opacity { duration: 150ms; easing: ease-out; }
 
-        // Glass background
+        // Glass background — semi-transparent for side panel
         background: @linear-gradient(180deg,
-            #0c0b10d0 0%,
-            #0808100a 100%
+            #0c0b10e8 0%,
+            #080810e0 50%,
+            #0c0b10e8 100%
         );
 
-        // Holographic border glow
-        border-width: 1px;
-        border-color: @linear-gradient(135deg,
-            #5ac8d430 0%,
-            #ffffff10 25%,
-            #d4a57420 50%,
-            #ffffff10 75%,
-            #5ac8d430 100%
-        );
-
-        // Deep shadow + glow
-        drop-shadow-blur: 40px;
-        drop-shadow-color: #4ab8f020;
-
-        // Top glass reflection
+        // Left edge glow (panel border)
         Rectangle {
-            x: 24px; y: 1px;
-            width: parent.width - 48px;
-            height: 1px;
-            border-radius: 0.5px;
-            background: @linear-gradient(90deg,
-                transparent 0%,
-                #ffffff0c 30%,
-                #ffffff18 50%,
-                #ffffff0c 70%,
-                transparent 100%
+            x: 0; y: 0;
+            width: 1px;
+            height: 100%;
+            background: @linear-gradient(180deg,
+                #5ac8d440 0%,
+                #5ac8d420 30%,
+                #d4a57420 70%,
+                #5ac8d440 100%
             );
         }
 
-        // Bottom holographic edge
-        Rectangle {
-            y: parent.height - 1px;
-            width: 100%;
-            height: 1px;
-            background: @linear-gradient(90deg,
-                transparent 5%,
-                Theme.cyan-glow 50%,
-                transparent 95%
-            );
-            opacity: 0.4;
-        }
+        // Deep shadow on left side
+        drop-shadow-blur: 30px;
+        drop-shadow-color: #00000060;
+        drop-shadow-offset-x: -8px;
 
         // Block click-through to the outside TouchArea
         TouchArea { width: 100%; height: 100%; }
@@ -193,15 +178,18 @@ export component IntentLens inherits Rectangle {
                             text <=> root.input-text;
                             accepted => {
                                 if root.input-text != "" {
-                                    // Dual-mode: Enter selects the highlighted result.
-                                    // If results exist, execute the selected one (default: first).
-                                    // This means "firefox"→Enter launches Firefox, not sends to AI.
+                                    // Active search: Enter selects the highlighted result.
                                     if root.results.length > 0 {
                                         root.result-selected(
                                             root.results[clamp(root.selected-index, 0, root.results.length - 1)].action-id
                                         );
                                     } else {
                                         root.submit-query(root.input-text);
+                                    }
+                                } else {
+                                    // Idle state: Enter executes first suggestion
+                                    if root.suggestions.length > 0 {
+                                        root.result-selected(root.suggestions[0].action-id);
                                     }
                                 }
                             }
@@ -276,12 +264,70 @@ export component IntentLens inherits Rectangle {
                 padding: 4px;
                 padding-bottom: 8px;
 
+                // ── Active search results (when user has typed something) ──
                 for result[idx] in root.results : Rectangle {
-                    height: result.result-type == "divider" ? 24px : Theme.lens-result-height;
+                    height: result.is-loading ? Theme.lens-result-height
+                        : result.result-type == "divider" ? 24px
+                        : result.result-type == "answer" ? Theme.lens-answer-height
+                        : Theme.lens-result-height;
                     property <bool> row-selected: idx == root.selected-index;
 
+                    // ── Skeleton shimmer row (loading placeholder) ──
+                    if result.is-loading : Rectangle {
+                        width: 100%;
+                        height: Theme.lens-result-height;
+                        border-radius: 8px;
+
+                        property <float> shimmer-phase: 0;
+                        Timer {
+                            interval: 16ms;
+                            running: result.is-loading;
+                            triggered => {
+                                parent.shimmer-phase = mod(parent.shimmer-phase + 0.01, 1.0);
+                            }
+                        }
+
+                        HorizontalLayout {
+                            padding-left: 16px;
+                            padding-right: 16px;
+                            spacing: 12px;
+
+                            // Shimmer badge
+                            Rectangle {
+                                width: 28px;
+                                height: 20px;
+                                y: (parent.height - 20px) / 2;
+                                border-radius: 4px;
+                                background: Theme.color-skeleton;
+                                opacity: 0.4 + 0.3 * sin(shimmer-phase * 6.2832 * 1rad);
+                            }
+
+                            // Shimmer text bars
+                            VerticalLayout {
+                                horizontal-stretch: 1;
+                                alignment: center;
+                                spacing: 6px;
+
+                                Rectangle {
+                                    width: 60%;
+                                    height: 12px;
+                                    border-radius: 3px;
+                                    background: Theme.color-skeleton;
+                                    opacity: 0.3 + 0.3 * sin(shimmer-phase * 6.2832 * 1rad);
+                                }
+                                Rectangle {
+                                    width: 40%;
+                                    height: 8px;
+                                    border-radius: 2px;
+                                    background: Theme.color-skeleton;
+                                    opacity: 0.2 + 0.2 * sin((shimmer-phase + 0.15) * 6.2832 * 1rad);
+                                }
+                            }
+                        }
+                    }
+
                     // ── Divider row ──
-                    if result.result-type == "divider" : Rectangle {
+                    if result.result-type == "divider" && !result.is-loading : Rectangle {
                         width: 100%;
                         height: 24px;
 
@@ -302,8 +348,79 @@ export component IntentLens inherits Rectangle {
                         }
                     }
 
+                    // ── Answer row (inline computed result, e.g. math, time) ──
+                    if result.result-type == "answer" && !result.is-loading : TouchArea {
+                        height: Theme.lens-answer-height;
+                        property <bool> hovered: self.has-hover;
+                        clicked => {
+                            root.selected-index = idx;
+                            if result.action-id != "" {
+                                root.result-selected(result.action-id);
+                            }
+                        }
+
+                        Rectangle {
+                            width: 100%;
+                            height: Theme.lens-answer-height;
+                            border-radius: 8px;
+                            background: row-selected ? Theme.bg-selected
+                                : parent.hovered ? Theme.bg-card
+                                : transparent;
+
+                            animate background { duration: 100ms; }
+
+                            HorizontalLayout {
+                                padding-left: 16px;
+                                padding-right: 16px;
+                                spacing: 12px;
+
+                                // Answer badge (holographic blue with glow)
+                                Rectangle {
+                                    width: 32px;
+                                    height: 24px;
+                                    y: (parent.height - 24px) / 2;
+                                    border-radius: 6px;
+                                    background: Theme.color-answer;
+                                    opacity: 0.2;
+                                    drop-shadow-blur: 8px;
+                                    drop-shadow-color: #4ab8f030;
+
+                                    Text {
+                                        text: result.icon-char;
+                                        color: Theme.color-answer;
+                                        font-size: 13px;
+                                        font-weight: 700;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+                                }
+
+                                // Title + large inline value
+                                VerticalLayout {
+                                    horizontal-stretch: 1;
+                                    alignment: center;
+                                    spacing: 4px;
+
+                                    Text {
+                                        text: result.title;
+                                        color: Theme.text-dim;
+                                        font-size: 11px;
+                                        letter-spacing: 1px;
+                                    }
+
+                                    Text {
+                                        text: result.inline-value;
+                                        color: Theme.color-answer;
+                                        font-size: 22px;
+                                        font-weight: 600;
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     // ── Normal result row ──
-                    if result.result-type != "divider" : TouchArea {
+                    if result.result-type != "divider" && result.result-type != "answer" && !result.is-loading : TouchArea {
                         height: Theme.lens-result-height;
                         property <bool> hovered: self.has-hover;
                         clicked => {
@@ -337,20 +454,28 @@ export component IntentLens inherits Rectangle {
                                 y: (parent.height - 20px) / 2;
                                 border-radius: 4px;
                                 background:
-                                    result.result-type == "do"      ? Theme.color-do :
-                                    result.result-type == "find"    ? Theme.color-find :
-                                    result.result-type == "ask"     ? Theme.color-ask :
-                                    result.result-type == "memory"  ? Theme.color-memory :
+                                    result.result-type == "do"        ? Theme.color-do :
+                                    result.result-type == "find"      ? Theme.color-find :
+                                    result.result-type == "ask"       ? Theme.color-ask :
+                                    result.result-type == "memory"    ? Theme.color-memory :
+                                    result.result-type == "tool"      ? Theme.color-tool :
+                                    result.result-type == "clipboard" ? Theme.color-clipboard :
+                                    result.result-type == "context"   ? Theme.color-context :
+                                    result.result-type == "recent"    ? Theme.color-recent :
                                     Theme.color-setting;
                                 opacity: 0.15;
 
                                 Text {
                                     text: result.icon-char;
                                     color:
-                                        result.result-type == "do"      ? Theme.color-do :
-                                        result.result-type == "find"    ? Theme.color-find :
-                                        result.result-type == "ask"     ? Theme.color-ask :
-                                        result.result-type == "memory"  ? Theme.color-memory :
+                                        result.result-type == "do"        ? Theme.color-do :
+                                        result.result-type == "find"      ? Theme.color-find :
+                                        result.result-type == "ask"       ? Theme.color-ask :
+                                        result.result-type == "memory"    ? Theme.color-memory :
+                                        result.result-type == "tool"      ? Theme.color-tool :
+                                        result.result-type == "clipboard" ? Theme.color-clipboard :
+                                        result.result-type == "context"   ? Theme.color-context :
+                                        result.result-type == "recent"    ? Theme.color-recent :
                                         Theme.color-setting;
                                     font-size: 11px;
                                     font-weight: 700;
@@ -378,6 +503,16 @@ export component IntentLens inherits Rectangle {
                                     font-size: 11px;
                                     overflow: elide;
                                 }
+                            }
+
+                            // Score indicator bar (3px on right side)
+                            if result.score > 0.0 : Rectangle {
+                                width: 3px;
+                                height: parent.height * 0.6;
+                                y: (parent.height - self.height) / 2;
+                                border-radius: 1.5px;
+                                background: Theme.cyan;
+                                opacity: result.score;
                             }
 
                             // "Enter" hint on selected result
@@ -423,20 +558,215 @@ export component IntentLens inherits Rectangle {
                     }
                 }
 
-                // Empty state
-                if root.results.length == 0 && root.input-text == "" : Rectangle {
-                    height: 64px;
+                // ── Idle state: Suggestions + Recents (empty query, no results) ──
+                if root.results.length == 0 && root.input-text == "" : VerticalLayout {
+                    spacing: 4px;
 
-                    VerticalLayout {
-                        alignment: center;
-                        padding-left: 20px;
+                    // ── SUGGESTED section ──
+                    if root.suggestions.length > 0 : VerticalLayout {
+                        spacing: 0;
 
-                        Text {
-                            text: root.companion-online
-                                ? "Type to search, ask, or command"
-                                : "Type to search apps and tools";
-                            color: Theme.text-dim;
-                            font-size: 13px;
+                        // Section header
+                        Rectangle {
+                            height: Theme.section-header-height;
+                            HorizontalLayout {
+                                padding-left: 16px;
+                                padding-right: 16px;
+                                alignment: start;
+
+                                VerticalLayout {
+                                    alignment: center;
+                                    spacing: 4px;
+
+                                    Text {
+                                        text: "SUGGESTED";
+                                        color: Theme.color-context;
+                                        font-size: 9px;
+                                        font-weight: 700;
+                                        letter-spacing: 2px;
+                                    }
+                                    // Animated underline
+                                    Rectangle {
+                                        width: 60px;
+                                        height: 1px;
+                                        background: Theme.color-context;
+                                        opacity: 0.4;
+                                    }
+                                }
+                            }
+                        }
+
+                        for sg[sg-idx] in root.suggestions : TouchArea {
+                            height: Theme.lens-result-height;
+                            property <bool> hovered: self.has-hover;
+                            clicked => { root.result-selected(sg.action-id); }
+
+                            Rectangle {
+                                width: 100%;
+                                height: Theme.lens-result-height;
+                                border-radius: 8px;
+                                background: parent.hovered ? Theme.bg-card : transparent;
+                                animate background { duration: 100ms; }
+
+                                HorizontalLayout {
+                                    padding-left: 16px;
+                                    padding-right: 16px;
+                                    spacing: 12px;
+
+                                    // Context badge with pulsing dot
+                                    Rectangle {
+                                        width: 28px;
+                                        height: 20px;
+                                        y: (parent.height - 20px) / 2;
+                                        border-radius: 4px;
+                                        background: Theme.color-context;
+                                        opacity: 0.12;
+
+                                        // Pulsing ambient dot
+                                        Rectangle {
+                                            x: 20px;
+                                            y: 0;
+                                            width: 5px;
+                                            height: 5px;
+                                            border-radius: 2.5px;
+                                            background: Theme.color-context;
+                                            opacity: 0.5 + 0.5 * sin(root.lens-glow-phase * 6.2832 * 1rad);
+                                        }
+
+                                        Text {
+                                            text: sg.icon-char;
+                                            color: Theme.color-context;
+                                            font-size: 11px;
+                                            font-weight: 700;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+
+                                    VerticalLayout {
+                                        horizontal-stretch: 1;
+                                        alignment: center;
+                                        spacing: 2px;
+
+                                        Text {
+                                            text: sg.title;
+                                            color: Theme.text-primary;
+                                            font-size: 14px;
+                                            overflow: elide;
+                                        }
+                                        if sg.subtitle != "" : Text {
+                                            text: sg.subtitle;
+                                            color: Theme.text-dim;
+                                            font-size: 11px;
+                                            overflow: elide;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // ── RECENT section ──
+                    if root.recents.length > 0 : VerticalLayout {
+                        spacing: 0;
+
+                        // Section header
+                        Rectangle {
+                            height: Theme.section-header-height;
+                            HorizontalLayout {
+                                padding-left: 16px;
+                                padding-right: 16px;
+                                alignment: start;
+
+                                VerticalLayout {
+                                    alignment: center;
+                                    spacing: 4px;
+
+                                    Text {
+                                        text: "RECENT";
+                                        color: Theme.color-recent;
+                                        font-size: 9px;
+                                        font-weight: 700;
+                                        letter-spacing: 2px;
+                                    }
+                                    Rectangle {
+                                        width: 44px;
+                                        height: 1px;
+                                        background: Theme.color-recent;
+                                        opacity: 0.3;
+                                    }
+                                }
+                            }
+                        }
+
+                        for rc[rc-idx] in root.recents : TouchArea {
+                            height: Theme.lens-result-height;
+                            property <bool> hovered: self.has-hover;
+                            clicked => { root.result-selected(rc.action-id); }
+
+                            Rectangle {
+                                width: 100%;
+                                height: Theme.lens-result-height;
+                                border-radius: 8px;
+                                background: parent.hovered ? Theme.bg-card : transparent;
+                                animate background { duration: 100ms; }
+
+                                HorizontalLayout {
+                                    padding-left: 16px;
+                                    padding-right: 16px;
+                                    spacing: 12px;
+
+                                    // Recent badge (dimmer steel)
+                                    Rectangle {
+                                        width: 28px;
+                                        height: 20px;
+                                        y: (parent.height - 20px) / 2;
+                                        border-radius: 4px;
+                                        background: Theme.color-recent;
+                                        opacity: 0.12;
+
+                                        Text {
+                                            text: rc.icon-char;
+                                            color: Theme.color-recent;
+                                            font-size: 11px;
+                                            font-weight: 700;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+
+                                    VerticalLayout {
+                                        horizontal-stretch: 1;
+                                        alignment: center;
+                                        spacing: 2px;
+
+                                        Text {
+                                            text: rc.title;
+                                            color: Theme.text-secondary;
+                                            font-size: 14px;
+                                            overflow: elide;
+                                            opacity: 0.8;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Fallback empty state (no suggestions, no recents)
+                    if root.suggestions.length == 0 && root.recents.length == 0 : Rectangle {
+                        height: 64px;
+                        VerticalLayout {
+                            alignment: center;
+                            padding-left: 20px;
+
+                            Text {
+                                text: root.companion-online
+                                    ? "Type to search, ask, or command"
+                                    : "Type to search apps and tools";
+                                color: Theme.text-dim;
+                                font-size: 13px;
+                            }
                         }
                     }
                 }
@@ -444,11 +774,10 @@ export component IntentLens inherits Rectangle {
 
             // ── Chat mode (multi-turn conversation) ──
             if root.chat-mode : VerticalLayout {
-                // Messages
+                // Messages — fills available panel height
                 ListView {
                     vertical-stretch: 1;
                     min-height: 200px;
-                    max-height: root.height * 0.4;
 
                     for msg[idx] in root.messages : MessageBubble {
                         data: msg;

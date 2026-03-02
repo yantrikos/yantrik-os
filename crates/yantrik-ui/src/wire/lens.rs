@@ -1,27 +1,68 @@
 //! Intent Lens wiring — query changed, result selected, open/close.
 
-use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
+use std::cell::RefCell;
+use std::rc::Rc;
+use std::time::Duration;
+
+use crossbeam_channel::Receiver;
+use slint::{ComponentHandle, Model, ModelRc, SharedString, Timer, TimerMode, VecModel};
 
 use crate::app_context::AppContext;
+use crate::bridge::MemoryResult;
 use crate::{focus, lens, onboarding, App, LensResult};
+
+/// Look up the selected result from the current UI results by action_id.
+fn find_selected_result(ui: &App, action_id: &str) -> Option<(String, String, String)> {
+    let results = ui.get_lens_results();
+    for i in 0..results.row_count() {
+        if let Some(r) = results.row_data(i) {
+            if r.action_id.as_str() == action_id {
+                return Some((
+                    r.title.to_string(),
+                    r.result_type.to_string(),
+                    r.icon_char.to_string(),
+                ));
+            }
+        }
+    }
+    None
+}
 
 /// Wire all Lens callbacks.
 pub fn wire(ui: &App, ctx: &AppContext) {
     wire_query(ui, ctx);
     wire_result_selected(ui, ctx);
-    wire_open_close(ui);
+    wire_open_close(ui, ctx);
 }
 
 /// Live search: build results as the user types.
+/// Integrates instant answers (Phase 4) at position 0 when applicable.
 fn wire_query(ui: &App, ctx: &AppContext) {
     let ui_weak = ui.as_weak();
     let apps = ctx.installed_apps.clone();
     let clip = ctx.clip_history.clone();
+    let snapshot = ctx.system_snapshot.clone();
+    let frecency = ctx.frecency.clone();
+    let bridge = ctx.bridge.clone();
+
+    // Shared state for async memory search
+    let memory_rx: Rc<RefCell<Option<Receiver<Vec<MemoryResult>>>>> = Rc::new(RefCell::new(None));
+    let memory_timer: Rc<RefCell<Option<Timer>>> = Rc::new(RefCell::new(None));
+
+    // Clone for the poll timer closure
+    let ui_weak_poll = ui.as_weak();
+    let memory_rx_poll = memory_rx.clone();
+    let memory_timer_poll = memory_timer.clone();
 
     ui.on_lens_query(move |text| {
         let query = text.to_string();
+
+        // Cancel any pending async memory search
+        *memory_timer.borrow_mut() = None;
+
         if let Some(ui) = ui_weak.upgrade() {
             if query.is_empty() {
+                *memory_rx.borrow_mut() = None;
                 let onboarding = ui.get_onboarding_step();
                 if onboarding > 0 {
                     let guide = onboarding::guide_result(onboarding);
@@ -46,10 +87,95 @@ fn wire_query(ui: &App, ctx: &AppContext) {
 
             let onboarding = ui.get_onboarding_step();
             let companion_online = ui.get_companion_online();
-            let results = lens::build_results(&query, onboarding, &apps, &clip_entries, companion_online);
+
+            let mut results = Vec::new();
+
+            // Try instant answer first (math, time, battery, date)
+            let snap = snapshot.borrow();
+            if let Some(answer) = lens::instant_answer(&query, &snap) {
+                results.push(answer);
+            }
+
+            // Standard results
+            results.extend(lens::build_results(&query, onboarding, &apps, &clip_entries, companion_online));
+
+            // Smart ranking: apply frecency + context scoring
+            let frecency_ref = frecency.borrow();
+            lens::apply_smart_ranking(&mut results, &query, &frecency_ref, &snap.running_processes);
+            drop(frecency_ref);
+            drop(snap);
+
             ui.set_lens_results(ModelRc::new(VecModel::from(results)));
+
+            // Fire async memory search for queries > 3 chars when companion is online
+            if query.len() > 3 && companion_online {
+                let rx = bridge.recall_memories(query);
+                *memory_rx.borrow_mut() = Some(rx);
+
+                // Start poll timer to check for memory results
+                let timer = Timer::default();
+                let ui_poll = ui_weak_poll.clone();
+                let rx_poll = memory_rx_poll.clone();
+                let t_poll = memory_timer_poll.clone();
+
+                timer.start(TimerMode::Repeated, Duration::from_millis(100), move || {
+                    let rx_ref = rx_poll.borrow();
+                    if let Some(ref rx) = *rx_ref {
+                        if let Ok(hits) = rx.try_recv() {
+                            drop(rx_ref);
+                            // Clear the receiver
+                            *rx_poll.borrow_mut() = None;
+                            // Stop the timer
+                            *t_poll.borrow_mut() = None;
+
+                            if hits.is_empty() {
+                                return;
+                            }
+
+                            // Merge memory results into current results
+                            if let Some(ui) = ui_poll.upgrade() {
+
+                                let memory_results = memory_hits_to_lens(&hits);
+                                // Append memory results to existing results
+                                let existing = ui.get_lens_results();
+                                let mut all: Vec<LensResult> = (0..existing.row_count())
+                                    .filter_map(|i| existing.row_data(i))
+                                    .collect();
+
+                                if !memory_results.is_empty() {
+                                    all.push(lens::lr_divider("── MEMORY ──"));
+                                    all.extend(memory_results);
+                                }
+                                ui.set_lens_results(ModelRc::new(VecModel::from(all)));
+                            }
+                        }
+                    }
+                });
+
+                *memory_timer.borrow_mut() = Some(timer);
+            }
         }
     });
+}
+
+/// Convert bridge MemoryResult hits into LensResult items.
+fn memory_hits_to_lens(hits: &[MemoryResult]) -> Vec<LensResult> {
+    hits.iter()
+        .take(5)
+        .map(|hit| {
+            let preview: String = hit.text.chars().take(80).collect();
+            LensResult {
+                result_type: "memory".into(),
+                title: SharedString::from(preview),
+                subtitle: SharedString::from(format!("{} • relevance {:.0}%", hit.memory_type, hit.score * 100.0)),
+                icon_char: "🧠".into(),
+                action_id: SharedString::from(format!("memory:{}", hit.text.chars().take(200).collect::<String>())),
+                score: hit.score as f32,
+                is_loading: false,
+                inline_value: SharedString::default(),
+            }
+        })
+        .collect()
 }
 
 /// Handle a result selection: resolve action, execute, advance onboarding.
@@ -57,10 +183,18 @@ fn wire_result_selected(ui: &App, ctx: &AppContext) {
     let ui_weak = ui.as_weak();
     let apps = ctx.installed_apps.clone();
     let clip = ctx.clip_history.clone();
+    let frecency = ctx.frecency.clone();
 
     ui.on_lens_result_selected(move |action_id| {
         let action = action_id.to_string();
         tracing::info!(action = %action, "Lens result selected");
+
+        // Record frecency for this action
+        if let Some(ui) = ui_weak.upgrade() {
+            if let Some((title, result_type, icon_char)) = find_selected_result(&ui, &action) {
+                frecency.borrow_mut().record(&action, &title, &result_type, &icon_char);
+            }
+        }
 
         match lens::resolve_action(&action, &apps) {
             lens::LensAction::Launch(cmd) => {
@@ -171,12 +305,35 @@ fn wire_result_selected(ui: &App, ctx: &AppContext) {
     });
 }
 
-/// Open/close Lens: reset state on close.
-fn wire_open_close(ui: &App) {
+/// Open/close Lens: populate context suggestions on open, reset on close.
+fn wire_open_close(ui: &App, ctx: &AppContext) {
     let ui_weak_open = ui.as_weak();
+    let snapshot = ctx.system_snapshot.clone();
+    let notification_store = ctx.notification_store.clone();
+    let frecency = ctx.frecency.clone();
+
     ui.on_open_lens(move || {
         tracing::debug!("Lens opened");
-        let _ = ui_weak_open.upgrade();
+        if let Some(ui) = ui_weak_open.upgrade() {
+            // Build contextual suggestions from current system state
+            let snap = snapshot.borrow();
+            let unread = notification_store.borrow().unread_count();
+            let companion_online = ui.get_companion_online();
+            let suggestions = lens::build_context_suggestions(
+                &snap,
+                unread,
+                companion_online,
+                &snap.running_processes,
+            );
+            ui.set_lens_suggestions(ModelRc::new(VecModel::from(suggestions)));
+
+            // Build recent actions from frecency store
+            let frecency_ref = frecency.borrow();
+            let frecency_entries = frecency_ref.top_n(5);
+            let recents = lens::frecency_to_recents(&frecency_entries);
+            drop(frecency_ref);
+            ui.set_lens_recents(ModelRc::new(VecModel::from(recents)));
+        }
     });
 
     let ui_weak_close = ui.as_weak();
@@ -184,6 +341,8 @@ fn wire_open_close(ui: &App) {
         tracing::debug!("Lens closed");
         if let Some(ui) = ui_weak_close.upgrade() {
             ui.set_lens_results(ModelRc::new(VecModel::<LensResult>::default()));
+            ui.set_lens_suggestions(ModelRc::new(VecModel::<LensResult>::default()));
+            ui.set_lens_recents(ModelRc::new(VecModel::<LensResult>::default()));
             ui.set_lens_chat_mode(false);
         }
     });

@@ -39,6 +39,9 @@ mod clipboard;
 mod features;
 mod filebrowser;
 mod focus;
+mod frecency;
+#[allow(dead_code)]
+mod mime_dispatch;
 mod lens;
 mod lock;
 mod notifications;

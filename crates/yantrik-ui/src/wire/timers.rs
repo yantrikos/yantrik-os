@@ -15,6 +15,7 @@ pub fn wire(ui: &App, ctx: &AppContext) {
     wire_think(ctx);
     wire_card_tick(ui, ctx);
     wire_morning_brief(ui, ctx);
+    wire_frecency_persist(ctx);
 }
 
 /// Clock timer — updates time and greeting every 30 seconds.
@@ -67,6 +68,16 @@ fn wire_morning_brief(ui: &App, ctx: &AppContext) {
         );
         tracing::info!("Generating morning brief");
         streaming::start_proactive_stream(ui_weak.clone(), &bridge, prompt, &slot);
+    });
+    std::mem::forget(timer);
+}
+
+/// Frecency store persistence — flush to disk every 30 seconds.
+fn wire_frecency_persist(ctx: &AppContext) {
+    let frecency = ctx.frecency.clone();
+    let timer = Timer::default();
+    timer.start(TimerMode::Repeated, Duration::from_secs(30), move || {
+        frecency.borrow_mut().persist();
     });
     std::mem::forget(timer);
 }
