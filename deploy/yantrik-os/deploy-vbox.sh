@@ -235,7 +235,6 @@ echo "  moment — labwc starts automatically on tty1."
 echo
 echo "  Access:"
 echo "    SSH:      ssh -p $SSH_PORT root@localhost"
-echo "    Web API:  http://localhost:$WEB_PORT"
 echo
 echo "  Quick redeploy (after code changes):"
 echo "    ./quick-deploy.sh  (works for VBox too)"

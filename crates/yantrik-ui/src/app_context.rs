@@ -23,12 +23,21 @@ use crate::wire::image_viewer::ImageViewerState;
 use crate::wire::media_player::MpvHandle;
 use crate::{App, ThemeMode, ThemeOverrides, MessageData, UrgeCardData, WhisperCardItem};
 
+/// Clipboard operation for file browser copy/cut.
+#[derive(Clone, Debug)]
+pub enum FileClipOp {
+    Copy { src_dir: String, name: String },
+    Cut { src_dir: String, name: String },
+}
+
 /// All shared state needed by wire modules.
 pub struct AppContext {
     pub bridge: Arc<CompanionBridge>,
     pub installed_apps: Arc<Vec<crate::apps::DesktopEntry>>,
     pub clip_history: clipboard::SharedHistory,
     pub browser_path: Rc<RefCell<String>>,
+    pub browser_show_hidden: Rc<RefCell<bool>>,
+    pub file_clipboard: Rc<RefCell<Option<FileClipOp>>>,
     pub card_manager: Rc<RefCell<CardManager>>,
     pub observer: Rc<yantrik_os::SystemObserver>,
     pub feature_registry: Rc<RefCell<features::FeatureRegistry>>,
@@ -167,6 +176,8 @@ impl AppContext {
             installed_apps,
             clip_history,
             browser_path: Rc::new(RefCell::new("~".to_string())),
+            browser_show_hidden: Rc::new(RefCell::new(false)),
+            file_clipboard: Rc::new(RefCell::new(None)),
             card_manager: Rc::new(RefCell::new(CardManager::new())),
             observer,
             feature_registry: Rc::new(RefCell::new(registry)),

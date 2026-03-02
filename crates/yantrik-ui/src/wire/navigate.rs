@@ -12,7 +12,10 @@ use crate::app_context::AppContext;
 use crate::bridge;
 use crate::filebrowser;
 use crate::notifications;
-use crate::{App, BondData, FileEntry, OpinionData, ProcessData, SharedRefData, UrgeCardData};
+use crate::{
+    App, BondData, BreadcrumbSegment, FileEntry, OpinionData, ProcessData, SharedRefData,
+    UrgeCardData,
+};
 
 /// Wire on_navigate callback.
 pub fn wire(ui: &App, ctx: &AppContext) {
@@ -21,6 +24,7 @@ pub fn wire(ui: &App, ctx: &AppContext) {
     let nav_timer: Rc<RefCell<Option<Timer>>> = Rc::new(RefCell::new(None));
     let timer_inner = nav_timer.clone();
     let browser_path = ctx.browser_path.clone();
+    let browser_show_hidden = ctx.browser_show_hidden.clone();
     let notification_store = ctx.notification_store.clone();
     let system_snapshot = ctx.system_snapshot.clone();
 
@@ -131,9 +135,10 @@ pub fn wire(ui: &App, ctx: &AppContext) {
             // File browser screen
             8 => {
                 let path = browser_path.borrow().clone();
+                let show_hidden = *browser_show_hidden.borrow();
                 if let Some(ui) = ui_weak.upgrade() {
                     ui.set_file_browser_path(slint::SharedString::from(&path));
-                    let entries = filebrowser::list_dir(&path);
+                    let entries = filebrowser::list_dir_filtered(&path, show_hidden);
                     let items: Vec<FileEntry> = entries
                         .into_iter()
                         .map(|e| FileEntry {
@@ -145,6 +150,17 @@ pub fn wire(ui: &App, ctx: &AppContext) {
                         })
                         .collect();
                     ui.set_file_browser_entries(ModelRc::new(VecModel::from(items)));
+
+                    // Update breadcrumbs
+                    let segments = filebrowser::breadcrumb_segments(&path);
+                    let crumbs: Vec<BreadcrumbSegment> = segments
+                        .into_iter()
+                        .map(|(label, full_path)| BreadcrumbSegment {
+                            label: label.into(),
+                            full_path: full_path.into(),
+                        })
+                        .collect();
+                    ui.set_file_breadcrumbs(ModelRc::new(VecModel::from(crumbs)));
                 }
             }
             // Notification Center — sync from store

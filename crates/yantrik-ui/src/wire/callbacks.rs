@@ -9,8 +9,10 @@ use slint::{ComponentHandle, ModelRc, SharedString, Timer, TimerMode, VecModel};
 
 use crate::app_context::AppContext;
 use crate::mime_dispatch::{self, FileAction};
+use crate::app_context::FileClipOp;
 use crate::{
-    bridge, cards, filebrowser, focus, lock, notifications, onboarding, App, FileEntry, MemoryItem,
+    bridge, cards, filebrowser, focus, lock, notifications, onboarding, App, BreadcrumbSegment,
+    FileEntry, MemoryItem,
 };
 
 /// Wire all miscellaneous callbacks.
@@ -89,20 +91,37 @@ fn wire_focus(ui: &App) {
 
 fn wire_file_browser(ui: &App, ctx: &AppContext) {
     let browser_path = ctx.browser_path.clone();
+    let show_hidden = ctx.browser_show_hidden.clone();
+    let file_clip = ctx.file_clipboard.clone();
+
+    // Helper: navigate to a path and refresh
+    fn navigate_to(ui: &App, bp: &Rc<RefCell<String>>, sh: &Rc<RefCell<bool>>, path: String) {
+        *bp.borrow_mut() = path.clone();
+        ui.set_file_browser_path(SharedString::from(&path));
+        refresh_entries(ui, &path, *sh.borrow());
+    }
 
     // Navigate into a subdirectory
     let ui_weak = ui.as_weak();
     let bp = browser_path.clone();
+    let sh = show_hidden.clone();
     ui.on_file_navigate_dir(move |name| {
-        let name = name.to_string();
         let new_path = {
             let current = bp.borrow();
-            filebrowser::child_path(&current, &name)
+            filebrowser::child_path(&current, &name.to_string())
         };
-        *bp.borrow_mut() = new_path.clone();
         if let Some(ui) = ui_weak.upgrade() {
-            ui.set_file_browser_path(SharedString::from(&new_path));
-            set_file_entries(&ui, &new_path);
+            navigate_to(&ui, &bp, &sh, new_path);
+        }
+    });
+
+    // Navigate to an absolute/display path (breadcrumb click)
+    let ui_weak = ui.as_weak();
+    let bp = browser_path.clone();
+    let sh = show_hidden.clone();
+    ui.on_file_navigate_to_path(move |path| {
+        if let Some(ui) = ui_weak.upgrade() {
+            navigate_to(&ui, &bp, &sh, path.to_string());
         }
     });
 
@@ -153,22 +172,142 @@ fn wire_file_browser(ui: &App, ctx: &AppContext) {
     // Go up one directory
     let ui_weak = ui.as_weak();
     let bp = browser_path.clone();
+    let sh = show_hidden.clone();
     ui.on_file_go_up(move || {
         let new_path = {
             let current = bp.borrow();
             filebrowser::parent_path(&current)
         };
-        *bp.borrow_mut() = new_path.clone();
         if let Some(ui) = ui_weak.upgrade() {
-            ui.set_file_browser_path(SharedString::from(&new_path));
-            set_file_entries(&ui, &new_path);
+            navigate_to(&ui, &bp, &sh, new_path);
+        }
+    });
+
+    // Toggle hidden files
+    let ui_weak = ui.as_weak();
+    let bp = browser_path.clone();
+    let sh = show_hidden.clone();
+    ui.on_file_toggle_hidden(move || {
+        let new_val = !*sh.borrow();
+        *sh.borrow_mut() = new_val;
+        if let Some(ui) = ui_weak.upgrade() {
+            ui.set_file_show_hidden(new_val);
+            let path = bp.borrow().clone();
+            refresh_entries(&ui, &path, new_val);
+        }
+    });
+
+    // Delete
+    let ui_weak = ui.as_weak();
+    let bp = browser_path.clone();
+    let sh = show_hidden.clone();
+    ui.on_file_delete(move |name| {
+        let dir = bp.borrow().clone();
+        match filebrowser::delete_entry(&dir, &name.to_string()) {
+            Ok(()) => tracing::info!(name = %name, "File deleted"),
+            Err(e) => tracing::error!(name = %name, error = %e, "Delete failed"),
+        }
+        if let Some(ui) = ui_weak.upgrade() {
+            refresh_entries(&ui, &dir, *sh.borrow());
+        }
+    });
+
+    // Rename
+    let ui_weak = ui.as_weak();
+    let bp = browser_path.clone();
+    let sh = show_hidden.clone();
+    ui.on_file_rename(move |old_name, new_name| {
+        let dir = bp.borrow().clone();
+        match filebrowser::rename_entry(&dir, &old_name.to_string(), &new_name.to_string()) {
+            Ok(()) => tracing::info!(old = %old_name, new = %new_name, "File renamed"),
+            Err(e) => tracing::error!(old = %old_name, error = %e, "Rename failed"),
+        }
+        if let Some(ui) = ui_weak.upgrade() {
+            refresh_entries(&ui, &dir, *sh.borrow());
+        }
+    });
+
+    // Copy (stage to file clipboard)
+    let bp = browser_path.clone();
+    let fc = file_clip.clone();
+    let ui_weak = ui.as_weak();
+    ui.on_file_copy(move |name| {
+        let dir = bp.borrow().clone();
+        *fc.borrow_mut() = Some(FileClipOp::Copy {
+            src_dir: dir,
+            name: name.to_string(),
+        });
+        if let Some(ui) = ui_weak.upgrade() {
+            ui.set_file_has_clipboard(true);
+        }
+        tracing::info!(name = %name, "File copied to clipboard");
+    });
+
+    // Cut (stage to file clipboard)
+    let bp = browser_path.clone();
+    let fc = file_clip.clone();
+    let ui_weak = ui.as_weak();
+    ui.on_file_cut(move |name| {
+        let dir = bp.borrow().clone();
+        *fc.borrow_mut() = Some(FileClipOp::Cut {
+            src_dir: dir,
+            name: name.to_string(),
+        });
+        if let Some(ui) = ui_weak.upgrade() {
+            ui.set_file_has_clipboard(true);
+        }
+        tracing::info!(name = %name, "File cut to clipboard");
+    });
+
+    // Paste (execute copy/move from file clipboard)
+    let bp = browser_path.clone();
+    let fc = file_clip.clone();
+    let sh = show_hidden.clone();
+    let ui_weak = ui.as_weak();
+    ui.on_file_paste(move || {
+        let dst_dir = bp.borrow().clone();
+        let op = fc.borrow().clone();
+        match op {
+            Some(FileClipOp::Copy { src_dir, name }) => {
+                match filebrowser::copy_entry(&src_dir, &name, &dst_dir) {
+                    Ok(()) => tracing::info!(name = %name, "File pasted (copy)"),
+                    Err(e) => tracing::error!(name = %name, error = %e, "Paste (copy) failed"),
+                }
+            }
+            Some(FileClipOp::Cut { src_dir, name }) => {
+                match filebrowser::move_entry(&src_dir, &name, &dst_dir) {
+                    Ok(()) => tracing::info!(name = %name, "File pasted (move)"),
+                    Err(e) => tracing::error!(name = %name, error = %e, "Paste (move) failed"),
+                }
+                *fc.borrow_mut() = None;
+            }
+            None => {}
+        }
+        if let Some(ui) = ui_weak.upgrade() {
+            ui.set_file_has_clipboard(fc.borrow().is_some());
+            refresh_entries(&ui, &dst_dir, *sh.borrow());
+        }
+    });
+
+    // Create folder
+    let bp = browser_path.clone();
+    let sh = show_hidden.clone();
+    let ui_weak = ui.as_weak();
+    ui.on_file_create_folder(move |name| {
+        let dir = bp.borrow().clone();
+        match filebrowser::create_folder(&dir, &name.to_string()) {
+            Ok(()) => tracing::info!(name = %name, "Folder created"),
+            Err(e) => tracing::error!(name = %name, error = %e, "Create folder failed"),
+        }
+        if let Some(ui) = ui_weak.upgrade() {
+            refresh_entries(&ui, &dir, *sh.borrow());
         }
     });
 }
 
-/// List a directory and push entries to the UI.
-fn set_file_entries(ui: &App, path: &str) {
-    let entries = filebrowser::list_dir(path);
+/// List a directory and push entries + breadcrumbs to the UI.
+fn refresh_entries(ui: &App, path: &str, show_hidden: bool) {
+    let entries = filebrowser::list_dir_filtered(path, show_hidden);
     let items: Vec<FileEntry> = entries
         .into_iter()
         .map(|e| FileEntry {
@@ -180,6 +319,17 @@ fn set_file_entries(ui: &App, path: &str) {
         })
         .collect();
     ui.set_file_browser_entries(ModelRc::new(VecModel::from(items)));
+
+    // Update breadcrumbs
+    let segments = filebrowser::breadcrumb_segments(path);
+    let crumbs: Vec<BreadcrumbSegment> = segments
+        .into_iter()
+        .map(|(label, full_path)| BreadcrumbSegment {
+            label: label.into(),
+            full_path: full_path.into(),
+        })
+        .collect();
+    ui.set_file_breadcrumbs(ModelRc::new(VecModel::from(crumbs)));
 }
 
 // ── Whisper cards ──

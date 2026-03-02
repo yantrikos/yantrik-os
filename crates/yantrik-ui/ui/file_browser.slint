@@ -1,8 +1,8 @@
-// File browser — visual file navigation.
-// Screen 8. List view, breadcrumb path, open/navigate actions.
+// File browser — visual file navigation with operations.
+// Screen 8. List view, breadcrumb path, file ops, hidden toggle.
 
 import { Theme } from "theme.slint";
-import { ListView } from "std-widgets.slint";
+import { ListView, LineEdit } from "std-widgets.slint";
 
 export struct FileEntry {
     name: string,
@@ -12,22 +12,48 @@ export struct FileEntry {
     icon-char: string,
 }
 
+export struct BreadcrumbSegment {
+    label: string,
+    full-path: string,
+}
+
 export component FileBrowser inherits Rectangle {
     background: Theme.bg-deep;
 
     in property <string> current-path: "~";
     in property <[FileEntry]> entries: [];
     in property <bool> is-loading: false;
+    in property <[BreadcrumbSegment]> breadcrumbs: [];
+    in property <bool> has-clipboard: false;
+    in-out property <bool> show-hidden: false;
+    in-out property <int> selected-index: -1;
+
+    // Dialogs
+    property <bool> show-rename-dialog: false;
+    property <string> rename-old-name: "";
+    property <string> rename-new-name: "";
+    property <bool> show-delete-dialog: false;
+    property <string> delete-target-name: "";
+    property <bool> show-new-folder-dialog: false;
+    property <string> new-folder-name: "";
 
     callback back-pressed();
     callback navigate-dir(string);
     callback open-file(string);
     callback go-up();
+    callback navigate-to-path(string);
+    callback toggle-hidden();
+    callback file-delete(string);
+    callback file-rename(string, string);
+    callback file-copy(string);
+    callback file-cut(string);
+    callback file-paste();
+    callback create-folder(string);
 
     VerticalLayout {
         spacing: 0px;
 
-        // Header
+        // ── Header with toolbar ──
         Rectangle {
             height: 56px;
             background: Theme.bg-surface;
@@ -35,33 +61,98 @@ export component FileBrowser inherits Rectangle {
             HorizontalLayout {
                 padding-left: 12px;
                 padding-right: 12px;
-                alignment: start;
-                spacing: 12px;
+                alignment: space-between;
+                spacing: 8px;
 
-                TouchArea {
-                    width: Theme.touch-target;
-                    height: Theme.touch-target;
-                    clicked => { root.back-pressed(); }
+                // Left: back + title
+                HorizontalLayout {
+                    spacing: 12px;
+                    alignment: start;
+
+                    TouchArea {
+                        width: Theme.touch-target;
+                        height: Theme.touch-target;
+                        clicked => { root.back-pressed(); }
+                        Text {
+                            text: "←";
+                            color: Theme.text-secondary;
+                            font-size: 22px;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
+
                     Text {
-                        text: "←";
-                        color: Theme.text-secondary;
-                        font-size: 22px;
-                        horizontal-alignment: center;
+                        text: "Files";
+                        color: Theme.text-primary;
+                        font-size: Theme.font-title;
+                        font-weight: 600;
                         vertical-alignment: center;
                     }
                 }
 
-                Text {
-                    text: "Files";
-                    color: Theme.text-primary;
-                    font-size: Theme.font-title;
-                    font-weight: 600;
-                    vertical-alignment: center;
+                // Right: toolbar buttons
+                HorizontalLayout {
+                    spacing: 4px;
+                    alignment: end;
+
+                    // New folder
+                    TouchArea {
+                        width: 36px; height: 36px;
+                        clicked => {
+                            root.new-folder-name = "";
+                            root.show-new-folder-dialog = true;
+                        }
+                        Rectangle {
+                            border-radius: 6px;
+                            background: parent.has-hover ? Theme.bg-elevated : transparent;
+                            Text {
+                                text: "+";
+                                color: Theme.cyan;
+                                font-size: 20px;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+
+                    // Paste (only when clipboard has content)
+                    if root.has-clipboard : TouchArea {
+                        width: 36px; height: 36px;
+                        clicked => { root.file-paste(); }
+                        Rectangle {
+                            border-radius: 6px;
+                            background: parent.has-hover ? Theme.bg-elevated : transparent;
+                            Text {
+                                text: "📋";
+                                font-size: 16px;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+
+                    // Toggle hidden
+                    TouchArea {
+                        width: 36px; height: 36px;
+                        clicked => { root.toggle-hidden(); }
+                        Rectangle {
+                            border-radius: 6px;
+                            background: parent.has-hover ? Theme.bg-elevated : transparent;
+                            Text {
+                                text: root.show-hidden ? "◉" : "◎";
+                                color: root.show-hidden ? Theme.cyan : Theme.text-dim;
+                                font-size: 18px;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
                 }
             }
         }
 
-        // Breadcrumb path bar
+        // ── Breadcrumb path bar ──
         Rectangle {
             height: 40px;
             background: Theme.bg-surface;
@@ -69,12 +160,11 @@ export component FileBrowser inherits Rectangle {
             HorizontalLayout {
                 padding-left: 16px;
                 padding-right: 16px;
-                spacing: 8px;
+                spacing: 4px;
 
                 // Up button
                 TouchArea {
-                    width: 32px;
-                    height: 32px;
+                    width: 32px; height: 32px;
                     clicked => { root.go-up(); }
                     Text {
                         text: "↑";
@@ -85,39 +175,76 @@ export component FileBrowser inherits Rectangle {
                     }
                 }
 
-                // Path display
-                Text {
-                    text: root.current-path;
-                    color: Theme.cyan-dim;
-                    font-size: Theme.font-small;
-                    vertical-alignment: center;
-                    horizontal-stretch: 1;
-                    overflow: elide;
+                // Breadcrumb segments
+                for seg[idx] in root.breadcrumbs : HorizontalLayout {
+                    spacing: 4px;
+
+                    if idx > 0 : Text {
+                        text: "/";
+                        color: Theme.text-dim;
+                        font-size: Theme.font-small;
+                        vertical-alignment: center;
+                    }
+
+                    TouchArea {
+                        height: 28px;
+                        width: seg-text.preferred-width + 12px;
+                        clicked => { root.navigate-to-path(seg.full-path); }
+
+                        Rectangle {
+                            border-radius: 4px;
+                            background: parent.has-hover ? Theme.bg-elevated : transparent;
+                            seg-text := Text {
+                                text: seg.label;
+                                color: idx == root.breadcrumbs.length - 1 ? Theme.cyan : Theme.cyan-dim;
+                                font-size: Theme.font-small;
+                                font-weight: idx == root.breadcrumbs.length - 1 ? 600 : 400;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
                 }
             }
         }
 
-        // File list
+        // ── File list ──
         ListView {
             vertical-stretch: 1;
 
             for entry[idx] in entries : Rectangle {
                 height: 48px;
-                background: file-touch.has-hover ? Theme.bg-elevated : Theme.bg-deep;
+                background: idx == root.selected-index ? Theme.bg-elevated :
+                    (file-touch.has-hover ? #1a1924 : Theme.bg-deep);
+
+                // Left border highlight on selected
+                if idx == root.selected-index : Rectangle {
+                    x: 0px;
+                    width: 3px;
+                    height: parent.height;
+                    background: Theme.cyan;
+                }
 
                 file-touch := TouchArea {
                     clicked => {
                         if entry.is-dir {
+                            root.selected-index = -1;
                             root.navigate-dir(entry.name);
                         } else {
-                            root.open-file(entry.name);
+                            if root.selected-index == idx {
+                                // Second click on same file → open it
+                                root.selected-index = -1;
+                                root.open-file(entry.name);
+                            } else {
+                                root.selected-index = idx;
+                            }
                         }
                     }
                 }
 
                 HorizontalLayout {
                     padding-left: 16px;
-                    padding-right: 16px;
+                    padding-right: 8px;
                     spacing: 12px;
 
                     // Icon
@@ -167,6 +294,107 @@ export component FileBrowser inherits Rectangle {
             }
         }
 
+        // ── Action bar (when file selected) ──
+        if root.selected-index >= 0 && root.selected-index < root.entries.length : Rectangle {
+            height: 52px;
+            background: Theme.bg-surface;
+            border-width: 1px;
+            border-color: Theme.bg-elevated;
+
+            HorizontalLayout {
+                padding-left: 16px;
+                padding-right: 16px;
+                spacing: 8px;
+                alignment: center;
+
+                // Open
+                TouchArea {
+                    width: 56px; height: 40px;
+                    clicked => {
+                        root.open-file(root.entries[root.selected-index].name);
+                        root.selected-index = -1;
+                    }
+                    Rectangle {
+                        border-radius: 8px;
+                        background: parent.has-hover ? Theme.bg-elevated : transparent;
+                        VerticalLayout {
+                            alignment: center;
+                            Text { text: "Open"; color: Theme.cyan; font-size: 12px; horizontal-alignment: center; }
+                        }
+                    }
+                }
+
+                // Copy
+                TouchArea {
+                    width: 56px; height: 40px;
+                    clicked => {
+                        root.file-copy(root.entries[root.selected-index].name);
+                        root.selected-index = -1;
+                    }
+                    Rectangle {
+                        border-radius: 8px;
+                        background: parent.has-hover ? Theme.bg-elevated : transparent;
+                        VerticalLayout {
+                            alignment: center;
+                            Text { text: "Copy"; color: Theme.text-secondary; font-size: 12px; horizontal-alignment: center; }
+                        }
+                    }
+                }
+
+                // Cut
+                TouchArea {
+                    width: 56px; height: 40px;
+                    clicked => {
+                        root.file-cut(root.entries[root.selected-index].name);
+                        root.selected-index = -1;
+                    }
+                    Rectangle {
+                        border-radius: 8px;
+                        background: parent.has-hover ? Theme.bg-elevated : transparent;
+                        VerticalLayout {
+                            alignment: center;
+                            Text { text: "Cut"; color: Theme.text-secondary; font-size: 12px; horizontal-alignment: center; }
+                        }
+                    }
+                }
+
+                // Rename
+                TouchArea {
+                    width: 64px; height: 40px;
+                    clicked => {
+                        root.rename-old-name = root.entries[root.selected-index].name;
+                        root.rename-new-name = root.entries[root.selected-index].name;
+                        root.show-rename-dialog = true;
+                    }
+                    Rectangle {
+                        border-radius: 8px;
+                        background: parent.has-hover ? Theme.bg-elevated : transparent;
+                        VerticalLayout {
+                            alignment: center;
+                            Text { text: "Rename"; color: Theme.text-secondary; font-size: 12px; horizontal-alignment: center; }
+                        }
+                    }
+                }
+
+                // Delete
+                TouchArea {
+                    width: 64px; height: 40px;
+                    clicked => {
+                        root.delete-target-name = root.entries[root.selected-index].name;
+                        root.show-delete-dialog = true;
+                    }
+                    Rectangle {
+                        border-radius: 8px;
+                        background: parent.has-hover ? Theme.bg-elevated : transparent;
+                        VerticalLayout {
+                            alignment: center;
+                            Text { text: "Delete"; color: #e05252; font-size: 12px; horizontal-alignment: center; }
+                        }
+                    }
+                }
+            }
+        }
+
         // Empty state
         if entries.length == 0 && !is-loading : VerticalLayout {
             vertical-stretch: 1;
@@ -191,6 +419,229 @@ export component FileBrowser inherits Rectangle {
                 color: Theme.text-dim;
                 font-size: Theme.font-body;
                 horizontal-alignment: center;
+            }
+        }
+    }
+
+    // ═══ Rename dialog overlay ═══
+    if root.show-rename-dialog : Rectangle {
+        width: 100%; height: 100%;
+        background: Theme.overlay-backdrop;
+
+        TouchArea { clicked => { root.show-rename-dialog = false; root.selected-index = -1; } }
+
+        Rectangle {
+            x: (parent.width - 340px) / 2;
+            y: (parent.height - 180px) / 2;
+            width: 340px;
+            height: 180px;
+            border-radius: 16px;
+            background: Theme.bg-surface;
+            border-width: 1px;
+            border-color: Theme.bg-elevated;
+            drop-shadow-blur: 24px;
+            drop-shadow-color: #000000aa;
+
+            TouchArea {}  // prevent click-through
+
+            VerticalLayout {
+                padding: 20px;
+                spacing: 16px;
+
+                Text {
+                    text: "Rename";
+                    color: Theme.text-primary;
+                    font-size: Theme.font-title;
+                    font-weight: 600;
+                }
+
+                rename-input := LineEdit {
+                    text: root.rename-new-name;
+                    edited(t) => { root.rename-new-name = t; }
+                    accepted(t) => {
+                        root.file-rename(root.rename-old-name, t);
+                        root.show-rename-dialog = false;
+                        root.selected-index = -1;
+                    }
+                }
+
+                HorizontalLayout {
+                    spacing: 12px;
+                    alignment: end;
+
+                    TouchArea {
+                        width: 80px; height: 36px;
+                        clicked => { root.show-rename-dialog = false; root.selected-index = -1; }
+                        Rectangle {
+                            border-radius: 8px;
+                            background: parent.has-hover ? Theme.bg-elevated : transparent;
+                            Text { text: "Cancel"; color: Theme.text-dim; font-size: 14px;
+                                horizontal-alignment: center; vertical-alignment: center; }
+                        }
+                    }
+
+                    TouchArea {
+                        width: 80px; height: 36px;
+                        clicked => {
+                            root.file-rename(root.rename-old-name, root.rename-new-name);
+                            root.show-rename-dialog = false;
+                            root.selected-index = -1;
+                        }
+                        Rectangle {
+                            border-radius: 8px;
+                            background: parent.has-hover ? Theme.cyan-dim : Theme.bg-elevated;
+                            Text { text: "Rename"; color: Theme.cyan; font-size: 14px;
+                                horizontal-alignment: center; vertical-alignment: center; }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // ═══ Delete confirmation dialog ═══
+    if root.show-delete-dialog : Rectangle {
+        width: 100%; height: 100%;
+        background: Theme.overlay-backdrop;
+
+        TouchArea { clicked => { root.show-delete-dialog = false; root.selected-index = -1; } }
+
+        Rectangle {
+            x: (parent.width - 340px) / 2;
+            y: (parent.height - 160px) / 2;
+            width: 340px;
+            height: 160px;
+            border-radius: 16px;
+            background: Theme.bg-surface;
+            border-width: 1px;
+            border-color: Theme.bg-elevated;
+            drop-shadow-blur: 24px;
+            drop-shadow-color: #000000aa;
+
+            TouchArea {}
+
+            VerticalLayout {
+                padding: 20px;
+                spacing: 16px;
+
+                Text {
+                    text: "Delete \"" + root.delete-target-name + "\"?";
+                    color: Theme.text-primary;
+                    font-size: Theme.font-body;
+                    wrap: word-wrap;
+                }
+
+                Text {
+                    text: "This cannot be undone.";
+                    color: Theme.text-dim;
+                    font-size: Theme.font-small;
+                }
+
+                HorizontalLayout {
+                    spacing: 12px;
+                    alignment: end;
+
+                    TouchArea {
+                        width: 80px; height: 36px;
+                        clicked => { root.show-delete-dialog = false; root.selected-index = -1; }
+                        Rectangle {
+                            border-radius: 8px;
+                            background: parent.has-hover ? Theme.bg-elevated : transparent;
+                            Text { text: "Cancel"; color: Theme.text-dim; font-size: 14px;
+                                horizontal-alignment: center; vertical-alignment: center; }
+                        }
+                    }
+
+                    TouchArea {
+                        width: 80px; height: 36px;
+                        clicked => {
+                            root.file-delete(root.delete-target-name);
+                            root.show-delete-dialog = false;
+                            root.selected-index = -1;
+                        }
+                        Rectangle {
+                            border-radius: 8px;
+                            background: parent.has-hover ? #e05252 : #c04040;
+                            Text { text: "Delete"; color: #fff; font-size: 14px;
+                                horizontal-alignment: center; vertical-alignment: center; }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // ═══ New folder dialog ═══
+    if root.show-new-folder-dialog : Rectangle {
+        width: 100%; height: 100%;
+        background: Theme.overlay-backdrop;
+
+        TouchArea { clicked => { root.show-new-folder-dialog = false; } }
+
+        Rectangle {
+            x: (parent.width - 340px) / 2;
+            y: (parent.height - 180px) / 2;
+            width: 340px;
+            height: 180px;
+            border-radius: 16px;
+            background: Theme.bg-surface;
+            border-width: 1px;
+            border-color: Theme.bg-elevated;
+            drop-shadow-blur: 24px;
+            drop-shadow-color: #000000aa;
+
+            TouchArea {}
+
+            VerticalLayout {
+                padding: 20px;
+                spacing: 16px;
+
+                Text {
+                    text: "New Folder";
+                    color: Theme.text-primary;
+                    font-size: Theme.font-title;
+                    font-weight: 600;
+                }
+
+                folder-input := LineEdit {
+                    text: root.new-folder-name;
+                    placeholder-text: "Folder name";
+                    edited(t) => { root.new-folder-name = t; }
+                    accepted(t) => {
+                        root.create-folder(t);
+                        root.show-new-folder-dialog = false;
+                    }
+                }
+
+                HorizontalLayout {
+                    spacing: 12px;
+                    alignment: end;
+
+                    TouchArea {
+                        width: 80px; height: 36px;
+                        clicked => { root.show-new-folder-dialog = false; }
+                        Rectangle {
+                            border-radius: 8px;
+                            background: parent.has-hover ? Theme.bg-elevated : transparent;
+                            Text { text: "Cancel"; color: Theme.text-dim; font-size: 14px;
+                                horizontal-alignment: center; vertical-alignment: center; }
+                        }
+                    }
+
+                    TouchArea {
+                        width: 80px; height: 36px;
+                        clicked => {
+                            root.create-folder(root.new-folder-name);
+                            root.show-new-folder-dialog = false;
+                        }
+                        Rectangle {
+                            border-radius: 8px;
+                            background: parent.has-hover ? Theme.cyan-dim : Theme.bg-elevated;
+                            Text { text: "Create"; color: Theme.cyan; font-size: 14px;
+                                horizontal-alignment: center; vertical-alignment: center; }
+                        }
+                    }
+                }
             }
         }
     }

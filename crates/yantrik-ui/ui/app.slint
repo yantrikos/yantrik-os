@@ -13,7 +13,7 @@ import { PersonalityScreen, OpinionData, SharedRefData } from "personality.slint
 import { LockScreen } from "lock.slint";
 import { SettingsScreen } from "settings.slint";
 import { MemoryBrowser, MemoryItem } from "memory_browser.slint";
-import { FileBrowser, FileEntry } from "file_browser.slint";
+import { FileBrowser, FileEntry, BreadcrumbSegment } from "file_browser.slint";
 import { NotificationCenter, NotificationData } from "notification_center.slint";
 import { SystemDashboard, ProcessData } from "system_dashboard.slint";
 import { VoiceOverlay } from "voice_overlay.slint";
@@ -29,7 +29,7 @@ import { AppGridItem } from "components/app_grid.slint";
 import { WindowItem } from "components/window_switcher.slint";
 import { DockItem } from "components/app_dock.slint";
 
-export { ThemeMode, ThemeOverrides, MessageData, UrgeCardData, BondData, OpinionData, SharedRefData, MemoryItem, LensResult, WhisperCardItem, FileEntry, NotificationData, ProcessData, ClipboardEntryData, AppGridItem, WindowItem, DockItem }
+export { ThemeMode, ThemeOverrides, MessageData, UrgeCardData, BondData, OpinionData, SharedRefData, MemoryItem, LensResult, WhisperCardItem, FileEntry, BreadcrumbSegment, NotificationData, ProcessData, ClipboardEntryData, AppGridItem, WindowItem, DockItem }
 
 export component App inherits Window {
     title: "Yantrik OS";
@@ -171,9 +171,20 @@ export component App inherits Window {
     in property <string> file-browser-path: "~";
     in property <[FileEntry]> file-browser-entries: [];
     in property <bool> file-browser-loading: false;
+    in property <[BreadcrumbSegment]> file-breadcrumbs: [];
+    in property <bool> file-has-clipboard: false;
+    in-out property <bool> file-show-hidden: false;
     callback file-navigate-dir(string);
     callback file-open(string);
     callback file-go-up();
+    callback file-navigate-to-path(string);
+    callback file-toggle-hidden();
+    callback file-delete(string);
+    callback file-rename(string, string);
+    callback file-copy(string);
+    callback file-cut(string);
+    callback file-paste();
+    callback file-create-folder(string);
 
     // Notification Center state (screen 9)
     in property <[NotificationData]> notification-list: [];
@@ -437,6 +448,9 @@ export component App inherits Window {
             current-path: root.file-browser-path;
             entries: root.file-browser-entries;
             is-loading: root.file-browser-loading;
+            breadcrumbs: root.file-breadcrumbs;
+            has-clipboard: root.file-has-clipboard;
+            show-hidden <=> root.file-show-hidden;
             back-pressed => {
                 root.current-screen = 1;
                 root.navigate(1);
@@ -444,6 +458,14 @@ export component App inherits Window {
             navigate-dir(name) => { root.file-navigate-dir(name); }
             open-file(name) => { root.file-open(name); }
             go-up => { root.file-go-up(); }
+            navigate-to-path(p) => { root.file-navigate-to-path(p); }
+            toggle-hidden => { root.file-toggle-hidden(); }
+            file-delete(name) => { root.file-delete(name); }
+            file-rename(old, new) => { root.file-rename(old, new); }
+            file-copy(name) => { root.file-copy(name); }
+            file-cut(name) => { root.file-cut(name); }
+            file-paste => { root.file-paste(); }
+            create-folder(name) => { root.file-create-folder(name); }
         }
 
         // Notification Center
