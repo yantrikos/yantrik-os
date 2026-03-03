@@ -78,6 +78,9 @@ pub struct AgentResponse {
     pub memories_recalled: usize,
     pub urges_delivered: Vec<String>,
     pub tool_calls_made: Vec<String>,
+    /// True if the response came from the offline responder (LLM was unavailable).
+    #[serde(default)]
+    pub offline_mode: bool,
 }
 
 /// A stored urge row from SQLite.

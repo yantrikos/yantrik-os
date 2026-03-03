@@ -19,6 +19,7 @@ pub fn wire(ui: &App, ctx: &AppContext) {
     let scorer = ctx.scorer.clone();
     let snapshot = ctx.system_snapshot.clone();
     let bridge = ctx.bridge.clone();
+    let accumulator = ctx.accumulator.clone();
     let card_mgr = ctx.card_manager.clone();
     let notification_store = ctx.notification_store.clone();
 
@@ -99,6 +100,18 @@ pub fn wire(ui: &App, ctx: &AppContext) {
                 clock: std::time::SystemTime::now(),
             };
             all_urges.extend(registry.borrow_mut().tick(&ctx));
+        }
+
+        // 2b. Feed events into activity accumulator + detect issues
+        {
+            let mut acc = accumulator.borrow_mut();
+            let snap = snapshot.borrow();
+            for event in &events {
+                acc.ingest(event);
+                if let Some(issue) = acc.detect_issue(event, &snap) {
+                    bridge.record_issue(issue.text, issue.importance, issue.decay);
+                }
+            }
         }
 
         // 3. Forward significant events to companion memory
@@ -199,8 +212,10 @@ pub fn wire(ui: &App, ctx: &AppContext) {
             }
         }
 
-        // 4d. Update system context for LLM prompt injection
-        bridge.set_system_context(system_context::format_system_context(&snap));
+        // 4d. Update system context for LLM prompt injection — only when state changed
+        if accumulator.borrow_mut().context_changed(&snap) {
+            bridge.set_system_context(system_context::format_system_context(&snap));
+        }
 
         // 5. Score and display urges
         if !all_urges.is_empty() {

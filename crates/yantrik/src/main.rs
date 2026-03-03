@@ -18,7 +18,8 @@ use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
 use yantrikdb_companion::{CompanionConfig, CompanionService};
-use yantrikdb_ml::{CandleEmbedder, CandleLLM, GGUFFiles};
+use yantrikdb_ml::{CandleEmbedder, CandleLLM, GGUFFiles, LLMBackend};
+use yantrikdb_ml::ApiLLM;
 
 #[derive(Parser)]
 #[command(name = "yantrik", about = "Personal AI companion — single binary")]
@@ -53,6 +54,17 @@ enum Commands {
         #[arg(long, default_value = "memory.db")]
         db: PathBuf,
     },
+    /// Send a single message through the full companion pipeline and exit.
+    Ask {
+        /// The message to send.
+        message: String,
+        /// Path to config.yaml.
+        #[arg(short, long)]
+        config: Option<PathBuf>,
+        /// Output JSON metadata after response (memories, tools, bond).
+        #[arg(long)]
+        json: bool,
+    },
     /// Show memory statistics.
     Stats {
         /// Path to memory database.
@@ -75,6 +87,7 @@ fn main() {
     match cli.command {
         Commands::Serve { config } => cmd_serve(config),
         Commands::Chat { config } => cmd_chat(config),
+        Commands::Ask { message, config, json } => cmd_ask(config, &message, json),
         Commands::Voice { config } => cmd_voice(config),
         Commands::Think { db } => cmd_think(db),
         Commands::Stats { db } => cmd_stats(db),
@@ -106,18 +119,30 @@ fn build_companion(config: CompanionConfig) -> CompanionService {
             .expect("failed to load embedder from hub")
     };
 
-    // Load LLM
-    let llm = if let Some(ref dir) = config.llm.model_dir {
+    // Load LLM — select backend based on config
+    let llm: Box<dyn LLMBackend> = if config.llm.is_api_backend() {
+        let base_url = config.llm.resolve_api_base_url()
+            .expect("api_base_url required for API backend");
+        let model = config.llm.api_model.as_deref()
+            .expect("api_model required for API backend");
+        tracing::info!(
+            backend = config.llm.backend,
+            base_url = %base_url,
+            model,
+            "Using API LLM backend"
+        );
+        Box::new(ApiLLM::new(base_url, config.llm.api_key.clone(), model))
+    } else if let Some(ref dir) = config.llm.model_dir {
         tracing::info!(dir, "Loading LLM from directory");
-        CandleLLM::from_dir(std::path::Path::new(dir))
-            .expect("failed to load LLM from directory")
+        Box::new(CandleLLM::from_dir(std::path::Path::new(dir))
+            .expect("failed to load LLM from directory"))
     } else if let (Some(ref gguf), Some(ref tok)) = (&config.llm.gguf_path, &config.llm.tokenizer_path) {
         tracing::info!(gguf, tok, "Loading LLM from explicit paths");
-        CandleLLM::from_gguf(
+        Box::new(CandleLLM::from_gguf(
             std::path::Path::new(gguf),
             std::path::Path::new(tok),
         )
-        .expect("failed to load LLM")
+        .expect("failed to load LLM"))
     } else {
         tracing::info!(
             repo = config.llm.hub_repo,
@@ -130,8 +155,8 @@ fn build_companion(config: CompanionConfig) -> CompanionService {
             &config.llm.hub_tokenizer,
         )
         .expect("failed to download LLM");
-        CandleLLM::from_gguf(&files.gguf, &files.tokenizer)
-            .expect("failed to load LLM")
+        Box::new(CandleLLM::from_gguf(&files.gguf, &files.tokenizer)
+            .expect("failed to load LLM"))
     };
 
     // Create YantrikDB
@@ -145,7 +170,7 @@ fn build_companion(config: CompanionConfig) -> CompanionService {
         "Companion initialized"
     );
 
-    CompanionService::new(db, Box::new(llm), config)
+    CompanionService::new(db, llm, config)
 }
 
 fn cmd_serve(config_path: Option<PathBuf>) {
@@ -207,11 +232,75 @@ fn cmd_chat(config_path: Option<PathBuf>) {
         print!("Yantrik: ");
         std::io::stdout().flush().ok();
 
+        let mut replace_next = false;
         let _response = companion.handle_message_streaming(text, |token| {
-            print!("{token}");
+            if token == "__REPLACE__" {
+                replace_next = true;
+                return;
+            }
+            if replace_next {
+                print!("\rYantrik: {token}");
+                replace_next = false;
+            } else {
+                print!("{token}");
+            }
             std::io::stdout().flush().ok();
         });
         println!("\n");
+    }
+}
+
+fn cmd_ask(config_path: Option<PathBuf>, message: &str, json_output: bool) {
+    let config = load_config(config_path);
+    let mut companion = build_companion(config);
+
+    // Print the user message so the conversation is visible
+    eprintln!("You: {message}");
+    eprint!("Yantrik: ");
+
+    let mut full_response = String::new();
+    let mut replace_next = false;
+    let response = companion.handle_message_streaming(message, |token| {
+        if token == "__REPLACE__" {
+            replace_next = true;
+            return;
+        }
+        if replace_next {
+            full_response.clear();
+            full_response.push_str(token);
+            replace_next = false;
+        } else {
+            full_response.push_str(token);
+        }
+    });
+    // Print the final (clean) response
+    eprint!("{full_response}");
+    eprintln!("\n");
+
+    if json_output {
+        // Structured output for programmatic use
+        let meta = serde_json::json!({
+            "message": message,
+            "response": full_response.trim(),
+            "memories_recalled": response.memories_recalled,
+            "tool_calls_made": response.tool_calls_made,
+            "urges_delivered": response.urges_delivered,
+            "offline_mode": response.offline_mode,
+        });
+        println!("{}", serde_json::to_string_pretty(&meta).unwrap());
+    } else {
+        // Human-friendly summary on stderr
+        eprintln!("--- pipeline stats ---");
+        eprintln!("  memories recalled: {}", response.memories_recalled);
+        if !response.tool_calls_made.is_empty() {
+            eprintln!("  tools used: {}", response.tool_calls_made.join(", "));
+        }
+        if !response.urges_delivered.is_empty() {
+            eprintln!("  urges delivered: {}", response.urges_delivered.len());
+        }
+        if response.offline_mode {
+            eprintln!("  (offline mode — LLM unreachable)");
+        }
     }
 }
 
@@ -381,11 +470,23 @@ fn cmd_voice(config_path: Option<PathBuf>) {
                         std::io::stdout().flush().ok();
 
                         let mut response_text = String::new();
+                        let mut replace_next = false;
                         let _response =
                             companion.handle_message_streaming(&text, |token| {
-                                print!("{token}");
+                                if token == "__REPLACE__" {
+                                    replace_next = true;
+                                    return;
+                                }
+                                if replace_next {
+                                    response_text.clear();
+                                    print!("\rYantrik: {token}");
+                                    response_text.push_str(token);
+                                    replace_next = false;
+                                } else {
+                                    print!("{token}");
+                                    response_text.push_str(token);
+                                }
                                 std::io::stdout().flush().ok();
-                                response_text.push_str(token);
                             });
                         println!("\n");
 

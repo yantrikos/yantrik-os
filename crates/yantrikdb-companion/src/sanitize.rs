@@ -209,7 +209,7 @@ pub fn validate_domain(domain: &str) -> &str {
     const ALLOWED_DOMAINS: &[&str] = &[
         "general", "work", "health", "family", "finance", "hobby", "travel",
         "self-reflection", "git", "terminal", "audit/tools", "fixes",
-        "work/project",
+        "work/project", "identity", "preference",
     ];
 
     if ALLOWED_DOMAINS.contains(&domain) {
@@ -409,6 +409,97 @@ pub fn detect_harmful_command(command: &str) -> Option<&'static str> {
     None
 }
 
+// ── Response cleaning for learning ──
+
+/// Patterns that indicate a line is tool output, not conversational content.
+const TOOL_OUTPUT_PATTERNS: &[&str] = &[
+    "Tool: ",
+    "Found memories:",
+    "No memories found",
+    "Remembered:",
+    "Recall failed:",
+    "My self-observations:",
+    "Bond level:",
+    "Opinion formed on",
+    "Inside joke saved:",
+    "Reminder set for",
+    "Noted:",
+    "Error: text is required",
+    "Error: query is required",
+];
+
+/// Sentences in the LLM response that indicate it is summarizing tool results,
+/// not expressing original conversational content worth learning from.
+const TOOL_FOLLOW_UP_PATTERNS: &[&str] = &[
+    "i found these memories",
+    "based on the recall results",
+    "based on my memories",
+    "according to my memory",
+    "let me search my memory",
+    "let me check my memories",
+    "from what i remember",
+    "i searched my memories",
+    "looking through my memories",
+    "here's what i found",
+    "i recalled the following",
+    "my records show",
+];
+
+/// Clean an LLM response before feeding it to the learning pipeline.
+///
+/// When tools were used, the response often contains tool output verbatim
+/// ("Tool: recall(...) → Found memories: ...") and follow-up summaries
+/// that should NOT be stored as memories. This strips those artifacts.
+pub fn clean_response_for_learning(response: &str, tools_used: &[String]) -> String {
+    // If no tools were used, pass through (minor cleanup only)
+    if tools_used.is_empty() {
+        return response.to_string();
+    }
+
+    let mut clean_lines = Vec::new();
+    let mut skip_bullet_block = false;
+
+    for line in response.lines() {
+        let trimmed = line.trim();
+
+        // Skip empty lines but preserve them for readability
+        if trimmed.is_empty() {
+            skip_bullet_block = false;
+            continue;
+        }
+
+        // Skip lines that are direct tool output
+        if TOOL_OUTPUT_PATTERNS.iter().any(|p| trimmed.starts_with(p)) {
+            skip_bullet_block = true;
+            continue;
+        }
+
+        // Skip bullet lists following tool output (these are recalled memory listings)
+        if skip_bullet_block && (trimmed.starts_with("- ") || trimmed.starts_with("* ")) {
+            continue;
+        }
+        skip_bullet_block = false;
+
+        // Skip sentences that are just summarizing tool results
+        let lower = trimmed.to_lowercase();
+        if TOOL_FOLLOW_UP_PATTERNS.iter().any(|p| lower.contains(p)) {
+            continue;
+        }
+
+        clean_lines.push(trimmed);
+    }
+
+    let result = clean_lines.join(" ").trim().to_string();
+
+    // If cleaning removed everything meaningful, return empty
+    // (will trigger the <25 char skip in learning)
+    if result.len() < 10 {
+        return String::new();
+    }
+
+    result
+}
+
 // ── Helpers ──
 
 /// Truncate text to max_len at a char boundary.
@@ -507,6 +598,43 @@ mod tests {
         let sanitized = sanitize_response(leak);
         assert!(!sanitized.contains("CompanionService"));
         assert!(!sanitized.contains("max_context_tokens"));
+    }
+
+    #[test]
+    fn test_clean_response_no_tools() {
+        let response = "The weather looks great today!";
+        let cleaned = clean_response_for_learning(response, &[]);
+        assert_eq!(cleaned, response);
+    }
+
+    #[test]
+    fn test_clean_response_strips_tool_output() {
+        let response = "Let me check.\nTool: recall(\"weather\") → Found memories:\n- User likes sunny days\n- User prefers 72°F\nYou seem to enjoy warm weather!";
+        let cleaned = clean_response_for_learning(response, &["recall".to_string()]);
+        assert!(cleaned.contains("enjoy warm weather"));
+        assert!(!cleaned.contains("Found memories"));
+        assert!(!cleaned.contains("User likes sunny"));
+    }
+
+    #[test]
+    fn test_clean_response_strips_follow_up() {
+        let response = "Based on my memories, you like coffee. I found these memories about your preferences. You really enjoy espresso.";
+        let cleaned = clean_response_for_learning(response, &["recall".to_string()]);
+        assert!(!cleaned.contains("found these memories"));
+        assert!(cleaned.contains("enjoy espresso"));
+    }
+
+    #[test]
+    fn test_clean_response_all_tool_output_returns_empty() {
+        let response = "Found memories:\n- fact 1\n- fact 2";
+        let cleaned = clean_response_for_learning(response, &["recall".to_string()]);
+        assert!(cleaned.is_empty());
+    }
+
+    #[test]
+    fn test_validate_domain_new_domains() {
+        assert_eq!(validate_domain("identity"), "identity");
+        assert_eq!(validate_domain("preference"), "preference");
     }
 
     #[test]

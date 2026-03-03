@@ -326,7 +326,7 @@ export component DesktopScreen inherits Rectangle {
         // ── Floating Orb — bottom center (hidden in focus mode) ──
         if !root.focus-mode : TouchArea {
             x: (parent.width - Theme.orb-desktop-size) / 2;
-            y: parent.height - Theme.orb-desktop-size - 32px;
+            y: parent.height - Theme.orb-desktop-size - 72px;
             width: Theme.orb-desktop-size;
             height: Theme.orb-desktop-size;
             clicked => {
@@ -350,11 +350,16 @@ export component DesktopScreen inherits Rectangle {
             y: parent.height - self.height;
             width: 100%;
             items: root.dock-items.length > 0 ? root.dock-items : [
-                { app-id: "terminal", label: "Terminal", icon-char: ">_", is-running: false },
-                { app-id: "browser",  label: "Browser",  icon-char: "W",  is-running: false },
-                { app-id: "files",    label: "Files",    icon-char: "F",  is-running: false },
-                { app-id: "editor",   label: "Editor",   icon-char: "E",  is-running: false },
-                { app-id: "settings", label: "Settings", icon-char: "*",  is-running: false },
+                { app-id: "terminal",      label: "Terminal",      icon-char: ">_", is-running: false },
+                { app-id: "browser",       label: "Browser",       icon-char: "W",  is-running: false },
+                { app-id: "files",         label: "Files",         icon-char: "F",  is-running: false },
+                { app-id: "editor",        label: "Editor",        icon-char: "≡",  is-running: false },
+                { app-id: "bond",          label: "Bond",          icon-char: "♥",  is-running: false },
+                { app-id: "memory",        label: "Memory",        icon-char: "◈",  is-running: false },
+                { app-id: "notifications", label: "Alerts",        icon-char: "N",  is-running: false },
+                { app-id: "system",        label: "System",        icon-char: "◉",  is-running: false },
+                { app-id: "media",         label: "Media",         icon-char: "♪",  is-running: false },
+                { app-id: "settings",      label: "Settings",      icon-char: "⚙",  is-running: false },
             ];
             launch-app(app-id) => { root.launch-app(app-id); }
             anchor-pressed => {

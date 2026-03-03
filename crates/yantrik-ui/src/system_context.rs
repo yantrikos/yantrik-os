@@ -30,6 +30,16 @@ pub fn format_system_context(snap: &yantrik_os::SystemSnapshot) -> String {
         parts.push(format!("RAM: {}/{}MB ({:.0}%)", used_mb, total_mb, snap.memory_usage_percent()));
     }
 
+    // Disk
+    if snap.disk_total_bytes > 0 {
+        let avail_gb = snap.disk_available_bytes as f64 / 1_073_741_824.0;
+        parts.push(format!(
+            "Disk: {:.1}GB free ({:.0}% used)",
+            avail_gb,
+            snap.disk_used_percent()
+        ));
+    }
+
     // Running processes (top 5 by name) — sanitize process names
     if !snap.running_processes.is_empty() {
         let names: Vec<String> = snap.running_processes.iter().take(5)
@@ -116,6 +126,9 @@ pub fn event_to_memory(event: &yantrik_os::SystemEvent) -> Option<(String, Strin
             ))
         }
         SystemEvent::ProcessStarted { name, .. } => {
+            if is_noisy_process(name) {
+                return None;
+            }
             let safe_name: String = name.chars().filter(|c| !c.is_control()).take(50).collect();
             Some((
                 format!("App opened: {}", safe_name),
@@ -124,6 +137,9 @@ pub fn event_to_memory(event: &yantrik_os::SystemEvent) -> Option<(String, Strin
             ))
         }
         SystemEvent::ProcessStopped { name, .. } => {
+            if is_noisy_process(name) {
+                return None;
+            }
             let safe_name: String = name.chars().filter(|c| !c.is_control()).take(50).collect();
             Some((
                 format!("App closed: {}", safe_name),
@@ -145,8 +161,67 @@ pub fn event_to_memory(event: &yantrik_os::SystemEvent) -> Option<(String, Strin
                 0.3,
             ))
         }
+        SystemEvent::CpuPressure { usage_percent } if *usage_percent >= 90.0 => {
+            Some((
+                format!("CPU spike: {:.0}%", usage_percent),
+                "system/cpu".into(),
+                0.5,
+            ))
+        }
+        SystemEvent::MemoryPressure { used_bytes, total_bytes } if *total_bytes > 0 => {
+            let pct = *used_bytes as f32 / *total_bytes as f32 * 100.0;
+            if pct >= 85.0 {
+                Some((
+                    format!(
+                        "Memory high: {:.0}% ({}/{}MB)",
+                        pct,
+                        *used_bytes / (1024 * 1024),
+                        *total_bytes / (1024 * 1024)
+                    ),
+                    "system/memory".into(),
+                    0.6,
+                ))
+            } else {
+                None
+            }
+        }
+        SystemEvent::DiskPressure {
+            mount_point,
+            available_bytes,
+            total_bytes,
+        } if *total_bytes > 0 => {
+            let avail_pct = *available_bytes as f64 / *total_bytes as f64 * 100.0;
+            if avail_pct <= 10.0 {
+                Some((
+                    format!(
+                        "Disk low on {}: {:.1}GB free ({:.0}% used)",
+                        mount_point,
+                        *available_bytes as f64 / 1_000_000_000.0,
+                        100.0 - avail_pct
+                    ),
+                    "system/disk".into(),
+                    0.7,
+                ))
+            } else {
+                None
+            }
+        }
         _ => None,
     }
+}
+
+/// Transient/noisy processes that churn constantly and don't represent
+/// meaningful user activity (browser helpers, system daemons, etc.).
+fn is_noisy_process(name: &str) -> bool {
+    const NOISY: &[&str] = &[
+        "StreamTrans", "chrome_crashpad", "crashpad_handler",
+        "cat", "grep", "sed", "awk", "sh", "bash", "sleep",
+        "wl-paste", "wl-copy", "xdg-", "dbus-",
+        "at-spi", "pipewire", "wireplumber",
+    ];
+    // Filter numbered helpers like "StreamTrans #49"
+    let base = name.split_whitespace().next().unwrap_or(name);
+    NOISY.iter().any(|n| base.starts_with(n))
 }
 
 /// Load system observer config from the YAML file.

@@ -1,6 +1,5 @@
 //! Image Viewer wiring — prev/next navigation and fit toggle.
 
-use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
 

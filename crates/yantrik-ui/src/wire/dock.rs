@@ -59,6 +59,48 @@ pub fn wire(ui: &App, ctx: &AppContext) {
                 }
                 return;
             }
+            "bond" => {
+                if let Some(ui) = ui_weak.upgrade() {
+                    ui.set_current_screen(4);
+                    ui.invoke_navigate(4);
+                }
+                return;
+            }
+            "personality" => {
+                if let Some(ui) = ui_weak.upgrade() {
+                    ui.set_current_screen(5);
+                    ui.invoke_navigate(5);
+                }
+                return;
+            }
+            "memory" => {
+                if let Some(ui) = ui_weak.upgrade() {
+                    ui.set_current_screen(6);
+                    ui.invoke_navigate(6);
+                }
+                return;
+            }
+            "notifications" => {
+                if let Some(ui) = ui_weak.upgrade() {
+                    ui.set_current_screen(9);
+                    ui.invoke_navigate(9);
+                }
+                return;
+            }
+            "system" => {
+                if let Some(ui) = ui_weak.upgrade() {
+                    ui.set_current_screen(10);
+                    ui.invoke_navigate(10);
+                }
+                return;
+            }
+            "media" => {
+                if let Some(ui) = ui_weak.upgrade() {
+                    ui.set_current_screen(13);
+                    ui.invoke_navigate(13);
+                }
+                return;
+            }
             _ => {
                 tracing::warn!(app = %app, "Unknown app");
                 return;

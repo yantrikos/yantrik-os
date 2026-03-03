@@ -1,6 +1,6 @@
-// WindowFrame — reusable window chrome with title bar and controls.
-// Provides minimize, maximize/restore, and close buttons.
-// Use @children to place content inside.
+// WindowFrame — reusable window chrome with glass title bar.
+// Holographic glow, glass gradient background, animated controls.
+// Semi-transparent body for depth. Use @children to place content inside.
 
 import { Theme } from "../theme.slint";
 
@@ -13,23 +13,50 @@ export component WindowFrame inherits Rectangle {
     callback close();
     callback minimize();
 
-    background: Theme.bg-deep;
-    border-radius: root.is-maximized ? 0px : 10px;
+    // Glass body — semi-transparent deep background
+    background: @linear-gradient(180deg,
+        #0a0a18e8 0%,
+        #080814e0 50%,
+        #0a0a18e8 100%
+    );
+    border-radius: root.is-maximized ? 0px : 12px;
     clip: true;
-    drop-shadow-blur: root.is-maximized ? 0px : 20px;
-    drop-shadow-color: root.is-maximized ? transparent : #000000aa;
+    drop-shadow-blur: root.is-maximized ? 0px : 24px;
+    drop-shadow-color: root.is-maximized ? transparent : #000000cc;
     border-width: root.is-maximized ? 0px : 1px;
-    border-color: root.is-maximized ? transparent : Theme.bg-elevated;
+    border-color: root.is-maximized ? transparent : @linear-gradient(180deg,
+        #ffffff14 0%,
+        #ffffff08 50%,
+        #ffffff04 100%
+    );
 
     animate border-radius, drop-shadow-blur, border-width { duration: 200ms; easing: ease-out; }
 
     VerticalLayout {
         spacing: 0px;
 
-        // ── Title bar ──
+        // ── Title bar — glass gradient ──
         Rectangle {
             height: 36px;
-            background: Theme.bg-surface;
+            background: @linear-gradient(180deg,
+                #14122290 0%,
+                #0e0d18a0 100%
+            );
+
+            // Top edge reflection
+            Rectangle {
+                x: 12px; y: 0;
+                width: parent.width - 24px;
+                height: 1px;
+                border-radius: 0.5px;
+                background: @linear-gradient(90deg,
+                    transparent 0%,
+                    #ffffff0c 30%,
+                    #ffffff14 50%,
+                    #ffffff0c 70%,
+                    transparent 100%
+                );
+            }
 
             HorizontalLayout {
                 padding-left: 12px;
@@ -45,11 +72,13 @@ export component WindowFrame inherits Rectangle {
                         width: 22px;
                         height: 22px;
                         border-radius: 5px;
-                        background: root.icon-color;
+                        background: @radial-gradient(circle, root.icon-color, #00000040);
+                        drop-shadow-blur: 6px;
+                        drop-shadow-color: root.icon-color;
 
                         Text {
                             text: root.icon-char;
-                            color: #ffffff;
+                            color: #ffffffd0;
                             font-size: 12px;
                             horizontal-alignment: center;
                             vertical-alignment: center;
@@ -72,42 +101,52 @@ export component WindowFrame inherits Rectangle {
                     alignment: end;
 
                     // Minimize
-                    TouchArea {
+                    min-btn := TouchArea {
                         width: 36px;
                         height: 36px;
                         clicked => { root.minimize(); }
                         Rectangle {
                             width: 100%; height: 100%;
-                            background: parent.has-hover ? Theme.hover-fill-strong : transparent;
+                            background: min-btn.has-hover ? Theme.hover-fill-strong : transparent;
+
+                            animate background { duration: 120ms; }
+
                             Text {
                                 text: "─";
-                                color: Theme.text-secondary;
+                                color: min-btn.has-hover ? Theme.cyan : Theme.text-secondary;
                                 font-size: 14px;
                                 horizontal-alignment: center;
                                 vertical-alignment: center;
+
+                                animate color { duration: 120ms; }
                             }
                         }
                     }
 
                     // Maximize / Restore
-                    TouchArea {
+                    max-btn := TouchArea {
                         width: 36px;
                         height: 36px;
                         clicked => { root.is-maximized = !root.is-maximized; }
                         Rectangle {
                             width: 100%; height: 100%;
-                            background: parent.has-hover ? Theme.hover-fill-strong : transparent;
+                            background: max-btn.has-hover ? Theme.hover-fill-strong : transparent;
+
+                            animate background { duration: 120ms; }
+
                             Text {
                                 text: root.is-maximized ? "❐" : "□";
-                                color: Theme.text-secondary;
+                                color: max-btn.has-hover ? Theme.cyan : Theme.text-secondary;
                                 font-size: 14px;
                                 horizontal-alignment: center;
                                 vertical-alignment: center;
+
+                                animate color { duration: 120ms; }
                             }
                         }
                     }
 
-                    // Close
+                    // Close — red glow on hover
                     close-btn := TouchArea {
                         width: 36px;
                         height: 36px;
@@ -115,12 +154,20 @@ export component WindowFrame inherits Rectangle {
                         Rectangle {
                             width: 100%; height: 100%;
                             background: close-btn.has-hover ? #e05252 : transparent;
+                            drop-shadow-blur: close-btn.has-hover ? 6px : 0;
+                            drop-shadow-color: #e0525260;
+
+                            animate background { duration: 120ms; }
+                            animate drop-shadow-blur { duration: 120ms; }
+
                             Text {
                                 text: "✕";
                                 color: close-btn.has-hover ? #ffffff : Theme.text-secondary;
                                 font-size: 14px;
                                 horizontal-alignment: center;
                                 vertical-alignment: center;
+
+                                animate color { duration: 120ms; }
                             }
                         }
                     }
@@ -128,13 +175,24 @@ export component WindowFrame inherits Rectangle {
             }
         }
 
-        // Separator
-        Rectangle { height: 1px; background: Theme.separator; }
+        // Separator — holographic edge
+        Rectangle {
+            height: 1px;
+            background: @linear-gradient(90deg,
+                transparent 5%,
+                Theme.separator 20%,
+                Theme.cyan-glow 50%,
+                Theme.separator 80%,
+                transparent 95%
+            );
+            opacity: 0.6;
+        }
 
-        // Content area
+        // Content area — slightly translucent
         Rectangle {
             vertical-stretch: 1;
             clip: true;
+            background: #080814d8;
             @children
         }
     }

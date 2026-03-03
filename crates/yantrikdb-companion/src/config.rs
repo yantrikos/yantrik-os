@@ -281,7 +281,7 @@ fn default_think_idle() -> u64 {
     30
 }
 fn default_proactive_threshold() -> f64 {
-    0.7
+    0.4
 }
 
 impl Default for CognitionConfig {
@@ -315,16 +315,31 @@ pub struct InstinctSettings {
     pub conflict_alerting_enabled: bool,
     #[serde(default = "default_conflict_threshold")]
     pub conflict_alert_threshold: usize,
+    /// Enable memory weaver instinct (proactive graph building during idle).
+    #[serde(default = "default_evolution_enabled")]
+    pub memory_weaver_enabled: bool,
+    /// Minutes of idle time before weaver urges start firing.
+    #[serde(default = "default_weaver_idle_minutes")]
+    pub memory_weaver_idle_minutes: f64,
+    /// Minimum memories before weaving is worthwhile.
+    #[serde(default = "default_weaver_min_memories")]
+    pub memory_weaver_min_memories: i64,
 }
 
 fn default_check_in_hours() -> f64 {
-    8.0
+    2.0
 }
 fn default_follow_up_hours() -> f64 {
     4.0
 }
 fn default_conflict_threshold() -> usize {
     5
+}
+fn default_weaver_idle_minutes() -> f64 {
+    15.0
+}
+fn default_weaver_min_memories() -> i64 {
+    10
 }
 
 impl Default for InstinctSettings {
@@ -339,6 +354,9 @@ impl Default for InstinctSettings {
             pattern_surfacing_enabled: true,
             conflict_alerting_enabled: true,
             conflict_alert_threshold: default_conflict_threshold(),
+            memory_weaver_enabled: true,
+            memory_weaver_idle_minutes: default_weaver_idle_minutes(),
+            memory_weaver_min_memories: default_weaver_min_memories(),
         }
     }
 }
@@ -496,6 +514,152 @@ pub struct HomeAssistantConfig {
     pub token: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProactiveConfig {
+    /// Whether proactive message delivery is enabled.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Urgency threshold above which to auto-deliver (0.0–1.0).
+    #[serde(default = "default_delivery_threshold")]
+    pub delivery_threshold: f64,
+    /// Minimum minutes between proactive messages.
+    #[serde(default = "default_cooldown_minutes")]
+    pub cooldown_minutes: u64,
+}
+
+fn default_delivery_threshold() -> f64 {
+    0.4
+}
+fn default_cooldown_minutes() -> u64 {
+    10
+}
+
+impl Default for ProactiveConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            delivery_threshold: default_delivery_threshold(),
+            cooldown_minutes: default_cooldown_minutes(),
+        }
+    }
+}
+
+// ── Memory Evolution Config ─────────────────────────────────────────────────
+
+/// Configuration for memory evolution features (V23).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryEvolutionConfig {
+    /// Enable smart multi-signal recall (Gap 1).
+    #[serde(default = "default_evolution_enabled")]
+    pub smart_recall_enabled: bool,
+    /// Max extra recall calls per message (Gap 1). Default 2.
+    #[serde(default = "default_max_extra_recalls")]
+    pub max_extra_recall_calls: usize,
+    /// Max total memories to inject from smart recall.
+    #[serde(default = "default_max_recall_memories")]
+    pub max_recall_memories: usize,
+    /// Enable cross-domain entity bridging (Gap 2).
+    #[serde(default = "default_evolution_enabled")]
+    pub cross_domain_enabled: bool,
+    /// Enable semantic drift correction / consolidation (Gap 3).
+    #[serde(default = "default_evolution_enabled")]
+    pub consolidation_enabled: bool,
+    /// Hours between consolidation runs. Default 6.
+    #[serde(default = "default_consolidation_hours")]
+    pub consolidation_interval_hours: f64,
+    /// Similarity threshold to consider two memories as duplicates.
+    #[serde(default = "default_dup_threshold")]
+    pub duplicate_similarity_threshold: f64,
+    /// Enable shared reference freshness tracking (Gap 4).
+    #[serde(default = "default_evolution_enabled")]
+    pub reference_freshness_enabled: bool,
+    /// Half-life for reference freshness decay in days.
+    #[serde(default = "default_ref_freshness_days")]
+    pub reference_freshness_half_life_days: f64,
+    /// Enable variable half-life / pruning (Gap 5).
+    #[serde(default = "default_evolution_enabled")]
+    pub variable_halflife_enabled: bool,
+    /// Hours between pruning runs. Default 24.
+    #[serde(default = "default_pruning_hours")]
+    pub pruning_interval_hours: f64,
+    /// Half-life in seconds for each importance tier.
+    #[serde(default)]
+    pub tier_half_lives: TierHalfLives,
+    /// Enable idle-time memory graph weaving.
+    #[serde(default = "default_evolution_enabled")]
+    pub weaving_enabled: bool,
+    /// Hours between weaving cycles. Default 2.
+    #[serde(default = "default_weaving_hours")]
+    pub weaving_interval_hours: f64,
+    /// Number of memories to process per weaving cycle.
+    #[serde(default = "default_weaving_batch")]
+    pub weaving_batch_size: usize,
+}
+
+/// Half-life durations (in seconds) for each importance tier.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TierHalfLives {
+    /// Core facts (identity, key relationships) — default 365 days.
+    #[serde(default = "default_tier_core")]
+    pub core: f64,
+    /// Important events, emotional memories — default 60 days.
+    #[serde(default = "default_tier_significant")]
+    pub significant: f64,
+    /// Default bucket — 7 days.
+    #[serde(default = "default_tier_routine")]
+    pub routine: f64,
+    /// Low-importance, system-generated — 1 day.
+    #[serde(default = "default_tier_ephemeral")]
+    pub ephemeral: f64,
+}
+
+fn default_evolution_enabled() -> bool { true }
+fn default_max_extra_recalls() -> usize { 2 }
+fn default_max_recall_memories() -> usize { 8 }
+fn default_consolidation_hours() -> f64 { 6.0 }
+fn default_dup_threshold() -> f64 { 0.85 }
+fn default_ref_freshness_days() -> f64 { 14.0 }
+fn default_pruning_hours() -> f64 { 24.0 }
+fn default_weaving_hours() -> f64 { 2.0 }
+fn default_weaving_batch() -> usize { 15 }
+fn default_tier_core() -> f64 { 31_536_000.0 }      // 365 days
+fn default_tier_significant() -> f64 { 5_184_000.0 } // 60 days
+fn default_tier_routine() -> f64 { 604_800.0 }       // 7 days
+fn default_tier_ephemeral() -> f64 { 86_400.0 }      // 1 day
+
+impl Default for TierHalfLives {
+    fn default() -> Self {
+        Self {
+            core: default_tier_core(),
+            significant: default_tier_significant(),
+            routine: default_tier_routine(),
+            ephemeral: default_tier_ephemeral(),
+        }
+    }
+}
+
+impl Default for MemoryEvolutionConfig {
+    fn default() -> Self {
+        Self {
+            smart_recall_enabled: true,
+            max_extra_recall_calls: default_max_extra_recalls(),
+            max_recall_memories: default_max_recall_memories(),
+            cross_domain_enabled: true,
+            consolidation_enabled: true,
+            consolidation_interval_hours: default_consolidation_hours(),
+            duplicate_similarity_threshold: default_dup_threshold(),
+            reference_freshness_enabled: true,
+            reference_freshness_half_life_days: default_ref_freshness_days(),
+            variable_halflife_enabled: true,
+            pruning_interval_hours: default_pruning_hours(),
+            tier_half_lives: TierHalfLives::default(),
+            weaving_enabled: true,
+            weaving_interval_hours: default_weaving_hours(),
+            weaving_batch_size: default_weaving_batch(),
+        }
+    }
+}
+
 /// Top-level companion configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompanionConfig {
@@ -529,6 +693,10 @@ pub struct CompanionConfig {
     pub voice: VoiceConfig,
     #[serde(default)]
     pub home_assistant: HomeAssistantConfig,
+    #[serde(default)]
+    pub proactive: ProactiveConfig,
+    #[serde(default)]
+    pub memory_evolution: MemoryEvolutionConfig,
 }
 
 fn default_user_name() -> String {
@@ -553,6 +721,8 @@ impl Default for CompanionConfig {
             narrative: NarrativeConfig::default(),
             voice: VoiceConfig::default(),
             home_assistant: HomeAssistantConfig::default(),
+            proactive: ProactiveConfig::default(),
+            memory_evolution: MemoryEvolutionConfig::default(),
         }
     }
 }

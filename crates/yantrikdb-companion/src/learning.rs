@@ -3,38 +3,79 @@
 //! After each user interaction, the LLM analyzes the exchange
 //! and decides what to remember (facts, preferences, events, relationships).
 //! Also generates self-reflections (memories about the companion itself).
+//!
+//! V25: Atomic extraction (one fact per memory), write-time dedup gate,
+//! compound-splitting fallback, and cleaned response input.
 
 use yantrikdb_core::YantrikDB;
 use yantrikdb_ml::{ChatMessage, GenerationConfig, LLMBackend};
 
 use crate::bond::BondTracker;
+use crate::config::MemoryEvolutionConfig;
 use crate::sanitize;
 
-const EXTRACTION_PROMPT: &str = r#"You are a memory extraction assistant. Given a conversation exchange, decide what to remember.
+/// Similarity threshold for write-time dedup. If the best existing match
+/// has similarity >= this, the new memory is skipped as a duplicate.
+const DEDUP_SIMILARITY_THRESHOLD: f64 = 0.85;
 
-Output valid JSON with these fields:
-- should_remember: true/false
-- memory_text: concise summary (1-2 sentences)
-- memory_type: "episodic" (event), "semantic" (fact), or "procedural" (how-to)
-- importance: 0.0-1.0
-- valence: -1.0 (negative) to 1.0 (positive)
-- domain: work/health/family/finance/hobby/travel/general
-- entities: list of {"source": str, "target": str, "relationship": str}
+/// Maximum atomic memories to store per exchange.
+const MAX_MEMORIES_PER_EXCHANGE: usize = 5;
 
-Only set should_remember=true for substantive information (facts, preferences, events, plans).
-Skip small talk, greetings, trivial exchanges."#;
+/// System event prefixes that should NEVER be stored as learned memories.
+/// These come from the SystemObserver and are stored separately with system/* domains.
+const SYSTEM_EVENT_PREFIXES: &[&str] = &[
+    "App opened:", "App closed:", "CPU spike:", "Memory high:",
+    "Battery ", "Network disconnected", "Connected to network",
+    "File created:", "File modified:", "File deleted:", "File renamed:",
+    "User idle ", "User returned", "Disk low ", "Notification from ",
+];
+
+const EXTRACTION_PROMPT: &str = r#"You are a memory extraction assistant. Given a conversation exchange, extract atomic facts to remember.
+
+Output valid JSON:
+{
+  "should_remember": true/false,
+  "memories": [
+    {
+      "text": "single atomic fact, max 120 chars",
+      "type": "episodic" | "semantic" | "procedural",
+      "importance": 0.0-1.0,
+      "valence": -1.0 to 1.0,
+      "domain": "identity" | "preference" | "work" | "health" | "family" | "finance" | "hobby" | "travel" | "general",
+      "entities": [{"source": "str", "target": "str", "relationship": "str"}]
+    }
+  ]
+}
+
+RULES:
+- Each memory = ONE atomic fact. Never combine facts with "|", "and also", or semicolons.
+- Max 150 characters per memory text.
+- For episodic memories, include brief context (what prompted it): "User mentioned X while discussing Y".
+- domain "identity" = facts about who the user IS (name, role, background).
+- domain "preference" = things the user likes/dislikes/prefers.
+- Skip tool calls, memory searches, system operations — only extract from conversation content.
+- Skip greetings, small talk, trivial exchanges.
+- NEVER extract system events: app starts/stops, CPU/memory/battery/network/disk changes, file operations, process lists. These are logged separately.
+- Max 5 memories per exchange."#;
 
 /// Extract and learn from a conversation exchange.
 ///
-/// Runs synchronously (LLM inference is in-process, fast for small models).
+/// The response_text should already be cleaned via `sanitize::clean_response_for_learning()`
+/// before calling this function.
 pub fn extract_and_learn(
     db: &YantrikDB,
     llm: &dyn LLMBackend,
     user_text: &str,
     response_text: &str,
+    evolution_config: &MemoryEvolutionConfig,
 ) {
     // Skip trivial exchanges
     if user_text.len() < 25 {
+        return;
+    }
+
+    // Skip if response was entirely tool output (cleaned to empty)
+    if response_text.is_empty() {
         return;
     }
 
@@ -46,7 +87,7 @@ pub fn extract_and_learn(
     ];
 
     let config = GenerationConfig {
-        max_tokens: 256,
+        max_tokens: 512,
         temperature: 0.0,
         top_p: None,
         ..Default::default()
@@ -89,29 +130,40 @@ pub fn extract_and_learn(
         return;
     }
 
-    // Record memory — with validation to prevent poisoning
-    let raw_memory_text = parsed
-        .get("memory_text")
-        .and_then(|v| v.as_str())
-        .unwrap_or_default();
-    let memory_type = parsed
-        .get("memory_type")
-        .and_then(|v| v.as_str())
-        .unwrap_or("episodic");
-    let importance = sanitize::clamp_importance(
-        parsed.get("importance").and_then(|v| v.as_f64()).unwrap_or(0.5)
-    );
-    let valence = sanitize::clamp_valence(
-        parsed.get("valence").and_then(|v| v.as_f64()).unwrap_or(0.0)
-    );
-    let raw_domain = parsed
-        .get("domain")
-        .and_then(|v| v.as_str())
-        .unwrap_or("general");
-    let domain = sanitize::validate_domain(raw_domain);
+    // V25: Parse memories array (with legacy single memory_text fallback)
+    let memory_entries = extract_memory_entries(&parsed);
+    let mut stored_count = 0;
 
-    // Validate memory text — reject injection attempts
-    if let Some(memory_text) = sanitize::validate_memory_text(raw_memory_text) {
+    for entry in memory_entries.into_iter().take(MAX_MEMORIES_PER_EXCHANGE) {
+        let raw_text = entry.get("text").and_then(|v| v.as_str()).unwrap_or_default();
+        let memory_type = entry.get("type").and_then(|v| v.as_str()).unwrap_or("episodic");
+        let importance = sanitize::clamp_importance(
+            entry.get("importance").and_then(|v| v.as_f64()).unwrap_or(0.5)
+        );
+        let valence = sanitize::clamp_valence(
+            entry.get("valence").and_then(|v| v.as_f64()).unwrap_or(0.0)
+        );
+        let raw_domain = entry.get("domain").and_then(|v| v.as_str()).unwrap_or("general");
+        let domain = sanitize::validate_domain(raw_domain);
+
+        // Validate memory text — reject injection attempts
+        let memory_text = match sanitize::validate_memory_text(raw_text) {
+            Some(t) => t,
+            None => continue,
+        };
+
+        // Reject system event text that the LLM shouldn't be memorizing
+        if SYSTEM_EVENT_PREFIXES.iter().any(|p| memory_text.starts_with(p)) {
+            tracing::debug!(memory_text, "Rejecting system event from learning");
+            continue;
+        }
+
+        // Write-time dedup gate: check if we already have this memory
+        if is_duplicate(db, &memory_text) {
+            tracing::debug!(memory_text, "Skipping duplicate memory");
+            continue;
+        }
+
         match db.record_text(
             &memory_text,
             memory_type,
@@ -125,37 +177,143 @@ pub fn extract_and_learn(
             "companion",
             None,
         ) {
-            Ok(rid) => tracing::debug!(rid, memory_text, "Learned from conversation"),
+            Ok(rid) => {
+                tracing::debug!(rid, memory_text, "Learned from conversation");
+                // Assign importance tier + variable half-life (Gap 5)
+                crate::memory_evolution::assign_memory_tier(
+                    db.conn(), &rid, importance, memory_type, domain, evolution_config,
+                );
+                stored_count += 1;
+
+                // Record per-memory entity relationships
+                if let Some(entities) = entry.get("entities").and_then(|v| v.as_array()) {
+                    for entity in entities.iter().take(3) {
+                        let source_raw = entity.get("source").and_then(|v| v.as_str()).unwrap_or("");
+                        let target_raw = entity.get("target").and_then(|v| v.as_str()).unwrap_or("");
+                        let rel_raw = entity
+                            .get("relationship")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("related_to");
+
+                        if let (Some(source), Some(target), Some(rel)) = (
+                            sanitize::validate_entity_field(source_raw),
+                            sanitize::validate_entity_field(target_raw),
+                            sanitize::validate_entity_field(rel_raw),
+                        ) {
+                            let _ = db.relate(source, target, rel, 1.0);
+                        }
+                    }
+                }
+            }
             Err(e) => tracing::warn!("Failed to record learned memory: {e}"),
         }
     }
 
-    // Record entity relationships — with validation
-    if let Some(entities) = parsed.get("entities").and_then(|v| v.as_array()) {
-        // Cap entity count to prevent flooding
-        for entity in entities.iter().take(5) {
-            let source_raw = entity.get("source").and_then(|v| v.as_str()).unwrap_or("");
-            let target_raw = entity.get("target").and_then(|v| v.as_str()).unwrap_or("");
-            let rel_raw = entity
-                .get("relationship")
-                .and_then(|v| v.as_str())
-                .unwrap_or("related_to");
-
-            // Validate each field for injection patterns
-            if let (Some(source), Some(target), Some(rel)) = (
-                sanitize::validate_entity_field(source_raw),
-                sanitize::validate_entity_field(target_raw),
-                sanitize::validate_entity_field(rel_raw),
-            ) {
-                if let Err(e) = db.relate(source, target, rel, 1.0) {
-                    tracing::debug!("Failed to record entity relation: {e}");
-                }
-            }
-        }
+    if stored_count > 0 {
+        tracing::debug!(stored_count, "Learning pass complete");
     }
 
     // Self-reflection pass (the companion observes itself)
     reflect_on_exchange(db, llm, user_text, response_text);
+}
+
+/// Extract memory entries from the LLM response.
+///
+/// Tries the V25 `memories` array first, falls back to legacy `memory_text` field,
+/// and splits compound memories as a last resort.
+fn extract_memory_entries(parsed: &serde_json::Value) -> Vec<serde_json::Value> {
+    // V25: Try `memories` array first
+    if let Some(memories) = parsed.get("memories").and_then(|v| v.as_array()) {
+        if !memories.is_empty() {
+            return memories.clone();
+        }
+    }
+
+    // Legacy fallback: single `memory_text` field
+    let raw_text = match parsed.get("memory_text").and_then(|v| v.as_str()) {
+        Some(t) if !t.is_empty() => t,
+        _ => return Vec::new(),
+    };
+
+    // If the legacy text is compound (pipe/semicolon separated, >150 chars), split it
+    if raw_text.len() > 150 {
+        return split_compound_memory(raw_text, parsed);
+    }
+
+    // Single atomic memory from legacy format
+    vec![serde_json::json!({
+        "text": raw_text,
+        "type": parsed.get("memory_type").and_then(|v| v.as_str()).unwrap_or("episodic"),
+        "importance": parsed.get("importance").and_then(|v| v.as_f64()).unwrap_or(0.5),
+        "valence": parsed.get("valence").and_then(|v| v.as_f64()).unwrap_or(0.0),
+        "domain": parsed.get("domain").and_then(|v| v.as_str()).unwrap_or("general"),
+        "entities": parsed.get("entities").cloned().unwrap_or(serde_json::json!([]))
+    })]
+}
+
+/// Split a compound memory text into atomic entries.
+///
+/// Handles pipe-separated ("fact1 | fact2"), semicolon-separated ("fact1; fact2"),
+/// and period-separated compound blobs.
+fn split_compound_memory(text: &str, parsed: &serde_json::Value) -> Vec<serde_json::Value> {
+    let parts: Vec<&str> = if text.contains(" | ") {
+        text.split(" | ").collect()
+    } else if text.contains("; ") {
+        text.split("; ").collect()
+    } else if text.matches(". ").count() >= 2 {
+        // Only split on periods if there are 3+ sentences
+        text.split(". ")
+            .filter(|s| s.len() > 10)
+            .collect()
+    } else {
+        return vec![serde_json::json!({
+            "text": text,
+            "type": parsed.get("memory_type").and_then(|v| v.as_str()).unwrap_or("episodic"),
+            "importance": parsed.get("importance").and_then(|v| v.as_f64()).unwrap_or(0.5),
+            "valence": parsed.get("valence").and_then(|v| v.as_f64()).unwrap_or(0.0),
+            "domain": parsed.get("domain").and_then(|v| v.as_str()).unwrap_or("general"),
+            "entities": serde_json::json!([])
+        })];
+    };
+
+    let base_importance = parsed.get("importance").and_then(|v| v.as_f64()).unwrap_or(0.5);
+    let base_valence = parsed.get("valence").and_then(|v| v.as_f64()).unwrap_or(0.0);
+    let memory_type = parsed.get("memory_type").and_then(|v| v.as_str()).unwrap_or("episodic");
+    let domain = parsed.get("domain").and_then(|v| v.as_str()).unwrap_or("general");
+
+    parts
+        .into_iter()
+        .map(|part| {
+            let trimmed = part.trim().trim_end_matches('.');
+            serde_json::json!({
+                "text": trimmed,
+                "type": memory_type,
+                "importance": base_importance,
+                "valence": base_valence,
+                "domain": domain,
+                "entities": serde_json::json!([])
+            })
+        })
+        .filter(|entry| {
+            entry.get("text")
+                .and_then(|v| v.as_str())
+                .map(|t| t.len() >= 10)
+                .unwrap_or(false)
+        })
+        .take(MAX_MEMORIES_PER_EXCHANGE)
+        .collect()
+}
+
+/// Check if a memory is a near-duplicate of an existing record.
+///
+/// Does one embed + one cosine lookup (~2ms). Returns true if best match >= threshold.
+pub fn is_duplicate(db: &YantrikDB, text: &str) -> bool {
+    match db.recall_text(text, 1) {
+        Ok(results) if !results.is_empty() => {
+            results[0].scores.similarity >= DEDUP_SIMILARITY_THRESHOLD
+        }
+        _ => false,
+    }
 }
 
 const SELF_REFLECTION_PROMPT: &str = r#"You just had a conversation with your user. Reflect briefly on the exchange from YOUR perspective as their companion.
@@ -169,6 +327,11 @@ Output valid JSON:
 
 Only reflect on meaningful exchanges. Skip trivial ones. Write in first person ("I noticed...", "I felt...", "I think I...")."#;
 
+/// Maximum self-reflections allowed per 30-minute window.
+const MAX_REFLECTIONS_PER_WINDOW: i64 = 1;
+/// Window duration in seconds for reflection rate-limiting.
+const REFLECTION_WINDOW_SECS: f64 = 1800.0; // 30 minutes
+
 /// Generate a self-reflection from the exchange and store as a self-memory.
 fn reflect_on_exchange(
     db: &YantrikDB,
@@ -178,6 +341,24 @@ fn reflect_on_exchange(
 ) {
     // Only reflect on substantial exchanges
     if user_text.len() < 50 {
+        return;
+    }
+
+    // Rate-limit: max 1 self-reflection per 30 minutes
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs_f64();
+    let cutoff = now - REFLECTION_WINDOW_SECS;
+    let recent_count: i64 = db.conn()
+        .query_row(
+            "SELECT COUNT(*) FROM memories WHERE source = 'self' AND created_at > ?1",
+            [cutoff],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
+    if recent_count >= MAX_REFLECTIONS_PER_WINDOW {
+        tracing::debug!(recent_count, "Self-reflection cap reached, skipping");
         return;
     }
 
@@ -241,6 +422,12 @@ fn reflect_on_exchange(
 
     // Validate reflection text — reject injection attempts
     if let Some(reflection_text) = sanitize::validate_memory_text(raw_reflection) {
+        // Write-time dedup for self-reflections too
+        if is_duplicate(db, &reflection_text) {
+            tracing::debug!(reflection_text, "Skipping duplicate self-reflection");
+            return;
+        }
+
         match db.record_text(
             &reflection_text,
             "semantic",
@@ -265,7 +452,7 @@ fn reflect_on_exchange(
 pub fn detect_humor_reaction(conn: &rusqlite::Connection, user_text: &str) {
     let lower = user_text.to_lowercase();
     let humor_indicators = [
-        "haha", "lol", "lmao", "rofl", "😂", "🤣",
+        "haha", "lol", "lmao", "rofl", "\u{1F602}", "\u{1F923}",
         "that's funny", "you're funny", "hilarious",
         "good one", "nice one", "made me laugh",
     ];

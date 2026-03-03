@@ -6,10 +6,10 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use slint::{ComponentHandle, Model, SharedString, Timer, VecModel};
+use slint::{ComponentHandle, Timer};
 
 use crate::app_context::AppContext;
-use crate::{apps, lens, streaming, App, MessageData};
+use crate::{apps, lens, streaming, App};
 
 /// Wire on_send_message and on_lens_submit callbacks.
 pub fn wire(ui: &App, ctx: &AppContext) {
@@ -29,27 +29,8 @@ fn wire_send_message(ui: &App, ctx: &AppContext) {
         if text.is_empty() {
             return;
         }
-        // Offline guard: show message instead of attempting LLM call
-        if !bridge.is_online() {
-            if let Some(ui) = ui_weak.upgrade() {
-                let messages = ui.get_messages();
-                let model = messages
-                    .as_any()
-                    .downcast_ref::<VecModel<MessageData>>()
-                    .unwrap();
-                model.push(MessageData {
-                    role: "user".into(),
-                    content: SharedString::from(&text),
-                    is_streaming: false,
-                });
-                model.push(MessageData {
-                    role: "assistant".into(),
-                    content: "I'm currently offline — the LLM backend isn't reachable. Apps, files, and settings still work normally.".into(),
-                    is_streaming: false,
-                });
-            }
-            return;
-        }
+        // V22: No offline guard — companion handles offline mode internally
+        // via OfflineResponder (memory recall + pattern matching + templates)
         streaming::start_ai_stream(ui_weak.clone(), &bridge, &text, &slot);
     });
 }
@@ -107,28 +88,7 @@ fn wire_lens_submit(ui: &App, ctx: &AppContext) {
             }
         }
 
-        // Otherwise treat as AI conversation — stream response
-        if !bridge.is_online() {
-            if let Some(ui) = ui_weak.upgrade() {
-                let messages = ui.get_messages();
-                let model = messages
-                    .as_any()
-                    .downcast_ref::<VecModel<MessageData>>()
-                    .unwrap();
-                model.push(MessageData {
-                    role: "user".into(),
-                    content: SharedString::from(&query),
-                    is_streaming: false,
-                });
-                model.push(MessageData {
-                    role: "assistant".into(),
-                    content: "I'm offline right now — check the LLM backend. You can still launch apps, browse files, and use settings.".into(),
-                    is_streaming: false,
-                });
-                ui.set_lens_chat_mode(true);
-            }
-            return;
-        }
+        // V22: No offline guard — companion handles offline mode internally
         streaming::start_ai_stream(ui_weak.clone(), &bridge, &query, &slot);
     });
 }

@@ -1,11 +1,9 @@
-# Yantrik OS — Ollama API Backend Configuration
-# Deploy to /opt/yantrik/config.yaml on the QEMU VM.
+# Yantrik OS — LLM API Backend Configuration
+# Deploy to /opt/yantrik/config.yaml on the VM.
 #
-# Uses Ollama running on the host machine via QEMU's gateway (10.0.2.2).
-# The LLM runs on the host GPU; only embeddings run in-process.
-#
-# To use on host directly (not QEMU), change api_base_url to:
-#   http://localhost:11434/v1
+# Uses llama-server (llama.cpp) running on the Windows host with CUDA GPU.
+# Model: Qwen3.5-4B Q4_K_M via OpenAI-compatible API.
+# Model repo: http://192.168.4.92:8888/ (LXC on Proxmox node2)
 
 user_name: "Pranab"
 
@@ -21,11 +19,11 @@ personality:
     and proactively help when something needs attention.
 
 llm:
-  backend: "ollama"
-  api_base_url: "http://10.0.2.2:11434/v1"   # QEMU host gateway
-  api_model: "qwen2.5:3b-instruct-q4_K_M"
+  backend: "api"
+  api_base_url: "http://192.168.4.35:8081/v1"  # llama-server on Windows host (CUDA)
+  api_model: "qwen3.5-4b"
   max_tokens: 1024
-  temperature: 0.7
+  temperature: 0.6
   max_context_tokens: 16384
 
 server:
@@ -72,6 +70,11 @@ urges:
 bond:
   enabled: true
 
+proactive:
+  enabled: true
+  delivery_threshold: 0.7    # urgency threshold for auto-delivery
+  cooldown_minutes: 30        # min time between proactive messages
+
 evolution:
   formality_alpha: 0.05
   opinion_threshold: 3
@@ -79,6 +82,27 @@ evolution:
 narrative:
   update_interval_interactions: 10
   max_tokens: 300
+
+memory_evolution:
+  smart_recall_enabled: true
+  max_extra_recall_calls: 2
+  max_recall_memories: 8
+  cross_domain_enabled: true
+  consolidation_enabled: true
+  consolidation_interval_hours: 6
+  duplicate_similarity_threshold: 0.85
+  reference_freshness_enabled: true
+  reference_freshness_half_life_days: 14.0
+  variable_halflife_enabled: true
+  pruning_interval_hours: 24
+  tier_half_lives:
+    core: 31536000
+    significant: 5184000
+    routine: 604800
+    ephemeral: 86400
+  weaving_enabled: true
+  weaving_interval_hours: 2
+  weaving_batch_size: 15
 
 system:
   mock: false

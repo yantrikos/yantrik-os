@@ -41,6 +41,7 @@ impl Instinct for ReminderInstinct {
 
                 UrgeSpec::new("reminder", reason, urgency)
                     .with_cooldown(&format!("reminder:{trigger_id}"))
+                    .with_message(&format!("Reminder: {reason}"))
                     .with_context(ctx)
             })
             .collect()

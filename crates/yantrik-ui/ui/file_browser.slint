@@ -1,6 +1,7 @@
-// File browser — visual file navigation with operations.
-// Screen 8. Breadcrumb path, colored icons, file operations.
+// File browser — full-featured file navigation with sidebar, status bar.
+// Screen 8. Sidebar (Places/Devices) + breadcrumb + list + details panel.
 // Wrapped in WindowFrame by app.slint — no internal header needed.
+// Firelight treatment: glassmorphism, holographic glows, gradient accents.
 
 import { Theme } from "theme.slint";
 import { ListView, LineEdit } from "std-widgets.slint";
@@ -18,6 +19,18 @@ export struct BreadcrumbSegment {
     full-path: string,
 }
 
+export struct FileDetailData {
+    name: string,
+    file-type: string,
+    size-text: string,
+    modified-text: string,
+    path-text: string,
+    permissions: string,
+    preview-text: string,
+    is-text-file: bool,
+    icon-char: string,
+}
+
 export component FileBrowser inherits Rectangle {
     background: transparent;
 
@@ -28,6 +41,17 @@ export component FileBrowser inherits Rectangle {
     in property <bool> has-clipboard: false;
     in-out property <bool> show-hidden: false;
     in-out property <int> selected-index: -1;
+    in property <FileDetailData> file-details;
+    in property <string> free-space-text: "";
+    in property <bool> can-go-back: false;
+    in property <bool> can-go-forward: false;
+
+    // AI features
+    in property <string> ai-summary: "";
+    in property <bool> is-summarizing: false;
+    in property <string> dir-type-badge: "";
+    callback request-summarize();
+    callback request-ask-ai();
 
     // Dialog state
     property <bool> show-rename-dialog: false;
@@ -37,10 +61,13 @@ export component FileBrowser inherits Rectangle {
     property <string> delete-target-name: "";
     property <bool> show-new-folder-dialog: false;
     property <string> new-folder-name: "";
+    property <bool> show-summary-dialog: false;
 
     callback navigate-dir(string);
     callback open-file(string);
     callback go-up();
+    callback go-back();
+    callback go-forward();
     callback navigate-to-path(string);
     callback toggle-hidden();
     callback file-delete(string);
@@ -49,508 +76,1154 @@ export component FileBrowser inherits Rectangle {
     callback file-cut(string);
     callback file-paste();
     callback create-folder(string);
+    callback file-selection-changed(string);
+    callback file-sort-changed(string, bool);
+    callback file-filter-changed(string);
+
+    // Sort state
+    property <string> sort-field: "name";
+    property <bool> sort-ascending: true;
+
+    // Search state
+    property <bool> search-active: false;
+    property <string> search-text: "";
+
+    // Address bar state
+    property <bool> address-editing: false;
 
     VerticalLayout {
         spacing: 0px;
 
-        // ── Breadcrumb bar with integrated toolbar ──
+        // ── Navigation bar — glass gradient with back/forward/up/home + breadcrumbs ──
         Rectangle {
             height: 40px;
-            background: Theme.bg-surface;
+            background: @linear-gradient(180deg,
+                #1a1830c0 0%,
+                #141228b0 100%
+            );
+
+            // Bottom holographic edge
+            Rectangle {
+                y: parent.height - 1px;
+                width: 100%;
+                height: 1px;
+                background: @linear-gradient(90deg,
+                    transparent 5%,
+                    #5ac8d430 20%,
+                    #5ac8d880 50%,
+                    #5ac8d430 80%,
+                    transparent 95%
+                );
+            }
 
             HorizontalLayout {
-                padding-left: 12px;
+                padding-left: 8px;
                 padding-right: 8px;
-                spacing: 4px;
+                spacing: 2px;
 
-                // Up button
-                TouchArea {
-                    width: 32px; height: 32px;
-                    clicked => { root.go-up(); }
+                // Back button
+                back-btn := TouchArea {
+                    width: 28px; height: 32px;
+                    clicked => { root.selected-index = -1; root.go-back(); }
                     Rectangle {
                         border-radius: 6px;
-                        background: parent.has-hover ? Theme.bg-elevated : transparent;
+                        background: back-btn.has-hover && root.can-go-back
+                            ? @radial-gradient(circle, #5ac8d418 0%, #12111a 100%)
+                            : transparent;
+                        animate background { duration: 120ms; }
                         Text {
-                            text: "↑";
-                            color: Theme.text-secondary;
-                            font-size: 18px;
+                            text: "◁";
+                            color: root.can-go-back ? (back-btn.has-hover ? Theme.cyan : Theme.text-secondary) : Theme.text-dim;
+                            font-size: 14px;
                             horizontal-alignment: center;
                             vertical-alignment: center;
+                            animate color { duration: 120ms; }
                         }
                     }
                 }
 
-                // Breadcrumb segments
-                for seg[idx] in root.breadcrumbs : HorizontalLayout {
+                // Forward button
+                fwd-btn := TouchArea {
+                    width: 28px; height: 32px;
+                    clicked => { root.selected-index = -1; root.go-forward(); }
+                    Rectangle {
+                        border-radius: 6px;
+                        background: fwd-btn.has-hover && root.can-go-forward
+                            ? @radial-gradient(circle, #5ac8d418 0%, #12111a 100%)
+                            : transparent;
+                        animate background { duration: 120ms; }
+                        Text {
+                            text: "▷";
+                            color: root.can-go-forward ? (fwd-btn.has-hover ? Theme.cyan : Theme.text-secondary) : Theme.text-dim;
+                            font-size: 14px;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                            animate color { duration: 120ms; }
+                        }
+                    }
+                }
+
+                // Up button
+                up-btn := TouchArea {
+                    width: 28px; height: 32px;
+                    clicked => { root.selected-index = -1; root.go-up(); }
+                    Rectangle {
+                        border-radius: 6px;
+                        background: up-btn.has-hover
+                            ? @radial-gradient(circle, #5ac8d418 0%, #12111a 100%)
+                            : transparent;
+                        animate background { duration: 120ms; }
+                        Text {
+                            text: "↑";
+                            color: up-btn.has-hover ? Theme.cyan : Theme.text-secondary;
+                            font-size: 16px;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                            animate color { duration: 120ms; }
+                        }
+                    }
+                }
+
+                // Home button
+                home-btn := TouchArea {
+                    width: 28px; height: 32px;
+                    clicked => { root.selected-index = -1; root.navigate-to-path("~"); }
+                    Rectangle {
+                        border-radius: 6px;
+                        background: home-btn.has-hover
+                            ? @radial-gradient(circle, #5ac8d418 0%, #12111a 100%)
+                            : transparent;
+                        animate background { duration: 120ms; }
+                        Text {
+                            text: "⌂";
+                            color: home-btn.has-hover ? Theme.cyan : Theme.text-secondary;
+                            font-size: 16px;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                            animate color { duration: 120ms; }
+                        }
+                    }
+                }
+
+                // Separator
+                Rectangle {
+                    width: 1px; height: 24px;
+                    background: #ffffff14;
+                }
+
+                // Breadcrumb / editable address bar toggle
+                if !root.address-editing : HorizontalLayout {
+                    horizontal-stretch: 1;
+                    spacing: 0px;
+
+                    // Double-click area to enter address editing
+                    addr-click := TouchArea {
+                        horizontal-stretch: 1;
+                        double-clicked => { root.address-editing = true; }
+
+                        HorizontalLayout {
+                            spacing: 0px;
+
+                            for seg[idx] in root.breadcrumbs : HorizontalLayout {
+                                spacing: 4px;
+
+                                if idx > 0 : Text {
+                                    text: "/";
+                                    color: Theme.text-dim;
+                                    font-size: Theme.font-small;
+                                    vertical-alignment: center;
+                                }
+
+                                TouchArea {
+                                    height: 28px;
+                                    width: seg-text.preferred-width + 12px;
+                                    clicked => { root.selected-index = -1; root.navigate-to-path(seg.full-path); }
+
+                                    Rectangle {
+                                        border-radius: 4px;
+                                        background: parent.has-hover
+                                            ? @radial-gradient(circle, #5ac8d410 0%, transparent 100%)
+                                            : transparent;
+                                        animate background { duration: 120ms; }
+
+                                        seg-text := Text {
+                                            text: seg.label;
+                                            color: idx == root.breadcrumbs.length - 1 ? Theme.cyan : Theme.cyan-dim;
+                                            font-size: Theme.font-small;
+                                            font-weight: idx == root.breadcrumbs.length - 1 ? 600 : 400;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                }
+                            }
+
+                            Rectangle { horizontal-stretch: 1; }
+                        }
+                    }
+                }
+
+                // Editable address bar (shown when address-editing is true)
+                if root.address-editing : HorizontalLayout {
+                    horizontal-stretch: 1;
                     spacing: 4px;
 
-                    if idx > 0 : Text {
-                        text: "/";
-                        color: Theme.text-dim;
-                        font-size: Theme.font-small;
-                        vertical-alignment: center;
+                    addr-input := LineEdit {
+                        horizontal-stretch: 1;
+                        text: root.current-path;
+                        accepted(t) => {
+                            root.address-editing = false;
+                            root.selected-index = -1;
+                            root.navigate-to-path(t);
+                        }
                     }
 
-                    TouchArea {
-                        height: 28px;
-                        width: seg-text.preferred-width + 12px;
-                        clicked => { root.navigate-to-path(seg.full-path); }
-
+                    // Cancel button
+                    addr-cancel := TouchArea {
+                        width: 28px; height: 28px;
+                        clicked => { root.address-editing = false; }
                         Rectangle {
-                            border-radius: 4px;
-                            background: parent.has-hover ? Theme.bg-elevated : transparent;
-                            seg-text := Text {
-                                text: seg.label;
-                                color: idx == root.breadcrumbs.length - 1 ? Theme.cyan : Theme.cyan-dim;
-                                font-size: Theme.font-small;
-                                font-weight: idx == root.breadcrumbs.length - 1 ? 600 : 400;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
-                            }
+                            border-radius: 6px;
+                            background: addr-cancel.has-hover ? #e0525220 : transparent;
+                            animate background { duration: 120ms; }
+                            Text { text: "✕"; color: addr-cancel.has-hover ? #e05252 : Theme.text-dim; font-size: 12px; horizontal-alignment: center; vertical-alignment: center; }
                         }
                     }
                 }
 
-                // Spacer
-                Rectangle { horizontal-stretch: 1; }
+                // Spacer (only when not in address editing mode and breadcrumbs don't stretch)
+                if root.address-editing : Rectangle { }
 
-                // Toolbar buttons (right side)
+                // Toolbar buttons
                 HorizontalLayout {
                     spacing: 2px;
                     alignment: end;
 
-                    // New folder
-                    TouchArea {
-                        width: 32px; height: 32px;
-                        clicked => {
-                            root.new-folder-name = "";
-                            root.show-new-folder-dialog = true;
-                        }
+                    // Search toggle / inline filter
+                    if !root.search-active : search-btn := TouchArea {
+                        width: 28px; height: 32px;
+                        clicked => { root.search-active = true; root.search-text = ""; }
                         Rectangle {
                             border-radius: 6px;
-                            background: parent.has-hover ? Theme.bg-elevated : transparent;
-                            Text {
-                                text: "+";
-                                color: Theme.cyan;
-                                font-size: 18px;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
+                            background: search-btn.has-hover
+                                ? @radial-gradient(circle, #5ac8d418 0%, #12111a 100%) : transparent;
+                            animate background { duration: 120ms; }
+                            Text { text: "⌕"; color: search-btn.has-hover ? Theme.cyan : Theme.text-dim; font-size: 15px; horizontal-alignment: center; vertical-alignment: center; }
+                        }
+                    }
+
+                    if root.search-active : HorizontalLayout {
+                        spacing: 2px;
+
+                        filter-input := LineEdit {
+                            width: 160px;
+                            placeholder-text: "Filter...";
+                            text: root.search-text;
+                            edited(t) => { root.search-text = t; root.file-filter-changed(t); }
+                            accepted(t) => { /* keep filter active */ }
+                        }
+
+                        filter-close := TouchArea {
+                            width: 24px; height: 28px;
+                            clicked => { root.search-active = false; root.search-text = ""; root.file-filter-changed(""); }
+                            Rectangle {
+                                border-radius: 6px;
+                                background: filter-close.has-hover ? #e0525220 : transparent;
+                                animate background { duration: 120ms; }
+                                Text { text: "✕"; color: filter-close.has-hover ? #e05252 : Theme.text-dim; font-size: 11px; horizontal-alignment: center; vertical-alignment: center; }
                             }
                         }
                     }
 
-                    // Paste (only when clipboard has content)
+                    // Address bar toggle
+                    addr-btn := TouchArea {
+                        width: 28px; height: 32px;
+                        clicked => { root.address-editing = !root.address-editing; }
+                        Rectangle {
+                            border-radius: 6px;
+                            background: addr-btn.has-hover
+                                ? @radial-gradient(circle, #5ac8d418 0%, #12111a 100%) : transparent;
+                            animate background { duration: 120ms; }
+                            Text {
+                                text: "/";
+                                color: root.address-editing ? Theme.cyan : (addr-btn.has-hover ? Theme.cyan : Theme.text-dim);
+                                font-size: 15px; font-weight: 700;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                                animate color { duration: 120ms; }
+                            }
+                        }
+                    }
+
+                    // New folder
+                    newfolder-btn := TouchArea {
+                        width: 28px; height: 32px;
+                        clicked => { root.new-folder-name = ""; root.show-new-folder-dialog = true; }
+                        Rectangle {
+                            border-radius: 6px;
+                            background: newfolder-btn.has-hover
+                                ? @radial-gradient(circle, #5ac8d418 0%, #12111a 100%) : transparent;
+                            animate background { duration: 120ms; }
+                            Text {
+                                text: "+";
+                                color: newfolder-btn.has-hover ? Theme.cyan : Theme.cyan-dim;
+                                font-size: 18px;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                                animate color { duration: 120ms; }
+                            }
+                        }
+                    }
+
+                    // Paste
                     if root.has-clipboard : TouchArea {
-                        width: 32px; height: 32px;
+                        width: 28px; height: 32px;
                         clicked => { root.file-paste(); }
                         Rectangle {
                             border-radius: 6px;
-                            background: parent.has-hover ? Theme.bg-elevated : transparent;
+                            background: parent.has-hover
+                                ? @radial-gradient(circle, #5ac8d418 0%, #12111a 100%) : transparent;
+                            animate background { duration: 120ms; }
+                            Text { text: "📋"; font-size: 13px; horizontal-alignment: center; vertical-alignment: center; }
+                        }
+                    }
+
+                    // Toggle hidden
+                    hidden-btn := TouchArea {
+                        width: 28px; height: 32px;
+                        clicked => { root.selected-index = -1; root.toggle-hidden(); }
+                        Rectangle {
+                            border-radius: 6px;
+                            background: hidden-btn.has-hover
+                                ? @radial-gradient(circle, #5ac8d418 0%, #12111a 100%) : transparent;
+                            animate background { duration: 120ms; }
                             Text {
-                                text: "📋";
+                                text: root.show-hidden ? "◉" : "◎";
+                                color: root.show-hidden ? Theme.cyan : Theme.text-dim;
                                 font-size: 14px;
                                 horizontal-alignment: center;
                                 vertical-alignment: center;
                             }
                         }
                     }
+                }
+            }
+        }
 
-                    // Toggle hidden
-                    TouchArea {
-                        width: 32px; height: 32px;
-                        clicked => { root.toggle-hidden(); }
-                        Rectangle {
-                            border-radius: 6px;
-                            background: parent.has-hover ? Theme.bg-elevated : transparent;
+        // ── Main body: sidebar + file list ──
+        HorizontalLayout {
+            vertical-stretch: 1;
+            spacing: 0px;
+
+            // ── Left sidebar — Places & Devices ──
+            Rectangle {
+                width: 160px;
+                background: @linear-gradient(180deg,
+                    #12102808 0%,
+                    #0e0c2008 100%
+                );
+
+                // Right border
+                Rectangle {
+                    x: parent.width - 1px;
+                    width: 1px;
+                    height: 100%;
+                    background: @linear-gradient(180deg,
+                        #5ac8d420 0%,
+                        #ffffff10 50%,
+                        #5ac8d420 100%
+                    );
+                }
+
+                Flickable {
+                    width: parent.width - 1px;
+                    height: parent.height;
+                    viewport-height: sidebar-col.preferred-height;
+
+                    sidebar-col := VerticalLayout {
+                        padding: 8px;
+                        padding-top: 12px;
+                        spacing: 2px;
+
+                        // ── Places section ──
+                        Text {
+                            text: "Places";
+                            color: Theme.text-dim;
+                            font-size: 11px;
+                            font-weight: 600;
+                            letter-spacing: 1.5px;
+                        }
+
+                        Rectangle { height: 4px; }
+
+                        // Home
+                        sb-home := TouchArea {
+                            height: 30px;
+                            clicked => { root.selected-index = -1; root.navigate-to-path("~"); }
+                            Rectangle {
+                                border-radius: 6px;
+                                background: sb-home.has-hover
+                                    ? @linear-gradient(90deg, #5ac8d418 0%, transparent 100%)
+                                    : (root.current-path == "~" || root.current-path == "/home/yantrik"
+                                        ? @linear-gradient(90deg, #5ac8d410 0%, transparent 100%)
+                                        : transparent);
+                                animate background { duration: 120ms; }
+                                HorizontalLayout {
+                                    padding-left: 8px;
+                                    spacing: 8px;
+                                    Rectangle {
+                                        width: 20px; height: 20px; border-radius: 5px;
+                                        background: @radial-gradient(circle, #3a9ac8 0%, #10101040 100%);
+                                        border-width: 1px; border-color: #3a9ac840;
+                                        Text { text: "⌂"; color: #ffffffe0; font-size: 11px; horizontal-alignment: center; vertical-alignment: center; }
+                                    }
+                                    Text { text: "Home"; color: sb-home.has-hover ? Theme.cyan : Theme.text-secondary; font-size: 12px; vertical-alignment: center; animate color { duration: 120ms; } }
+                                }
+                            }
+                        }
+
+                        // Documents
+                        sb-docs := TouchArea {
+                            height: 30px;
+                            clicked => { root.selected-index = -1; root.navigate-to-path("~/Documents"); }
+                            Rectangle {
+                                border-radius: 6px;
+                                background: sb-docs.has-hover
+                                    ? @linear-gradient(90deg, #5ac8d418 0%, transparent 100%) : transparent;
+                                animate background { duration: 120ms; }
+                                HorizontalLayout {
+                                    padding-left: 8px;
+                                    spacing: 8px;
+                                    Rectangle {
+                                        width: 20px; height: 20px; border-radius: 5px;
+                                        background: @radial-gradient(circle, #5a7abd 0%, #10101040 100%);
+                                        border-width: 1px; border-color: #5a7abd40;
+                                        Text { text: "≡"; color: #ffffffe0; font-size: 11px; horizontal-alignment: center; vertical-alignment: center; }
+                                    }
+                                    Text { text: "Documents"; color: sb-docs.has-hover ? Theme.cyan : Theme.text-secondary; font-size: 12px; vertical-alignment: center; animate color { duration: 120ms; } }
+                                }
+                            }
+                        }
+
+                        // Downloads
+                        sb-dl := TouchArea {
+                            height: 30px;
+                            clicked => { root.selected-index = -1; root.navigate-to-path("~/Downloads"); }
+                            Rectangle {
+                                border-radius: 6px;
+                                background: sb-dl.has-hover
+                                    ? @linear-gradient(90deg, #5ac8d418 0%, transparent 100%) : transparent;
+                                animate background { duration: 120ms; }
+                                HorizontalLayout {
+                                    padding-left: 8px;
+                                    spacing: 8px;
+                                    Rectangle {
+                                        width: 20px; height: 20px; border-radius: 5px;
+                                        background: @radial-gradient(circle, #3aad6a 0%, #10101040 100%);
+                                        border-width: 1px; border-color: #3aad6a40;
+                                        Text { text: "↓"; color: #ffffffe0; font-size: 11px; horizontal-alignment: center; vertical-alignment: center; }
+                                    }
+                                    Text { text: "Downloads"; color: sb-dl.has-hover ? Theme.cyan : Theme.text-secondary; font-size: 12px; vertical-alignment: center; animate color { duration: 120ms; } }
+                                }
+                            }
+                        }
+
+                        // Pictures
+                        sb-pics := TouchArea {
+                            height: 30px;
+                            clicked => { root.selected-index = -1; root.navigate-to-path("~/Pictures"); }
+                            Rectangle {
+                                border-radius: 6px;
+                                background: sb-pics.has-hover
+                                    ? @linear-gradient(90deg, #5ac8d418 0%, transparent 100%) : transparent;
+                                animate background { duration: 120ms; }
+                                HorizontalLayout {
+                                    padding-left: 8px;
+                                    spacing: 8px;
+                                    Rectangle {
+                                        width: 20px; height: 20px; border-radius: 5px;
+                                        background: @radial-gradient(circle, #9a4a9a 0%, #10101040 100%);
+                                        border-width: 1px; border-color: #9a4a9a40;
+                                        Text { text: "▣"; color: #ffffffe0; font-size: 11px; horizontal-alignment: center; vertical-alignment: center; }
+                                    }
+                                    Text { text: "Pictures"; color: sb-pics.has-hover ? Theme.cyan : Theme.text-secondary; font-size: 12px; vertical-alignment: center; animate color { duration: 120ms; } }
+                                }
+                            }
+                        }
+
+                        // Music
+                        sb-music := TouchArea {
+                            height: 30px;
+                            clicked => { root.selected-index = -1; root.navigate-to-path("~/Music"); }
+                            Rectangle {
+                                border-radius: 6px;
+                                background: sb-music.has-hover
+                                    ? @linear-gradient(90deg, #5ac8d418 0%, transparent 100%) : transparent;
+                                animate background { duration: 120ms; }
+                                HorizontalLayout {
+                                    padding-left: 8px;
+                                    spacing: 8px;
+                                    Rectangle {
+                                        width: 20px; height: 20px; border-radius: 5px;
+                                        background: @radial-gradient(circle, #c89a3a 0%, #10101040 100%);
+                                        border-width: 1px; border-color: #c89a3a40;
+                                        Text { text: "♪"; color: #ffffffe0; font-size: 11px; horizontal-alignment: center; vertical-alignment: center; }
+                                    }
+                                    Text { text: "Music"; color: sb-music.has-hover ? Theme.cyan : Theme.text-secondary; font-size: 12px; vertical-alignment: center; animate color { duration: 120ms; } }
+                                }
+                            }
+                        }
+
+                        Rectangle { height: 12px; }
+
+                        // ── Devices section ──
+                        Text {
+                            text: "Devices";
+                            color: Theme.text-dim;
+                            font-size: 11px;
+                            font-weight: 600;
+                            letter-spacing: 1.5px;
+                        }
+
+                        Rectangle { height: 4px; }
+
+                        // File System
+                        sb-root := TouchArea {
+                            height: 30px;
+                            clicked => { root.selected-index = -1; root.navigate-to-path("/"); }
+                            Rectangle {
+                                border-radius: 6px;
+                                background: sb-root.has-hover
+                                    ? @linear-gradient(90deg, #5ac8d418 0%, transparent 100%) : transparent;
+                                animate background { duration: 120ms; }
+                                HorizontalLayout {
+                                    padding-left: 8px;
+                                    spacing: 8px;
+                                    Rectangle {
+                                        width: 20px; height: 20px; border-radius: 5px;
+                                        background: @radial-gradient(circle, #6a6a7a 0%, #10101040 100%);
+                                        border-width: 1px; border-color: #6a6a7a40;
+                                        Text { text: "◉"; color: #ffffffe0; font-size: 11px; horizontal-alignment: center; vertical-alignment: center; }
+                                    }
+                                    Text { text: "File System"; color: sb-root.has-hover ? Theme.cyan : Theme.text-secondary; font-size: 12px; vertical-alignment: center; animate color { duration: 120ms; } }
+                                }
+                            }
+                        }
+
+                        // /tmp
+                        sb-tmp := TouchArea {
+                            height: 30px;
+                            clicked => { root.selected-index = -1; root.navigate-to-path("/tmp"); }
+                            Rectangle {
+                                border-radius: 6px;
+                                background: sb-tmp.has-hover
+                                    ? @linear-gradient(90deg, #5ac8d418 0%, transparent 100%) : transparent;
+                                animate background { duration: 120ms; }
+                                HorizontalLayout {
+                                    padding-left: 8px;
+                                    spacing: 8px;
+                                    Rectangle {
+                                        width: 20px; height: 20px; border-radius: 5px;
+                                        background: @radial-gradient(circle, #bd5a4a 0%, #10101040 100%);
+                                        border-width: 1px; border-color: #bd5a4a40;
+                                        Text { text: "T"; color: #ffffffe0; font-size: 11px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; }
+                                    }
+                                    Text { text: "Temp"; color: sb-tmp.has-hover ? Theme.cyan : Theme.text-secondary; font-size: 12px; vertical-alignment: center; animate color { duration: 120ms; } }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ── Right: file list area ──
+            VerticalLayout {
+                horizontal-stretch: 1;
+                spacing: 0px;
+
+                // ── Column headers ──
+                Rectangle {
+                    height: 28px;
+                    background: @linear-gradient(180deg, #16142808 0%, #12102808 100%);
+
+                    // Bottom edge
+                    Rectangle {
+                        y: parent.height - 1px; width: 100%; height: 1px;
+                        background: @linear-gradient(90deg, transparent 5%, #ffffff10 30%, #ffffff10 70%, transparent 95%);
+                    }
+
+                    HorizontalLayout {
+                        padding-left: 50px; // align with file names (icon badge 28px + 12px pad + 10px gap)
+                        padding-right: 8px;
+                        spacing: 10px;
+
+                        // Name header
+                        name-hdr := TouchArea {
+                            horizontal-stretch: 1; height: 28px;
+                            clicked => {
+                                if root.sort-field == "name" { root.sort-ascending = !root.sort-ascending; }
+                                else { root.sort-field = "name"; root.sort-ascending = true; }
+                                root.file-sort-changed(root.sort-field, root.sort-ascending);
+                            }
+                            HorizontalLayout {
+                                spacing: 4px;
+                                Text {
+                                    text: "Name";
+                                    color: root.sort-field == "name" ? Theme.cyan : (name-hdr.has-hover ? Theme.text-secondary : Theme.text-dim);
+                                    font-size: 11px; font-weight: 600;
+                                    vertical-alignment: center;
+                                    animate color { duration: 120ms; }
+                                }
+                                if root.sort-field == "name" : Text {
+                                    text: root.sort-ascending ? "▲" : "▼";
+                                    color: Theme.cyan-dim; font-size: 9px; vertical-alignment: center;
+                                }
+                            }
+                        }
+
+                        // Size header
+                        size-hdr := TouchArea {
+                            width: 80px; height: 28px;
+                            clicked => {
+                                if root.sort-field == "size" { root.sort-ascending = !root.sort-ascending; }
+                                else { root.sort-field = "size"; root.sort-ascending = false; }
+                                root.file-sort-changed(root.sort-field, root.sort-ascending);
+                            }
+                            HorizontalLayout {
+                                spacing: 4px;
+                                Text {
+                                    text: "Size";
+                                    color: root.sort-field == "size" ? Theme.cyan : (size-hdr.has-hover ? Theme.text-secondary : Theme.text-dim);
+                                    font-size: 11px; font-weight: 600;
+                                    vertical-alignment: center;
+                                    animate color { duration: 120ms; }
+                                }
+                                if root.sort-field == "size" : Text {
+                                    text: root.sort-ascending ? "▲" : "▼";
+                                    color: Theme.cyan-dim; font-size: 9px; vertical-alignment: center;
+                                }
+                            }
+                        }
+
+                        // Modified header
+                        mod-hdr := TouchArea {
+                            width: 80px; height: 28px;
+                            clicked => {
+                                if root.sort-field == "modified" { root.sort-ascending = !root.sort-ascending; }
+                                else { root.sort-field = "modified"; root.sort-ascending = true; }
+                                root.file-sort-changed(root.sort-field, root.sort-ascending);
+                            }
+                            HorizontalLayout {
+                                spacing: 4px;
+                                Text {
+                                    text: "Modified";
+                                    color: root.sort-field == "modified" ? Theme.cyan : (mod-hdr.has-hover ? Theme.text-secondary : Theme.text-dim);
+                                    font-size: 11px; font-weight: 600;
+                                    vertical-alignment: center;
+                                    animate color { duration: 120ms; }
+                                }
+                                if root.sort-field == "modified" : Text {
+                                    text: root.sort-ascending ? "▲" : "▼";
+                                    color: Theme.cyan-dim; font-size: 9px; vertical-alignment: center;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // ── File list ──
+                ListView {
+                    vertical-stretch: 1;
+
+                    for entry[idx] in entries : Rectangle {
+                        height: 44px;
+                        background: idx == root.selected-index
+                            ? @linear-gradient(90deg, #5ac8d420 0%, #5ac8d80c 40%, transparent 100%)
+                            : (file-touch.has-hover
+                                ? @linear-gradient(90deg, #ffffff0a 0%, #ffffff04 40%, transparent 100%)
+                                : transparent);
+                        animate background { duration: 120ms; }
+
+                        // Left edge glow on selected
+                        if idx == root.selected-index : Rectangle {
+                            x: 0; width: 3px; height: parent.height;
+                            background: Theme.cyan;
+                            drop-shadow-blur: 8px;
+                            drop-shadow-color: Theme.cyan-glow;
+                        }
+
+                        file-touch := TouchArea {
+                            clicked => {
+                                if entry.is-dir {
+                                    root.selected-index = -1;
+                                    root.navigate-dir(entry.name);
+                                } else {
+                                    if root.selected-index == idx {
+                                        root.selected-index = -1;
+                                        root.open-file(entry.name);
+                                    } else {
+                                        root.selected-index = idx;
+                                        root.file-selection-changed(entry.name);
+                                    }
+                                }
+                            }
+                        }
+
+                        HorizontalLayout {
+                            padding-left: 12px;
+                            padding-right: 8px;
+                            spacing: 10px;
+
+                            // Vivid icon badge
+                            Rectangle {
+                                property <color> badge-color:
+                                    entry.is-dir ? #3a9ac8 :
+                                    entry.icon-char == "◇" ? #3aad6a :
+                                    entry.icon-char == "≡" ? #5a7abd :
+                                    entry.icon-char == "▣" ? #9a4a9a :
+                                    entry.icon-char == "♪" ? #c89a3a :
+                                    entry.icon-char == "▶" ? #c84a5a :
+                                    entry.icon-char == "▤" ? #7a8a6a :
+                                    entry.icon-char == "▧" ? #bd5a4a :
+                                    entry.icon-char == "⚙" ? #4a7abd :
+                                    entry.icon-char == "·" ? #6a6a7a :
+                                    #5a5a7a;
+                                width: 28px;
+                                height: 28px;
+                                border-radius: 7px;
+                                background: @radial-gradient(circle, badge-color, #10101040);
+                                border-width: 1px;
+                                border-color: badge-color;
+                                drop-shadow-blur: file-touch.has-hover ? 10px : 3px;
+                                drop-shadow-color: badge-color;
+                                animate drop-shadow-blur { duration: 120ms; }
+
+                                Text {
+                                    text: entry.icon-char;
+                                    color: #ffffffe0;
+                                    font-size: 13px;
+                                    font-weight: 700;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                            }
+
+                            // Name
                             Text {
-                                text: root.show-hidden ? "◉" : "◎";
-                                color: root.show-hidden ? Theme.cyan : Theme.text-dim;
-                                font-size: 16px;
-                                horizontal-alignment: center;
+                                text: entry.name;
+                                color: entry.is-dir ? Theme.cyan-light : Theme.text-primary;
+                                font-size: Theme.font-body;
+                                font-weight: entry.is-dir ? 600 : 400;
+                                vertical-alignment: center;
+                                horizontal-stretch: 1;
+                                overflow: elide;
+                            }
+
+                            // Size
+                            if !entry.is-dir : Text {
+                                text: entry.size-text;
+                                color: Theme.text-dim;
+                                font-size: Theme.font-small;
+                                vertical-alignment: center;
+                            }
+
+                            // Modified
+                            Text {
+                                text: entry.modified-text;
+                                color: Theme.text-dim;
+                                font-size: Theme.font-small;
                                 vertical-alignment: center;
                             }
                         }
+
+                        // Row separator
+                        Rectangle {
+                            y: parent.height - 1px;
+                            height: 1px;
+                            background: @linear-gradient(90deg,
+                                #5ac8d410 0%, #ffffff14 20%, #ffffff14 80%, #5ac8d410 100%
+                            );
+                        }
                     }
                 }
-            }
-        }
 
-        // Separator
-        Rectangle { height: 1px; background: Theme.separator; }
+                // ── Action bar ──
+                if root.selected-index >= 0 && root.selected-index < root.entries.length : Rectangle {
+                    height: 48px;
+                    background: @linear-gradient(180deg, #1a1830c0 0%, #141228b0 100%);
+                    // Top holographic edge
+                    Rectangle {
+                        y: 0; width: 100%; height: 1px;
+                        background: @linear-gradient(90deg, transparent 5%, #5ac8d430 20%, #5ac8d880 50%, #5ac8d430 80%, transparent 95%);
+                    }
 
-        // ── File list ──
-        ListView {
-            vertical-stretch: 1;
+                    HorizontalLayout {
+                        padding-left: 16px; padding-right: 16px; spacing: 8px; alignment: center;
 
-            for entry[idx] in entries : Rectangle {
-                height: 48px;
-                background: idx == root.selected-index ? Theme.bg-elevated :
-                    (file-touch.has-hover ? #1a1924 : transparent);
+                        open-btn := TouchArea {
+                            width: 56px; height: 36px;
+                            clicked => { root.open-file(root.entries[root.selected-index].name); root.selected-index = -1; }
+                            Rectangle {
+                                border-radius: 8px;
+                                background: open-btn.has-hover ? @radial-gradient(circle, #5ac8d418 0%, #12111a 100%) : transparent;
+                                border-width: open-btn.has-hover ? 1px : 0; border-color: Theme.cyan-dim;
+                                animate background, border-width { duration: 120ms; }
+                                Text { text: "Open"; color: open-btn.has-hover ? Theme.cyan : Theme.cyan-dim; font-size: 12px; horizontal-alignment: center; vertical-alignment: center; animate color { duration: 120ms; } }
+                            }
+                        }
 
-                // Left border highlight on selected
-                if idx == root.selected-index : Rectangle {
-                    x: 0px;
-                    width: 3px;
-                    height: parent.height;
-                    background: Theme.cyan;
-                }
+                        copy-btn := TouchArea {
+                            width: 56px; height: 36px;
+                            clicked => { root.file-copy(root.entries[root.selected-index].name); root.selected-index = -1; }
+                            Rectangle {
+                                border-radius: 8px;
+                                background: copy-btn.has-hover ? @radial-gradient(circle, #ffffff0c 0%, transparent 100%) : transparent;
+                                animate background { duration: 120ms; }
+                                Text { text: "Copy"; color: copy-btn.has-hover ? Theme.text-primary : Theme.text-secondary; font-size: 12px; horizontal-alignment: center; vertical-alignment: center; animate color { duration: 120ms; } }
+                            }
+                        }
 
-                file-touch := TouchArea {
-                    clicked => {
-                        if entry.is-dir {
-                            root.selected-index = -1;
-                            root.navigate-dir(entry.name);
-                        } else {
-                            if root.selected-index == idx {
-                                root.selected-index = -1;
-                                root.open-file(entry.name);
-                            } else {
-                                root.selected-index = idx;
+                        cut-btn := TouchArea {
+                            width: 56px; height: 36px;
+                            clicked => { root.file-cut(root.entries[root.selected-index].name); root.selected-index = -1; }
+                            Rectangle {
+                                border-radius: 8px;
+                                background: cut-btn.has-hover ? @radial-gradient(circle, #ffffff0c 0%, transparent 100%) : transparent;
+                                animate background { duration: 120ms; }
+                                Text { text: "Cut"; color: cut-btn.has-hover ? Theme.text-primary : Theme.text-secondary; font-size: 12px; horizontal-alignment: center; vertical-alignment: center; animate color { duration: 120ms; } }
+                            }
+                        }
+
+                        rename-btn := TouchArea {
+                            width: 64px; height: 36px;
+                            clicked => { root.rename-old-name = root.entries[root.selected-index].name; root.rename-new-name = root.entries[root.selected-index].name; root.show-rename-dialog = true; }
+                            Rectangle {
+                                border-radius: 8px;
+                                background: rename-btn.has-hover ? @radial-gradient(circle, #ffffff0c 0%, transparent 100%) : transparent;
+                                animate background { duration: 120ms; }
+                                Text { text: "Rename"; color: rename-btn.has-hover ? Theme.text-primary : Theme.text-secondary; font-size: 12px; horizontal-alignment: center; vertical-alignment: center; animate color { duration: 120ms; } }
+                            }
+                        }
+
+                        del-btn := TouchArea {
+                            width: 64px; height: 36px;
+                            clicked => { root.delete-target-name = root.entries[root.selected-index].name; root.show-delete-dialog = true; }
+                            Rectangle {
+                                border-radius: 8px;
+                                background: del-btn.has-hover ? @radial-gradient(circle, #e0525218 0%, transparent 100%) : transparent;
+                                border-width: del-btn.has-hover ? 1px : 0; border-color: #e0525240;
+                                animate background, border-width { duration: 120ms; }
+                                Text { text: "Delete"; color: del-btn.has-hover ? #e05252 : #c04040; font-size: 12px; horizontal-alignment: center; vertical-alignment: center; animate color { duration: 120ms; } }
                             }
                         }
                     }
                 }
 
-                HorizontalLayout {
-                    padding-left: 16px;
-                    padding-right: 8px;
-                    spacing: 12px;
-
-                    // Colored icon badge
+                // ── Empty state ──
+                if entries.length == 0 && !is-loading : VerticalLayout {
+                    vertical-stretch: 1;
+                    alignment: center;
+                    padding: 40px;
                     Rectangle {
-                        width: 28px;
-                        height: 28px;
-                        border-radius: 6px;
-                        background: entry.is-dir ? Theme.cyan-dim :
-                            entry.icon-char == "◇" ? #2d6a4f :
-                            entry.icon-char == "≡" ? #3a4a6a :
-                            entry.icon-char == "▣" ? #6a2d6a :
-                            entry.icon-char == "♪" ? #6a5a2d :
-                            entry.icon-char == "▶" ? #6a2d3a :
-                            entry.icon-char == "▤" ? #4a4a3a :
-                            entry.icon-char == "▧" ? #6a2d2d :
-                            entry.icon-char == "⚙" ? #2d4a6a :
-                            entry.icon-char == "·" ? #3a3a3a :
-                            Theme.bg-elevated;
-
-                        Text {
-                            text: entry.icon-char;
-                            color: #ffffffd0;
-                            font-size: 14px;
-                            horizontal-alignment: center;
-                            vertical-alignment: center;
-                        }
+                        width: 48px; height: 48px; x: (parent.width - 48px) / 2;
+                        border-radius: 24px; border-width: 1px; border-color: Theme.cyan-dim;
+                        background: @radial-gradient(circle, #5ac8d40c 0%, transparent 70%);
+                        drop-shadow-blur: 8px; drop-shadow-color: Theme.cyan-glow;
+                        Text { text: "∅"; color: Theme.cyan-dim; font-size: 20px; horizontal-alignment: center; vertical-alignment: center; }
                     }
-
-                    // Name
-                    Text {
-                        text: entry.name;
-                        color: entry.is-dir ? Theme.cyan-light : Theme.text-primary;
-                        font-size: Theme.font-body;
-                        font-weight: entry.is-dir ? 600 : 400;
-                        vertical-alignment: center;
-                        horizontal-stretch: 1;
-                        overflow: elide;
-                    }
-
-                    // Size (files only)
-                    if !entry.is-dir : Text {
-                        text: entry.size-text;
-                        color: Theme.text-dim;
-                        font-size: Theme.font-small;
-                        vertical-alignment: center;
-                    }
-
-                    // Modified time
-                    Text {
-                        text: entry.modified-text;
-                        color: Theme.text-dim;
-                        font-size: Theme.font-small;
-                        vertical-alignment: center;
-                    }
+                    Rectangle { height: 12px; }
+                    Text { text: "Empty directory"; color: Theme.text-dim; font-size: Theme.font-body; horizontal-alignment: center; }
                 }
 
-                // Bottom separator
-                Rectangle {
-                    y: parent.height - 1px;
-                    height: 1px;
-                    background: Theme.bg-elevated;
+                // Loading
+                if is-loading : VerticalLayout {
+                    vertical-stretch: 1;
+                    alignment: center;
+                    Text { text: "Loading..."; color: Theme.text-dim; font-size: Theme.font-body; horizontal-alignment: center; }
                 }
             }
         }
 
-        // ── Action bar (when file selected) ──
-        if root.selected-index >= 0 && root.selected-index < root.entries.length : Rectangle {
-            height: 52px;
-            background: Theme.bg-surface;
-            border-width: 1px;
-            border-color: Theme.bg-elevated;
+        // ── Status bar — file count + free space ──
+        Rectangle {
+            height: 26px;
+            background: @linear-gradient(180deg, #141228a0 0%, #12102898 100%);
+
+            // Top edge
+            Rectangle {
+                y: 0; width: 100%; height: 1px;
+                background: @linear-gradient(90deg, transparent 10%, #ffffff0c 50%, transparent 90%);
+            }
 
             HorizontalLayout {
-                padding-left: 16px;
-                padding-right: 16px;
-                spacing: 8px;
-                alignment: center;
-
-                // Open
-                TouchArea {
-                    width: 56px; height: 40px;
-                    clicked => {
-                        root.open-file(root.entries[root.selected-index].name);
-                        root.selected-index = -1;
-                    }
-                    Rectangle {
-                        border-radius: 8px;
-                        background: parent.has-hover ? Theme.bg-elevated : transparent;
-                        VerticalLayout {
-                            alignment: center;
-                            Text { text: "Open"; color: Theme.cyan; font-size: 12px; horizontal-alignment: center; }
-                        }
-                    }
-                }
-
-                // Copy
-                TouchArea {
-                    width: 56px; height: 40px;
-                    clicked => {
-                        root.file-copy(root.entries[root.selected-index].name);
-                        root.selected-index = -1;
-                    }
-                    Rectangle {
-                        border-radius: 8px;
-                        background: parent.has-hover ? Theme.bg-elevated : transparent;
-                        VerticalLayout {
-                            alignment: center;
-                            Text { text: "Copy"; color: Theme.text-secondary; font-size: 12px; horizontal-alignment: center; }
-                        }
-                    }
-                }
-
-                // Cut
-                TouchArea {
-                    width: 56px; height: 40px;
-                    clicked => {
-                        root.file-cut(root.entries[root.selected-index].name);
-                        root.selected-index = -1;
-                    }
-                    Rectangle {
-                        border-radius: 8px;
-                        background: parent.has-hover ? Theme.bg-elevated : transparent;
-                        VerticalLayout {
-                            alignment: center;
-                            Text { text: "Cut"; color: Theme.text-secondary; font-size: 12px; horizontal-alignment: center; }
-                        }
-                    }
-                }
-
-                // Rename
-                TouchArea {
-                    width: 64px; height: 40px;
-                    clicked => {
-                        root.rename-old-name = root.entries[root.selected-index].name;
-                        root.rename-new-name = root.entries[root.selected-index].name;
-                        root.show-rename-dialog = true;
-                    }
-                    Rectangle {
-                        border-radius: 8px;
-                        background: parent.has-hover ? Theme.bg-elevated : transparent;
-                        VerticalLayout {
-                            alignment: center;
-                            Text { text: "Rename"; color: Theme.text-secondary; font-size: 12px; horizontal-alignment: center; }
-                        }
-                    }
-                }
-
-                // Delete
-                TouchArea {
-                    width: 64px; height: 40px;
-                    clicked => {
-                        root.delete-target-name = root.entries[root.selected-index].name;
-                        root.show-delete-dialog = true;
-                    }
-                    Rectangle {
-                        border-radius: 8px;
-                        background: parent.has-hover ? Theme.bg-elevated : transparent;
-                        VerticalLayout {
-                            alignment: center;
-                            Text { text: "Delete"; color: #e05252; font-size: 12px; horizontal-alignment: center; }
-                        }
-                    }
-                }
-            }
-        }
-
-        // Empty state
-        if entries.length == 0 && !is-loading : VerticalLayout {
-            vertical-stretch: 1;
-            alignment: center;
-            padding: 40px;
-
-            Text {
-                text: "Empty directory";
-                color: Theme.text-dim;
-                font-size: Theme.font-body;
-                horizontal-alignment: center;
-            }
-        }
-
-        // Loading indicator
-        if is-loading : VerticalLayout {
-            vertical-stretch: 1;
-            alignment: center;
-
-            Text {
-                text: "Loading...";
-                color: Theme.text-dim;
-                font-size: Theme.font-body;
-                horizontal-alignment: center;
-            }
-        }
-    }
-
-    // ═══ Rename dialog overlay ═══
-    if root.show-rename-dialog : Rectangle {
-        width: 100%; height: 100%;
-        background: Theme.overlay-backdrop;
-
-        TouchArea { clicked => { root.show-rename-dialog = false; root.selected-index = -1; } }
-
-        Rectangle {
-            x: (parent.width - 340px) / 2;
-            y: (parent.height - 180px) / 2;
-            width: 340px;
-            height: 180px;
-            border-radius: 16px;
-            background: Theme.bg-surface;
-            border-width: 1px;
-            border-color: Theme.bg-elevated;
-            drop-shadow-blur: 24px;
-            drop-shadow-color: #000000aa;
-
-            TouchArea {}  // prevent click-through
-
-            VerticalLayout {
-                padding: 20px;
+                padding-left: 12px;
+                padding-right: 12px;
                 spacing: 16px;
 
                 Text {
-                    text: "Rename";
-                    color: Theme.text-primary;
-                    font-size: Theme.font-title;
-                    font-weight: 600;
-                }
-
-                rename-input := LineEdit {
-                    text: root.rename-new-name;
-                    edited(t) => { root.rename-new-name = t; }
-                    accepted(t) => {
-                        root.file-rename(root.rename-old-name, t);
-                        root.show-rename-dialog = false;
-                        root.selected-index = -1;
-                    }
-                }
-
-                HorizontalLayout {
-                    spacing: 12px;
-                    alignment: end;
-
-                    TouchArea {
-                        width: 80px; height: 36px;
-                        clicked => { root.show-rename-dialog = false; root.selected-index = -1; }
-                        Rectangle {
-                            border-radius: 8px;
-                            background: parent.has-hover ? Theme.bg-elevated : transparent;
-                            Text { text: "Cancel"; color: Theme.text-dim; font-size: 14px;
-                                horizontal-alignment: center; vertical-alignment: center; }
-                        }
-                    }
-
-                    TouchArea {
-                        width: 80px; height: 36px;
-                        clicked => {
-                            root.file-rename(root.rename-old-name, root.rename-new-name);
-                            root.show-rename-dialog = false;
-                            root.selected-index = -1;
-                        }
-                        Rectangle {
-                            border-radius: 8px;
-                            background: parent.has-hover ? Theme.cyan-dim : Theme.bg-elevated;
-                            Text { text: "Rename"; color: Theme.cyan; font-size: 14px;
-                                horizontal-alignment: center; vertical-alignment: center; }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // ═══ Delete confirmation dialog ═══
-    if root.show-delete-dialog : Rectangle {
-        width: 100%; height: 100%;
-        background: Theme.overlay-backdrop;
-
-        TouchArea { clicked => { root.show-delete-dialog = false; root.selected-index = -1; } }
-
-        Rectangle {
-            x: (parent.width - 340px) / 2;
-            y: (parent.height - 160px) / 2;
-            width: 340px;
-            height: 160px;
-            border-radius: 16px;
-            background: Theme.bg-surface;
-            border-width: 1px;
-            border-color: Theme.bg-elevated;
-            drop-shadow-blur: 24px;
-            drop-shadow-color: #000000aa;
-
-            TouchArea {}
-
-            VerticalLayout {
-                padding: 20px;
-                spacing: 16px;
-
-                Text {
-                    text: "Delete \"" + root.delete-target-name + "\"?";
-                    color: Theme.text-primary;
-                    font-size: Theme.font-body;
-                    wrap: word-wrap;
-                }
-
-                Text {
-                    text: "This cannot be undone.";
+                    text: root.entries.length == 1 ? "1 item" : root.entries.length + " items";
                     color: Theme.text-dim;
-                    font-size: Theme.font-small;
+                    font-size: 11px;
+                    vertical-alignment: center;
                 }
 
+                if root.dir-type-badge != "" : Text {
+                    text: "│";
+                    color: Theme.text-dim;
+                    font-size: 11px;
+                    vertical-alignment: center;
+                }
+
+                if root.dir-type-badge != "" : Text {
+                    text: root.dir-type-badge;
+                    color: Theme.amber-dim;
+                    font-size: 11px;
+                    font-weight: 600;
+                    vertical-alignment: center;
+                }
+
+                if root.free-space-text != "" : Text {
+                    text: "│";
+                    color: Theme.text-dim;
+                    font-size: 11px;
+                    vertical-alignment: center;
+                }
+
+                if root.free-space-text != "" : Text {
+                    text: "Free: " + root.free-space-text;
+                    color: Theme.text-dim;
+                    font-size: 11px;
+                    vertical-alignment: center;
+                }
+
+                Rectangle { horizontal-stretch: 1; }
+
+                Text {
+                    text: root.current-path;
+                    color: Theme.text-dim;
+                    font-size: 11px;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+            }
+        }
+    }
+
+    // ═══ File details panel — glassmorphic overlay ═══
+    if root.selected-index >= 0 && root.file-details.name != "" : Rectangle {
+        x: parent.width - 280px;
+        y: 41px;
+        width: 280px;
+        height: parent.height - 41px - 48px - 26px;
+        clip: true;
+
+        background: @linear-gradient(180deg, #161430e8 0%, #0e0c20e0 50%, #161430e8 100%);
+        drop-shadow-blur: 24px;
+        drop-shadow-offset-x: -4px;
+        drop-shadow-color: #000000a0;
+
+        // Left holographic border
+        Rectangle {
+            x: 0; y: 0; width: 2px; height: parent.height;
+            background: @linear-gradient(180deg, #5ac8d8a0 0%, Theme.cyan-dim 30%, Theme.separator 50%, Theme.amber-dim 70%, Theme.amber-glow 100%);
+            opacity: 0.6;
+        }
+
+        // Close button
+        detail-close := TouchArea {
+            x: parent.width - 36px; y: 4px; width: 28px; height: 28px;
+            clicked => { root.selected-index = -1; }
+            Rectangle {
+                border-radius: 6px;
+                background: detail-close.has-hover ? #e0525230 : transparent;
+                animate background { duration: 120ms; }
+                Text { text: "✕"; color: detail-close.has-hover ? #e05252 : Theme.text-dim; font-size: 14px; horizontal-alignment: center; vertical-alignment: center; animate color { duration: 120ms; } }
+            }
+        }
+
+        Flickable {
+            x: 2px; y: 0; width: parent.width - 2px; height: parent.height;
+            viewport-height: detail-col.preferred-height;
+
+            detail-col := VerticalLayout {
+                padding: 16px; padding-top: 12px; spacing: 14px;
+
+                // Large icon badge
                 HorizontalLayout {
                     spacing: 12px;
-                    alignment: end;
+                    Rectangle {
+                        property <color> detail-badge-color:
+                            root.file-details.icon-char == "◇" ? #3aad6a :
+                            root.file-details.icon-char == "≡" ? #5a7abd :
+                            root.file-details.icon-char == "▣" ? #9a4a9a :
+                            root.file-details.icon-char == "♪" ? #c89a3a :
+                            root.file-details.icon-char == "▶" ? #c84a5a :
+                            root.file-details.icon-char == "▤" ? #7a8a6a :
+                            root.file-details.icon-char == "▧" ? #bd5a4a :
+                            root.file-details.icon-char == "⚙" ? #4a7abd :
+                            root.file-details.icon-char == "·" ? #6a6a7a :
+                            #5a5a7a;
+                        width: 48px; height: 48px; border-radius: 12px;
+                        background: @radial-gradient(circle, detail-badge-color, #10101040);
+                        border-width: 1px; border-color: detail-badge-color;
+                        drop-shadow-blur: 16px; drop-shadow-color: detail-badge-color;
+                        Text { text: root.file-details.icon-char; color: #ffffffd0; font-size: 22px; horizontal-alignment: center; vertical-alignment: center; }
+                    }
+                    VerticalLayout {
+                        alignment: center; horizontal-stretch: 1;
+                        Text { text: root.file-details.name; color: Theme.text-primary; font-size: 15px; font-weight: 600; wrap: word-wrap; }
+                        Text { text: root.file-details.file-type; color: Theme.text-dim; font-size: 12px; }
+                    }
+                }
 
-                    TouchArea {
-                        width: 80px; height: 36px;
-                        clicked => { root.show-delete-dialog = false; root.selected-index = -1; }
+                // Separator
+                Rectangle { height: 1px; background: @linear-gradient(90deg, transparent 5%, Theme.separator 30%, Theme.separator 70%, transparent 95%); opacity: 0.5; }
+
+                // Info rows
+                VerticalLayout {
+                    spacing: 10px;
+                    if root.file-details.size-text != "" : HorizontalLayout { spacing: 8px; Text { text: "Size"; color: Theme.text-dim; font-size: 12px; width: 72px; vertical-alignment: center; } Text { text: root.file-details.size-text; color: Theme.text-secondary; font-size: 12px; vertical-alignment: center; } }
+                    if root.file-details.modified-text != "" : HorizontalLayout { spacing: 8px; Text { text: "Modified"; color: Theme.text-dim; font-size: 12px; width: 72px; } Text { text: root.file-details.modified-text; color: Theme.text-secondary; font-size: 12px; wrap: word-wrap; horizontal-stretch: 1; } }
+                    HorizontalLayout { spacing: 8px; Text { text: "Path"; color: Theme.text-dim; font-size: 12px; width: 72px; } Text { text: root.file-details.path-text; color: Theme.text-secondary; font-size: 12px; wrap: char-wrap; horizontal-stretch: 1; } }
+                    if root.file-details.permissions != "" : HorizontalLayout { spacing: 8px; Text { text: "Perms"; color: Theme.text-dim; font-size: 12px; width: 72px; vertical-alignment: center; } Text { text: root.file-details.permissions; color: Theme.text-secondary; font-size: 12px; vertical-alignment: center; } }
+                }
+
+                // Preview
+                if root.file-details.is-text-file : VerticalLayout {
+                    spacing: 8px;
+                    Rectangle { height: 1px; background: @linear-gradient(90deg, transparent 5%, Theme.separator 30%, Theme.separator 70%, transparent 95%); opacity: 0.5; }
+                    Text { text: "Preview"; color: Theme.cyan-dim; font-size: 12px; font-weight: 600; letter-spacing: 2px; }
+                    Rectangle {
+                        clip: true; border-radius: 6px; height: 180px;
+                        background: @linear-gradient(180deg, #08080c 0%, #060610 50%, #08080c 100%);
+                        border-width: 1px; border-color: #ffffff08;
+                        Rectangle { x: 8px; y: 0; width: parent.width - 16px; height: 1px; background: @linear-gradient(90deg, transparent 0%, #ffffff08 30%, #ffffff0c 50%, #ffffff08 70%, transparent 100%); }
+                        Text { x: 8px; y: 8px; width: parent.width - 16px; text: root.file-details.preview-text; color: Theme.text-dim; font-size: 11px; wrap: word-wrap; }
+                    }
+                }
+
+                // ── AI Actions ──
+                Rectangle { height: 1px; background: @linear-gradient(90deg, transparent 5%, Theme.separator 30%, Theme.separator 70%, transparent 95%); opacity: 0.5; }
+
+                HorizontalLayout {
+                    spacing: 8px;
+                    padding-top: 2px;
+
+                    // Summarize button — only for text files
+                    if root.file-details.is-text-file : summarize-btn := TouchArea {
+                        horizontal-stretch: 1;
+                        height: 32px;
+                        clicked => { root.show-summary-dialog = true; root.request-summarize(); }
                         Rectangle {
                             border-radius: 8px;
-                            background: parent.has-hover ? Theme.bg-elevated : transparent;
-                            Text { text: "Cancel"; color: Theme.text-dim; font-size: 14px;
-                                horizontal-alignment: center; vertical-alignment: center; }
+                            background: summarize-btn.has-hover
+                                ? @radial-gradient(circle, #d4a03c18 0%, #12111a 100%)
+                                : @radial-gradient(circle, #d4a03c08 0%, transparent 100%);
+                            border-width: 1px;
+                            border-color: summarize-btn.has-hover ? Theme.amber-dim : #ffffff08;
+                            animate background, border-color { duration: 120ms; }
+                            HorizontalLayout {
+                                spacing: 6px;
+                                alignment: center;
+                                Text {
+                                    text: "✦";
+                                    color: Theme.amber;
+                                    font-size: 12px;
+                                    vertical-alignment: center;
+                                }
+                                Text {
+                                    text: "Summarize";
+                                    color: summarize-btn.has-hover ? Theme.amber : Theme.amber-dim;
+                                    font-size: 12px;
+                                    vertical-alignment: center;
+                                    animate color { duration: 120ms; }
+                                }
+                            }
                         }
                     }
 
-                    TouchArea {
-                        width: 80px; height: 36px;
-                        clicked => {
-                            root.file-delete(root.delete-target-name);
-                            root.show-delete-dialog = false;
-                            root.selected-index = -1;
-                        }
+                    // Ask AI button — always visible
+                    ask-ai-btn := TouchArea {
+                        horizontal-stretch: 1;
+                        height: 32px;
+                        clicked => { root.request-ask-ai(); }
                         Rectangle {
                             border-radius: 8px;
-                            background: parent.has-hover ? #e05252 : #c04040;
-                            Text { text: "Delete"; color: #fff; font-size: 14px;
-                                horizontal-alignment: center; vertical-alignment: center; }
+                            background: ask-ai-btn.has-hover
+                                ? @radial-gradient(circle, #5ac8d818 0%, #12111a 100%)
+                                : @radial-gradient(circle, #5ac8d808 0%, transparent 100%);
+                            border-width: 1px;
+                            border-color: ask-ai-btn.has-hover ? Theme.cyan-dim : #ffffff08;
+                            animate background, border-color { duration: 120ms; }
+                            HorizontalLayout {
+                                spacing: 6px;
+                                alignment: center;
+                                Text {
+                                    text: "◈";
+                                    color: Theme.cyan;
+                                    font-size: 12px;
+                                    vertical-alignment: center;
+                                }
+                                Text {
+                                    text: "Ask AI";
+                                    color: ask-ai-btn.has-hover ? Theme.cyan : Theme.cyan-dim;
+                                    font-size: 12px;
+                                    vertical-alignment: center;
+                                    animate color { duration: 120ms; }
+                                }
+                            }
                         }
                     }
+                }
+            }
+        }
+    }
+
+    // ═══ Rename dialog ═══
+    if root.show-rename-dialog : Rectangle {
+        width: 100%; height: 100%; background: Theme.overlay-backdrop;
+        TouchArea { clicked => { root.show-rename-dialog = false; root.selected-index = -1; } }
+        Rectangle {
+            x: (parent.width - 340px) / 2; y: (parent.height - 180px) / 2; width: 340px; height: 180px;
+            border-radius: 16px;
+            background: @linear-gradient(180deg, #12111ae0 0%, #0c0b10d0 50%, #12111ae0 100%);
+            border-width: 1px; border-color: @linear-gradient(180deg, #ffffff14 0%, #ffffff08 50%, #ffffff04 100%);
+            drop-shadow-blur: 24px; drop-shadow-color: #000000aa;
+            Rectangle { x: 16px; y: 1px; width: parent.width - 32px; height: 1px; border-radius: 0.5px; background: @linear-gradient(90deg, transparent 0%, #ffffff0c 30%, #ffffff10 50%, #ffffff0c 70%, transparent 100%); }
+            TouchArea {}
+            VerticalLayout {
+                padding: 20px; spacing: 16px;
+                Text { text: "Rename"; color: Theme.text-primary; font-size: Theme.font-title; font-weight: 600; }
+                rename-input := LineEdit { text: root.rename-new-name; edited(t) => { root.rename-new-name = t; } accepted(t) => { root.file-rename(root.rename-old-name, t); root.show-rename-dialog = false; root.selected-index = -1; } }
+                HorizontalLayout {
+                    spacing: 12px; alignment: end;
+                    TouchArea { width: 80px; height: 36px; clicked => { root.show-rename-dialog = false; root.selected-index = -1; } Rectangle { border-radius: 8px; background: parent.has-hover ? @radial-gradient(circle, #ffffff0c 0%, transparent 100%) : transparent; animate background { duration: 120ms; } Text { text: "Cancel"; color: Theme.text-dim; font-size: 14px; horizontal-alignment: center; vertical-alignment: center; } } }
+                    TouchArea { width: 80px; height: 36px; clicked => { root.file-rename(root.rename-old-name, root.rename-new-name); root.show-rename-dialog = false; root.selected-index = -1; } Rectangle { border-radius: 8px; background: parent.has-hover ? @radial-gradient(circle, #5ac8d418 0%, #12111a 100%) : Theme.bg-elevated; animate background { duration: 120ms; } Text { text: "Rename"; color: Theme.cyan; font-size: 14px; horizontal-alignment: center; vertical-alignment: center; } } }
+                }
+            }
+        }
+    }
+
+    // ═══ Delete dialog ═══
+    if root.show-delete-dialog : Rectangle {
+        width: 100%; height: 100%; background: Theme.overlay-backdrop;
+        TouchArea { clicked => { root.show-delete-dialog = false; root.selected-index = -1; } }
+        Rectangle {
+            x: (parent.width - 340px) / 2; y: (parent.height - 160px) / 2; width: 340px; height: 160px;
+            border-radius: 16px;
+            background: @linear-gradient(180deg, #12111ae0 0%, #0c0b10d0 50%, #12111ae0 100%);
+            border-width: 1px; border-color: @linear-gradient(180deg, #ffffff14 0%, #ffffff08 50%, #ffffff04 100%);
+            drop-shadow-blur: 24px; drop-shadow-color: #000000aa;
+            Rectangle { x: 16px; y: 1px; width: parent.width - 32px; height: 1px; border-radius: 0.5px; background: @linear-gradient(90deg, transparent 0%, #ffffff0c 30%, #ffffff10 50%, #ffffff0c 70%, transparent 100%); }
+            TouchArea {}
+            VerticalLayout {
+                padding: 20px; spacing: 16px;
+                Text { text: "Delete \"" + root.delete-target-name + "\"?"; color: Theme.text-primary; font-size: Theme.font-body; wrap: word-wrap; }
+                Text { text: "This cannot be undone."; color: Theme.text-dim; font-size: Theme.font-small; }
+                HorizontalLayout {
+                    spacing: 12px; alignment: end;
+                    TouchArea { width: 80px; height: 36px; clicked => { root.show-delete-dialog = false; root.selected-index = -1; } Rectangle { border-radius: 8px; background: parent.has-hover ? @radial-gradient(circle, #ffffff0c 0%, transparent 100%) : transparent; animate background { duration: 120ms; } Text { text: "Cancel"; color: Theme.text-dim; font-size: 14px; horizontal-alignment: center; vertical-alignment: center; } } }
+                    TouchArea { width: 80px; height: 36px; clicked => { root.file-delete(root.delete-target-name); root.show-delete-dialog = false; root.selected-index = -1; } Rectangle { border-radius: 8px; background: parent.has-hover ? @radial-gradient(circle, #e0525230 0%, #e0525218 100%) : #c04040; drop-shadow-blur: parent.has-hover ? 8px : 0; drop-shadow-color: #e0525260; animate background, drop-shadow-blur { duration: 120ms; } Text { text: "Delete"; color: #fff; font-size: 14px; horizontal-alignment: center; vertical-alignment: center; } } }
                 }
             }
         }
@@ -558,74 +1231,131 @@ export component FileBrowser inherits Rectangle {
 
     // ═══ New folder dialog ═══
     if root.show-new-folder-dialog : Rectangle {
-        width: 100%; height: 100%;
-        background: Theme.overlay-backdrop;
-
+        width: 100%; height: 100%; background: Theme.overlay-backdrop;
         TouchArea { clicked => { root.show-new-folder-dialog = false; } }
-
         Rectangle {
-            x: (parent.width - 340px) / 2;
-            y: (parent.height - 180px) / 2;
-            width: 340px;
-            height: 180px;
+            x: (parent.width - 340px) / 2; y: (parent.height - 180px) / 2; width: 340px; height: 180px;
             border-radius: 16px;
-            background: Theme.bg-surface;
-            border-width: 1px;
-            border-color: Theme.bg-elevated;
-            drop-shadow-blur: 24px;
-            drop-shadow-color: #000000aa;
-
+            background: @linear-gradient(180deg, #12111ae0 0%, #0c0b10d0 50%, #12111ae0 100%);
+            border-width: 1px; border-color: @linear-gradient(180deg, #ffffff14 0%, #ffffff08 50%, #ffffff04 100%);
+            drop-shadow-blur: 24px; drop-shadow-color: #000000aa;
+            Rectangle { x: 16px; y: 1px; width: parent.width - 32px; height: 1px; border-radius: 0.5px; background: @linear-gradient(90deg, transparent 0%, #ffffff0c 30%, #ffffff10 50%, #ffffff0c 70%, transparent 100%); }
             TouchArea {}
+            VerticalLayout {
+                padding: 20px; spacing: 16px;
+                Text { text: "New Folder"; color: Theme.text-primary; font-size: Theme.font-title; font-weight: 600; }
+                folder-input := LineEdit { text: root.new-folder-name; placeholder-text: "Folder name"; edited(t) => { root.new-folder-name = t; } accepted(t) => { root.create-folder(t); root.show-new-folder-dialog = false; } }
+                HorizontalLayout {
+                    spacing: 12px; alignment: end;
+                    TouchArea { width: 80px; height: 36px; clicked => { root.show-new-folder-dialog = false; } Rectangle { border-radius: 8px; background: parent.has-hover ? @radial-gradient(circle, #ffffff0c 0%, transparent 100%) : transparent; animate background { duration: 120ms; } Text { text: "Cancel"; color: Theme.text-dim; font-size: 14px; horizontal-alignment: center; vertical-alignment: center; } } }
+                    TouchArea { width: 80px; height: 36px; clicked => { root.create-folder(root.new-folder-name); root.show-new-folder-dialog = false; } Rectangle { border-radius: 8px; background: parent.has-hover ? @radial-gradient(circle, #5ac8d418 0%, #12111a 100%) : Theme.bg-elevated; animate background { duration: 120ms; } Text { text: "Create"; color: Theme.cyan; font-size: 14px; horizontal-alignment: center; vertical-alignment: center; } } }
+                }
+            }
+        }
+    }
+
+    // ═══ AI Summary dialog ═══
+    if root.show-summary-dialog : Rectangle {
+        width: 100%; height: 100%; background: Theme.overlay-backdrop;
+        TouchArea { clicked => { root.show-summary-dialog = false; } }
+        Rectangle {
+            x: (parent.width - 420px) / 2; y: (parent.height - 300px) / 2; width: 420px; height: 300px;
+            border-radius: 16px;
+            background: @linear-gradient(180deg, #1e1a38f0 0%, #141228f0 50%, #1e1a38f0 100%);
+            border-width: 1px; border-color: root.is-summarizing ? Theme.amber : Theme.amber-dim;
+            drop-shadow-blur: 32px; drop-shadow-color: #d4a03c30;
+            animate border-color { duration: 400ms; }
+
+            // Top holographic edge
+            Rectangle {
+                y: 0; width: parent.width; height: 1px; border-radius: 16px;
+                background: @linear-gradient(90deg, transparent 10%, #d4a03c60 30%, #d4a03ca0 50%, #d4a03c60 70%, transparent 90%);
+            }
 
             VerticalLayout {
-                padding: 20px;
-                spacing: 16px;
+                padding: 20px; spacing: 12px;
 
-                Text {
-                    text: "New Folder";
-                    color: Theme.text-primary;
-                    font-size: Theme.font-title;
-                    font-weight: 600;
-                }
-
-                folder-input := LineEdit {
-                    text: root.new-folder-name;
-                    placeholder-text: "Folder name";
-                    edited(t) => { root.new-folder-name = t; }
-                    accepted(t) => {
-                        root.create-folder(t);
-                        root.show-new-folder-dialog = false;
-                    }
-                }
-
+                // Header
                 HorizontalLayout {
-                    spacing: 12px;
-                    alignment: end;
-
-                    TouchArea {
-                        width: 80px; height: 36px;
-                        clicked => { root.show-new-folder-dialog = false; }
+                    spacing: 10px;
+                    Text {
+                        text: "✦";
+                        color: Theme.amber;
+                        font-size: 18px;
+                        vertical-alignment: center;
+                    }
+                    VerticalLayout {
+                        horizontal-stretch: 1;
+                        Text {
+                            text: "AI Summary";
+                            color: Theme.text-primary;
+                            font-size: 16px;
+                            font-weight: 600;
+                        }
+                        Text {
+                            text: root.file-details.name;
+                            color: Theme.text-dim;
+                            font-size: 12px;
+                        }
+                    }
+                    // Close button
+                    summary-close := TouchArea {
+                        width: 28px; height: 28px;
+                        clicked => { root.show-summary-dialog = false; }
                         Rectangle {
-                            border-radius: 8px;
-                            background: parent.has-hover ? Theme.bg-elevated : transparent;
-                            Text { text: "Cancel"; color: Theme.text-dim; font-size: 14px;
-                                horizontal-alignment: center; vertical-alignment: center; }
+                            border-radius: 6px;
+                            background: summary-close.has-hover ? #e0525230 : transparent;
+                            animate background { duration: 120ms; }
+                            Text { text: "✕"; color: summary-close.has-hover ? #e05252 : Theme.text-dim; font-size: 14px; horizontal-alignment: center; vertical-alignment: center; }
+                        }
+                    }
+                }
+
+                // Separator
+                Rectangle { height: 1px; background: @linear-gradient(90deg, transparent 5%, Theme.amber-dim 30%, Theme.amber-dim 70%, transparent 95%); opacity: 0.4; }
+
+                // Summary content area
+                Rectangle {
+                    vertical-stretch: 1;
+                    clip: true;
+                    border-radius: 8px;
+                    background: @linear-gradient(180deg, #0c0a1880 0%, #08061080 50%, #0c0a1880 100%);
+                    border-width: 1px; border-color: #ffffff08;
+
+                    Flickable {
+                        x: 0; y: 0; width: parent.width; height: parent.height;
+                        viewport-height: summary-text.preferred-height + 24px;
+
+                        summary-text := Text {
+                            x: 14px;
+                            y: 12px;
+                            width: parent.width - 28px;
+                            text: root.is-summarizing && root.ai-summary == "" ? "Thinking..." : root.ai-summary;
+                            color: root.is-summarizing && root.ai-summary == "" ? Theme.text-dim : Theme.text-secondary;
+                            font-size: 13px;
+                            font-italic: root.is-summarizing && root.ai-summary == "";
+                            wrap: word-wrap;
+                            horizontal-alignment: left;
                         }
                     }
 
-                    TouchArea {
-                        width: 80px; height: 36px;
-                        clicked => {
-                            root.create-folder(root.new-folder-name);
-                            root.show-new-folder-dialog = false;
-                        }
-                        Rectangle {
-                            border-radius: 8px;
-                            background: parent.has-hover ? Theme.cyan-dim : Theme.bg-elevated;
-                            Text { text: "Create"; color: Theme.cyan; font-size: 14px;
-                                horizontal-alignment: center; vertical-alignment: center; }
-                        }
+                    // Pulsing glow while summarizing
+                    if root.is-summarizing : Rectangle {
+                        x: 0; y: 0; width: parent.width; height: parent.height;
+                        border-radius: 8px;
+                        border-width: 1px;
+                        border-color: Theme.amber;
+                        opacity: 0.4;
+                        animate opacity { duration: 800ms; }
                     }
+                }
+
+                // Status
+                if root.is-summarizing : Text {
+                    text: "⟳ Generating summary...";
+                    color: Theme.amber-dim;
+                    font-size: 11px;
+                    horizontal-alignment: center;
                 }
             }
         }

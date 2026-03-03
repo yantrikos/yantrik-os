@@ -38,6 +38,8 @@
 //! - ssh:        ssh_list_hosts, ssh_check_host, ssh_run
 //! - artifacts:  generate_fix_summary, list_fixes, read_fix
 //! - home_assistant: ha_get_state, ha_call_service, ha_list_entities
+//! - browser:    launch_browser, browse, browser_read, browser_click, browser_type, browser_screenshot, browser_tabs, browser_search
+//! - background_tasks: run_background, list_background_tasks, check_background_task, stop_background_task
 //! - plugin:     (dynamic — loaded from ~/.config/yantrik/plugins/*.yaml)
 
 pub mod memory;
@@ -74,6 +76,9 @@ pub mod docker;
 pub mod ssh;
 pub mod artifacts;
 pub mod home_assistant;
+pub mod browser;
+pub mod discovery;
+pub mod background_tasks;
 pub mod plugin;
 
 use crate::config::CompanionConfig;
@@ -142,6 +147,19 @@ pub struct ToolContext<'a> {
     pub db: &'a YantrikDB,
     /// Maximum permission level allowed. Tools above this are denied.
     pub max_permission: PermissionLevel,
+    /// Tool metadata for discover_tools (populated by companion).
+    pub registry_metadata: Option<&'a [ToolMetadata]>,
+    /// Background task manager for long-running processes.
+    pub task_manager: Option<&'a std::sync::Mutex<crate::task_manager::TaskManager>>,
+}
+
+/// Compact tool metadata for discovery (no full JSON schema).
+#[derive(Debug, Clone)]
+pub struct ToolMetadata {
+    pub name: &'static str,
+    pub category: &'static str,
+    pub permission: PermissionLevel,
+    pub description: String,
 }
 
 // ── Tool Registry ──
@@ -193,6 +211,56 @@ impl ToolRegistry {
             }
         }
         format!("Unknown tool: {name}")
+    }
+
+    /// Compact metadata listing for tool discovery.
+    pub fn list_metadata(&self, max_permission: PermissionLevel) -> Vec<ToolMetadata> {
+        self.tools
+            .iter()
+            .filter(|t| t.permission() <= max_permission)
+            .map(|t| {
+                let def = t.definition();
+                let full_desc = def["function"]["description"].as_str().unwrap_or("");
+                ToolMetadata {
+                    name: t.name(),
+                    category: t.category(),
+                    permission: t.permission(),
+                    description: first_sentence(full_desc, 80),
+                }
+            })
+            .collect()
+    }
+
+    /// Full JSON schemas for specific tool names (permission-filtered).
+    pub fn definitions_for(
+        &self,
+        names: &[&str],
+        max_permission: PermissionLevel,
+    ) -> Vec<serde_json::Value> {
+        self.tools
+            .iter()
+            .filter(|t| t.permission() <= max_permission && names.contains(&t.name()))
+            .map(|t| t.definition())
+            .collect()
+    }
+}
+
+/// Extract first sentence from description (for compact metadata).
+fn first_sentence(text: &str, max_len: usize) -> String {
+    let end = text
+        .find(". ")
+        .map(|i| i + 1)
+        .unwrap_or(text.len())
+        .min(max_len);
+    let mut boundary = end;
+    while boundary > 0 && !text.is_char_boundary(boundary) {
+        boundary -= 1;
+    }
+    let result = &text[..boundary];
+    if boundary < text.len() {
+        format!("{}...", result.trim_end_matches('.'))
+    } else {
+        result.to_string()
     }
 }
 
@@ -280,6 +348,9 @@ pub fn build_registry(config: &CompanionConfig) -> ToolRegistry {
     docker::register(&mut reg);
     ssh::register(&mut reg);
     artifacts::register(&mut reg);
+    browser::register(&mut reg);
+    discovery::register(&mut reg);
+    background_tasks::register(&mut reg);
 
     // Conditionally register Home Assistant tools
     let ha = &config.home_assistant;

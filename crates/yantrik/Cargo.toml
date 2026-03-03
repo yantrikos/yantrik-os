@@ -11,7 +11,8 @@ path = "src/main.rs"
 [dependencies]
 yantrikdb-companion = { path = "../yantrikdb-companion" }
 yantrikdb-server = { path = "../yantrikdb-server" }
-yantrikdb-ml = { git = "https://github.com/spranab/yantrikdb.git" }
+yantrikdb-ml = { git = "https://github.com/spranab/yantrikdb.git", features = ["api-llm"] }
+serde_json = "1"
 yantrikdb-core = { git = "https://github.com/spranab/yantrikdb.git" }
 axum = "0.8"
 clap = { version = "4", features = ["derive"] }

@@ -59,6 +59,11 @@ impl Tool for RememberTool {
         let memory_type = args.get("memory_type").and_then(|v| v.as_str()).unwrap_or("episodic");
         let domain = args.get("domain").and_then(|v| v.as_str()).unwrap_or("general");
 
+        // V25: Write-time dedup — check if we already have this memory
+        if crate::learning::is_duplicate(ctx.db, text) {
+            return format!("Already remembered something similar to: {text}");
+        }
+
         match ctx.db.record_text(
             text, memory_type, importance, 0.0, 604800.0,
             &serde_json::json!({}), "default", 0.9, domain, "companion", None,

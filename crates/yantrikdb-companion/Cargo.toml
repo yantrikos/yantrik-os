@@ -14,3 +14,5 @@ serde_yaml = "0.9"
 chrono = { version = "0.4", features = ["serde"] }
 uuid7 = "1"
 tracing = "0.1"
+tungstenite = "0.24"
+url = "2"

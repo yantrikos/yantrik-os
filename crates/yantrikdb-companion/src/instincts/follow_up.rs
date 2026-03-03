@@ -38,6 +38,7 @@ impl Instinct for FollowUpInstinct {
 
                 UrgeSpec::new("follow_up", &format!("Follow up: {reason}"), urgency)
                     .with_cooldown(&format!("follow_up:{trigger_id}"))
+                    .with_message(&format!("I was thinking about something from before — {reason}"))
                     .with_context(ctx)
             })
             .collect()

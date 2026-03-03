@@ -1,6 +1,6 @@
-// App dock — centered floating glass bar (Windows 11 style).
-// Hovering 8px above bottom edge. Glass background with holographic glow.
-// Icons lift on hover with glow. Auto-hides after 2s of no interaction.
+// App dock — centered floating glass bar.
+// Always visible at the bottom of the desktop. Glass background with holographic glow.
+// Icons lift on hover with glow and tooltip labels.
 // Anchor orb at center — holographic mini-orb.
 
 import { Theme } from "../theme.slint";
@@ -14,25 +14,25 @@ export struct DockItem {
 
 export component AppDock inherits Rectangle {
     in property <[DockItem]> items: [
-        { app-id: "terminal", label: "Terminal", icon-char: ">_", is-running: false },
-        { app-id: "browser",  label: "Browser",  icon-char: "W",  is-running: false },
-        { app-id: "files",    label: "Files",    icon-char: "F",  is-running: false },
-        { app-id: "settings", label: "Settings", icon-char: "*",  is-running: false },
+        { app-id: "terminal",      label: "Terminal", icon-char: ">_", is-running: false },
+        { app-id: "browser",       label: "Browser",  icon-char: "W",  is-running: false },
+        { app-id: "files",         label: "Files",    icon-char: "F",  is-running: false },
+        { app-id: "editor",        label: "Editor",   icon-char: "≡",  is-running: false },
+        { app-id: "bond",          label: "Bond",     icon-char: "♥",  is-running: false },
+        { app-id: "memory",        label: "Memory",   icon-char: "◈",  is-running: false },
+        { app-id: "notifications", label: "Alerts",   icon-char: "N",  is-running: false },
+        { app-id: "system",        label: "System",   icon-char: "◉",  is-running: false },
+        { app-id: "media",         label: "Media",    icon-char: "♪",  is-running: false },
+        { app-id: "settings",      label: "Settings", icon-char: "⚙",  is-running: false },
     ];
 
     callback launch-app(string);
     callback anchor-pressed();
 
-    // Dock visibility state
-    in-out property <bool> dock-visible: false;
-    property <float> hide-timer-phase: 0;
     property <float> glow-phase: 0;
 
-    height: dock-visible ? 60px : 6px;
+    height: 60px;
     background: transparent;
-    clip: true;
-
-    animate height { duration: 200ms; easing: ease-out; }
 
     // Glow animation
     Timer {
@@ -43,58 +43,8 @@ export component AppDock inherits Rectangle {
         }
     }
 
-    // Bottom edge glow trigger (always visible — holographic line)
-    Rectangle {
-        y: parent.height - 6px;
-        width: 100%;
-        height: 6px;
-        background: transparent;
-
-        // Center glow line
-        Rectangle {
-            x: (parent.width - 400px) / 2;
-            width: 400px;
-            y: 2px;
-            height: 2px;
-            border-radius: 1px;
-            background: @linear-gradient(90deg,
-                transparent 0%,
-                Theme.amber-glow 20%,
-                Theme.cyan-glow 50%,
-                Theme.amber-glow 80%,
-                transparent 100%
-            );
-            opacity: dock-visible ? 0.0 : (0.4 + 0.2 * sin(glow-phase * 6.2832 * 1rad));
-
-            animate opacity { duration: 200ms; }
-        }
-    }
-
-    // Hover detection area (at the very bottom)
-    TouchArea {
-        width: 100%;
-        height: 100%;
-        moved => {
-            root.dock-visible = true;
-            root.hide-timer-phase = 0;
-        }
-    }
-
-    // Hide timer — 2s after no hover
-    Timer {
-        interval: 100ms;
-        running: root.dock-visible;
-        triggered => {
-            root.hide-timer-phase += 0.1;
-            if root.hide-timer-phase > 2.0 {
-                root.dock-visible = false;
-                root.hide-timer-phase = 0;
-            }
-        }
-    }
-
     // Dock surface — centered floating glass pill
-    if dock-visible : Rectangle {
+    Rectangle {
         property <int> item-count: root.items.length;
         // Each icon is 44px + 12px spacing, plus anchor (44px) + separator (20px)
         property <length> dock-width: max(280px, item-count * 56px + 64px + 24px);
@@ -103,7 +53,7 @@ export component AppDock inherits Rectangle {
         height: 52px;
         y: parent.height - 58px;
         border-radius: 16px;
-        clip: true;
+        clip: false;
 
         // Glass background layers
         Rectangle {
@@ -157,13 +107,6 @@ export component AppDock inherits Rectangle {
         drop-shadow-blur: 24px;
         drop-shadow-color: #00000060;
 
-        // Reset hide timer on hover
-        TouchArea {
-            width: 100%;
-            height: 100%;
-            moved => { root.hide-timer-phase = 0; }
-        }
-
         HorizontalLayout {
             alignment: center;
             spacing: 12px;
@@ -178,9 +121,30 @@ export component AppDock inherits Rectangle {
                 property <bool> hovered: self.has-hover;
                 clicked => {
                     root.launch-app(item.app-id);
-                    root.hide-timer-phase = 0;
                 }
-                moved => { root.hide-timer-phase = 0; }
+
+                // Tooltip label — glass pill above icon
+                if hovered : Rectangle {
+                    property <length> label-width: tooltip-text.preferred-width + 16px;
+                    x: (parent.width - self.label-width) / 2;
+                    y: -30px;
+                    width: self.label-width;
+                    height: 22px;
+                    border-radius: 6px;
+                    background: @linear-gradient(180deg, #12111ae0 0%, #0c0b10d0 100%);
+                    border-width: 1px;
+                    border-color: #ffffff10;
+                    drop-shadow-blur: 8px;
+                    drop-shadow-color: #00000040;
+
+                    tooltip-text := Text {
+                        text: item.label;
+                        color: Theme.text-secondary;
+                        font-size: 11px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
 
                 // Icon container — lifts on hover
                 Rectangle {
@@ -245,7 +209,6 @@ export component AppDock inherits Rectangle {
                 width: 44px;
                 height: 44px;
                 clicked => { root.anchor-pressed(); }
-                moved => { root.hide-timer-phase = 0; }
 
                 Rectangle {
                     width: 40px;

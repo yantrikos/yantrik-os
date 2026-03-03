@@ -9,6 +9,7 @@ mod conflict_alerting;
 mod emotional_awareness;
 mod follow_up;
 mod humor;
+mod memory_weaver;
 mod pattern_surfacing;
 mod reminder;
 mod self_awareness;
@@ -22,6 +23,7 @@ pub use conflict_alerting::ConflictAlertingInstinct;
 pub use emotional_awareness::EmotionalAwarenessInstinct;
 pub use follow_up::FollowUpInstinct;
 pub use humor::HumorInstinct;
+pub use memory_weaver::MemoryWeaverInstinct;
 pub use pattern_surfacing::PatternSurfacingInstinct;
 pub use reminder::ReminderInstinct;
 pub use self_awareness::SelfAwarenessInstinct;
@@ -61,6 +63,13 @@ pub fn load_instincts(settings: &InstinctSettings) -> Vec<Box<dyn Instinct>> {
     if settings.conflict_alerting_enabled {
         instincts.push(Box::new(ConflictAlertingInstinct::new(
             settings.conflict_alert_threshold,
+        )));
+    }
+
+    if settings.memory_weaver_enabled {
+        instincts.push(Box::new(MemoryWeaverInstinct::new(
+            settings.memory_weaver_idle_minutes,
+            settings.memory_weaver_min_memories,
         )));
     }
 

@@ -14,7 +14,7 @@ use yantrikdb_companion::evolution::Evolution;
 use yantrikdb_ml::{CandleEmbedder, CandleLLM, GGUFFiles, LLMBackend};
 use yantrikdb_ml::ApiLLM;
 
-use slint::{ModelRc, VecModel};
+use slint::{Model, ModelRc, SharedString, VecModel};
 
 use crate::{App, UrgeCardData};
 
@@ -56,8 +56,22 @@ pub enum CompanionCommand {
     SetSystemContext {
         context: String,
     },
+    /// Store a periodic hourly system snapshot digest.
+    RecordSnapshot {
+        text: String,
+    },
+    /// Store a detected system issue as a persistent memory.
+    RecordIssue {
+        text: String,
+        importance: f64,
+        /// Decay constant in seconds. 0.0 = permanent.
+        decay: f64,
+    },
     /// Run a background think cycle.
-    Think,
+    Think {
+        /// Current interruptibility from FocusFlow (0.0 = deep work, 1.0 = normal).
+        interruptibility: f32,
+    },
     /// Shut down the worker.
     Shutdown,
 }
@@ -216,9 +230,23 @@ impl CompanionBridge {
         let _ = self.cmd_tx.send(CompanionCommand::SetSystemContext { context });
     }
 
-    /// Trigger a think cycle.
-    pub fn think(&self) {
-        let _ = self.cmd_tx.send(CompanionCommand::Think);
+    /// Store a periodic system snapshot digest.
+    pub fn record_snapshot(&self, text: String) {
+        let _ = self.cmd_tx.send(CompanionCommand::RecordSnapshot { text });
+    }
+
+    /// Store a detected system issue as a persistent memory.
+    pub fn record_issue(&self, text: String, importance: f64, decay: f64) {
+        let _ = self.cmd_tx.send(CompanionCommand::RecordIssue {
+            text,
+            importance,
+            decay,
+        });
+    }
+
+    /// Trigger a think cycle with current focus interruptibility.
+    pub fn think(&self, interruptibility: f32) {
+        let _ = self.cmd_tx.send(CompanionCommand::Think { interruptibility });
     }
 
     /// Shut down the worker thread.
@@ -256,7 +284,7 @@ fn worker_loop(
                 tracing::info!(text = %text, "Processing message");
                 let start = std::time::Instant::now();
                 let mut token_count = 0u32;
-                let _response = companion.handle_message_streaming(&text, |token| {
+                let response = companion.handle_message_streaming(&text, |token| {
                     if token_count == 0 {
                         tracing::info!(
                             elapsed_ms = start.elapsed().as_millis(),
@@ -267,17 +295,18 @@ fn worker_loop(
                     let _ = token_tx.send(token.to_string());
                 });
 
-                // Track whether the LLM backend succeeded
-                let ok = token_count > 0;
+                // V22: Use response.offline_mode to track LLM status
+                let ok = !response.offline_mode;
                 online.store(ok, Ordering::Relaxed);
-                if !ok {
-                    tracing::warn!("LLM backend appears offline (no tokens or error)");
+                if response.offline_mode {
+                    tracing::info!("Response served by offline responder");
                 }
 
                 tracing::info!(
                     elapsed_ms = start.elapsed().as_millis(),
                     tokens = token_count,
                     online = ok,
+                    offline_mode = response.offline_mode,
                     "Generation complete"
                 );
                 // Sentinel to indicate generation is done
@@ -404,28 +433,211 @@ fn worker_loop(
                 }
             }
             Ok(CompanionCommand::SetSystemContext { context }) => {
-                companion.set_system_context(context);
+                // Poll background tasks and append summary to system context
+                companion.poll_background_tasks();
+                let task_summary = companion.active_tasks_summary();
+                let full_ctx = if task_summary.is_empty() {
+                    context
+                } else {
+                    format!("{}\n{}", context, task_summary)
+                };
+                companion.set_system_context(full_ctx);
             }
-            Ok(CompanionCommand::Think) => {
+            Ok(CompanionCommand::RecordSnapshot { text }) => {
+                let safe: String = text
+                    .chars()
+                    .filter(|c| !c.is_control() || *c == '\n')
+                    .take(2000)
+                    .collect();
+                if let Err(e) = companion.db.record_text(
+                    &safe,
+                    "episodic",
+                    0.6,
+                    0.0,
+                    604800.0, // 7-day decay
+                    &serde_json::json!({}),
+                    "default",
+                    0.95,
+                    "system/snapshot",
+                    "system",
+                    None,
+                ) {
+                    tracing::warn!(error = %e, "Failed to record system snapshot");
+                } else {
+                    tracing::debug!("Hourly system snapshot stored");
+                }
+            }
+            Ok(CompanionCommand::RecordIssue {
+                text,
+                importance,
+                decay,
+            }) => {
+                let safe: String = text
+                    .chars()
+                    .filter(|c| !c.is_control())
+                    .take(500)
+                    .collect();
+                let safe_importance = importance.clamp(0.0, 1.0);
+                if let Err(e) = companion.db.record_text(
+                    &safe,
+                    "episodic",
+                    safe_importance,
+                    -0.3, // negative valence — it's a problem
+                    decay,
+                    &serde_json::json!({"issue": true}),
+                    "default",
+                    1.0, // max consolidation — never prune issues
+                    "system/issue",
+                    "system",
+                    None,
+                ) {
+                    tracing::warn!(error = %e, "Failed to record system issue");
+                } else {
+                    tracing::info!(text = %safe, "System issue recorded to memory");
+                }
+            }
+            Ok(CompanionCommand::Think { interruptibility }) => {
                 let db = &companion.db;
-                let config = yantrikdb_core::types::ThinkConfig::default();
+                // Disable consolidation: yantrikdb-core's consolidate()
+                // hardcodes domain="general",source="user" on merged records,
+                // which destroys system/* domain info and creates compound
+                // blobs. Keep triggers, patterns, and personality running.
+                let config = yantrikdb_core::types::ThinkConfig {
+                    run_consolidation: false,
+                    ..Default::default()
+                };
                 if let Ok(result) = db.think(&config) {
-                    tracing::debug!(
-                        triggers = result.triggers.len(),
-                        "Think cycle complete"
+                    // Convert triggers to JSON for instinct evaluation
+                    let triggers: Vec<serde_json::Value> = result
+                        .triggers
+                        .iter()
+                        .map(|t| {
+                            serde_json::json!({
+                                "trigger_type": t.trigger_type,
+                                "reason": t.reason,
+                                "urgency": t.urgency,
+                                "context": t.context,
+                            })
+                        })
+                        .collect();
+
+                    // Fetch active patterns
+                    let patterns: Vec<serde_json::Value> = db
+                        .get_patterns(None, Some("active"), 10)
+                        .unwrap_or_default()
+                        .iter()
+                        .map(|p| {
+                            serde_json::json!({
+                                "pattern_type": p.pattern_type,
+                                "description": p.description,
+                                "confidence": p.confidence,
+                            })
+                        })
+                        .collect();
+
+                    // Count open conflicts
+                    let conflicts_count = db
+                        .get_conflicts(Some("open"), None, None, None, 100)
+                        .map(|c| c.len())
+                        .unwrap_or(0);
+
+                    // Extract valence trend
+                    let valence_avg = triggers
+                        .iter()
+                        .find(|t| {
+                            t.get("trigger_type").and_then(|v| v.as_str())
+                                == Some("valence_trend")
+                        })
+                        .and_then(|t| {
+                            t.get("context")
+                                .and_then(|c| c.get("current_avg"))
+                                .and_then(|v| v.as_f64())
+                        });
+
+                    tracing::info!(
+                        triggers = triggers.len(),
+                        patterns = patterns.len(),
+                        conflicts = conflicts_count,
+                        "Think cycle — caching cognition results"
+                    );
+
+                    // CRITICAL: Cache results so instincts can see them
+                    companion.update_cognition_cache(
+                        triggers,
+                        patterns,
+                        conflicts_count,
+                        valence_avg,
                     );
                 }
 
-                // Check for proactive message
+                // V22: Evaluate instincts + check proactive engine for messages
+                let state = companion.build_state();
+                let urge_specs = companion.evaluate_instincts(&state);
+
+                let idle_hrs = (state.current_ts - state.last_interaction_ts) / 3600.0;
+                tracing::info!(
+                    urge_count = urge_specs.len(),
+                    triggers = state.pending_triggers.len(),
+                    patterns = state.active_patterns.len(),
+                    idle_hours = %format!("{idle_hrs:.1}"),
+                    "Instinct evaluation complete"
+                );
+
+                for spec in &urge_specs {
+                    tracing::info!(
+                        instinct = %spec.instinct_name,
+                        urgency = spec.urgency,
+                        reason = %spec.reason,
+                        "Urge generated"
+                    );
+                    companion.urge_queue.push(companion.db.conn(), spec);
+                }
+                companion.check_proactive();
+
+                // Deliver proactive message — gated on focus state
                 if let Some(msg) = companion.take_proactive_message() {
-                    let text = msg.text.clone();
-                    let weak = ui_weak.clone();
-                    let _ = slint::invoke_from_event_loop(move || {
-                        if let Some(ui) = weak.upgrade() {
-                            ui.set_notification_text(text.into());
-                            ui.set_show_notification(true);
-                        }
-                    });
+                    if interruptibility < 0.5 {
+                        // Deep work mode — suppress non-critical proactive messages
+                        tracing::info!(
+                            interruptibility,
+                            text = msg.text,
+                            "Suppressing proactive message (deep work mode)"
+                        );
+                    } else {
+                        tracing::info!(
+                            text = msg.text,
+                            urges = ?msg.urge_ids,
+                            "Delivering proactive message to UI"
+                        );
+                        let text = msg.text.clone();
+                        let notif_text = msg.text.clone();
+                        let weak = ui_weak.clone();
+                        let _ = slint::invoke_from_event_loop(move || {
+                            if let Some(ui) = weak.upgrade() {
+                                // Add as assistant message in chat
+                                let messages = ui.get_messages();
+                                let model = messages
+                                    .as_any()
+                                    .downcast_ref::<VecModel<crate::MessageData>>()
+                                    .unwrap();
+                                model.push(crate::MessageData {
+                                    role: SharedString::from("assistant"),
+                                    content: SharedString::from(&text),
+                                    is_streaming: false,
+                                    blocks: ModelRc::default(),
+                                });
+                                // Also show notification
+                                ui.set_notification_text(notif_text.into());
+                                ui.set_show_notification(true);
+                            }
+                        });
+                    }
+                } else {
+                    let pending = companion.urge_queue.count_pending(companion.db.conn());
+                    tracing::debug!(
+                        pending_urges = pending,
+                        "No proactive message this cycle"
+                    );
                 }
 
                 // Push updated urges to Home screen

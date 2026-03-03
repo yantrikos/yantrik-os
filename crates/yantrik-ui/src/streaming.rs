@@ -13,10 +13,11 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
-use slint::{Model, SharedString, Timer, TimerMode, VecModel};
+use slint::{Model, ModelRc, SharedString, Timer, TimerMode, VecModel};
 
 use crate::bridge::CompanionBridge;
-use crate::{App, MessageData};
+use crate::markdown;
+use crate::{App, ContentBlock, MessageData};
 
 /// Start streaming tokens from the companion into the message model.
 ///
@@ -40,11 +41,13 @@ pub fn start_ai_stream(
             role: "user".into(),
             content: SharedString::from(text),
             is_streaming: false,
+            blocks: ModelRc::default(),
         });
         model.push(MessageData {
             role: "assistant".into(),
             content: "".into(),
             is_streaming: true,
+            blocks: ModelRc::default(),
         });
         ui.set_is_generating(true);
         ui.set_is_thinking(true);
@@ -56,15 +59,23 @@ pub fn start_ai_stream(
     let token_rx = bridge.send_message(text.to_string());
     let timer_handle = timer_slot.clone();
     let ui_weak_stream = ui_weak.clone();
+    let replace_next = Rc::new(RefCell::new(false));
 
     // 3. Poll tokens at 16ms (60fps)
     let timer = Timer::default();
+    let replace_flag = replace_next.clone();
     timer.start(TimerMode::Repeated, Duration::from_millis(16), move || {
         let mut done = false;
         while let Ok(token) = token_rx.try_recv() {
             if token == "__DONE__" {
                 done = true;
                 break;
+            }
+            // __REPLACE__: next token replaces the entire message content
+            // (used when tool calls are detected to strip raw XML)
+            if token == "__REPLACE__" {
+                *replace_flag.borrow_mut() = true;
+                continue;
             }
             if let Some(ui) = ui_weak_stream.upgrade() {
                 let messages = ui.get_messages();
@@ -75,9 +86,16 @@ pub fn start_ai_stream(
                 let count = model.row_count();
                 if count > 0 {
                     let mut last = model.row_data(count - 1).unwrap();
-                    let mut content = last.content.to_string();
-                    content.push_str(&token);
-                    last.content = SharedString::from(&content);
+                    if *replace_flag.borrow() {
+                        // Replace entire content (strip tool XML)
+                        last.content = SharedString::from(&token);
+                        *replace_flag.borrow_mut() = false;
+                    } else {
+                        // Normal append
+                        let mut content = last.content.to_string();
+                        content.push_str(&token);
+                        last.content = SharedString::from(&content);
+                    }
                     model.set_row_data(count - 1, last);
                 }
             }
@@ -96,6 +114,7 @@ pub fn start_ai_stream(
                 if count > 0 {
                     let mut last = model.row_data(count - 1).unwrap();
                     last.is_streaming = false;
+                    last.blocks = parse_content_blocks(&last.content);
                     model.set_row_data(count - 1, last);
                 }
             }
@@ -124,6 +143,7 @@ pub fn start_proactive_stream(
             role: "assistant".into(),
             content: "".into(),
             is_streaming: true,
+            blocks: ModelRc::default(),
         });
         ui.set_is_generating(true);
         ui.set_is_thinking(true);
@@ -133,14 +153,20 @@ pub fn start_proactive_stream(
     let token_rx = bridge.send_message(hidden_prompt.to_string());
     let timer_handle = timer_slot.clone();
     let ui_weak_stream = ui_weak.clone();
+    let replace_next = Rc::new(RefCell::new(false));
 
     let timer = Timer::default();
+    let replace_flag = replace_next.clone();
     timer.start(TimerMode::Repeated, Duration::from_millis(16), move || {
         let mut done = false;
         while let Ok(token) = token_rx.try_recv() {
             if token == "__DONE__" {
                 done = true;
                 break;
+            }
+            if token == "__REPLACE__" {
+                *replace_flag.borrow_mut() = true;
+                continue;
             }
             if let Some(ui) = ui_weak_stream.upgrade() {
                 let messages = ui.get_messages();
@@ -151,9 +177,14 @@ pub fn start_proactive_stream(
                 let count = model.row_count();
                 if count > 0 {
                     let mut last = model.row_data(count - 1).unwrap();
-                    let mut content = last.content.to_string();
-                    content.push_str(&token);
-                    last.content = SharedString::from(&content);
+                    if *replace_flag.borrow() {
+                        last.content = SharedString::from(&token);
+                        *replace_flag.borrow_mut() = false;
+                    } else {
+                        let mut content = last.content.to_string();
+                        content.push_str(&token);
+                        last.content = SharedString::from(&content);
+                    }
                     model.set_row_data(count - 1, last);
                 }
             }
@@ -172,6 +203,7 @@ pub fn start_proactive_stream(
                 if count > 0 {
                     let mut last = model.row_data(count - 1).unwrap();
                     last.is_streaming = false;
+                    last.blocks = parse_content_blocks(&last.content);
                     model.set_row_data(count - 1, last);
                 }
             }
@@ -179,4 +211,23 @@ pub fn start_proactive_stream(
         }
     });
     *timer_slot.borrow_mut() = Some(timer);
+}
+
+/// Parse message content into styled blocks for rich rendering.
+fn parse_content_blocks(content: &SharedString) -> ModelRc<ContentBlock> {
+    let text = content.to_string();
+    if text.trim().is_empty() {
+        return ModelRc::default();
+    }
+
+    let parsed = markdown::parse_blocks(&text);
+    let blocks: Vec<ContentBlock> = parsed
+        .into_iter()
+        .map(|b| ContentBlock {
+            block_type: SharedString::from(b.block_type),
+            text: SharedString::from(b.text.as_str()),
+        })
+        .collect();
+
+    ModelRc::new(VecModel::from(blocks))
 }

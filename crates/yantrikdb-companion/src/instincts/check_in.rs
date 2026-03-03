@@ -25,18 +25,28 @@ impl Instinct for CheckInInstinct {
             return vec![];
         }
 
-        // Urgency: 0 at threshold, caps at 0.8
-        let urgency = ((hours_since - self.hours_threshold) / (self.hours_threshold * 2.0)).min(0.8);
+        // Urgency: starts at 0.4 at threshold, grows to 0.8
+        let excess_ratio = ((hours_since - self.hours_threshold) / self.hours_threshold).min(1.0);
+        let urgency = 0.4 + excess_ratio * 0.4;
+
+        let message = if hours_since < 4.0 {
+            format!("Hey {}! Been a little while — how's it going?", state.config_user_name)
+        } else if hours_since < 8.0 {
+            format!("Hey {}. It's been a few hours — I'm here if you need anything.", state.config_user_name)
+        } else {
+            format!("Hey {}! It's been a while since we talked. Hope things are going well.", state.config_user_name)
+        };
 
         vec![UrgeSpec::new(
             "check_in",
             &format!(
-                "{} hasn't interacted in {:.0} hours",
+                "{} hasn't interacted in {:.1} hours",
                 state.config_user_name, hours_since
             ),
             urgency,
         )
         .with_cooldown("check_in")
+        .with_message(&message)
         .with_context(serde_json::json!({
             "hours_since_interaction": (hours_since * 10.0).round() / 10.0,
         }))]

@@ -198,7 +198,16 @@ fn build_system_prompt(
             let max_len = remaining.min(200);
             if max_len > 40 {
                 prompt.push_str("About yourself: ");
-                let n = if s.narrative.len() > max_len { &s.narrative[..max_len] } else { s.narrative };
+                let n = if s.narrative.len() > max_len {
+                    // Find a char boundary at or before max_len to avoid panicking
+                    let mut end = max_len;
+                    while end > 0 && !s.narrative.is_char_boundary(end) {
+                        end -= 1;
+                    }
+                    &s.narrative[..end]
+                } else {
+                    s.narrative
+                };
                 prompt.push_str(&sanitize::escape_for_prompt(n));
                 prompt.push_str("\n\n");
             }
@@ -320,17 +329,17 @@ fn response_instructions(level: BondLevel, name: &str, user: &str) -> String {
     }
 }
 
-/// Tool chaining guidance — teaches the LLM to sequence multiple tool calls.
+/// Tool chaining guidance — teaches the LLM to call tools properly.
 fn tool_chaining_instructions() -> String {
-    "You have tools. You can chain multiple tool calls to complete complex tasks.\n\
-     Examples of chaining:\n\
-     - \"Download and extract\": use run_command to download, then run_command to extract.\n\
-     - \"Find and read a file\": use list_files to find it, then read_file on the match.\n\
-     - \"Screenshot and remember\": use run_command for grim, then remember the context.\n\
-     - \"Check disk and clean up\": use run_command for df, then list_files to find large files.\n\
-     - \"Search memory and summarize\": use recall to find memories, then explain them.\n\
-     When a task needs multiple steps, use one tool per step. After each tool result, \
-     decide if another tool call is needed to finish the task.\n\n"
+    "TOOL CALLING RULES (CRITICAL):\n\
+     1. Call tools IMMEDIATELY using <tool_call> XML. Do NOT describe what you plan to do.\n\
+     2. If the tool you need is NOT listed, call discover_tools ONCE with a keyword.\n\
+     3. After discover_tools returns, USE the actual tool right away. Do NOT call discover_tools again.\n\
+     4. NEVER mention tool names, discovery, or tool internals in your response to the user.\n\
+     5. For multi-step tasks, call one tool per step. After each result, decide the next step.\n\
+     6. After all tool calls, give a SHORT natural response about what happened.\n\
+     7. BACKGROUND TASKS: For long-running commands (builds, downloads, data processing), \
+     use run_background instead of run_command. Check status with check_background_task.\n\n"
         .to_string()
 }
 

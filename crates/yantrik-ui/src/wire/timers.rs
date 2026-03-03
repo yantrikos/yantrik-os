@@ -16,6 +16,7 @@ pub fn wire(ui: &App, ctx: &AppContext) {
     wire_card_tick(ui, ctx);
     wire_morning_brief(ui, ctx);
     wire_frecency_persist(ctx);
+    wire_hourly_snapshot(ctx);
 }
 
 /// Clock timer — updates time and greeting every 30 seconds.
@@ -33,11 +34,15 @@ fn wire_clock(ui: &App) {
 }
 
 /// Background cognition — think cycle every 60 seconds.
+/// Passes current interruptibility from FocusFlow so the worker can gate
+/// proactive messages during deep work.
 fn wire_think(ctx: &AppContext) {
     let bridge = ctx.bridge.clone();
+    let scorer = ctx.scorer.clone();
     let timer = Timer::default();
     timer.start(TimerMode::Repeated, Duration::from_secs(60), move || {
-        bridge.think();
+        let interruptibility = scorer.borrow().interruptibility();
+        bridge.think(interruptibility);
     });
     std::mem::forget(timer);
 }
@@ -91,6 +96,21 @@ fn wire_card_tick(ui: &App, ctx: &AppContext) {
         let mut mgr = card_mgr.borrow_mut();
         if mgr.tick() {
             cards::sync_whisper_ui(&mgr, &ui_weak);
+        }
+    });
+    std::mem::forget(timer);
+}
+
+/// Hourly system snapshot — flushes the ActivityAccumulator and stores the digest.
+fn wire_hourly_snapshot(ctx: &AppContext) {
+    let bridge = ctx.bridge.clone();
+    let accumulator = ctx.accumulator.clone();
+    let timer = Timer::default();
+    timer.start(TimerMode::Repeated, Duration::from_secs(3600), move || {
+        let digest = accumulator.borrow_mut().flush();
+        if !digest.is_empty() {
+            tracing::info!(len = digest.len(), "Storing hourly system snapshot");
+            bridge.record_snapshot(digest);
         }
     });
     std::mem::forget(timer);

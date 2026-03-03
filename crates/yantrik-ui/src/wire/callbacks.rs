@@ -12,7 +12,7 @@ use crate::mime_dispatch::{self, FileAction};
 use crate::app_context::FileClipOp;
 use crate::{
     bridge, cards, filebrowser, focus, lock, notifications, onboarding, App, BreadcrumbSegment,
-    FileEntry, MemoryItem,
+    FileDetailData, FileEntry, MemoryItem,
 };
 
 /// Wire all miscellaneous callbacks.
@@ -93,35 +93,115 @@ fn wire_file_browser(ui: &App, ctx: &AppContext) {
     let browser_path = ctx.browser_path.clone();
     let show_hidden = ctx.browser_show_hidden.clone();
     let file_clip = ctx.file_clipboard.clone();
+    let history_back = ctx.browser_history_back.clone();
+    let history_forward = ctx.browser_history_forward.clone();
+    let sort_field = ctx.browser_sort_field.clone();
+    let sort_ascending = ctx.browser_sort_ascending.clone();
+    let filter_text = ctx.browser_filter.clone();
 
-    // Helper: navigate to a path and refresh
-    fn navigate_to(ui: &App, bp: &Rc<RefCell<String>>, sh: &Rc<RefCell<bool>>, path: String) {
+    // Helper: navigate to a path, push old path to back stack, clear forward stack, update free space
+    fn navigate_to(
+        ui: &App,
+        bp: &Rc<RefCell<String>>,
+        sh: &Rc<RefCell<bool>>,
+        hb: &Rc<RefCell<Vec<String>>>,
+        hf: &Rc<RefCell<Vec<String>>>,
+        sf: &Rc<RefCell<String>>,
+        sa: &Rc<RefCell<bool>>,
+        ft: &Rc<RefCell<String>>,
+        path: String,
+    ) {
+        let old = bp.borrow().clone();
+        if old != path {
+            hb.borrow_mut().push(old);
+            hf.borrow_mut().clear();
+        }
         *bp.borrow_mut() = path.clone();
         ui.set_file_browser_path(SharedString::from(&path));
-        refresh_entries(ui, &path, *sh.borrow());
+        refresh_entries(ui, &path, *sh.borrow(), &sf.borrow(), *sa.borrow(), &ft.borrow());
+        update_nav_state(ui, hb, hf);
+        update_free_space(ui, &path);
     }
 
     // Navigate into a subdirectory
     let ui_weak = ui.as_weak();
     let bp = browser_path.clone();
     let sh = show_hidden.clone();
+    let hb = history_back.clone();
+    let hf = history_forward.clone();
+    let sf = sort_field.clone();
+    let sa = sort_ascending.clone();
+    let ft = filter_text.clone();
     ui.on_file_navigate_dir(move |name| {
         let new_path = {
             let current = bp.borrow();
             filebrowser::child_path(&current, &name.to_string())
         };
         if let Some(ui) = ui_weak.upgrade() {
-            navigate_to(&ui, &bp, &sh, new_path);
+            navigate_to(&ui, &bp, &sh, &hb, &hf, &sf, &sa, &ft, new_path);
         }
     });
 
-    // Navigate to an absolute/display path (breadcrumb click)
+    // Navigate to an absolute/display path (breadcrumb click or sidebar)
     let ui_weak = ui.as_weak();
     let bp = browser_path.clone();
     let sh = show_hidden.clone();
+    let hb = history_back.clone();
+    let hf = history_forward.clone();
+    let sf = sort_field.clone();
+    let sa = sort_ascending.clone();
+    let ft = filter_text.clone();
     ui.on_file_navigate_to_path(move |path| {
         if let Some(ui) = ui_weak.upgrade() {
-            navigate_to(&ui, &bp, &sh, path.to_string());
+            navigate_to(&ui, &bp, &sh, &hb, &hf, &sf, &sa, &ft, path.to_string());
+        }
+    });
+
+    // Go back in navigation history
+    let ui_weak = ui.as_weak();
+    let bp = browser_path.clone();
+    let sh = show_hidden.clone();
+    let hb = history_back.clone();
+    let hf = history_forward.clone();
+    let sf = sort_field.clone();
+    let sa = sort_ascending.clone();
+    let ft = filter_text.clone();
+    ui.on_file_go_back(move || {
+        let prev = hb.borrow_mut().pop();
+        if let Some(prev_path) = prev {
+            let current = bp.borrow().clone();
+            hf.borrow_mut().push(current);
+            *bp.borrow_mut() = prev_path.clone();
+            if let Some(ui) = ui_weak.upgrade() {
+                ui.set_file_browser_path(SharedString::from(&prev_path));
+                refresh_entries(&ui, &prev_path, *sh.borrow(), &sf.borrow(), *sa.borrow(), &ft.borrow());
+                update_nav_state(&ui, &hb, &hf);
+                update_free_space(&ui, &prev_path);
+            }
+        }
+    });
+
+    // Go forward in navigation history
+    let ui_weak = ui.as_weak();
+    let bp = browser_path.clone();
+    let sh = show_hidden.clone();
+    let hb = history_back.clone();
+    let hf = history_forward.clone();
+    let sf = sort_field.clone();
+    let sa = sort_ascending.clone();
+    let ft = filter_text.clone();
+    ui.on_file_go_forward(move || {
+        let next = hf.borrow_mut().pop();
+        if let Some(next_path) = next {
+            let current = bp.borrow().clone();
+            hb.borrow_mut().push(current);
+            *bp.borrow_mut() = next_path.clone();
+            if let Some(ui) = ui_weak.upgrade() {
+                ui.set_file_browser_path(SharedString::from(&next_path));
+                refresh_entries(&ui, &next_path, *sh.borrow(), &sf.borrow(), *sa.borrow(), &ft.borrow());
+                update_nav_state(&ui, &hb, &hf);
+                update_free_space(&ui, &next_path);
+            }
         }
     });
 
@@ -173,13 +253,18 @@ fn wire_file_browser(ui: &App, ctx: &AppContext) {
     let ui_weak = ui.as_weak();
     let bp = browser_path.clone();
     let sh = show_hidden.clone();
+    let hb = history_back.clone();
+    let hf = history_forward.clone();
+    let sf = sort_field.clone();
+    let sa = sort_ascending.clone();
+    let ft = filter_text.clone();
     ui.on_file_go_up(move || {
         let new_path = {
             let current = bp.borrow();
             filebrowser::parent_path(&current)
         };
         if let Some(ui) = ui_weak.upgrade() {
-            navigate_to(&ui, &bp, &sh, new_path);
+            navigate_to(&ui, &bp, &sh, &hb, &hf, &sf, &sa, &ft, new_path);
         }
     });
 
@@ -187,13 +272,16 @@ fn wire_file_browser(ui: &App, ctx: &AppContext) {
     let ui_weak = ui.as_weak();
     let bp = browser_path.clone();
     let sh = show_hidden.clone();
+    let sf = sort_field.clone();
+    let sa = sort_ascending.clone();
+    let ft = filter_text.clone();
     ui.on_file_toggle_hidden(move || {
         let new_val = !*sh.borrow();
         *sh.borrow_mut() = new_val;
         if let Some(ui) = ui_weak.upgrade() {
             ui.set_file_show_hidden(new_val);
             let path = bp.borrow().clone();
-            refresh_entries(&ui, &path, new_val);
+            refresh_entries(&ui, &path, new_val, &sf.borrow(), *sa.borrow(), &ft.borrow());
         }
     });
 
@@ -201,6 +289,9 @@ fn wire_file_browser(ui: &App, ctx: &AppContext) {
     let ui_weak = ui.as_weak();
     let bp = browser_path.clone();
     let sh = show_hidden.clone();
+    let sf = sort_field.clone();
+    let sa = sort_ascending.clone();
+    let ft = filter_text.clone();
     ui.on_file_delete(move |name| {
         let dir = bp.borrow().clone();
         match filebrowser::delete_entry(&dir, &name.to_string()) {
@@ -208,7 +299,7 @@ fn wire_file_browser(ui: &App, ctx: &AppContext) {
             Err(e) => tracing::error!(name = %name, error = %e, "Delete failed"),
         }
         if let Some(ui) = ui_weak.upgrade() {
-            refresh_entries(&ui, &dir, *sh.borrow());
+            refresh_entries(&ui, &dir, *sh.borrow(), &sf.borrow(), *sa.borrow(), &ft.borrow());
         }
     });
 
@@ -216,6 +307,9 @@ fn wire_file_browser(ui: &App, ctx: &AppContext) {
     let ui_weak = ui.as_weak();
     let bp = browser_path.clone();
     let sh = show_hidden.clone();
+    let sf = sort_field.clone();
+    let sa = sort_ascending.clone();
+    let ft = filter_text.clone();
     ui.on_file_rename(move |old_name, new_name| {
         let dir = bp.borrow().clone();
         match filebrowser::rename_entry(&dir, &old_name.to_string(), &new_name.to_string()) {
@@ -223,7 +317,7 @@ fn wire_file_browser(ui: &App, ctx: &AppContext) {
             Err(e) => tracing::error!(old = %old_name, error = %e, "Rename failed"),
         }
         if let Some(ui) = ui_weak.upgrade() {
-            refresh_entries(&ui, &dir, *sh.borrow());
+            refresh_entries(&ui, &dir, *sh.borrow(), &sf.borrow(), *sa.borrow(), &ft.borrow());
         }
     });
 
@@ -263,6 +357,9 @@ fn wire_file_browser(ui: &App, ctx: &AppContext) {
     let bp = browser_path.clone();
     let fc = file_clip.clone();
     let sh = show_hidden.clone();
+    let sf = sort_field.clone();
+    let sa = sort_ascending.clone();
+    let ft = filter_text.clone();
     let ui_weak = ui.as_weak();
     ui.on_file_paste(move || {
         let dst_dir = bp.borrow().clone();
@@ -285,13 +382,16 @@ fn wire_file_browser(ui: &App, ctx: &AppContext) {
         }
         if let Some(ui) = ui_weak.upgrade() {
             ui.set_file_has_clipboard(fc.borrow().is_some());
-            refresh_entries(&ui, &dst_dir, *sh.borrow());
+            refresh_entries(&ui, &dst_dir, *sh.borrow(), &sf.borrow(), *sa.borrow(), &ft.borrow());
         }
     });
 
     // Create folder
     let bp = browser_path.clone();
     let sh = show_hidden.clone();
+    let sf = sort_field.clone();
+    let sa = sort_ascending.clone();
+    let ft = filter_text.clone();
     let ui_weak = ui.as_weak();
     ui.on_file_create_folder(move |name| {
         let dir = bp.borrow().clone();
@@ -300,14 +400,182 @@ fn wire_file_browser(ui: &App, ctx: &AppContext) {
             Err(e) => tracing::error!(name = %name, error = %e, "Create folder failed"),
         }
         if let Some(ui) = ui_weak.upgrade() {
-            refresh_entries(&ui, &dir, *sh.borrow());
+            refresh_entries(&ui, &dir, *sh.borrow(), &sf.borrow(), *sa.borrow(), &ft.borrow());
         }
+    });
+
+    // File selection changed — load file details + clear AI summary
+    let bp = browser_path.clone();
+    let ui_weak = ui.as_weak();
+    let summary_timer_sel = ctx.summary_timer.clone();
+    ui.on_file_selection_changed(move |name| {
+        let name = name.to_string();
+        if name.is_empty() {
+            return;
+        }
+        let dir = bp.borrow().clone();
+        let detail = filebrowser::get_file_details(&dir, &name);
+        if let Some(ui) = ui_weak.upgrade() {
+            ui.set_file_detail_data(FileDetailData {
+                name: detail.name.into(),
+                file_type: detail.file_type.into(),
+                size_text: detail.size_text.into(),
+                modified_text: detail.modified_text.into(),
+                path_text: detail.path_text.into(),
+                permissions: detail.permissions.into(),
+                preview_text: detail.preview_text.into(),
+                is_text_file: detail.is_text_file,
+                icon_char: detail.icon_char.into(),
+            });
+            // Clear previous AI summary and cancel any in-progress streaming
+            ui.set_file_ai_summary("".into());
+            ui.set_file_is_summarizing(false);
+            *summary_timer_sel.borrow_mut() = None;
+        }
+    });
+
+    // Sort changed
+    let ui_weak = ui.as_weak();
+    let bp = browser_path.clone();
+    let sh = show_hidden.clone();
+    let sf = sort_field.clone();
+    let sa = sort_ascending.clone();
+    let ft = filter_text.clone();
+    ui.on_file_sort_changed(move |field, ascending| {
+        *sf.borrow_mut() = field.to_string();
+        *sa.borrow_mut() = ascending;
+        if let Some(ui) = ui_weak.upgrade() {
+            let path = bp.borrow().clone();
+            refresh_entries(&ui, &path, *sh.borrow(), &sf.borrow(), *sa.borrow(), &ft.borrow());
+        }
+    });
+
+    // Filter changed
+    let ui_weak = ui.as_weak();
+    let bp = browser_path.clone();
+    let sh = show_hidden.clone();
+    let sf = sort_field.clone();
+    let sa = sort_ascending.clone();
+    let ft = filter_text.clone();
+    ui.on_file_filter_changed(move |text| {
+        *ft.borrow_mut() = text.to_string();
+        if let Some(ui) = ui_weak.upgrade() {
+            let path = bp.borrow().clone();
+            refresh_entries(&ui, &path, *sh.borrow(), &sf.borrow(), *sa.borrow(), &ft.borrow());
+        }
+    });
+
+    // AI Summarize — on-demand summary of selected text file
+    let ui_weak = ui.as_weak();
+    let bridge = ctx.bridge.clone();
+    let summary_timer = ctx.summary_timer.clone();
+    ui.on_file_request_summarize(move || {
+        let ui = match ui_weak.upgrade() {
+            Some(ui) => ui,
+            None => return,
+        };
+
+        let detail = ui.get_file_detail_data();
+        let preview = detail.preview_text.to_string();
+        if preview.is_empty() {
+            return;
+        }
+
+        // Don't start if already summarizing
+        if ui.get_file_is_summarizing() {
+            return;
+        }
+
+        // Check bridge online
+        if !bridge.is_online() {
+            ui.set_file_ai_summary("AI is offline".into());
+            return;
+        }
+
+        let file_name = detail.name.to_string();
+        let prompt = format!(
+            "Here is the content of \"{}\". Summarize what this code/text does in 2-3 sentences. Do NOT say you can't access the file — the content is below:\n\n{}",
+            file_name, preview
+        );
+
+        ui.set_file_is_summarizing(true);
+        ui.set_file_ai_summary("".into());
+
+        let token_rx = bridge.send_message(prompt);
+        let weak = ui_weak.clone();
+        let timer_handle = summary_timer.clone();
+        let start_time = std::time::Instant::now();
+
+        let timer = Timer::default();
+        timer.start(TimerMode::Repeated, Duration::from_millis(16), move || {
+            let mut done = false;
+            while let Ok(token) = token_rx.try_recv() {
+                if token == "__DONE__" {
+                    done = true;
+                    break;
+                }
+                if let Some(ui) = weak.upgrade() {
+                    let current = ui.get_file_ai_summary().to_string();
+                    let updated = format!("{}{}", current, token);
+                    ui.set_file_ai_summary(SharedString::from(&updated));
+                }
+            }
+            // Timeout after 30 seconds if no response
+            if !done && start_time.elapsed() > Duration::from_secs(30) {
+                if let Some(ui) = weak.upgrade() {
+                    if ui.get_file_ai_summary().is_empty() {
+                        ui.set_file_ai_summary("AI is busy — try again later.".into());
+                    }
+                    ui.set_file_is_summarizing(false);
+                }
+                *timer_handle.borrow_mut() = None;
+                return;
+            }
+            if done {
+                if let Some(ui) = weak.upgrade() {
+                    ui.set_file_is_summarizing(false);
+                }
+                *timer_handle.borrow_mut() = None;
+            }
+        });
+        *summary_timer.borrow_mut() = Some(timer);
+
+        tracing::info!(file = %detail.name, "AI file summary requested");
+    });
+
+    // Ask AI — navigate to desktop Lens with contextual query
+    let ui_weak = ui.as_weak();
+    let bp = browser_path.clone();
+    ui.on_file_request_ask_ai(move || {
+        let ui = match ui_weak.upgrade() {
+            Some(ui) => ui,
+            None => return,
+        };
+
+        let detail = ui.get_file_detail_data();
+        let name = detail.name.to_string();
+        let path = detail.path_text.to_string();
+
+        let query = if name.is_empty() {
+            let dir = bp.borrow().clone();
+            format!("What kind of project is in {}?", dir)
+        } else {
+            format!("Tell me about {}", path)
+        };
+
+        // Navigate to desktop (screen 1) and open Lens with query
+        ui.set_current_screen(1);
+        ui.invoke_navigate(1);
+        ui.set_lens_open(true);
+        ui.invoke_lens_submit(SharedString::from(&query));
+
+        tracing::info!(query = %query, "Ask AI from file browser");
     });
 }
 
 /// List a directory and push entries + breadcrumbs to the UI.
-fn refresh_entries(ui: &App, path: &str, show_hidden: bool) {
-    let entries = filebrowser::list_dir_filtered(path, show_hidden);
+fn refresh_entries(ui: &App, path: &str, show_hidden: bool, sort_field: &str, sort_ascending: bool, name_filter: &str) {
+    let entries = filebrowser::list_dir_full(path, show_hidden, name_filter, sort_field, sort_ascending);
     let items: Vec<FileEntry> = entries
         .into_iter()
         .map(|e| FileEntry {
@@ -330,6 +598,40 @@ fn refresh_entries(ui: &App, path: &str, show_hidden: bool) {
         })
         .collect();
     ui.set_file_breadcrumbs(ModelRc::new(VecModel::from(crumbs)));
+
+    // Detect project type for directory badge
+    let badge = filebrowser::detect_project_type(path);
+    ui.set_file_dir_type_badge(SharedString::from(badge));
+}
+
+/// Update can-go-back / can-go-forward UI properties from history stacks.
+fn update_nav_state(
+    ui: &App,
+    hb: &Rc<RefCell<Vec<String>>>,
+    hf: &Rc<RefCell<Vec<String>>>,
+) {
+    ui.set_file_can_go_back(!hb.borrow().is_empty());
+    ui.set_file_can_go_forward(!hf.borrow().is_empty());
+}
+
+/// Update the free-space-text property for the current path's filesystem.
+fn update_free_space(ui: &App, path: &str) {
+    let expanded = filebrowser::expand_home(path);
+    let dir = expanded.to_string_lossy().to_string();
+    match std::process::Command::new("df")
+        .args(["-h", "--output=avail", &dir])
+        .output()
+    {
+        Ok(o) if o.status.success() => {
+            let text = String::from_utf8_lossy(&o.stdout);
+            if let Some(avail) = text.lines().nth(1) {
+                ui.set_file_free_space_text(
+                    SharedString::from(format!("{} free", avail.trim())),
+                );
+            }
+        }
+        _ => {}
+    }
 }
 
 // ── Whisper cards ──

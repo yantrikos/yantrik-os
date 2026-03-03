@@ -8,10 +8,11 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use slint::{ComponentHandle, ModelRc, VecModel};
+use slint::{ComponentHandle, ModelRc, Timer, VecModel};
 use yantrikdb_companion::CompanionConfig;
 use yantrikdb_companion::config::VoiceConfig;
 
+use crate::activity_feed::ActivityAccumulator;
 use crate::bridge::CompanionBridge;
 use crate::cards::CardManager;
 use crate::clipboard;
@@ -43,12 +44,19 @@ pub struct AppContext {
     pub feature_registry: Rc<RefCell<features::FeatureRegistry>>,
     pub scorer: Rc<RefCell<features::UrgencyScorer>>,
     pub system_snapshot: Rc<RefCell<yantrik_os::SystemSnapshot>>,
+    pub accumulator: Rc<RefCell<ActivityAccumulator>>,
     pub notification_store: notifications::SharedStore,
     pub voice_config: VoiceConfig,
     pub image_viewer_state: Rc<RefCell<ImageViewerState>>,
     pub editor_file_path: Rc<RefCell<String>>,
     pub media_player: Rc<RefCell<Option<MpvHandle>>>,
     pub frecency: Rc<RefCell<FrecencyStore>>,
+    pub browser_history_back: Rc<RefCell<Vec<String>>>,
+    pub browser_history_forward: Rc<RefCell<Vec<String>>>,
+    pub browser_sort_field: Rc<RefCell<String>>,
+    pub browser_sort_ascending: Rc<RefCell<bool>>,
+    pub browser_filter: Rc<RefCell<String>>,
+    pub summary_timer: Rc<RefCell<Option<Timer>>>,
 }
 
 impl AppContext {
@@ -183,12 +191,19 @@ impl AppContext {
             feature_registry: Rc::new(RefCell::new(registry)),
             scorer: Rc::new(RefCell::new(features::UrgencyScorer::new())),
             system_snapshot: Rc::new(RefCell::new(yantrik_os::SystemSnapshot::default())),
+            accumulator: Rc::new(RefCell::new(ActivityAccumulator::new())),
             notification_store: Rc::new(RefCell::new(notifications::NotificationStore::new())),
             voice_config,
             image_viewer_state: Rc::new(RefCell::new(ImageViewerState::default())),
             editor_file_path: Rc::new(RefCell::new(String::new())),
             media_player: Rc::new(RefCell::new(None)),
             frecency: Rc::new(RefCell::new(FrecencyStore::load())),
+            browser_history_back: Rc::new(RefCell::new(Vec::new())),
+            browser_history_forward: Rc::new(RefCell::new(Vec::new())),
+            browser_sort_field: Rc::new(RefCell::new("name".to_string())),
+            browser_sort_ascending: Rc::new(RefCell::new(true)),
+            browser_filter: Rc::new(RefCell::new(String::new())),
+            summary_timer: Rc::new(RefCell::new(None)),
         }
     }
 }

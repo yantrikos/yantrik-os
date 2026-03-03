@@ -125,6 +125,41 @@ pub fn run_think_cycle(service: &mut CompanionService) {
         );
     }
 
+    // 9. Memory evolution — background maintenance (V23)
+    {
+        use crate::memory_evolution;
+        let conn = service.db.conn();
+        let cfg = &service.config.memory_evolution;
+
+        // Gap 3: Semantic drift correction
+        if cfg.consolidation_enabled && memory_evolution::should_consolidate(conn, cfg) {
+            memory_evolution::run_consolidation(&service.db, &*service.llm, cfg);
+        }
+
+        // Gap 5: Memory pruning
+        if cfg.variable_halflife_enabled && memory_evolution::should_prune(conn, cfg) {
+            memory_evolution::run_pruning(&service.db, &*service.llm, cfg);
+        }
+
+        // Gap 4: Reference freshness decay + auto-detection
+        if cfg.reference_freshness_enabled {
+            memory_evolution::decay_reference_freshness(conn, cfg);
+            memory_evolution::detect_emerging_references(&service.db, conn, &*service.llm);
+        }
+
+        // Gap 1: Expire stale conversation context
+        memory_evolution::expire_stale_context(conn);
+
+        // Memory graph weaving — proactive idle-time linking
+        if cfg.weaving_enabled && memory_evolution::should_weave(conn, cfg) {
+            // Only weave when system is idle (>15 min since last interaction)
+            let idle = service.idle_seconds();
+            if idle > cfg.weaving_interval_hours.min(0.25) * 3600.0 {
+                memory_evolution::run_weaving_cycle(&service.db, &*service.llm, cfg);
+            }
+        }
+    }
+
     tracing::debug!(
         triggers = state.pending_triggers.len(),
         patterns = patterns.len(),

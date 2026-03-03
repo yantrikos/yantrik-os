@@ -34,6 +34,10 @@ impl Instinct for ConflictAlertingInstinct {
             urgency,
         )
         .with_cooldown("conflict_alert")
+        .with_message(&format!(
+            "I have some conflicting memories that I could use your help sorting out — {} things don't quite add up.",
+            state.open_conflicts_count
+        ))
         .with_context(serde_json::json!({
             "open_count": state.open_conflicts_count,
         }))]

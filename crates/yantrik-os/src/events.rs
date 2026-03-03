@@ -114,6 +114,10 @@ pub struct SystemSnapshot {
     pub memory_used_bytes: u64,
     pub memory_total_bytes: u64,
 
+    // Disk
+    pub disk_available_bytes: u64,
+    pub disk_total_bytes: u64,
+
     // Process tracking
     pub running_processes: Vec<ProcessInfo>,
 
@@ -151,6 +155,10 @@ impl SystemSnapshot {
                 self.memory_used_bytes = *used_bytes;
                 self.memory_total_bytes = *total_bytes;
             }
+            SystemEvent::DiskPressure { available_bytes, total_bytes, .. } => {
+                self.disk_available_bytes = *available_bytes;
+                self.disk_total_bytes = *total_bytes;
+            }
             SystemEvent::ProcessStarted { name, pid, cpu_percent } => {
                 // Only add if not already tracked
                 if !self.running_processes.iter().any(|p| p.pid == *pid) {
@@ -184,6 +192,17 @@ impl SystemSnapshot {
             0.0
         } else {
             (self.memory_used_bytes as f64 / self.memory_total_bytes as f64 * 100.0) as f32
+        }
+    }
+
+    /// Disk used as a percentage (0.0 - 100.0).
+    pub fn disk_used_percent(&self) -> f32 {
+        if self.disk_total_bytes == 0 {
+            0.0
+        } else {
+            let avail = self.disk_available_bytes as f64;
+            let total = self.disk_total_bytes as f64;
+            ((1.0 - avail / total) * 100.0) as f32
         }
     }
 }

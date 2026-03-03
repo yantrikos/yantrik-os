@@ -1,3 +1,8 @@
+// NOTE: Crate-level allow(unused) works around rustc 1.93.1 ICE in early_lint_checks.
+// The ICE is triggered by the lint emission formatter (StyledBuffer::replace panic).
+// Remove once rustc is updated past 1.93.1.
+#![allow(unused)]
+
 //! Yantrik OS — AI-native desktop shell.
 //!
 //! The desktop's primary interface. Embeds CompanionService in-process
@@ -26,6 +31,7 @@
 use std::path::PathBuf;
 use yantrikdb_companion::CompanionConfig;
 
+mod activity_feed;
 mod app_context;
 // NOTE: #[allow(dead_code)] required to avoid rustc 1.93.1 ICE in check_mod_deathness.
 #[allow(dead_code)]
@@ -44,6 +50,7 @@ mod frecency;
 mod mime_dispatch;
 mod lens;
 mod lock;
+mod markdown;
 mod notifications;
 mod onboarding;
 mod streaming;

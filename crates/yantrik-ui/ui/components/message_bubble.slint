@@ -1,19 +1,27 @@
 // Chat message bubble.
 // User messages: dark pill, right-aligned.
-// Yantrik messages: left-aligned with glowing cyan dot.
+// Yantrik messages: left-aligned with glowing cyan dot + rich block rendering.
 
 import { Theme } from "../theme.slint";
+
+// A single rendered block in a message (parsed from markdown).
+export struct ContentBlock {
+    block-type: string,  // "text", "code", "heading", "bullet"
+    text: string,
+}
 
 export struct MessageData {
     role: string,       // "user" or "assistant"
     content: string,
     is-streaming: bool,
+    blocks: [ContentBlock],
 }
 
 export component MessageBubble inherits Rectangle {
     in property <MessageData> data;
 
     property <bool> is-user: data.role == "user";
+    property <bool> has-blocks: data.blocks.length > 0 && !data.is-streaming;
 
     height: self.preferred-height;
     background: transparent;
@@ -40,13 +48,46 @@ export component MessageBubble inherits Rectangle {
                 drop-shadow-color: Theme.cyan-glow;
             }
 
-            // Response text
-            Text {
-                text: data.content;
-                color: Theme.text-primary;
-                font-size: Theme.font-body;
-                wrap: word-wrap;
+            // Content area — plain text during streaming, rich blocks after
+            VerticalLayout {
                 horizontal-stretch: 1;
+                spacing: 4px;
+
+                // Plain text fallback (streaming or no parsed blocks)
+                if !has-blocks : Text {
+                    text: data.content;
+                    color: Theme.text-primary;
+                    font-size: Theme.font-body;
+                    wrap: word-wrap;
+                }
+
+                // Rich block rendering (after stream completes)
+                for block in data.blocks : Rectangle {
+                    height: self.preferred-height;
+                    background: block.block-type == "code" ? Theme.bg-card : transparent;
+                    border-radius: block.block-type == "code" ? 6px : 0;
+                    border-width: block.block-type == "code" ? 1px : 0;
+                    border-color: block.block-type == "code" ? Theme.border-subtle : transparent;
+
+                    HorizontalLayout {
+                        padding: block.block-type == "code" ? 8px : 0;
+                        padding-left: block.block-type == "code" ? 10px
+                            : block.block-type == "bullet" ? 8px : 0;
+
+                        Text {
+                            text: block.text;
+                            color: block.block-type == "code" ? Theme.cyan-light
+                                : block.block-type == "heading" ? Theme.amber-light
+                                : Theme.text-primary;
+                            font-size: block.block-type == "heading" ? Theme.font-title
+                                : block.block-type == "code" ? Theme.font-small
+                                : Theme.font-body;
+                            font-weight: block.block-type == "heading" ? 600 : 400;
+                            wrap: word-wrap;
+                            horizontal-stretch: 1;
+                        }
+                    }
+                }
             }
         }
 

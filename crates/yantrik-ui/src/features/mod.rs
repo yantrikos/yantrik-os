@@ -193,6 +193,11 @@ impl UrgencyScorer {
         }
     }
 
+    /// Current interruptibility level.
+    pub fn interruptibility(&self) -> f32 {
+        self.interruptibility
+    }
+
     /// Set the user's interruptibility level (from FocusFlow or manual).
     pub fn set_interruptibility(&mut self, level: f32) {
         self.interruptibility = level.clamp(0.0, 1.0);

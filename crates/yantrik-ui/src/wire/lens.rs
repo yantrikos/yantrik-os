@@ -315,6 +315,17 @@ fn wire_open_close(ui: &App, ctx: &AppContext) {
     ui.on_open_lens(move || {
         tracing::debug!("Lens opened");
         if let Some(ui) = ui_weak_open.upgrade() {
+            // Restore chat mode if there are existing messages
+            let messages = ui.get_messages();
+            let msg_model = messages
+                .as_any()
+                .downcast_ref::<slint::VecModel<crate::MessageData>>();
+            if let Some(model) = msg_model {
+                if model.row_count() > 0 {
+                    ui.set_lens_chat_mode(true);
+                }
+            }
+
             // Build contextual suggestions from current system state
             let snap = snapshot.borrow();
             let unread = notification_store.borrow().unread_count();
