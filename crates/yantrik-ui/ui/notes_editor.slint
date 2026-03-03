@@ -1,0 +1,358 @@
+// Notes Editor — AI-native markdown notes with semantic search.
+// Screen 15. Opens from dock "Notes" icon.
+// Split-pane: sidebar note list + TextEdit editor.
+// Notes saved as .md files + indexed in YantrikDB for semantic recall.
+
+import { Theme } from "theme.slint";
+import { TextEdit } from "std-widgets.slint";
+
+export struct NoteEntry {
+    title: string,
+    filename: string,
+    modified: string,
+    preview: string,
+}
+
+export component NotesEditor inherits Rectangle {
+    background: Theme.bg-deep;
+
+    // Note list
+    in property <[NoteEntry]> notes-list: [];
+    in property <int> selected-index: -1;
+
+    // Editor state
+    in-out property <string> current-content: "";
+    in property <string> current-title: "";
+    in property <bool> is-modified: false;
+    in property <int> note-count: 0;
+
+    // Search state
+    in-out property <string> search-query: "";
+    in property <bool> is-searching: false;
+
+    // Callbacks
+    callback new-note();
+    callback save-note();
+    callback delete-note();
+    callback select-note(int);
+    callback search-notes(string);
+    callback content-changed(string);
+
+    VerticalLayout {
+        spacing: 0px;
+
+        // ── Toolbar ──
+        Rectangle {
+            height: 40px;
+            background: Theme.bg-surface;
+
+            HorizontalLayout {
+                padding-left: 14px;
+                padding-right: 12px;
+                alignment: space-between;
+
+                // Left: title + modified indicator
+                HorizontalLayout {
+                    spacing: 8px;
+                    alignment: start;
+
+                    Text {
+                        text: root.current-title != "" ? root.current-title : "Notes";
+                        color: Theme.text-primary;
+                        font-size: 14px;
+                        font-weight: 500;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+
+                    if root.is-modified : Text {
+                        text: "\u{25CF}";
+                        color: Theme.amber;
+                        font-size: 14px;
+                        vertical-alignment: center;
+                    }
+                }
+
+                // Right: buttons
+                HorizontalLayout {
+                    spacing: 6px;
+                    alignment: end;
+
+                    // New note button
+                    TouchArea {
+                        width: 56px;
+                        height: 32px;
+                        clicked => { root.new-note(); }
+
+                        Rectangle {
+                            width: 56px;
+                            height: 32px;
+                            border-radius: 8px;
+                            background: parent.has-hover ? Theme.hover-fill-strong : Theme.hover-fill;
+                            border-width: 1px;
+                            border-color: Theme.border-subtle;
+
+                            Text {
+                                text: "+ New";
+                                color: Theme.cyan;
+                                font-size: 12px;
+                                font-weight: 500;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+
+                    // Save button
+                    TouchArea {
+                        width: 56px;
+                        height: 32px;
+                        clicked => { root.save-note(); }
+
+                        Rectangle {
+                            width: 56px;
+                            height: 32px;
+                            border-radius: 8px;
+                            background: root.is-modified
+                                ? Theme.cyan
+                                : (parent.has-hover ? Theme.hover-fill-strong : Theme.hover-fill);
+                            border-width: root.is-modified ? 0px : 1px;
+                            border-color: Theme.border-subtle;
+
+                            Text {
+                                text: "Save";
+                                color: root.is-modified ? Theme.bg-deep : Theme.text-secondary;
+                                font-size: 12px;
+                                font-weight: root.is-modified ? 600 : 400;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+
+                    // Delete button
+                    if root.selected-index >= 0 : TouchArea {
+                        width: 32px;
+                        height: 32px;
+                        clicked => { root.delete-note(); }
+
+                        Rectangle {
+                            width: 32px;
+                            height: 32px;
+                            border-radius: 8px;
+                            background: parent.has-hover ? #ff444444 : transparent;
+
+                            Text {
+                                text: "\u{00D7}";
+                                color: Theme.text-dim;
+                                font-size: 18px;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Separator
+        Rectangle { height: 1px; background: Theme.separator; }
+
+        // ── Main content: sidebar + editor ──
+        HorizontalLayout {
+            spacing: 0px;
+
+            // ── Left sidebar: search + note list ──
+            Rectangle {
+                width: 200px;
+                background: Theme.bg-surface;
+
+                VerticalLayout {
+                    spacing: 0px;
+
+                    // Search input
+                    Rectangle {
+                        height: 36px;
+                        background: Theme.bg-deep;
+
+                        HorizontalLayout {
+                            padding-left: 8px;
+                            padding-right: 8px;
+                            spacing: 6px;
+
+                            Text {
+                                text: "\u{1F50D}";
+                                color: Theme.text-dim;
+                                font-size: 12px;
+                                vertical-alignment: center;
+                                width: 18px;
+                            }
+
+                            search-input := TextEdit {
+                                horizontal-stretch: 1;
+                                font-size: 12px;
+                                text <=> root.search-query;
+                                edited(text) => {
+                                    root.search-notes(text);
+                                }
+                            }
+                        }
+                    }
+
+                    // Note count
+                    Rectangle {
+                        height: 24px;
+                        background: Theme.bg-surface;
+
+                        Text {
+                            x: 10px;
+                            text: root.note-count == 1
+                                ? "1 note"
+                                : (root.note-count > 0
+                                    ? "\{root.note-count} notes"
+                                    : "No notes");
+                            color: Theme.text-dim;
+                            font-size: 11px;
+                            vertical-alignment: center;
+                        }
+                    }
+
+                    // Separator
+                    Rectangle { height: 1px; background: Theme.separator; }
+
+                    // Note list (scrollable)
+                    Flickable {
+                        vertical-stretch: 1;
+                        viewport-height: note-list-layout.preferred-height;
+
+                        note-list-layout := VerticalLayout {
+                            spacing: 0px;
+
+                            for entry[idx] in root.notes-list : TouchArea {
+                                height: 64px;
+                                clicked => { root.select-note(idx); }
+
+                                Rectangle {
+                                    height: 64px;
+                                    background: idx == root.selected-index
+                                        ? Theme.hover-fill-strong
+                                        : (parent.has-hover ? Theme.hover-fill : transparent);
+                                    border-width: idx == root.selected-index ? 0px : 0px;
+
+                                    VerticalLayout {
+                                        padding: 8px;
+                                        padding-left: 10px;
+                                        padding-right: 10px;
+                                        spacing: 2px;
+
+                                        // Title
+                                        Text {
+                                            text: entry.title;
+                                            color: idx == root.selected-index
+                                                ? Theme.cyan
+                                                : Theme.text-primary;
+                                            font-size: 13px;
+                                            font-weight: 500;
+                                            overflow: elide;
+                                        }
+
+                                        // Preview (first line of content)
+                                        Text {
+                                            text: entry.preview;
+                                            color: Theme.text-dim;
+                                            font-size: 11px;
+                                            overflow: elide;
+                                        }
+
+                                        // Modified time
+                                        Text {
+                                            text: entry.modified;
+                                            color: Theme.text-dim;
+                                            font-size: 10px;
+                                        }
+                                    }
+
+                                    // Selected indicator bar
+                                    if idx == root.selected-index : Rectangle {
+                                        x: 0px;
+                                        y: 0px;
+                                        width: 3px;
+                                        height: parent.height;
+                                        background: Theme.cyan;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Vertical separator
+            Rectangle { width: 1px; background: Theme.separator; }
+
+            // ── Right: editor area ──
+            Rectangle {
+                horizontal-stretch: 1;
+                background: Theme.bg-deep;
+
+                if root.selected-index >= 0 : TextEdit {
+                    width: 100%;
+                    height: 100%;
+                    text <=> root.current-content;
+                    font-size: 14px;
+                    edited(text) => {
+                        root.content-changed(text);
+                    }
+                }
+
+                // Empty state when no note selected
+                if root.selected-index < 0 : Rectangle {
+                    VerticalLayout {
+                        alignment: center;
+                        spacing: 8px;
+
+                        Text {
+                            text: "\u{1F4DD}";
+                            color: Theme.text-dim;
+                            font-size: 48px;
+                            horizontal-alignment: center;
+                        }
+
+                        Text {
+                            text: "Select a note or create a new one";
+                            color: Theme.text-dim;
+                            font-size: 14px;
+                            horizontal-alignment: center;
+                        }
+
+                        // Quick-create button
+                        TouchArea {
+                            width: 120px;
+                            height: 36px;
+                            x: (parent.width - self.width) / 2;
+                            clicked => { root.new-note(); }
+
+                            Rectangle {
+                                width: 120px;
+                                height: 36px;
+                                border-radius: 8px;
+                                background: parent.has-hover ? Theme.hover-fill-strong : Theme.hover-fill;
+                                border-width: 1px;
+                                border-color: Theme.border-subtle;
+
+                                Text {
+                                    text: "+ New Note";
+                                    color: Theme.cyan;
+                                    font-size: 13px;
+                                    font-weight: 500;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

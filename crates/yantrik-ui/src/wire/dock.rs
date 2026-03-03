@@ -32,8 +32,14 @@ pub fn wire(ui: &App, ctx: &AppContext) {
 
         // Fallback: hardcoded commands
         let cmd = match app.as_str() {
-            "terminal" => "foot",
-            "browser" => "firefox-esr",
+            "terminal" => {
+                if let Some(ui) = ui_weak.upgrade() {
+                    ui.set_current_screen(14);
+                    ui.invoke_navigate(14);
+                }
+                return;
+            }
+            "browser" => "chromium",
             "files" => {
                 if let Some(ui) = ui_weak.upgrade() {
                     ui.set_current_screen(8);
@@ -45,6 +51,13 @@ pub fn wire(ui: &App, ctx: &AppContext) {
                 if let Some(ui) = ui_weak.upgrade() {
                     ui.set_current_screen(7);
                     ui.invoke_navigate(7);
+                }
+                return;
+            }
+            "notes" => {
+                if let Some(ui) = ui_weak.upgrade() {
+                    ui.set_current_screen(15);
+                    ui.invoke_navigate(15);
                 }
                 return;
             }

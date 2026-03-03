@@ -155,9 +155,11 @@ pub fn wire(ui: &App, ctx: &AppContext) {
             ui.set_battery_charging(snap.battery_charging);
             ui.set_wifi_connected(snap.network_connected);
 
-            // Auto-lock on idle (only from desktop screen)
-            if snap.user_idle
-                && snap.idle_seconds >= lock::DEFAULT_IDLE_LOCK_SECS
+            // Auto-lock on idle (only from desktop screen, 0 = disabled)
+            let lock_timeout = ui.get_settings_auto_lock_secs() as u64;
+            if lock_timeout > 0
+                && snap.user_idle
+                && snap.idle_seconds >= lock_timeout
                 && ui.get_current_screen() == 1
             {
                 ui.set_current_screen(3);

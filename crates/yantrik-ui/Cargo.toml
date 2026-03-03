@@ -27,6 +27,8 @@ serde_yaml = "0.9"
 cpal = "0.15"
 rubato = "0.16"
 anyhow = "1"
+pty-process = "0.5"
+vt100 = "0.16"
 
 [features]
 default = []

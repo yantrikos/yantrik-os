@@ -1,9 +1,9 @@
 # Yantrik OS — LLM API Backend Configuration
 # Deploy to /opt/yantrik/config.yaml on the VM.
 #
-# Uses llama-server (llama.cpp) running on the Windows host with CUDA GPU.
-# Model: Qwen3.5-4B Q4_K_M via OpenAI-compatible API.
-# Model repo: http://192.168.4.92:8888/ (LXC on Proxmox node2)
+# Uses Ollama on the Windows host with CUDA GPU.
+# Model: Qwen3.5-9B Q4_K_M via OpenAI-compatible API.
+# OLLAMA_KEEP_ALIVE=-1 set system-wide to prevent model unloading.
 
 user_name: "Pranab"
 
@@ -20,8 +20,8 @@ personality:
 
 llm:
   backend: "api"
-  api_base_url: "http://192.168.4.35:8083/v1"  # llama-server on Windows host (CUDA)
-  api_model: "qwen3.5-4b"
+  api_base_url: "http://192.168.4.35:11434/v1"  # Ollama on Windows host (CUDA)
+  api_model: "qwen3.5:9b"
   max_tokens: 1024
   temperature: 0.6
   max_context_tokens: 16384

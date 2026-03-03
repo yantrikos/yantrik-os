@@ -42,6 +42,10 @@ export component SettingsScreen inherits Rectangle {
     in-out property <bool> dark-mode: true;
     callback toggle-dark-mode();
 
+    // Interactive settings
+    callback cycle-tool-permission();
+    callback cycle-auto-lock();
+
     callback back-pressed();
     callback navigate-to(int);
 
@@ -420,17 +424,42 @@ export component SettingsScreen inherits Rectangle {
 
                         Rectangle { height: 1px; background: #ffffff08; }
 
-                        HorizontalLayout {
-                            Text {
-                                text: "Tool permission";
-                                color: Theme.text-secondary;
-                                font-size: Theme.font-body;
-                                horizontal-stretch: 1;
-                            }
-                            Text {
-                                text: root.tool-permission;
-                                color: Theme.text-primary;
-                                font-size: Theme.font-body;
+                        perm-ta := TouchArea {
+                            height: 24px;
+                            clicked => { root.cycle-tool-permission(); }
+
+                            HorizontalLayout {
+                                Text {
+                                    text: "Tool permission";
+                                    color: Theme.text-secondary;
+                                    font-size: Theme.font-body;
+                                    horizontal-stretch: 1;
+                                }
+                                Rectangle {
+                                    width: perm-tag.preferred-width + 16px;
+                                    height: 24px;
+                                    border-radius: 12px;
+                                    background: root.tool-permission == "safe" ? Theme.tint-cyan
+                                        : (root.tool-permission == "standard" ? Theme.tint-amber
+                                        : #e86b6b18);
+                                    border-width: 1px;
+                                    border-color: root.tool-permission == "safe" ? Theme.cyan-dim
+                                        : (root.tool-permission == "standard" ? Theme.amber-dim
+                                        : #e86b6b40);
+
+                                    perm-tag := Text {
+                                        text: root.tool-permission == "safe" ? "Safe"
+                                            : (root.tool-permission == "standard" ? "Standard"
+                                            : "Sensitive");
+                                        color: root.tool-permission == "safe" ? Theme.cyan
+                                            : (root.tool-permission == "standard" ? Theme.amber
+                                            : Theme.color-emotional);
+                                        font-size: 11px;
+                                        font-weight: 600;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+                                }
                             }
                         }
                     }
@@ -579,19 +608,37 @@ export component SettingsScreen inherits Rectangle {
                         padding: 16px;
                         spacing: 12px;
 
-                        HorizontalLayout {
-                            Text {
-                                text: "Auto-lock";
-                                color: Theme.text-secondary;
-                                font-size: Theme.font-body;
-                                horizontal-stretch: 1;
-                            }
-                            Text {
-                                text: root.auto-lock-secs >= 60
-                                    ? Math.floor(root.auto-lock-secs / 60) + " min"
-                                    : root.auto-lock-secs + " sec";
-                                color: Theme.text-primary;
-                                font-size: Theme.font-body;
+                        lock-ta := TouchArea {
+                            height: 24px;
+                            clicked => { root.cycle-auto-lock(); }
+
+                            HorizontalLayout {
+                                Text {
+                                    text: "Auto-lock";
+                                    color: Theme.text-secondary;
+                                    font-size: Theme.font-body;
+                                    horizontal-stretch: 1;
+                                }
+                                Rectangle {
+                                    width: lock-tag.preferred-width + 16px;
+                                    height: 24px;
+                                    border-radius: 12px;
+                                    background: lock-ta.has-hover ? Theme.hover-fill-strong : Theme.hover-fill;
+                                    border-width: 1px;
+                                    border-color: Theme.border-subtle;
+
+                                    lock-tag := Text {
+                                        text: root.auto-lock-secs == 0 ? "Never"
+                                            : (root.auto-lock-secs >= 60
+                                                ? Math.floor(root.auto-lock-secs / 60) + " min"
+                                                : root.auto-lock-secs + " sec");
+                                        color: Theme.text-primary;
+                                        font-size: 11px;
+                                        font-weight: 500;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+                                }
                             }
                         }
 

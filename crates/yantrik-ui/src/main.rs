@@ -56,6 +56,7 @@ mod onboarding;
 mod streaming;
 mod system_context;
 mod telegram;
+mod terminal;
 mod voice;
 // NOTE: #[allow(dead_code)] required to avoid rustc 1.93.1 ICE in check_mod_deathness.
 #[allow(dead_code)]

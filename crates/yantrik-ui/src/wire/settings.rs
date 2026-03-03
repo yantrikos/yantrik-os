@@ -15,6 +15,37 @@ pub fn wire(ui: &App, _ctx: &AppContext) {
         ui.global::<ThemeMode>().set_dark(new_val);
         persist_theme(new_val);
     });
+
+    // Cycle tool permission: safe → standard → sensitive → safe
+    let ui_weak = ui.as_weak();
+    ui.on_cycle_tool_permission(move || {
+        let Some(ui) = ui_weak.upgrade() else { return };
+        let current = ui.get_settings_tool_permission().to_string();
+        let next = match current.as_str() {
+            "safe" => "standard",
+            "standard" => "sensitive",
+            _ => "safe",
+        };
+        ui.set_settings_tool_permission(next.into());
+        tracing::info!(from = %current, to = next, "Tool permission level changed");
+    });
+
+    // Cycle auto-lock timeout: 30s → 1m → 2m → 5m → 10m → never → 30s
+    let ui_weak = ui.as_weak();
+    ui.on_cycle_auto_lock(move || {
+        let Some(ui) = ui_weak.upgrade() else { return };
+        let current = ui.get_settings_auto_lock_secs();
+        let next = match current {
+            30 => 60,
+            60 => 120,
+            120 => 300,
+            300 => 600,
+            600 => 0,
+            _ => 30,
+        };
+        ui.set_settings_auto_lock_secs(next);
+        tracing::info!(from = current, to = next, "Auto-lock timeout changed");
+    });
 }
 
 /// Load theme preference from ~/.config/yantrik/theme.yaml.

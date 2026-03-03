@@ -27,6 +27,8 @@ pub fn wire(ui: &App, ctx: &AppContext) {
     let browser_show_hidden = ctx.browser_show_hidden.clone();
     let notification_store = ctx.notification_store.clone();
     let system_snapshot = ctx.system_snapshot.clone();
+    let terminal = ctx.terminal.clone();
+    let term_poll_timer: Rc<RefCell<Option<Timer>>> = Rc::new(RefCell::new(None));
 
     ui.on_navigate(move |screen| {
         tracing::debug!(screen, "Navigate to screen");
@@ -190,6 +192,40 @@ pub fn wire(ui: &App, ctx: &AppContext) {
                         })
                         .collect();
                     ui.set_sys_top_processes(ModelRc::new(VecModel::from(procs)));
+                }
+            }
+            // Terminal screen — spawn PTY if needed, start poll timer
+            14 => {
+                // Spawn terminal if not already running
+                {
+                    let mut guard = terminal.borrow_mut();
+                    if guard.is_none() || !guard.as_ref().map_or(false, |t| t.is_alive()) {
+                        match crate::terminal::TerminalHandle::spawn(24, 80) {
+                            Ok(th) => {
+                                *guard = Some(th);
+                                tracing::info!("Terminal spawned");
+                            }
+                            Err(e) => {
+                                tracing::error!(error = %e, "Failed to spawn terminal");
+                            }
+                        }
+                    }
+                }
+
+                // Start the output poll timer
+                if let Some(ui) = ui_weak.upgrade() {
+                    super::terminal::start_poll_timer(
+                        &ui,
+                        &terminal,
+                        &bridge,
+                        &term_poll_timer,
+                    );
+                }
+            }
+            // Notes editor — load notes list
+            15 => {
+                if let Some(ui) = ui_weak.upgrade() {
+                    super::notes::load_notes_list(&ui);
                 }
             }
             _ => {}

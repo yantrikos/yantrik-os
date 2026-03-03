@@ -21,6 +21,8 @@ mod system_poll;
 pub mod text_editor;
 mod timers;
 mod voice_mode;
+pub mod terminal;
+pub mod notes;
 mod window_switcher;
 
 use crate::app_context::AppContext;
@@ -43,5 +45,7 @@ pub fn wire_all(ui: &App, ctx: &AppContext) {
     image_viewer::wire(ui, ctx);
     text_editor::wire(ui, ctx);
     media_player::wire(ui, ctx);
+    terminal::wire(ui, ctx);
+    notes::wire(ui, ctx);
     callbacks::wire(ui, ctx);
 }

@@ -21,6 +21,7 @@ use crate::frecency::FrecencyStore;
 use crate::notifications;
 use crate::system_context;
 use crate::wire::image_viewer::ImageViewerState;
+use crate::terminal::TerminalHandle;
 use crate::wire::media_player::MpvHandle;
 use crate::{App, ThemeMode, ThemeOverrides, MessageData, UrgeCardData, WhisperCardItem};
 
@@ -58,6 +59,7 @@ pub struct AppContext {
     pub browser_filter: Rc<RefCell<String>>,
     pub summary_timer: Rc<RefCell<Option<Timer>>>,
     pub telegram: Option<Arc<crate::telegram::TelegramHandle>>,
+    pub terminal: Rc<RefCell<Option<TerminalHandle>>>,
 }
 
 impl AppContext {
@@ -228,6 +230,7 @@ impl AppContext {
             browser_filter: Rc::new(RefCell::new(String::new())),
             summary_timer: Rc::new(RefCell::new(None)),
             telegram,
+            terminal: Rc::new(RefCell::new(None)),
         }
     }
 }

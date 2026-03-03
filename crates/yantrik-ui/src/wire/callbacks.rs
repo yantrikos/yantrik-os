@@ -543,9 +543,11 @@ fn wire_file_browser(ui: &App, ctx: &AppContext) {
         tracing::info!(file = %detail.name, "AI file summary requested");
     });
 
-    // Ask AI — navigate to desktop Lens with contextual query
+    // Ask AI — send file context to AI and stream response inline
     let ui_weak = ui.as_weak();
     let bp = browser_path.clone();
+    let bridge_ask = ctx.bridge.clone();
+    let ask_timer = ctx.summary_timer.clone();
     ui.on_file_request_ask_ai(move || {
         let ui = match ui_weak.upgrade() {
             Some(ui) => ui,
@@ -554,22 +556,75 @@ fn wire_file_browser(ui: &App, ctx: &AppContext) {
 
         let detail = ui.get_file_detail_data();
         let name = detail.name.to_string();
+        let preview = detail.preview_text.to_string();
         let path = detail.path_text.to_string();
 
-        let query = if name.is_empty() {
+        if ui.get_file_is_summarizing() {
+            return;
+        }
+
+        if !bridge_ask.is_online() {
+            ui.set_file_ai_summary("AI is offline".into());
+            return;
+        }
+
+        let prompt = if name.is_empty() {
             let dir = bp.borrow().clone();
-            format!("What kind of project is in {}?", dir)
+            format!("What kind of project is in {}? List the key files and what they do.", dir)
+        } else if preview.is_empty() {
+            format!("Tell me about the file '{}' at path {}. What is its likely purpose based on the name and extension?", name, path)
         } else {
-            format!("Tell me about {}", path)
+            format!(
+                "Analyze this file and tell me what it does, any issues you notice, and suggestions:\n\nFile: {}\nPath: {}\n\nContent:\n{}",
+                name, path, preview
+            )
         };
 
-        // Navigate to desktop (screen 1) and open Lens with query
-        ui.set_current_screen(1);
-        ui.invoke_navigate(1);
-        ui.set_lens_open(true);
-        ui.invoke_lens_submit(SharedString::from(&query));
+        ui.set_file_is_summarizing(true);
+        ui.set_file_ai_summary("".into());
 
-        tracing::info!(query = %query, "Ask AI from file browser");
+        let token_rx = bridge_ask.send_message(prompt.clone());
+        let weak = ui_weak.clone();
+        let timer_handle = ask_timer.clone();
+        let start_time = std::time::Instant::now();
+
+        let timer = Timer::default();
+        timer.start(TimerMode::Repeated, Duration::from_millis(16), move || {
+            let mut done = false;
+            while let Ok(token) = token_rx.try_recv() {
+                if token == "__DONE__" {
+                    done = true;
+                    break;
+                }
+                if token.starts_with("__") && token.ends_with("__") {
+                    continue;
+                }
+                if let Some(ui) = weak.upgrade() {
+                    let current = ui.get_file_ai_summary().to_string();
+                    let updated = format!("{}{}", current, token);
+                    ui.set_file_ai_summary(SharedString::from(&updated));
+                }
+            }
+            if !done && start_time.elapsed() > Duration::from_secs(30) {
+                if let Some(ui) = weak.upgrade() {
+                    if ui.get_file_ai_summary().is_empty() {
+                        ui.set_file_ai_summary("AI is busy — try again later.".into());
+                    }
+                    ui.set_file_is_summarizing(false);
+                }
+                *timer_handle.borrow_mut() = None;
+                return;
+            }
+            if done {
+                if let Some(ui) = weak.upgrade() {
+                    ui.set_file_is_summarizing(false);
+                }
+                *timer_handle.borrow_mut() = None;
+            }
+        });
+        *ask_timer.borrow_mut() = Some(timer);
+
+        tracing::info!(file = %name, "Ask AI from file browser");
     });
 }
 

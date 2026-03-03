@@ -1,8 +1,8 @@
-// Text Editor — simple text editing with save.
+// Text Editor — simple text editing with AI assist and save.
 // Screen 12. Opens from file browser or "Editor" dock icon.
+// AI panel: summarize, generate, or improve text via Yantrik.
 
 import { Theme } from "theme.slint";
-import { TextEdit } from "std-widgets.slint";
 
 export component TextEditorScreen inherits Rectangle {
     background: Theme.bg-deep;
@@ -12,13 +12,29 @@ export component TextEditorScreen inherits Rectangle {
     in property <bool> is-modified: false;
     in property <bool> is-readonly: false;
 
+    // Save As dialog state
+    in-out property <bool> show-save-dialog: false;
+    in-out property <string> save-dir: "~/";
+    in-out property <string> save-filename: "untitled.txt";
+    in property <string> save-error: "";
+
+    // AI assist state
+    in-out property <bool> show-ai-panel: false;
+    in-out property <string> ai-prompt: "";
+    in property <string> ai-response: "";
+    in property <bool> ai-is-working: false;
+
     callback save-file();
+    callback save-file-as(string, string);
     callback content-changed(string);
+    callback ai-request(string);       // Send prompt with document context
+    callback ai-insert();              // Insert AI response into document
+    callback ai-dismiss();             // Close AI panel
 
     VerticalLayout {
         spacing: 0px;
 
-        // Toolbar (filename + modified indicator + save button)
+        // ── Toolbar ──
         Rectangle {
             height: 40px;
             background: Theme.bg-surface;
@@ -44,7 +60,7 @@ export component TextEditorScreen inherits Rectangle {
                     }
 
                     if root.is-modified : Text {
-                        text: "●";
+                        text: "\u{25CF}";
                         color: Theme.amber;
                         font-size: 14px;
                         vertical-alignment: center;
@@ -58,50 +74,427 @@ export component TextEditorScreen inherits Rectangle {
                     }
                 }
 
-                // Right: save button
-                if !root.is-readonly : TouchArea {
-                    width: 72px;
-                    height: 32px;
-                    clicked => { root.save-file(); }
+                // Right: AI button + Save button
+                HorizontalLayout {
+                    spacing: 6px;
+                    alignment: end;
 
-                    Rectangle {
+                    // AI assist button
+                    ai-btn-ta := TouchArea {
+                        width: 56px;
+                        height: 32px;
+                        clicked => {
+                            root.show-ai-panel = !root.show-ai-panel;
+                            root.show-save-dialog = false;
+                        }
+
+                        Rectangle {
+                            width: 56px;
+                            height: 32px;
+                            border-radius: 8px;
+                            background: root.show-ai-panel
+                                ? Theme.amber
+                                : (ai-btn-ta.has-hover ? Theme.hover-fill-strong : Theme.hover-fill);
+                            border-width: root.show-ai-panel ? 0px : 1px;
+                            border-color: Theme.border-subtle;
+
+                            Text {
+                                text: "AI";
+                                color: root.show-ai-panel ? Theme.bg-deep : Theme.amber;
+                                font-size: 12px;
+                                font-weight: 600;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+
+                    // Save button
+                    if !root.is-readonly : save-btn-ta := TouchArea {
                         width: 72px;
                         height: 32px;
-                        border-radius: 8px;
-                        background: root.is-modified
-                            ? Theme.cyan
-                            : (parent.has-hover ? Theme.hover-fill-strong : Theme.hover-fill);
-                        border-width: root.is-modified ? 0px : 1px;
-                        border-color: Theme.border-subtle;
+                        clicked => { root.save-file(); }
 
-                        Text {
-                            text: "Save";
-                            color: root.is-modified ? Theme.bg-deep : Theme.text-secondary;
-                            font-size: 13px;
-                            font-weight: root.is-modified ? 600 : 400;
-                            horizontal-alignment: center;
-                            vertical-alignment: center;
+                        Rectangle {
+                            width: 72px;
+                            height: 32px;
+                            border-radius: 8px;
+                            background: root.is-modified
+                                ? Theme.cyan
+                                : (save-btn-ta.has-hover ? Theme.hover-fill-strong : Theme.hover-fill);
+                            border-width: root.is-modified ? 0px : 1px;
+                            border-color: Theme.border-subtle;
+
+                            Text {
+                                text: "Save";
+                                color: root.is-modified ? Theme.bg-deep : Theme.text-secondary;
+                                font-size: 13px;
+                                font-weight: root.is-modified ? 600 : 400;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
                         }
                     }
                 }
             }
         }
 
-        // Separator
         Rectangle { height: 1px; background: Theme.separator; }
 
-        // Editor area
+        // ── AI assist panel ──
+        if root.show-ai-panel : Rectangle {
+            max-height: 250px;
+            background: @linear-gradient(135deg, #12111ae0 0%, #0c0b10c0 100%);
+            border-width: 1px;
+            border-color: Theme.amber-dim;
+
+            ai-panel-layout := VerticalLayout {
+                padding: 12px;
+                spacing: 8px;
+
+                // Header: label + quick actions + close
+                HorizontalLayout {
+                    spacing: 6px;
+
+                    Text {
+                        text: "\u{25C9} AI Assist";
+                        color: Theme.amber;
+                        font-size: 12px;
+                        font-weight: 600;
+                        vertical-alignment: center;
+                    }
+
+                    Rectangle { horizontal-stretch: 1; }
+
+                    // Quick action: Summarize
+                    sum-ta := TouchArea {
+                        width: 76px;
+                        height: 24px;
+                        clicked => { root.ai-request("summarize"); }
+
+                        Rectangle {
+                            width: 76px;
+                            height: 24px;
+                            border-radius: 12px;
+                            background: sum-ta.has-hover ? Theme.hover-fill-strong : Theme.hover-fill;
+                            border-width: 1px;
+                            border-color: Theme.border-subtle;
+
+                            Text {
+                                text: "Summarize";
+                                color: Theme.text-secondary;
+                                font-size: 11px;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+
+                    // Quick action: Improve
+                    imp-ta := TouchArea {
+                        width: 66px;
+                        height: 24px;
+                        clicked => { root.ai-request("improve"); }
+
+                        Rectangle {
+                            width: 66px;
+                            height: 24px;
+                            border-radius: 12px;
+                            background: imp-ta.has-hover ? Theme.hover-fill-strong : Theme.hover-fill;
+                            border-width: 1px;
+                            border-color: Theme.border-subtle;
+
+                            Text {
+                                text: "Improve";
+                                color: Theme.text-secondary;
+                                font-size: 11px;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+
+                    // Close
+                    ai-close-ta := TouchArea {
+                        width: 24px;
+                        height: 24px;
+                        clicked => { root.ai-dismiss(); }
+                        Rectangle {
+                            width: 24px;
+                            height: 24px;
+                            border-radius: 6px;
+                            background: ai-close-ta.has-hover ? Theme.hover-fill-strong : transparent;
+                            Text {
+                                text: "\u{00D7}";
+                                color: Theme.text-dim;
+                                font-size: 16px;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                }
+
+                // Prompt input row
+                HorizontalLayout {
+                    spacing: 6px;
+
+                    Rectangle {
+                        horizontal-stretch: 1;
+                        height: 32px;
+                        border-radius: 8px;
+                        background: #0a091080;
+                        border-width: 1px;
+                        border-color: Theme.border-subtle;
+
+                        ai-input := TextInput {
+                            x: 12px;
+                            y: (parent.height - self.preferred-height) / 2;
+                            width: parent.width - 24px;
+                            color: Theme.text-primary;
+                            font-size: 13px;
+                            text <=> root.ai-prompt;
+                            input-type: text;
+                            accepted => {
+                                if root.ai-prompt != "" {
+                                    root.ai-request(root.ai-prompt);
+                                }
+                            }
+                        }
+                    }
+
+                    // Send button
+                    send-ta := TouchArea {
+                        width: 56px;
+                        height: 32px;
+                        clicked => {
+                            if root.ai-prompt != "" {
+                                root.ai-request(root.ai-prompt);
+                            }
+                        }
+
+                        Rectangle {
+                            width: 56px;
+                            height: 32px;
+                            border-radius: 8px;
+                            background: root.ai-is-working
+                                ? Theme.hover-fill
+                                : (send-ta.has-hover ? Theme.amber : Theme.hover-fill-strong);
+                            border-width: send-ta.has-hover ? 0px : 1px;
+                            border-color: Theme.amber-dim;
+
+                            Text {
+                                text: root.ai-is-working ? "..." : "Ask";
+                                color: send-ta.has-hover && !root.ai-is-working ? Theme.bg-deep : Theme.amber;
+                                font-size: 12px;
+                                font-weight: 600;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                }
+
+                // AI response area (scrollable)
+                if root.ai-response != "" : Rectangle {
+                    min-height: 40px;
+                    max-height: 140px;
+                    border-radius: 8px;
+                    background: #0a091060;
+
+                    Flickable {
+                        width: parent.width;
+                        height: parent.height;
+                        viewport-height: ai-resp-text.preferred-height + 16px;
+
+                        ai-resp-text := Text {
+                            x: 12px;
+                            y: 8px;
+                            width: parent.width - 24px;
+                            text: root.ai-response;
+                            color: Theme.text-secondary;
+                            font-size: 13px;
+                            wrap: word-wrap;
+                        }
+                    }
+                }
+
+                // Insert button (when response is available and not working)
+                if root.ai-response != "" && !root.ai-is-working : HorizontalLayout {
+                    alignment: end;
+                    spacing: 6px;
+
+                    ins-ta := TouchArea {
+                        width: 110px;
+                        height: 28px;
+                        clicked => { root.ai-insert(); }
+
+                        Rectangle {
+                            width: 110px;
+                            height: 28px;
+                            border-radius: 8px;
+                            background: ins-ta.has-hover ? Theme.cyan : Theme.hover-fill-strong;
+                            border-width: ins-ta.has-hover ? 0px : 1px;
+                            border-color: Theme.cyan-dim;
+
+                            Text {
+                                text: "Insert into doc";
+                                color: ins-ta.has-hover ? Theme.bg-deep : Theme.cyan;
+                                font-size: 11px;
+                                font-weight: 600;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if root.show-ai-panel : Rectangle { height: 1px; background: Theme.separator; }
+
+        // ── Save As dialog ──
+        if root.show-save-dialog : Rectangle {
+            height: save-dialog-layout.preferred-height;
+            background: @linear-gradient(135deg, #12111ae0 0%, #0c0b10c0 100%);
+            border-width: 1px;
+            border-color: Theme.cyan-dim;
+
+            save-dialog-layout := VerticalLayout {
+                padding: 16px;
+                spacing: 12px;
+
+                HorizontalLayout {
+                    spacing: 8px;
+                    Text {
+                        text: "Save As";
+                        color: Theme.cyan;
+                        font-size: 14px;
+                        font-weight: 600;
+                        horizontal-stretch: 1;
+                        vertical-alignment: center;
+                    }
+                    close-ta := TouchArea {
+                        width: 24px;
+                        height: 24px;
+                        clicked => { root.show-save-dialog = false; }
+                        Rectangle {
+                            width: 24px;
+                            height: 24px;
+                            border-radius: 6px;
+                            background: close-ta.has-hover ? Theme.hover-fill-strong : transparent;
+                            Text {
+                                text: "\u{00D7}";
+                                color: Theme.text-dim;
+                                font-size: 16px;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                }
+
+                VerticalLayout {
+                    spacing: 4px;
+                    Text { text: "Directory"; color: Theme.text-dim; font-size: 11px; }
+                    Rectangle {
+                        height: 34px;
+                        border-radius: 8px;
+                        background: #0a091080;
+                        border-width: 1px;
+                        border-color: Theme.border-subtle;
+                        dir-input := TextInput {
+                            x: 12px;
+                            y: (parent.height - self.preferred-height) / 2;
+                            width: parent.width - 24px;
+                            color: Theme.text-primary;
+                            font-size: 13px;
+                            text <=> root.save-dir;
+                            accepted => { root.save-file-as(root.save-dir, root.save-filename); }
+                        }
+                    }
+                }
+
+                VerticalLayout {
+                    spacing: 4px;
+                    Text { text: "Filename"; color: Theme.text-dim; font-size: 11px; }
+                    Rectangle {
+                        height: 34px;
+                        border-radius: 8px;
+                        background: #0a091080;
+                        border-width: 1px;
+                        border-color: Theme.border-subtle;
+                        name-input := TextInput {
+                            x: 12px;
+                            y: (parent.height - self.preferred-height) / 2;
+                            width: parent.width - 24px;
+                            color: Theme.text-primary;
+                            font-size: 13px;
+                            text <=> root.save-filename;
+                            accepted => { root.save-file-as(root.save-dir, root.save-filename); }
+                        }
+                    }
+                }
+
+                if root.save-error != "" : Text {
+                    text: root.save-error;
+                    color: Theme.color-emotional;
+                    font-size: 12px;
+                }
+
+                HorizontalLayout {
+                    spacing: 8px;
+                    alignment: end;
+                    cancel-ta := TouchArea {
+                        width: 72px; height: 32px;
+                        clicked => { root.show-save-dialog = false; }
+                        Rectangle {
+                            width: 72px; height: 32px; border-radius: 8px;
+                            background: cancel-ta.has-hover ? Theme.hover-fill-strong : Theme.hover-fill;
+                            border-width: 1px; border-color: Theme.border-subtle;
+                            Text { text: "Cancel"; color: Theme.text-secondary; font-size: 13px; horizontal-alignment: center; vertical-alignment: center; }
+                        }
+                    }
+                    confirm-ta := TouchArea {
+                        width: 72px; height: 32px;
+                        clicked => { root.save-file-as(root.save-dir, root.save-filename); }
+                        Rectangle {
+                            width: 72px; height: 32px; border-radius: 8px;
+                            background: Theme.cyan;
+                            Text { text: "Save"; color: Theme.bg-deep; font-size: 13px; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; }
+                        }
+                    }
+                }
+            }
+        }
+
+        if root.show-save-dialog : Rectangle { height: 1px; background: Theme.separator; }
+
+        // ── Editor area ──
         Rectangle {
             background: Theme.bg-deep;
+            vertical-stretch: 1;
 
-            TextEdit {
-                width: 100%;
-                height: 100%;
-                text <=> root.file-content;
-                read-only: root.is-readonly;
-                font-size: 14px;
-                edited(text) => {
-                    root.content-changed(text);
+            Flickable {
+                x: 0px;
+                y: 0px;
+                width: parent.width;
+                height: parent.height;
+                viewport-height: editor-input.preferred-height + 32px;
+
+                editor-input := TextInput {
+                    x: 16px;
+                    y: 12px;
+                    width: parent.width - 32px;
+                    color: Theme.text-primary;
+                    font-size: 14px;
+                    text <=> root.file-content;
+                    read-only: root.is-readonly;
+                    single-line: false;
+                    wrap: word-wrap;
+                    selection-foreground-color: Theme.bg-deep;
+                    selection-background-color: Theme.cyan;
+                    edited => { root.content-changed(self.text); }
                 }
             }
         }

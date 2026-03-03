@@ -1,0 +1,264 @@
+// Terminal — AI-native terminal emulator.
+// Screen 14. Opens from dock "Terminal" icon.
+// PTY-backed with vt100 emulation; AI watches output for errors.
+
+import { Theme } from "theme.slint";
+
+export component TerminalScreen inherits Rectangle {
+    background: #0c0c10;
+
+    // Terminal content (plain text, rows joined by newlines)
+    in property <string> terminal-output: "";
+    in property <int> cursor-row: 0;
+    in property <int> cursor-col: 0;
+    in property <bool> is-alive: true;
+
+    // AI suggestion state
+    in property <string> ai-suggestion: "";
+    in property <bool> has-suggestion: false;
+
+    // Callbacks to Rust
+    callback terminal-key-pressed(KeyEvent) -> EventResult;
+    callback request-ai-help();
+    callback dismiss-suggestion();
+    callback restart-terminal();
+
+    VerticalLayout {
+        spacing: 0px;
+
+        // ── Toolbar ──
+        Rectangle {
+            height: 36px;
+            background: Theme.bg-surface;
+
+            HorizontalLayout {
+                padding-left: 14px;
+                padding-right: 14px;
+                alignment: space-between;
+
+                // Left: title + status
+                HorizontalLayout {
+                    spacing: 8px;
+                    alignment: start;
+
+                    Text {
+                        text: ">_";
+                        color: Theme.cyan;
+                        font-size: 16px;
+                        font-weight: 700;
+                        vertical-alignment: center;
+                    }
+
+                    Text {
+                        text: "Terminal";
+                        color: Theme.text-primary;
+                        font-size: 14px;
+                        font-weight: 500;
+                        vertical-alignment: center;
+                    }
+
+                    // Process alive indicator
+                    Text {
+                        text: root.is-alive ? "●" : "○";
+                        color: root.is-alive ? Theme.cyan : Theme.text-dim;
+                        font-size: 10px;
+                        vertical-alignment: center;
+                    }
+                }
+
+                // Right: restart button (when dead)
+                if !root.is-alive : TouchArea {
+                    width: 80px;
+                    height: 28px;
+                    clicked => { root.restart-terminal(); }
+
+                    Rectangle {
+                        width: 80px;
+                        height: 28px;
+                        border-radius: 6px;
+                        background: parent.has-hover ? Theme.hover-fill-strong : Theme.hover-fill;
+                        border-width: 1px;
+                        border-color: Theme.border-subtle;
+
+                        Text {
+                            text: "Restart";
+                            color: Theme.cyan;
+                            font-size: 12px;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Separator
+        Rectangle { height: 1px; background: Theme.separator; }
+
+        // ── Terminal output area ──
+        Rectangle {
+            background: #0c0c10;
+            vertical-stretch: 1;
+
+            Flickable {
+                x: 0px;
+                y: 0px;
+                width: parent.width;
+                height: parent.height;
+                viewport-width: self.width;
+                viewport-height: Math.max(term-text.preferred-height + 16px, self.height);
+
+                // Auto-scroll to bottom when content changes
+                // (viewport-y tracks how far we've scrolled)
+
+                fs := FocusScope {
+                    x: 0px;
+                    y: 0px;
+                    width: parent.width;
+                    height: parent.viewport-height;
+                    enabled: true;
+
+                    key-pressed(event) => {
+                        return root.terminal-key-pressed(event);
+                    }
+
+                    // Click to focus
+                    TouchArea {
+                        width: 100%;
+                        height: 100%;
+                        clicked => { fs.focus(); }
+                    }
+
+                    term-text := Text {
+                        x: 8px;
+                        y: 8px;
+                        width: parent.width - 16px;
+                        text: root.terminal-output;
+                        color: #c8c8d0;
+                        font-family: "monospace";
+                        font-size: 14px;
+                        wrap: no-wrap;
+                        overflow: elide;
+                    }
+                }
+            }
+        }
+
+        // ── AI suggestion panel (column, slides up when error detected) ──
+        if root.has-suggestion : Rectangle {
+            min-height: 60px;
+            max-height: 200px;
+            background: Theme.bg-elevated;
+            border-width: 1px;
+            border-color: Theme.amber-dim;
+
+            VerticalLayout {
+                spacing: 0px;
+
+                // Header row: icon + label + buttons
+                Rectangle {
+                    height: 32px;
+                    background: transparent;
+
+                    HorizontalLayout {
+                        padding-left: 14px;
+                        padding-right: 10px;
+                        spacing: 8px;
+                        alignment: space-between;
+
+                        HorizontalLayout {
+                            spacing: 6px;
+                            alignment: start;
+
+                            Text {
+                                text: "◉";
+                                color: Theme.amber;
+                                font-size: 14px;
+                                vertical-alignment: center;
+                            }
+
+                            Text {
+                                text: "AI Assistant";
+                                color: Theme.amber;
+                                font-size: 12px;
+                                font-weight: 600;
+                                vertical-alignment: center;
+                            }
+                        }
+
+                        HorizontalLayout {
+                            spacing: 6px;
+                            alignment: end;
+
+                            // "Help" button
+                            help-ta := TouchArea {
+                                width: 56px;
+                                height: 26px;
+                                clicked => { root.request-ai-help(); }
+
+                                Rectangle {
+                                    width: 56px;
+                                    height: 26px;
+                                    border-radius: 6px;
+                                    background: help-ta.has-hover ? Theme.amber : Theme.hover-fill-strong;
+                                    border-width: help-ta.has-hover ? 0px : 1px;
+                                    border-color: Theme.amber-dim;
+
+                                    Text {
+                                        text: "Help";
+                                        color: help-ta.has-hover ? Theme.bg-deep : Theme.amber;
+                                        font-size: 11px;
+                                        font-weight: 600;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                            }
+
+                            // Dismiss
+                            dismiss-ta := TouchArea {
+                                width: 26px;
+                                height: 26px;
+                                clicked => { root.dismiss-suggestion(); }
+
+                                Rectangle {
+                                    width: 26px;
+                                    height: 26px;
+                                    border-radius: 6px;
+                                    background: dismiss-ta.has-hover ? Theme.hover-fill-strong : transparent;
+
+                                    Text {
+                                        text: "×";
+                                        color: Theme.text-dim;
+                                        font-size: 16px;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Separator
+                Rectangle { height: 1px; background: Theme.separator; }
+
+                // Scrollable content area
+                Flickable {
+                    vertical-stretch: 1;
+                    viewport-height: suggestion-text.preferred-height + 16px;
+
+                    suggestion-text := Text {
+                        x: 14px;
+                        y: 8px;
+                        width: parent.width - 28px;
+                        text: root.ai-suggestion;
+                        color: Theme.text-secondary;
+                        font-size: 13px;
+                        wrap: word-wrap;
+                    }
+                }
+            }
+        }
+    }
+}
