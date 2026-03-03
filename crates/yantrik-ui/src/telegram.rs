@@ -1,0 +1,216 @@
+//! Telegram poller — background thread for bidirectional Telegram chat.
+//!
+//! Inbound:  Long-polls getUpdates → sends to CompanionBridge → collects
+//!           streaming response → sends back via sendMessage.
+//! Outbound: Receives proactive messages via channel → forwards to Telegram.
+
+use std::sync::Arc;
+
+use slint::{Model, ModelRc, SharedString, VecModel};
+use yantrikdb_companion::config::TelegramConfig;
+
+use crate::bridge::CompanionBridge;
+use crate::App;
+
+/// Handle returned by `start_poller()`.
+pub struct TelegramHandle {
+    outbound_tx: crossbeam_channel::Sender<String>,
+    shutdown_tx: crossbeam_channel::Sender<()>,
+}
+
+impl TelegramHandle {
+    /// Queue a message to be sent to Telegram (e.g. proactive messages).
+    pub fn send(&self, text: String) {
+        let _ = self.outbound_tx.send(text);
+    }
+
+    /// Signal the poller to shut down.
+    pub fn shutdown(&self) {
+        let _ = self.shutdown_tx.send(());
+    }
+}
+
+/// Start the Telegram polling thread. Returns a handle for outbound messages.
+pub fn start_poller(
+    config: TelegramConfig,
+    bridge: Arc<CompanionBridge>,
+    ui_weak: slint::Weak<App>,
+) -> TelegramHandle {
+    let (outbound_tx, outbound_rx) = crossbeam_channel::unbounded::<String>();
+    let (shutdown_tx, shutdown_rx) = crossbeam_channel::bounded::<()>(1);
+
+    let config_clone = config.clone();
+    std::thread::Builder::new()
+        .name("telegram-poller".into())
+        .spawn(move || {
+            poller_loop(config_clone, bridge, ui_weak, outbound_rx, shutdown_rx);
+        })
+        .expect("Failed to start Telegram poller thread");
+
+    TelegramHandle {
+        outbound_tx,
+        shutdown_tx,
+    }
+}
+
+/// Check if current local time is within quiet hours (22:00–06:00).
+fn is_quiet_hours() -> bool {
+    let hour: u32 = std::process::Command::new("date")
+        .arg("+%H")
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(12);
+    hour >= 22 || hour < 6
+}
+
+fn poller_loop(
+    config: TelegramConfig,
+    bridge: Arc<CompanionBridge>,
+    ui_weak: slint::Weak<App>,
+    outbound_rx: crossbeam_channel::Receiver<String>,
+    shutdown_rx: crossbeam_channel::Receiver<()>,
+) {
+    let mut offset: i64 = 0;
+    let poll_timeout = config.poll_interval_secs.max(1);
+
+    // V15: Daily digest buffer — messages queued during quiet hours
+    let mut digest_buffer: Vec<String> = Vec::new();
+    let mut was_quiet = is_quiet_hours();
+
+    tracing::info!("Telegram poller started (poll_interval={}s)", poll_timeout);
+
+    loop {
+        // Check for shutdown signal
+        if shutdown_rx.try_recv().is_ok() {
+            tracing::info!("Telegram poller shutting down");
+            break;
+        }
+
+        // V15: Check quiet hours transition — flush digest when quiet hours end
+        let now_quiet = is_quiet_hours();
+        if was_quiet && !now_quiet && !digest_buffer.is_empty() {
+            let count = digest_buffer.len();
+            let digest = format!(
+                "\u{1f305} Morning digest ({} messages overnight):\n\n{}",
+                count,
+                digest_buffer.join("\n\n\u{2500}\u{2500}\u{2500}\n\n")
+            );
+            if let Err(e) = yantrikdb_companion::telegram::send_message(&config, &digest) {
+                tracing::warn!(error = %e, "Failed to send Telegram digest");
+            } else {
+                tracing::info!(count, "Telegram daily digest sent");
+            }
+            digest_buffer.clear();
+        }
+        was_quiet = now_quiet;
+
+        // Process any outbound messages (proactive messages forwarded from bridge)
+        while let Ok(text) = outbound_rx.try_recv() {
+            if now_quiet {
+                // Buffer during quiet hours
+                digest_buffer.push(text);
+                tracing::debug!(
+                    buffered = digest_buffer.len(),
+                    "Telegram message buffered (quiet hours)"
+                );
+            } else if let Err(e) = yantrikdb_companion::telegram::send_message(&config, &text) {
+                tracing::warn!(error = %e, "Failed to send outbound Telegram message");
+            }
+        }
+
+        // Long-poll for inbound messages
+        match yantrikdb_companion::telegram::get_updates(&config, offset, poll_timeout) {
+            Ok(updates) => {
+                for update in updates {
+                    offset = update.update_id + 1;
+
+                    tracing::info!(
+                        text = %update.text,
+                        chat_id = %update.chat_id,
+                        "Telegram inbound message"
+                    );
+
+                    // Add user message to desktop UI chat
+                    let user_text = update.text.clone();
+                    let weak = ui_weak.clone();
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(ui) = weak.upgrade() {
+                            let messages = ui.get_messages();
+                            let model = messages
+                                .as_any()
+                                .downcast_ref::<VecModel<crate::MessageData>>()
+                                .unwrap();
+                            model.push(crate::MessageData {
+                                role: SharedString::from("user"),
+                                content: SharedString::from(format!("[Telegram] {}", user_text)),
+                                is_streaming: false,
+                                blocks: ModelRc::default(),
+                            });
+                        }
+                    });
+
+                    // Send to companion and collect full response
+                    let token_rx = bridge.send_message(update.text);
+                    let mut response = String::new();
+
+                    // Collect all streaming tokens.
+                    // __REPLACE__ means "discard everything so far, next token is the new start".
+                    // This can happen multiple times (tool progress → final response).
+                    while let Ok(token) = token_rx.recv() {
+                        if token == "__DONE__" {
+                            break;
+                        }
+                        if token == "__REPLACE__" {
+                            response.clear();
+                            continue;
+                        }
+                        response.push_str(&token);
+                    }
+
+                    // Strip any leftover tool-progress lines like "[Using recall...]"
+                    let clean: String = response
+                        .lines()
+                        .filter(|line| !line.starts_with("[Using "))
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    response = clean.trim().to_string();
+
+                    if response.is_empty() {
+                        response = "(no response)".to_string();
+                    }
+
+                    // Send response back to Telegram
+                    if let Err(e) = yantrikdb_companion::telegram::send_message(&config, &response) {
+                        tracing::warn!(error = %e, "Failed to send Telegram response");
+                    }
+
+                    // Add assistant response to desktop UI
+                    let resp_text = response.clone();
+                    let weak = ui_weak.clone();
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(ui) = weak.upgrade() {
+                            let messages = ui.get_messages();
+                            let model = messages
+                                .as_any()
+                                .downcast_ref::<VecModel<crate::MessageData>>()
+                                .unwrap();
+                            model.push(crate::MessageData {
+                                role: SharedString::from("assistant"),
+                                content: SharedString::from(format!("[Telegram] {}", resp_text)),
+                                is_streaming: false,
+                                blocks: ModelRc::default(),
+                            });
+                        }
+                    });
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "Telegram getUpdates failed");
+                // Back off on error
+                std::thread::sleep(std::time::Duration::from_secs(5));
+            }
+        }
+    }
+}

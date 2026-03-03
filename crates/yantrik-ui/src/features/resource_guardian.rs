@@ -66,7 +66,7 @@ impl ProactiveFeature for ResourceGuardian {
         "resource_guardian"
     }
 
-    fn on_event(&mut self, event: &SystemEvent, _ctx: &FeatureContext) -> Vec<Urge> {
+    fn on_event(&mut self, event: &SystemEvent, ctx: &FeatureContext) -> Vec<Urge> {
         let mut urges = Vec::new();
 
         match event {
@@ -75,7 +75,7 @@ impl ProactiveFeature for ResourceGuardian {
                     if *level <= self.battery_critical && self.should_fire("battery_critical") {
                         let body = match time_to_empty_mins {
                             Some(mins) => format!(
-                                "Battery at {}% — about {} minutes left. Plug in soon.",
+                                "Battery at {}% \u{2014} about {} minutes left. Plug in soon.",
                                 level, mins
                             ),
                             None => format!("Battery at {}%. Plug in now.", level),
@@ -92,7 +92,7 @@ impl ProactiveFeature for ResourceGuardian {
                     } else if *level <= self.battery_warning && self.should_fire("battery_warning") {
                         let body = match time_to_empty_mins {
                             Some(mins) => format!(
-                                "Battery at {}% — roughly {} minutes remaining.",
+                                "Battery at {}% \u{2014} roughly {} minutes remaining.",
                                 level, mins
                             ),
                             None => format!("Battery at {}%. Consider plugging in.", level),
@@ -117,7 +117,7 @@ impl ProactiveFeature for ResourceGuardian {
                                 id: "rg:battery_recovery".into(),
                                 source: "resource_guardian".into(),
                                 title: "Charging".into(),
-                                body: "Plugged in — crisis averted.".into(),
+                                body: "Plugged in \u{2014} crisis averted.".into(),
                                 urgency: 0.3,
                                 confidence: 1.0,
                                 category: UrgeCategory::Celebration,
@@ -135,14 +135,24 @@ impl ProactiveFeature for ResourceGuardian {
                     if self.cpu_high_count >= self.cpu_sustained_ticks
                         && self.should_fire("cpu_sustained")
                     {
+                        // V15: Action-first — identify the top CPU consumer
+                        let top = top_cpu_process(ctx);
+                        let body = if let Some((name, cpu)) = top {
+                            format!(
+                                "CPU at {:.0}% for over a minute. Top consumer: {} ({:.0}%).",
+                                usage_percent, name, cpu
+                            )
+                        } else {
+                            format!(
+                                "CPU at {:.0}% for over a minute. Something might be stuck.",
+                                usage_percent
+                            )
+                        };
                         urges.push(Urge {
                             id: format!("rg:cpu_sustained:{:.0}", usage_percent),
                             source: "resource_guardian".into(),
                             title: "CPU running hot".into(),
-                            body: format!(
-                                "CPU at {:.0}% for over a minute. Something might be stuck.",
-                                usage_percent
-                            ),
+                            body,
                             urgency: 0.6,
                             confidence: 0.8,
                             category: UrgeCategory::Resource,
@@ -162,13 +172,16 @@ impl ProactiveFeature for ResourceGuardian {
                     {
                         let used_mb = *used_bytes / 1_000_000;
                         let total_mb = *total_bytes / 1_000_000;
+                        // V15: Action-first — identify top memory consumer
+                        let top = top_cpu_process(ctx);
+                        let top_note = top.map(|(name, _)| format!(" Top process: {}.", name)).unwrap_or_default();
                         urges.push(Urge {
                             id: format!("rg:memory:{:.0}", percent),
                             source: "resource_guardian".into(),
                             title: "Memory pressure".into(),
                             body: format!(
-                                "Using {:.0}% of RAM ({} / {} MB). Apps may slow down.",
-                                percent, used_mb, total_mb
+                                "RAM at {:.0}% ({} / {} MB).{}",
+                                percent, used_mb, total_mb, top_note
                             ),
                             urgency: 0.65,
                             confidence: 0.9,
@@ -208,7 +221,7 @@ impl ProactiveFeature for ResourceGuardian {
                                 id: "rg:disk_recovery".into(),
                                 source: "resource_guardian".into(),
                                 title: "Space freed".into(),
-                                body: format!("You freed {:.1} GB — nice!", recovered_gb),
+                                body: format!("You freed {:.1} GB \u{2014} nice!", recovered_gb),
                                 urgency: 0.25,
                                 confidence: 1.0,
                                 category: UrgeCategory::Celebration,
@@ -242,6 +255,16 @@ impl ProactiveFeature for ResourceGuardian {
     }
 }
 
+/// Find the top CPU-consuming process from the system snapshot.
+fn top_cpu_process(ctx: &FeatureContext) -> Option<(String, f32)> {
+    ctx.system
+        .running_processes
+        .iter()
+        .max_by(|a, b| a.cpu_percent.partial_cmp(&b.cpu_percent).unwrap_or(std::cmp::Ordering::Equal))
+        .filter(|p| p.cpu_percent > 5.0) // Only report if it's actually consuming significant CPU
+        .map(|p| (p.name.clone(), p.cpu_percent))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -253,6 +276,7 @@ mod tests {
         FeatureContext {
             system: snapshot,
             clock: std::time::SystemTime::now(),
+            bond_level: 1,
         }
     }
 

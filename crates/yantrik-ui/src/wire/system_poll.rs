@@ -2,7 +2,9 @@
 //! runs proactive features, handles keybinds, updates status bar,
 //! and injects system context into the LLM prompt.
 
-use std::time::Duration;
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
 use slint::{ComponentHandle, Timer, TimerMode};
 
@@ -23,6 +25,11 @@ pub fn wire(ui: &App, ctx: &AppContext) {
     let card_mgr = ctx.card_manager.clone();
     let notification_store = ctx.notification_store.clone();
 
+    // Dedup cache: prevents recording the same system event to memory more than
+    // once per 5 minutes. Key = event text, Value = last recorded time.
+    let event_dedup: RefCell<HashMap<String, Instant>> = RefCell::new(HashMap::new());
+    const DEDUP_WINDOW: Duration = Duration::from_secs(300); // 5 minutes
+
     let timer = Timer::default();
     timer.start(TimerMode::Repeated, Duration::from_secs(3), move || {
         // 0. Sync interruptibility with focus mode state
@@ -39,6 +46,7 @@ pub fn wire(ui: &App, ctx: &AppContext) {
             let ctx = features::FeatureContext {
                 system: &snap,
                 clock: std::time::SystemTime::now(),
+                bond_level: bridge.bond_level_cached(),
             };
             let tick_urges = registry.borrow_mut().tick(&ctx);
             if !tick_urges.is_empty() {
@@ -87,6 +95,7 @@ pub fn wire(ui: &App, ctx: &AppContext) {
             let ctx = features::FeatureContext {
                 system: &snap,
                 clock: std::time::SystemTime::now(),
+                bond_level: bridge.bond_level_cached(),
             };
             let event_urges = registry.borrow_mut().process_event(event, &ctx);
             all_urges.extend(event_urges);
@@ -98,6 +107,7 @@ pub fn wire(ui: &App, ctx: &AppContext) {
             let ctx = features::FeatureContext {
                 system: &snap,
                 clock: std::time::SystemTime::now(),
+                bond_level: bridge.bond_level_cached(),
             };
             all_urges.extend(registry.borrow_mut().tick(&ctx));
         }
@@ -114,10 +124,27 @@ pub fn wire(ui: &App, ctx: &AppContext) {
             }
         }
 
-        // 3. Forward significant events to companion memory
-        for event in &events {
-            if let Some((text, domain, importance)) = system_context::event_to_memory(event) {
-                bridge.record_system_event(text, domain, importance);
+        // 3. Forward significant events to companion memory (with dedup)
+        {
+            let now = Instant::now();
+            let mut cache = event_dedup.borrow_mut();
+
+            // Periodic cleanup: remove expired entries every ~30 seconds
+            if cache.len() > 100 {
+                cache.retain(|_, ts| now.duration_since(*ts) < DEDUP_WINDOW);
+            }
+
+            for event in &events {
+                if let Some((text, domain, importance)) = system_context::event_to_memory(event) {
+                    // Skip if same event text was recorded within the dedup window
+                    if let Some(last) = cache.get(&text) {
+                        if now.duration_since(*last) < DEDUP_WINDOW {
+                            continue;
+                        }
+                    }
+                    cache.insert(text.clone(), now);
+                    bridge.record_system_event(text, domain, importance);
+                }
             }
         }
 

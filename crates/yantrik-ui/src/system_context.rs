@@ -214,10 +214,22 @@ pub fn event_to_memory(event: &yantrik_os::SystemEvent) -> Option<(String, Strin
 /// meaningful user activity (browser helpers, system daemons, etc.).
 fn is_noisy_process(name: &str) -> bool {
     const NOISY: &[&str] = &[
+        // Browser/app helpers
         "StreamTrans", "chrome_crashpad", "crashpad_handler",
-        "cat", "grep", "sed", "awk", "sh", "bash", "sleep",
+        "chrome_", "chromium_", "Web Content", "WebExtensions",
+        // Shell & coreutils
+        "cat", "grep", "sed", "awk", "sh", "bash", "sleep", "ls", "ps",
+        "find", "wc", "sort", "head", "tail", "cut", "tr", "tee", "date",
+        "true", "false", "test", "env", "id", "stat", "mkdir",
+        // Wayland/desktop plumbing
         "wl-paste", "wl-copy", "xdg-", "dbus-",
-        "at-spi", "pipewire", "wireplumber",
+        "at-spi", "pipewire", "wireplumber", "grim",
+        // System daemons
+        "kworker", "ksoftirqd", "migration", "rcu_", "irq/",
+        "acpid", "crond", "chronyd", "dhcpcd", "udevd", "eudevd",
+        "agetty", "login", "sshd", "ntpd", "rsyslogd",
+        // Curl (used by companion tools internally)
+        "curl",
     ];
     // Filter numbered helpers like "StreamTrans #49"
     let base = name.split_whitespace().next().unwrap_or(name);

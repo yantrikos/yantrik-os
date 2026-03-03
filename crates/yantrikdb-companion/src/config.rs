@@ -544,6 +544,38 @@ impl Default for ProactiveConfig {
     }
 }
 
+// ── Telegram Config ─────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TelegramConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub bot_token: Option<String>,
+    #[serde(default)]
+    pub chat_id: Option<String>,
+    #[serde(default = "default_tg_poll_secs")]
+    pub poll_interval_secs: u64,
+    #[serde(default = "default_true")]
+    pub forward_proactive: bool,
+}
+
+fn default_tg_poll_secs() -> u64 {
+    3
+}
+
+impl Default for TelegramConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            bot_token: None,
+            chat_id: None,
+            poll_interval_secs: default_tg_poll_secs(),
+            forward_proactive: true,
+        }
+    }
+}
+
 // ── Memory Evolution Config ─────────────────────────────────────────────────
 
 /// Configuration for memory evolution features (V23).
@@ -696,6 +728,8 @@ pub struct CompanionConfig {
     #[serde(default)]
     pub proactive: ProactiveConfig,
     #[serde(default)]
+    pub telegram: TelegramConfig,
+    #[serde(default)]
     pub memory_evolution: MemoryEvolutionConfig,
 }
 
@@ -722,6 +756,7 @@ impl Default for CompanionConfig {
             voice: VoiceConfig::default(),
             home_assistant: HomeAssistantConfig::default(),
             proactive: ProactiveConfig::default(),
+            telegram: TelegramConfig::default(),
             memory_evolution: MemoryEvolutionConfig::default(),
         }
     }

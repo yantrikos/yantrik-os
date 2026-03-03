@@ -149,6 +149,8 @@ pub struct CompanionBridge {
     worker_handle: Option<std::thread::JoinHandle<()>>,
     /// Whether the LLM backend responded successfully on the last call.
     online: Arc<AtomicBool>,
+    /// Cached bond level (1-5) — updated by worker thread, read by UI features.
+    cached_bond_level: Arc<std::sync::atomic::AtomicU8>,
 }
 
 impl CompanionBridge {
@@ -157,21 +159,29 @@ impl CompanionBridge {
         let (cmd_tx, cmd_rx) = crossbeam_channel::unbounded();
         let online = Arc::new(AtomicBool::new(true));
         let online_w = online.clone();
+        let cached_bond_level = Arc::new(std::sync::atomic::AtomicU8::new(1));
+        let bond_w = cached_bond_level.clone();
 
         let worker_handle = std::thread::spawn(move || {
-            worker_loop(config, cmd_rx, ui_weak, online_w);
+            worker_loop(config, cmd_rx, ui_weak, online_w, bond_w);
         });
 
         Self {
             cmd_tx,
             worker_handle: Some(worker_handle),
             online,
+            cached_bond_level,
         }
     }
 
     /// Whether the LLM backend is reachable.
     pub fn is_online(&self) -> bool {
         self.online.load(Ordering::Relaxed)
+    }
+
+    /// Current bond level as u8 (1-5). Updated by worker thread, safe to read from UI thread.
+    pub fn bond_level_cached(&self) -> u8 {
+        self.cached_bond_level.load(Ordering::Relaxed)
     }
 
     /// Send a message and get a channel to receive streaming tokens.
@@ -270,6 +280,7 @@ fn worker_loop(
     cmd_rx: Receiver<CompanionCommand>,
     ui_weak: slint::Weak<App>,
     online: Arc<AtomicBool>,
+    cached_bond: Arc<std::sync::atomic::AtomicU8>,
 ) {
     // Build companion on this thread (owns SQLite connection)
     let mut companion = build_companion(config);
@@ -277,6 +288,9 @@ fn worker_loop(
 
     // Push initial state to UI
     push_state(&companion, &ui_weak, online.load(Ordering::Relaxed));
+
+    // Sync initial bond level
+    cached_bond.store(companion.bond_level().as_u8(), Ordering::Relaxed);
 
     loop {
         match cmd_rx.recv() {
@@ -314,6 +328,8 @@ fn worker_loop(
 
                 // Push updated state (includes online status)
                 push_state(&companion, &ui_weak, ok);
+                // V15: Update cached bond level for UI features
+                cached_bond.store(companion.bond_level().as_u8(), Ordering::Relaxed);
             }
             Ok(CompanionCommand::GetBondState { reply_tx }) => {
                 let bond = BondTracker::get_state(companion.db.conn());
@@ -436,11 +452,16 @@ fn worker_loop(
                 // Poll background tasks and append summary to system context
                 companion.poll_background_tasks();
                 let task_summary = companion.active_tasks_summary();
-                let full_ctx = if task_summary.is_empty() {
-                    context
-                } else {
-                    format!("{}\n{}", context, task_summary)
-                };
+                let sched_summary = yantrikdb_companion::scheduler::Scheduler::format_summary(companion.db.conn());
+                let mut full_ctx = context;
+                if !task_summary.is_empty() {
+                    full_ctx.push('\n');
+                    full_ctx.push_str(&task_summary);
+                }
+                if !sched_summary.is_empty() {
+                    full_ctx.push('\n');
+                    full_ctx.push_str(&sched_summary);
+                }
                 companion.set_system_context(full_ctx);
             }
             Ok(CompanionCommand::RecordSnapshot { text }) => {
@@ -508,7 +529,7 @@ fn worker_loop(
                 };
                 if let Ok(result) = db.think(&config) {
                     // Convert triggers to JSON for instinct evaluation
-                    let triggers: Vec<serde_json::Value> = result
+                    let mut triggers: Vec<serde_json::Value> = result
                         .triggers
                         .iter()
                         .map(|t| {
@@ -553,6 +574,34 @@ fn worker_loop(
                                 .and_then(|c| c.get("current_avg"))
                                 .and_then(|v| v.as_f64())
                         });
+
+                    // Check scheduler for due tasks — inject as triggers
+                    let due_tasks = yantrikdb_companion::scheduler::Scheduler::get_due(companion.db.conn());
+                    for task in &due_tasks {
+                        triggers.push(serde_json::json!({
+                            "trigger_type": "scheduled_task",
+                            "task_id": task.task_id,
+                            "label": task.label,
+                            "description": task.description,
+                            "urgency": task.urgency,
+                            "schedule_type": task.schedule_type,
+                            "action": task.action,
+                        }));
+                        yantrikdb_companion::scheduler::Scheduler::advance(companion.db.conn(), &task.task_id);
+                    }
+                    if !due_tasks.is_empty() {
+                        tracing::info!(count = due_tasks.len(), "Scheduler: advanced due tasks");
+                    }
+
+                    // V15: Serendipity — surface a random older memory as a connection trigger
+                    if companion.bond_level() >= yantrikdb_companion::types::BondLevel::Friend {
+                        if let Some(memory) = pick_serendipity_memory(&companion.db) {
+                            triggers.push(serde_json::json!({
+                                "trigger_type": "serendipity",
+                                "memory_text": memory,
+                            }));
+                        }
+                    }
 
                     tracing::info!(
                         triggers = triggers.len(),
@@ -631,6 +680,15 @@ fn worker_loop(
                                 ui.set_show_notification(true);
                             }
                         });
+
+                        // Forward proactive messages to Telegram
+                        if companion.config.telegram.enabled && companion.config.telegram.forward_proactive {
+                            if let Err(e) = yantrikdb_companion::telegram::send_message(
+                                &companion.config.telegram, &msg.text,
+                            ) {
+                                tracing::warn!(error = %e, "Failed to forward proactive to Telegram");
+                            }
+                        }
                     }
                 } else {
                     let pending = companion.urge_queue.count_pending(companion.db.conn());
@@ -798,4 +856,50 @@ fn build_companion(config: CompanionConfig) -> CompanionService {
     );
 
     CompanionService::new(db, llm, config)
+}
+
+/// V15: Pick a random older memory for serendipity connections.
+///
+/// Uses semantic recall with a broad query to find diverse user memories,
+/// then filters for older ones worth surfacing. Only fires ~10% of think
+/// cycles to avoid spam.
+fn pick_serendipity_memory(db: &yantrikdb_core::YantrikDB) -> Option<String> {
+    // Only fire ~10% of think cycles to avoid spam
+    let roll = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .subsec_nanos()
+        % 10;
+    if roll != 0 {
+        return None;
+    }
+
+    // Query for older user memories (3+ days old, importance >= 0.4)
+    let cutoff_ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs_f64()
+        - (3.0 * 86400.0);
+
+    // Use a broad query to get diverse memories
+    let memories = db.recall_text("things the user shared or talked about", 20).unwrap_or_default();
+
+    // Filter to old enough and important enough
+    let candidates: Vec<_> = memories
+        .iter()
+        .filter(|m| m.created_at < cutoff_ts && m.importance >= 0.4 && m.text.len() >= 10)
+        .collect();
+
+    if candidates.is_empty() {
+        return None;
+    }
+
+    // Pick a pseudo-random one based on subsec nanos
+    let idx = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .subsec_nanos() as usize
+        % candidates.len();
+
+    Some(candidates[idx].text.clone())
 }

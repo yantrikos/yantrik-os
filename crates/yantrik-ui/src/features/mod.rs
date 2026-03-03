@@ -97,6 +97,8 @@ pub enum UrgeTier {
 pub struct FeatureContext<'a> {
     pub system: &'a SystemSnapshot,
     pub clock: std::time::SystemTime,
+    /// Current bond level (V15: for bond-aware message personality).
+    pub bond_level: u8,
 }
 
 // ── ProactiveFeature trait ──

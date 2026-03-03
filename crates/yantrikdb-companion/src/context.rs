@@ -339,7 +339,21 @@ fn tool_chaining_instructions() -> String {
      5. For multi-step tasks, call one tool per step. After each result, decide the next step.\n\
      6. After all tool calls, give a SHORT natural response about what happened.\n\
      7. BACKGROUND TASKS: For long-running commands (builds, downloads, data processing), \
-     use run_background instead of run_command. Check status with check_background_task.\n\n"
+     use run_background instead of run_command. Check status with check_background_task.\n\
+     8. SCHEDULING: Use create_schedule for recurring tasks (daily, weekly, cron). \
+     Use set_reminder for one-time reminders. Use update_schedule to reschedule \
+     (e.g. after a birthday fires, set next_invoke to next year).\n\
+     9. SYSTEM ADMIN: You ARE the operating system. Use run_command for system tasks \
+     (timezone, date, package install, reboot, config changes). You have full admin access. \
+     Never say you can't do system operations — discover_tools and use run_command.\n\
+     10. MEMORY HYGIENE: You can curate your own memory. Use memory_stats to see health, \
+     review_memories to browse by domain/source, forget_memory to remove noise or duplicates, \
+     update_memory to re-classify, resolve_conflicts to clear stale conflicts, and \
+     purge_system_noise to bulk-clean system event noise. Take ownership of your memory health.\n\
+     11. REMEMBERING: When the user shares personal facts (name, location, city, timezone, age, \
+     job, interests, preferences, relationships, important dates), ALWAYS call the `remember` tool \
+     to save it. Personal facts are high importance (0.7-1.0). Use domain 'identity' for who they \
+     are, 'location' for where they are, 'preference' for likes/dislikes. Never lose user facts.\n\n"
         .to_string()
 }
 

@@ -209,18 +209,24 @@ impl Tool for SetReminderTool {
             }
         };
 
-        let metadata = serde_json::json!({
-            "remind_at": remind_ts,
-            "type": "reminder",
-        });
+        // Use native scheduler instead of memory-based reminders.
+        // This makes reminders persistent, visible in list_schedules,
+        // and survivable across restarts.
+        let task_id = crate::scheduler::Scheduler::create(
+            ctx.db.conn(),
+            text,
+            "",
+            "once",
+            None,
+            None,
+            remind_ts,
+            Some(1),
+            0.7,
+            None,
+            &serde_json::json!({"type": "reminder"}),
+        );
 
-        match ctx.db.record_text(
-            text, "episodic", 0.8, 0.0, 604800.0,
-            &metadata, "default", 0.9, "reminder", "companion", None,
-        ) {
-            Ok(rid) => format!("Reminder set for {remind_at_str}: {text} (id: {rid})"),
-            Err(e) => format!("Failed to set reminder: {e}"),
-        }
+        format!("Reminder set for {remind_at_str}: {text} (id: {task_id})")
     }
 }
 

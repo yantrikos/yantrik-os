@@ -27,6 +27,22 @@ use crate::tools::{self, PermissionLevel, ToolContext, ToolRegistry, parse_permi
 use crate::types::{AgentResponse, CompanionState, ProactiveMessage};
 use crate::urges::UrgeQueue;
 
+/// Core tools always included in the LLM prompt — no discover_tools needed for these.
+/// These cover the most common user needs. Everything else is discoverable.
+pub const CORE_TOOLS: &[&str] = &[
+    // Memory (always essential)
+    "remember", "recall", "discover_tools",
+    // Files & system
+    "run_command", "read_file", "write_file", "list_files", "search_files",
+    "system_info", "current_time",
+    // Scheduling & reminders
+    "set_reminder", "create_schedule", "list_schedules",
+    // Communication
+    "telegram_send",
+    // Utility
+    "calculator",
+];
+
 /// The companion agent — memory + inference + instincts + bond + evolution in one struct.
 pub struct CompanionService {
     pub db: YantrikDB,
@@ -88,6 +104,9 @@ impl CompanionService {
         let proactive_engine =
             ProactiveEngine::new(config.proactive.clone(), &config.user_name);
 
+        // Scheduler table
+        crate::scheduler::Scheduler::ensure_table(db.conn());
+
         // Memory evolution tables + backfill existing memories
         memory_evolution::ensure_tables(db.conn());
         memory_evolution::ensure_weaving_tables(db.conn());
@@ -97,8 +116,7 @@ impl CompanionService {
         // Full tool set is discoverable via discover_tools meta-tool.
         let max_perm = parse_permission(&config.tools.max_permission);
         let tools_system_message = if config.tools.enabled {
-            let core_names = &["remember", "recall", "discover_tools"];
-            let core_defs = registry.definitions_for(core_names, max_perm);
+            let core_defs = registry.definitions_for(CORE_TOOLS, max_perm);
             tracing::info!(
                 core = core_defs.len(),
                 total = registry.definitions(max_perm).len(),
@@ -262,12 +280,11 @@ impl CompanionService {
         // Skip per-query tool selection for short greeting-like messages
         let needs_tools = self.config.tools.enabled && user_text.split_whitespace().count() > 2;
         if needs_tools {
-            let core_names = ["remember", "recall", "discover_tools"];
             let relevant: Vec<_> = ToolCache::select_relevant(
                 self.db.conn(), &self.db, user_text, 10,
             ).into_iter().filter(|def| {
                 let name = def["function"]["name"].as_str().unwrap_or("");
-                !core_names.contains(&name)
+                !CORE_TOOLS.contains(&name)
             }).take(5).collect();
             if !relevant.is_empty() {
                 tools_prefix.push_str(&format_tools(&relevant));
@@ -574,12 +591,11 @@ impl CompanionService {
         }
         let needs_tools = self.config.tools.enabled && user_text.split_whitespace().count() > 2;
         if needs_tools {
-            let core_names = ["remember", "recall", "discover_tools"];
             let relevant: Vec<_> = ToolCache::select_relevant(
                 self.db.conn(), &self.db, user_text, 10,
             ).into_iter().filter(|def| {
                 let name = def["function"]["name"].as_str().unwrap_or("");
-                !core_names.contains(&name)
+                !CORE_TOOLS.contains(&name)
             }).take(5).collect();
             if !relevant.is_empty() {
                 tools_prefix.push_str(&format_tools(&relevant));
@@ -937,6 +953,8 @@ impl CompanionService {
 
     /// Check proactive engine for messages to deliver. Called during think cycle.
     pub fn check_proactive(&mut self) {
+        // Sync bond level so templates render with personality
+        self.proactive_engine.set_bond_level(self.bond_level);
         if let Some(msg) = self.proactive_engine.check(&self.urge_queue, self.db.conn()) {
             self.set_proactive_message(msg);
         }

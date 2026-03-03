@@ -150,14 +150,34 @@ impl ProactiveFeature for FocusFlow {
                     if should_remind {
                         self.last_break_reminder = Some(now);
                         let mins = deep_duration.as_secs() / 60;
+                        // V15: Bond-aware break reminders
+                        let body = match _ctx.bond_level {
+                            1 => format!(
+                                "You've been focused for {} minutes. A short break is recommended.",
+                                mins
+                            ),
+                            2 => format!(
+                                "You've been focused for {} minutes. Stretch, hydrate, look away from the screen.",
+                                mins
+                            ),
+                            3 => format!(
+                                "Nice {} minute focus session. Time for a breather \u{2014} even machines need cooldown.",
+                                mins
+                            ),
+                            4 => format!(
+                                "{} minutes of deep work. Your eyes will thank you for a break.",
+                                mins
+                            ),
+                            _ => format!(
+                                "{} minutes straight. Get up. Stretch. That's an order.",
+                                mins
+                            ),
+                        };
                         urges.push(Urge {
                             id: format!("ff:break:{}", mins),
                             source: "focus_flow".into(),
                             title: "Take a break".into(),
-                            body: format!(
-                                "You've been focused for {} minutes. Stretch, hydrate, look away from the screen.",
-                                mins
-                            ),
+                            body,
                             urgency: 0.5,
                             confidence: 0.9,
                             category: UrgeCategory::Focus,

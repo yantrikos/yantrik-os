@@ -209,7 +209,7 @@ pub fn validate_domain(domain: &str) -> &str {
     const ALLOWED_DOMAINS: &[&str] = &[
         "general", "work", "health", "family", "finance", "hobby", "travel",
         "self-reflection", "git", "terminal", "audit/tools", "fixes",
-        "work/project", "identity", "preference",
+        "work/project", "identity", "preference", "location",
     ];
 
     if ALLOWED_DOMAINS.contains(&domain) {

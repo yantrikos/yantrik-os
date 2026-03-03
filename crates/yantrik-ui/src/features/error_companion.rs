@@ -160,14 +160,31 @@ impl ProactiveFeature for ErrorCompanion {
                 "Shell command failed"
             );
 
+            // V15: Bond-aware error messages — action-first pattern
+            let body = match _ctx.bond_level {
+                1 | 2 => format!(
+                    "`{}` exited with code {}. Tap Help to troubleshoot.",
+                    cmd_display, entry.exit_code
+                ),
+                3 => format!(
+                    "`{}` failed (exit {}). Want me to look into it?",
+                    cmd_display, entry.exit_code
+                ),
+                4 => format!(
+                    "`{}` failed (exit {}). I may have seen this before \u{2014} tap Help and I'll check.",
+                    cmd_display, entry.exit_code
+                ),
+                _ => format!(
+                    "`{}` bombed with exit {}. Here we go again. Tap Help.",
+                    cmd_display, entry.exit_code
+                ),
+            };
+
             urges.push(Urge {
                 id: format!("err-{}", entry.timestamp),
                 source: "error_companion".to_string(),
                 title: format!("Command failed: {}", cmd_display),
-                body: format!(
-                    "Exit code {}. Tap Help to troubleshoot.",
-                    entry.exit_code
-                ),
+                body,
                 urgency: 0.6,
                 confidence: 0.9,
                 category: UrgeCategory::Shell,

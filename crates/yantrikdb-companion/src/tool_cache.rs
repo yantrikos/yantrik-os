@@ -12,7 +12,14 @@ use yantrikdb_core::YantrikDB;
 pub struct ToolCache;
 
 /// Tools that are always included regardless of similarity score.
-const ALWAYS_INCLUDE: &[&str] = &["remember", "recall", "discover_tools"];
+/// Mirrors CORE_TOOLS in companion.rs — keep in sync.
+const ALWAYS_INCLUDE: &[&str] = &[
+    "remember", "recall", "discover_tools",
+    "run_command", "read_file", "write_file", "list_files", "search_files",
+    "system_info", "current_time",
+    "set_reminder", "create_schedule", "list_schedules",
+    "telegram_send", "calculator",
+];
 
 /// Keyword → tool groups. When query matches keywords, these tools are force-included.
 const KEYWORD_TOOLS: &[(&[&str], &[&str])] = &[
@@ -44,7 +51,9 @@ const KEYWORD_TOOLS: &[(&[&str], &[&str])] = &[
     ),
     (
         &["process", "kill", "cpu", "ram", "memory usage", "disk", "storage", "space",
-          "battery", "top", "htop", "system info"],
+          "battery", "top", "htop", "system info", "timezone", "time zone", "clock",
+          "date", "hostname", "reboot", "shutdown", "update", "upgrade", "install",
+          "config", "configure", "admin", "sudo", "command", "run", "execute", "shell"],
         &["list_processes", "system_info", "disk_usage", "run_command"],
     ),
     (
@@ -70,6 +79,25 @@ const KEYWORD_TOOLS: &[(&[&str], &[&str])] = &[
           "monitor task", "background task"],
         &["run_background", "list_background_tasks", "check_background_task",
           "stop_background_task"],
+    ),
+    (
+        &["schedule", "scheduled", "cron", "recurring", "every day", "every week",
+          "every hour", "repeat", "periodic", "birthday", "anniversary",
+          "remind me", "reminder"],
+        &["create_schedule", "list_schedules", "update_schedule", "cancel_schedule",
+          "set_reminder"],
+    ),
+    (
+        &["telegram", "message phone", "send message", "text me", "notify me",
+          "reach me", "phone"],
+        &["telegram_send"],
+    ),
+    (
+        &["memory", "memories", "forget", "clean", "purge", "review", "conflict",
+          "conflicts", "duplicate", "noise", "tier", "curate", "hygiene",
+          "memory health", "memory stats", "too many memories"],
+        &["memory_stats", "review_memories", "forget_memory", "update_memory",
+          "resolve_conflicts", "purge_system_noise"],
     ),
 ];
 

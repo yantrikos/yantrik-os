@@ -41,7 +41,7 @@ Output valid JSON:
       "type": "episodic" | "semantic" | "procedural",
       "importance": 0.0-1.0,
       "valence": -1.0 to 1.0,
-      "domain": "identity" | "preference" | "work" | "health" | "family" | "finance" | "hobby" | "travel" | "general",
+      "domain": "identity" | "preference" | "work" | "health" | "family" | "finance" | "hobby" | "travel" | "location" | "general",
       "entities": [{"source": "str", "target": "str", "relationship": "str"}]
     }
   ]
@@ -50,11 +50,13 @@ Output valid JSON:
 RULES:
 - Each memory = ONE atomic fact. Never combine facts with "|", "and also", or semicolons.
 - Max 150 characters per memory text.
-- For episodic memories, include brief context (what prompted it): "User mentioned X while discussing Y".
-- domain "identity" = facts about who the user IS (name, role, background).
+- ALWAYS extract personal facts the user shares: name, age, location, city, country, timezone, job, company, relationships, interests, etc. These are HIGH importance.
+- domain "identity" = facts about who the user IS (name, role, background, age).
+- domain "location" = where the user lives, works, or is located (city, country, timezone).
 - domain "preference" = things the user likes/dislikes/prefers.
+- For episodic memories, include brief context: "User mentioned X while discussing Y".
 - Skip tool calls, memory searches, system operations — only extract from conversation content.
-- Skip greetings, small talk, trivial exchanges.
+- Skip greetings-only messages, but DO extract facts even from short messages like "I'm in Dallas" or "I'm 30".
 - NEVER extract system events: app starts/stops, CPU/memory/battery/network/disk changes, file operations, process lists. These are logged separately.
 - Max 5 memories per exchange."#;
 
@@ -69,8 +71,9 @@ pub fn extract_and_learn(
     response_text: &str,
     evolution_config: &MemoryEvolutionConfig,
 ) {
-    // Skip trivial exchanges
-    if user_text.len() < 25 {
+    // Skip trivial exchanges (but not too aggressively — short messages
+    // like "I'm in Dallas" or "I'm 30" are still valuable user facts)
+    if user_text.len() < 8 {
         return;
     }
 

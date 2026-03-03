@@ -79,6 +79,9 @@ pub mod home_assistant;
 pub mod browser;
 pub mod discovery;
 pub mod background_tasks;
+pub mod scheduler;
+pub mod telegram;
+pub mod memory_hygiene;
 pub mod plugin;
 
 use crate::config::CompanionConfig;
@@ -351,6 +354,8 @@ pub fn build_registry(config: &CompanionConfig) -> ToolRegistry {
     browser::register(&mut reg);
     discovery::register(&mut reg);
     background_tasks::register(&mut reg);
+    scheduler::register(&mut reg);
+    memory_hygiene::register(&mut reg);
 
     // Conditionally register Home Assistant tools
     let ha = &config.home_assistant;
@@ -360,6 +365,17 @@ pub fn build_registry(config: &CompanionConfig) -> ToolRegistry {
             tracing::info!("Home Assistant tools registered ({})", base_url);
         } else {
             tracing::warn!("Home Assistant enabled but base_url or token missing — skipping");
+        }
+    }
+
+    // Conditionally register Telegram tools
+    let tg = &config.telegram;
+    if tg.enabled {
+        if let (Some(token), Some(chat_id)) = (&tg.bot_token, &tg.chat_id) {
+            telegram::register(&mut reg, token, chat_id);
+            tracing::info!("Telegram tool registered");
+        } else {
+            tracing::warn!("Telegram enabled but bot_token or chat_id missing — skipping");
         }
     }
 

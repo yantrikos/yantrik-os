@@ -137,6 +137,13 @@ system:
   process_poll_secs: 5
   resource_poll_secs: 10
 
+telegram:
+  enabled: false
+  # bot_token: "123456:ABC-DEF..."
+  # chat_id: "987654321"
+  poll_interval_secs: 3
+  forward_proactive: true
+
 voice:
   enabled: true
   # Whisper STT — in-process via Candle

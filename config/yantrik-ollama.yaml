@@ -20,7 +20,7 @@ personality:
 
 llm:
   backend: "api"
-  api_base_url: "http://192.168.4.35:8081/v1"  # llama-server on Windows host (CUDA)
+  api_base_url: "http://192.168.4.35:8083/v1"  # llama-server on Windows host (CUDA)
   api_model: "qwen3.5-4b"
   max_tokens: 1024
   temperature: 0.6

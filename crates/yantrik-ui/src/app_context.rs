@@ -57,6 +57,7 @@ pub struct AppContext {
     pub browser_sort_ascending: Rc<RefCell<bool>>,
     pub browser_filter: Rc<RefCell<String>>,
     pub summary_timer: Rc<RefCell<Option<Timer>>>,
+    pub telegram: Option<Arc<crate::telegram::TelegramHandle>>,
 }
 
 impl AppContext {
@@ -138,11 +139,33 @@ impl AppContext {
         // Start clipboard watcher
         let clip_history = clipboard::start_watcher();
 
-        // Save voice config before moving config into bridge
+        // Save voice + telegram config before moving config into bridge
         let voice_config = config.voice.clone();
+        let tg_config = config.telegram.clone();
 
         // Start companion bridge (spawns worker thread)
         let bridge = Arc::new(CompanionBridge::start(config, ui.as_weak()));
+
+        // Start Telegram poller if configured
+        tracing::info!(
+            enabled = tg_config.enabled,
+            has_token = tg_config.bot_token.is_some(),
+            has_chat_id = tg_config.chat_id.is_some(),
+            "Telegram config check"
+        );
+        let telegram = if tg_config.enabled
+            && tg_config.bot_token.is_some()
+            && tg_config.chat_id.is_some()
+        {
+            tracing::info!("Starting Telegram bot poller");
+            Some(Arc::new(crate::telegram::start_poller(
+                tg_config,
+                bridge.clone(),
+                ui.as_weak(),
+            )))
+        } else {
+            None
+        };
 
         // Set up UI models
         ui.set_messages(ModelRc::new(VecModel::<MessageData>::default()));
@@ -204,6 +227,7 @@ impl AppContext {
             browser_sort_ascending: Rc::new(RefCell::new(true)),
             browser_filter: Rc::new(RefCell::new(String::new())),
             summary_timer: Rc::new(RefCell::new(None)),
+            telegram,
         }
     }
 }

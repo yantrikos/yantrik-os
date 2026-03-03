@@ -3,6 +3,7 @@
 //! Each instinct evaluates the companion's state and produces urges
 //! (things the companion should bring up with the user).
 
+mod activity_reflector;
 mod bond_milestone;
 mod check_in;
 mod conflict_alerting;
@@ -10,13 +11,18 @@ mod emotional_awareness;
 mod follow_up;
 mod humor;
 mod memory_weaver;
+mod morning_brief;
 mod pattern_surfacing;
 mod reminder;
+mod scheduler;
 mod self_awareness;
+mod serendipity;
+mod weather_watch;
 
 use crate::config::InstinctSettings;
 use crate::types::{CompanionState, UrgeSpec};
 
+pub use activity_reflector::ActivityReflectorInstinct;
 pub use bond_milestone::BondMilestoneInstinct;
 pub use check_in::CheckInInstinct;
 pub use conflict_alerting::ConflictAlertingInstinct;
@@ -24,9 +30,13 @@ pub use emotional_awareness::EmotionalAwarenessInstinct;
 pub use follow_up::FollowUpInstinct;
 pub use humor::HumorInstinct;
 pub use memory_weaver::MemoryWeaverInstinct;
+pub use morning_brief::MorningBriefInstinct;
 pub use pattern_surfacing::PatternSurfacingInstinct;
 pub use reminder::ReminderInstinct;
+pub use scheduler::SchedulerInstinct;
 pub use self_awareness::SelfAwarenessInstinct;
+pub use serendipity::SerendipityInstinct;
+pub use weather_watch::WeatherWatchInstinct;
 
 /// Trait for companion instincts.
 pub trait Instinct: Send + Sync {
@@ -73,10 +83,19 @@ pub fn load_instincts(settings: &InstinctSettings) -> Vec<Box<dyn Instinct>> {
         )));
     }
 
+    // Scheduler instinct — converts due scheduled tasks into urges
+    instincts.push(Box::new(SchedulerInstinct));
+
     // Soul instincts — bond-awareness, self-awareness, humor
     instincts.push(Box::new(BondMilestoneInstinct));
     instincts.push(Box::new(SelfAwarenessInstinct));
     instincts.push(Box::new(HumorInstinct));
+
+    // V15: Proactive intelligence instincts
+    instincts.push(Box::new(MorningBriefInstinct::new()));
+    instincts.push(Box::new(WeatherWatchInstinct::new()));
+    instincts.push(Box::new(ActivityReflectorInstinct));
+    instincts.push(Box::new(SerendipityInstinct));
 
     instincts
 }
