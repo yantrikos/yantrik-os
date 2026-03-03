@@ -297,9 +297,13 @@ impl ProactiveEngine {
             "pattern_surfacing" => {
                 format!("I've been noticing something: {}", reason)
             }
-            "conflict_alerting" => {
-                // Memory conflicts are internal housekeeping, not user-facing
-                return String::new();
+            "conflict_alerting" | "memoryweaver" => {
+                // Internal housekeeping urges — only deliver if instinct provided
+                // a concrete suggested_message (e.g. milestone celebrations).
+                if msg.is_empty() {
+                    return String::new();
+                }
+                msg.clone()
             }
             "bond_milestone" | "bondmilestone" => {
                 if msg.is_empty() {

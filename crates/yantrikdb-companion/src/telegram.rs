@@ -60,8 +60,86 @@ pub fn send_message(config: &TelegramConfig, text: &str) -> Result<(), String> {
 /// Represents a received Telegram message.
 pub struct TelegramUpdate {
     pub update_id: i64,
+    pub message_id: i64,
     pub text: String,
     pub chat_id: String,
+}
+
+/// Send a "typing..." indicator to the chat.
+pub fn send_typing(config: &TelegramConfig) -> Result<(), String> {
+    let token = config.bot_token.as_deref().ok_or("No bot_token configured")?;
+    let chat_id = config.chat_id.as_deref().ok_or("No chat_id configured")?;
+
+    let url = format!("https://api.telegram.org/bot{}/sendChatAction", token);
+    let body = serde_json::json!({
+        "chat_id": chat_id,
+        "action": "typing",
+    });
+
+    std::process::Command::new("curl")
+        .arg("-s")
+        .arg("-X").arg("POST")
+        .arg("-H").arg("Content-Type: application/json")
+        .arg("--connect-timeout").arg("3")
+        .arg("--max-time").arg("5")
+        .arg("-d").arg(body.to_string())
+        .arg(&url)
+        .output()
+        .map_err(|e| format!("curl failed: {e}"))?;
+
+    Ok(())
+}
+
+/// React to a message with an emoji (e.g. eyes when reading).
+pub fn set_reaction(config: &TelegramConfig, message_id: i64, emoji: &str) -> Result<(), String> {
+    let token = config.bot_token.as_deref().ok_or("No bot_token configured")?;
+    let chat_id = config.chat_id.as_deref().ok_or("No chat_id configured")?;
+
+    let url = format!("https://api.telegram.org/bot{}/setMessageReaction", token);
+    let body = serde_json::json!({
+        "chat_id": chat_id,
+        "message_id": message_id,
+        "reaction": [{"type": "emoji", "emoji": emoji}],
+    });
+
+    std::process::Command::new("curl")
+        .arg("-s")
+        .arg("-X").arg("POST")
+        .arg("-H").arg("Content-Type: application/json")
+        .arg("--connect-timeout").arg("3")
+        .arg("--max-time").arg("5")
+        .arg("-d").arg(body.to_string())
+        .arg(&url)
+        .output()
+        .map_err(|e| format!("curl failed: {e}"))?;
+
+    Ok(())
+}
+
+/// Remove a reaction from a message (clear the eyes emoji after responding).
+pub fn clear_reaction(config: &TelegramConfig, message_id: i64) -> Result<(), String> {
+    let token = config.bot_token.as_deref().ok_or("No bot_token configured")?;
+    let chat_id = config.chat_id.as_deref().ok_or("No chat_id configured")?;
+
+    let url = format!("https://api.telegram.org/bot{}/setMessageReaction", token);
+    let body = serde_json::json!({
+        "chat_id": chat_id,
+        "message_id": message_id,
+        "reaction": [],
+    });
+
+    std::process::Command::new("curl")
+        .arg("-s")
+        .arg("-X").arg("POST")
+        .arg("-H").arg("Content-Type: application/json")
+        .arg("--connect-timeout").arg("3")
+        .arg("--max-time").arg("5")
+        .arg("-d").arg(body.to_string())
+        .arg(&url)
+        .output()
+        .map_err(|e| format!("curl failed: {e}"))?;
+
+    Ok(())
 }
 
 /// Long-poll for updates from Telegram.
@@ -137,8 +215,11 @@ pub fn get_updates(
             continue;
         }
 
+        let message_id = message.get("message_id").and_then(|v| v.as_i64()).unwrap_or(0);
+
         result.push(TelegramUpdate {
             update_id,
+            message_id,
             text: text.to_string(),
             chat_id: msg_chat_id,
         });

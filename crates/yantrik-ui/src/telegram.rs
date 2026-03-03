@@ -151,9 +151,18 @@ fn poller_loop(
                         }
                     });
 
+                    // React with eyes emoji to show we're reading the message
+                    let _ = yantrikdb_companion::telegram::set_reaction(
+                        &config, update.message_id, "\u{1f440}",
+                    );
+
+                    // Show "typing..." indicator
+                    let _ = yantrikdb_companion::telegram::send_typing(&config);
+
                     // Send to companion and collect full response
                     let token_rx = bridge.send_message(update.text);
                     let mut response = String::new();
+                    let mut typing_refresh = std::time::Instant::now();
 
                     // Collect all streaming tokens.
                     // __REPLACE__ means "discard everything so far, next token is the new start".
@@ -167,6 +176,12 @@ fn poller_loop(
                             continue;
                         }
                         response.push_str(&token);
+
+                        // Refresh typing indicator every 4s (Telegram expires it after 5s)
+                        if typing_refresh.elapsed().as_secs() >= 4 {
+                            let _ = yantrikdb_companion::telegram::send_typing(&config);
+                            typing_refresh = std::time::Instant::now();
+                        }
                     }
 
                     // Strip any leftover tool-progress lines like "[Using recall...]"
@@ -180,6 +195,11 @@ fn poller_loop(
                     if response.is_empty() {
                         response = "(no response)".to_string();
                     }
+
+                    // Clear the eyes reaction now that we're responding
+                    let _ = yantrikdb_companion::telegram::clear_reaction(
+                        &config, update.message_id,
+                    );
 
                     // Send response back to Telegram
                     if let Err(e) = yantrikdb_companion::telegram::send_message(&config, &response) {
