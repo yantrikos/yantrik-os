@@ -365,7 +365,10 @@ fn tool_chaining_instructions(use_native_tools: bool) -> String {
          11. REMEMBERING: When the user shares personal facts (name, location, city, timezone, age, \
          job, interests, preferences, relationships, important dates), ALWAYS call the `remember` tool \
          to save it. Personal facts are high importance (0.7-1.0). Use domain 'identity' for who they \
-         are, 'location' for where they are, 'preference' for likes/dislikes. Never lose user facts.\n\n"
+         are, 'location' for where they are, 'preference' for likes/dislikes. Never lose user facts.\n\
+         12. TOOL EFFICIENCY: Use the BEST tool for the job. Prefer specific tools (current_time, \
+         list_files, disk_usage) over generic ones (run_command). Never call the same tool more than \
+         3 times for a single query — if results aren't satisfactory, summarize what you have.\n\n"
     )
 }
 

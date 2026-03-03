@@ -148,6 +148,21 @@ impl AgentLoop {
     pub fn any_success(&self) -> bool {
         self.steps.iter().any(|s| s.success)
     }
+
+    /// Check if the same tool has been called too many times (runaway detection).
+    /// Returns Some(message) if the tool should be stopped.
+    pub fn runaway_check(&self, tool_name: &str, max_per_tool: usize) -> Option<String> {
+        let count = self.steps.iter().filter(|s| s.tool_name == tool_name).count();
+        if count >= max_per_tool {
+            Some(format!(
+                "You've already called '{}' {} times. Stop calling it and give a final answer \
+                 using the information you already have.",
+                tool_name, count,
+            ))
+        } else {
+            None
+        }
+    }
 }
 
 /// Summarize tool arguments — keep keys, truncate large values.

@@ -1493,6 +1493,20 @@ fn execute_tool_round_tracked(
     for (idx, (name, args)) in tool_calls.iter().enumerate() {
         tool_calls_made.push(name.clone());
 
+        // Runaway detection: stop if same tool called 3+ times already
+        if let Some(stop_msg) = agent_loop.runaway_check(name, 3) {
+            tracing::warn!(tool = name, "Runaway tool loop detected — injecting stop");
+            if use_native_tools {
+                let call_id = api_tool_calls.get(idx)
+                    .map(|tc| tc.id.as_str())
+                    .unwrap_or("call_stop");
+                messages.push(ChatMessage::tool(call_id, name, &stop_msg));
+            } else {
+                messages.push(ChatMessage::user(&format!("[system] {}", stop_msg)));
+            }
+            continue;
+        }
+
         // Execute the tool
         let result = if name == "discover_tools" {
             let metadata = registry.list_metadata(max_perm);
