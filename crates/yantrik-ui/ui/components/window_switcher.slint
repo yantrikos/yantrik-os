@@ -8,6 +8,7 @@ export struct WindowItem {
     title: string,
     app-id: string,
     icon-char: string,
+    subtitle: string,
 }
 
 export component WindowSwitcher inherits Rectangle {
@@ -87,14 +88,14 @@ export component WindowSwitcher inherits Rectangle {
 
                     VerticalLayout {
                         alignment: center;
-                        spacing: 6px;
+                        spacing: 4px;
                         padding: 8px;
 
                         // Icon
                         Text {
                             text: win.icon-char;
                             color: is-hovered ? Theme.cyan : Theme.text-secondary;
-                            font-size: 24px;
+                            font-size: 22px;
                             font-weight: 700;
                             horizontal-alignment: center;
 
@@ -106,6 +107,15 @@ export component WindowSwitcher inherits Rectangle {
                             text: win.title;
                             color: Theme.text-primary;
                             font-size: 10px;
+                            horizontal-alignment: center;
+                            overflow: elide;
+                        }
+
+                        // Contextual subtitle
+                        if win.subtitle != "" : Text {
+                            text: win.subtitle;
+                            color: Theme.text-dim;
+                            font-size: 8px;
                             horizontal-alignment: center;
                             overflow: elide;
                         }

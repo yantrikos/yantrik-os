@@ -159,23 +159,46 @@ fn wire_query(ui: &App, ctx: &AppContext) {
 }
 
 /// Convert bridge MemoryResult hits into LensResult items.
+/// If a memory hit contains a recognizable file path, make it directly openable.
 fn memory_hits_to_lens(hits: &[MemoryResult]) -> Vec<LensResult> {
     hits.iter()
         .take(5)
         .map(|hit| {
             let preview: String = hit.text.chars().take(80).collect();
+            // Check if this memory references a file path — make it actionable
+            let (icon, action, rtype) = if let Some(path) = extract_file_path(&hit.text) {
+                ("F", format!("exec:xdg-open {}", path), "find")
+            } else {
+                ("🧠", format!("memory:{}", hit.text.chars().take(200).collect::<String>()), "memory")
+            };
             LensResult {
-                result_type: "memory".into(),
+                result_type: rtype.into(),
                 title: SharedString::from(preview),
                 subtitle: SharedString::from(format!("{} • relevance {:.0}%", hit.memory_type, hit.score * 100.0)),
-                icon_char: "🧠".into(),
-                action_id: SharedString::from(format!("memory:{}", hit.text.chars().take(200).collect::<String>())),
+                icon_char: icon.into(),
+                action_id: SharedString::from(action),
                 score: hit.score as f32,
                 is_loading: false,
                 inline_value: SharedString::default(),
             }
         })
         .collect()
+}
+
+/// Extract a file path from memory text if present.
+/// Looks for patterns like /home/.../file.ext or ~/Documents/file.ext.
+fn extract_file_path(text: &str) -> Option<String> {
+    for word in text.split_whitespace() {
+        let trimmed = word.trim_matches(|c: char| c == '\'' || c == '"' || c == ',' || c == ':');
+        if (trimmed.starts_with('/') || trimmed.starts_with("~/"))
+            && trimmed.len() > 3
+            && trimmed.contains('.')
+            && !trimmed.contains("://")
+        {
+            return Some(trimmed.to_string());
+        }
+    }
+    None
 }
 
 /// Handle a result selection: resolve action, execute, advance onboarding.

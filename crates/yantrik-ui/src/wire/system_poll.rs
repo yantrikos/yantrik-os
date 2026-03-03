@@ -79,10 +79,13 @@ pub fn wire(ui: &App, ctx: &AppContext) {
                 notification_store
                     .borrow_mut()
                     .push(app.clone(), summary.clone(), body.clone(), *urgency);
+                // Update badge unless in focus mode (notifications still stored, badge deferred)
                 if let Some(ui) = ui_weak.upgrade() {
-                    ui.set_notification_unread_count(
-                        notification_store.borrow().unread_count() as i32,
-                    );
+                    if !ui.get_focus_mode() {
+                        ui.set_notification_unread_count(
+                            notification_store.borrow().unread_count() as i32,
+                        );
+                    }
                 }
             }
         }
@@ -228,13 +231,14 @@ pub fn wire(ui: &App, ctx: &AppContext) {
                     .collect();
                 ui.set_dock_items(ModelRc::new(VecModel::from(dock)));
 
-                // Update window list for switcher
+                // Update window list for switcher (with contextual subtitles)
                 let win_items: Vec<WindowItem> = wins
                     .iter()
                     .map(|w| WindowItem {
                         title: w.title.clone().into(),
                         app_id: w.app_id.clone().into(),
                         icon_char: w.icon_char.clone().into(),
+                        subtitle: w.subtitle.clone().into(),
                     })
                     .collect();
                 ui.set_window_list(ModelRc::new(VecModel::from(win_items)));
@@ -321,6 +325,7 @@ fn handle_keybind(ui: &App, action: &str) {
                         title: w.title.clone().into(),
                         app_id: w.app_id.clone().into(),
                         icon_char: w.icon_char.clone().into(),
+                        subtitle: w.subtitle.clone().into(),
                     })
                     .collect();
                 ui.set_window_list(ModelRc::new(VecModel::from(items)));

@@ -60,6 +60,7 @@ pub struct AppContext {
     pub summary_timer: Rc<RefCell<Option<Timer>>>,
     pub telegram: Option<Arc<crate::telegram::TelegramHandle>>,
     pub terminal: Rc<RefCell<Option<TerminalHandle>>>,
+    pub user_name: String,
 }
 
 impl AppContext {
@@ -73,9 +74,11 @@ impl AppContext {
         // Community theme overrides
         load_theme_overrides(ui);
 
-        // Boot status + greeting
+        // Boot status + greeting (personalized with user name)
         ui.set_boot_status("remembering...".into());
-        ui.set_greeting_text(time_of_day_greeting().into());
+        ui.set_greeting_text(
+            format!("{}, {}", time_of_day_greeting(), config.user_name).into(),
+        );
 
         // First-boot onboarding check
         if !crate::onboarding::marker_path().exists() {
@@ -141,7 +144,8 @@ impl AppContext {
         // Start clipboard watcher
         let clip_history = clipboard::start_watcher();
 
-        // Save voice + telegram config before moving config into bridge
+        // Save fields before moving config into bridge
+        let user_name = config.user_name.clone();
         let voice_config = config.voice.clone();
         let tg_config = config.telegram.clone();
 
@@ -231,6 +235,7 @@ impl AppContext {
             summary_timer: Rc::new(RefCell::new(None)),
             telegram,
             terminal: Rc::new(RefCell::new(None)),
+            user_name,
         }
     }
 }

@@ -1080,6 +1080,94 @@ fn match_tool_intents(lower: &str, original: &str) -> Vec<LensResult> {
         }
     }
 
+    // ── NL App Launch (intent-based) ──
+    // "open my browser", "browse the web", "play music", "edit code", "write notes"
+    if results.is_empty() {
+        let intent_apps: &[(&[&str], &str, &str, &str)] = &[
+            (&["open my browser", "browse the web", "browse web", "web browser", "go online"],
+             "Open Browser", "Launch web browser", "launch:browser"),
+            (&["open my terminal", "command line", "open terminal", "open shell", "open a terminal"],
+             "Open Terminal", "Launch terminal emulator", "launch:terminal"),
+            (&["play music", "music player", "media player", "play video", "play media"],
+             "Open Media Player", "Launch media app", "exec:mpv"),
+            (&["edit code", "code editor", "open editor", "text editor"],
+             "Open Editor", "Launch text editor", "navigate:editor"),
+        ];
+        for (triggers, title, subtitle, action) in intent_apps {
+            if triggers.iter().any(|t| lower == *t || lower.starts_with(t)) {
+                results.push(lr("do", *title, *subtitle, "▶", *action));
+                break;
+            }
+        }
+    }
+
+    // ── File Content Search ──
+    // "find file about X", "where is my X", "find my resume", "that file about X"
+    if lower.contains("find file") || lower.contains("find my ")
+        || lower.contains("where is my") || lower.contains("that file about")
+        || lower.contains("where did i put") || lower.contains("locate ")
+    {
+        let subject = lower
+            .strip_prefix("find file about ").or_else(|| lower.strip_prefix("find file "))
+            .or_else(|| lower.strip_prefix("find my "))
+            .or_else(|| lower.strip_prefix("where is my "))
+            .or_else(|| lower.strip_prefix("locate "))
+            .or_else(|| lower.strip_prefix("where did i put "))
+            .unwrap_or(lower)
+            .trim()
+            .replace("that file about ", "");
+        if !subject.is_empty() {
+            results.push(lr("find", SharedString::from(format!("Find: \"{}\"", subject)),
+                "Search files by content via AI", "F",
+                SharedString::from(format!("tool:Search for files related to '{}'. Use search_files and recall to find relevant files, then tell me the path so I can open it.", subject))));
+        }
+    }
+
+    // ── Window Organization ──
+    // "organize for coding", "close all browsers", "focus on writing"
+    if lower.starts_with("organize ") || lower.contains("organize for")
+        || (lower.starts_with("close all ") && !lower.contains("lens"))
+        || lower.starts_with("show only ")
+    {
+        if lower.starts_with("close all ") {
+            let target = lower.strip_prefix("close all ").unwrap_or("").trim();
+            if !target.is_empty() {
+                results.push(lr("tool", SharedString::from(format!("Close all {} windows", target)),
+                    "Batch close by app type", "X",
+                    SharedString::from(format!("tool:List all open windows. Close every window that looks like a {}. Tell me what you closed.", target))));
+            }
+        } else {
+            let context = lower
+                .strip_prefix("organize for ").or_else(|| lower.strip_prefix("organize "))
+                .or_else(|| lower.strip_prefix("show only "))
+                .unwrap_or("general")
+                .trim();
+            results.push(lr("tool", SharedString::from(format!("Organize for {}", context)),
+                "Focus relevant windows, suggest closing distractors", ">_",
+                SharedString::from(format!("tool:Use focus_context with context '{}'. Focus the most relevant window for that task. List any unrelated windows and ask if I want to close them.", context))));
+        }
+    }
+
+    // ── Workspace Templates ──
+    // "start coding workspace", "save workspace", "load workspace"
+    if (lower.starts_with("start ") || lower.starts_with("load ") || lower.starts_with("setup for "))
+        && lower.contains("workspace")
+    {
+        let template = lower
+            .strip_prefix("start ").or_else(|| lower.strip_prefix("load "))
+            .or_else(|| lower.strip_prefix("setup for "))
+            .unwrap_or("")
+            .replace("workspace", "").trim().to_string();
+        let template = if template.is_empty() { "default".to_string() } else { template };
+        results.push(lr("tool", SharedString::from(format!("Start {} workspace", template)),
+            "Launch apps for this activity", "W",
+            SharedString::from(format!("tool:Apply the workspace template '{}'. Use apply_workspace_template to launch the right apps and restore context.", template))));
+    } else if lower.starts_with("save ") && lower.contains("workspace") {
+        results.push(lr("tool", "Save workspace template",
+            "Remember this app layout as a template", "W",
+            "tool:Save the current workspace as a named template. Use save_workspace_template. Ask me what to name it."));
+    }
+
     results
 }
 

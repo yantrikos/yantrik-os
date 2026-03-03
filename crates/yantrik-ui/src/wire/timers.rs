@@ -11,7 +11,7 @@ use crate::{cards, streaming, App};
 
 /// Wire all background timers.
 pub fn wire(ui: &App, ctx: &AppContext) {
-    wire_clock(ui);
+    wire_clock(ui, &ctx.user_name);
     wire_think(ctx);
     wire_card_tick(ui, ctx);
     wire_morning_brief(ui, ctx);
@@ -19,14 +19,17 @@ pub fn wire(ui: &App, ctx: &AppContext) {
     wire_hourly_snapshot(ctx);
 }
 
-/// Clock timer — updates time and greeting every 30 seconds.
-fn wire_clock(ui: &App) {
+/// Clock timer — updates time and personalized greeting every 30 seconds.
+fn wire_clock(ui: &App, user_name: &str) {
     let ui_weak = ui.as_weak();
+    let name = user_name.to_string();
     let timer = Timer::default();
     timer.start(TimerMode::Repeated, Duration::from_secs(30), move || {
         if let Some(ui) = ui_weak.upgrade() {
             ui.set_clock_text(app_context::current_time_hhmm().into());
-            ui.set_greeting_text(app_context::time_of_day_greeting().into());
+            ui.set_greeting_text(
+                format!("{}, {}", app_context::time_of_day_greeting(), name).into(),
+            );
         }
     });
     // Keep timer alive
@@ -49,9 +52,11 @@ fn wire_think(ctx: &AppContext) {
 
 /// Morning brief — fires once 5s after boot, proactively greets the user.
 /// The prompt is hidden; only the AI's response appears in chat.
+/// Personalized with user name and bond-level tone.
 fn wire_morning_brief(ui: &App, ctx: &AppContext) {
     let bridge = ctx.bridge.clone();
     let ui_weak = ui.as_weak();
+    let user_name = ctx.user_name.clone();
     let timer_slot: Rc<RefCell<Option<Timer>>> = Rc::new(RefCell::new(None));
     let slot = timer_slot.clone();
 
@@ -62,17 +67,26 @@ fn wire_morning_brief(ui: &App, ctx: &AppContext) {
             tracing::info!("Morning brief skipped — companion offline");
             return;
         }
-        let prompt = concat!(
-            "You just started up. Give me a short morning brief (3-5 sentences max). ",
-            "First use recall_workspace to check if I have a previous session snapshot. ",
-            "Mention: the time of day, any system status worth noting from your context ",
-            "(battery, memory, disk, network), and if you found a workspace snapshot, ",
-            "briefly mention what I was last working on. End with something warm. ",
-            "Be concise — this is the first thing I see when I log in. ",
-            "Do NOT use bullet points or headers. Just natural sentences."
+        let bond = bridge.bond_level_cached();
+        let tone = match bond {
+            0..=2 => "Keep it polite and professional.",
+            3..=4 => "Be friendly and casual.",
+            _ => "Be warm and personal — we know each other well.",
+        };
+        let prompt = format!(
+            "You just started up. Greet {} by name. \
+             Give a short morning brief (3-5 sentences max). \
+             First use recall_workspace to check for a previous session snapshot. \
+             Mention: the time of day, any system status worth noting from your context \
+             (battery, memory, disk, network), and if you found a workspace snapshot, \
+             briefly mention what they were last working on and suggest continuing. \
+             End with something warm. {} \
+             Be concise — this is the first thing they see when they log in. \
+             Do NOT use bullet points or headers. Just natural sentences.",
+            user_name, tone
         );
-        tracing::info!("Generating morning brief");
-        streaming::start_proactive_stream(ui_weak.clone(), &bridge, prompt, &slot);
+        tracing::info!(bond, user = %user_name, "Generating personalized morning brief");
+        streaming::start_proactive_stream(ui_weak.clone(), &bridge, &prompt, &slot);
     });
     std::mem::forget(timer);
 }

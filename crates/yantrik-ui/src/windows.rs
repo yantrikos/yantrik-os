@@ -6,6 +6,7 @@ pub struct WindowEntry {
     pub title: String,
     pub app_id: String,
     pub icon_char: String,
+    pub subtitle: String,
 }
 
 /// List all open windows via wlrctl.
@@ -25,10 +26,12 @@ pub fn list_windows() -> Vec<WindowEntry> {
             let title = line.trim().to_string();
             let app_id = derive_app_id(&title);
             let icon_char = icon_for_app(&app_id).to_string();
+            let subtitle = derive_context(&title, &app_id);
             WindowEntry {
                 title,
                 app_id,
                 icon_char,
+                subtitle,
             }
         })
         .collect()
@@ -64,5 +67,48 @@ pub fn icon_for_app(app_id: &str) -> &'static str {
         "files" => "F",
         "yantrik" => "Y",
         _ => "?",
+    }
+}
+
+/// Derive a contextual subtitle from a window title.
+/// Terminal: extract CWD from "user@host:/path" pattern.
+/// Browser: extract site name from "Page Title - Site" pattern.
+/// Files: extract current directory.
+fn derive_context(title: &str, app_id: &str) -> String {
+    match app_id {
+        "terminal" => {
+            // Terminals often show "user@host:path" or just "foot" or "bash"
+            if let Some(idx) = title.find(':') {
+                let path = title[idx + 1..].trim();
+                if !path.is_empty() {
+                    return path.to_string();
+                }
+            }
+            String::new()
+        }
+        "browser" => {
+            // Browser titles: "Page Title - Site Name" or "Page Title — Firefox"
+            let sep = if title.contains(" - ") {
+                " - "
+            } else if title.contains(" — ") {
+                " — "
+            } else {
+                return String::new();
+            };
+            // Take the last segment as the site/app name
+            title.rsplit(sep).next()
+                .filter(|s| !s.eq_ignore_ascii_case("firefox") && !s.eq_ignore_ascii_case("chromium"))
+                .unwrap_or("")
+                .to_string()
+        }
+        "files" => {
+            // File managers often show the current directory in the title
+            if title.contains('/') {
+                title.rsplit('/').next().unwrap_or("").to_string()
+            } else {
+                String::new()
+            }
+        }
+        _ => String::new(),
     }
 }

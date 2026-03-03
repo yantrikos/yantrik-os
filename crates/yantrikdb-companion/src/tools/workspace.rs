@@ -8,6 +8,9 @@ use super::{Tool, ToolContext, ToolRegistry, PermissionLevel};
 pub fn register(reg: &mut ToolRegistry) {
     reg.register(Box::new(SaveWorkspaceTool));
     reg.register(Box::new(RecallWorkspaceTool));
+    reg.register(Box::new(SaveWorkspaceTemplateTool));
+    reg.register(Box::new(ListWorkspaceTemplatesTool));
+    reg.register(Box::new(ApplyWorkspaceTemplateTool));
 }
 
 // ── Save Workspace ──
@@ -167,5 +170,227 @@ impl Tool for RecallWorkspaceTool {
             Ok(_) => "No workspace snapshots found. This might be your first session.".to_string(),
             Err(e) => format!("Failed to recall workspace: {e}"),
         }
+    }
+}
+
+// ── Workspace Templates ──
+
+/// Built-in default workspace templates (fallback when no custom template found).
+const DEFAULT_TEMPLATES: &[(&str, &[&str])] = &[
+    ("coding", &["foot", "chromium"]),
+    ("writing", &["foot"]),
+    ("browsing", &["chromium"]),
+    ("research", &["chromium", "foot"]),
+];
+
+pub struct SaveWorkspaceTemplateTool;
+
+impl Tool for SaveWorkspaceTemplateTool {
+    fn name(&self) -> &'static str { "save_workspace_template" }
+    fn permission(&self) -> PermissionLevel { PermissionLevel::Standard }
+    fn category(&self) -> &'static str { "workspace" }
+
+    fn definition(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "function",
+            "function": {
+                "name": "save_workspace_template",
+                "description": "Save a named workspace template. Captures which apps to launch for a specific activity. Use when the user says 'save this as my coding workspace' or 'remember this setup'.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string", "description": "Template name (e.g. 'coding', 'writing', 'research')"},
+                        "apps": {
+                            "type": "array", "items": {"type": "string"},
+                            "description": "Apps to launch (e.g. ['foot', 'chromium'])"
+                        },
+                        "description": {"type": "string", "description": "What this workspace is for"}
+                    },
+                    "required": ["name"]
+                }
+            }
+        })
+    }
+
+    fn execute(&self, ctx: &ToolContext, args: &serde_json::Value) -> String {
+        let name = args.get("name").and_then(|v| v.as_str()).unwrap_or("default");
+        let apps: Vec<String> = args.get("apps")
+            .and_then(|v| v.as_array())
+            .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+            .unwrap_or_default();
+        let desc = args.get("description").and_then(|v| v.as_str()).unwrap_or("");
+
+        let mut text = format!("Workspace template: {}\n", name);
+        if !desc.is_empty() {
+            text.push_str(&format!("Description: {}\n", desc));
+        }
+        if !apps.is_empty() {
+            text.push_str(&format!("Apps: {}\n", apps.join(", ")));
+        }
+
+        match ctx.db.record_text(
+            &text,
+            "semantic",
+            0.9,
+            0.0,
+            0.0, // permanent (no decay)
+            &serde_json::json!({"type": "workspace_template", "template_name": name}),
+            "default",
+            1.0,
+            "workspace/templates",
+            "user",
+            None,
+        ) {
+            Ok(rid) => format!("Workspace template '{}' saved (#{}).", name, rid),
+            Err(e) => format!("Failed to save template: {}", e),
+        }
+    }
+}
+
+pub struct ListWorkspaceTemplatesTool;
+
+impl Tool for ListWorkspaceTemplatesTool {
+    fn name(&self) -> &'static str { "list_workspace_templates" }
+    fn permission(&self) -> PermissionLevel { PermissionLevel::Safe }
+    fn category(&self) -> &'static str { "workspace" }
+
+    fn definition(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "function",
+            "function": {
+                "name": "list_workspace_templates",
+                "description": "List all saved workspace templates.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {}
+                }
+            }
+        })
+    }
+
+    fn execute(&self, ctx: &ToolContext, _args: &serde_json::Value) -> String {
+        match ctx.db.recall_text("workspace template", 10) {
+            Ok(results) if !results.is_empty() => {
+                let mut text = String::from("Saved workspace templates:\n");
+                for r in &results {
+                    if r.text.starts_with("Workspace template:") {
+                        text.push_str(&format!("  - {}\n", r.text.lines().next().unwrap_or("")));
+                    }
+                }
+                // Also list built-in defaults
+                text.push_str("\nBuilt-in defaults:\n");
+                for (name, apps) in DEFAULT_TEMPLATES {
+                    text.push_str(&format!("  - {} ({})\n", name, apps.join(", ")));
+                }
+                text
+            }
+            Ok(_) => {
+                let mut text = String::from("No custom workspace templates saved.\n\nBuilt-in defaults:\n");
+                for (name, apps) in DEFAULT_TEMPLATES {
+                    text.push_str(&format!("  - {} ({})\n", name, apps.join(", ")));
+                }
+                text
+            }
+            Err(e) => format!("Failed to list templates: {e}"),
+        }
+    }
+}
+
+pub struct ApplyWorkspaceTemplateTool;
+
+impl Tool for ApplyWorkspaceTemplateTool {
+    fn name(&self) -> &'static str { "apply_workspace_template" }
+    fn permission(&self) -> PermissionLevel { PermissionLevel::Standard }
+    fn category(&self) -> &'static str { "workspace" }
+
+    fn definition(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "function",
+            "function": {
+                "name": "apply_workspace_template",
+                "description": "Apply a workspace template — launch the apps associated with a named template. Looks up saved templates first, falls back to built-in defaults (coding, writing, browsing, research).",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string", "description": "Template name to apply (e.g. 'coding', 'writing')"}
+                    },
+                    "required": ["name"]
+                }
+            }
+        })
+    }
+
+    fn execute(&self, ctx: &ToolContext, args: &serde_json::Value) -> String {
+        let name = args.get("name").and_then(|v| v.as_str()).unwrap_or("default");
+
+        // Try to find a saved template
+        let apps = match ctx.db.recall_text(&format!("workspace template: {}", name), 3) {
+            Ok(results) => {
+                // Look for a matching template
+                let mut found_apps = Vec::new();
+                for r in &results {
+                    if r.text.to_lowercase().contains(&format!("workspace template: {}", name.to_lowercase())) {
+                        // Parse apps from "Apps: foot, chromium" line
+                        for line in r.text.lines() {
+                            if line.starts_with("Apps:") {
+                                found_apps = line[5..].split(',').map(|s| s.trim().to_string()).collect();
+                                break;
+                            }
+                        }
+                        if !found_apps.is_empty() {
+                            break;
+                        }
+                    }
+                }
+                if found_apps.is_empty() {
+                    // Fallback to defaults
+                    DEFAULT_TEMPLATES.iter()
+                        .find(|(n, _)| *n == name)
+                        .map(|(_, apps)| apps.iter().map(|s| s.to_string()).collect())
+                        .unwrap_or_default()
+                } else {
+                    found_apps
+                }
+            }
+            Err(_) => {
+                DEFAULT_TEMPLATES.iter()
+                    .find(|(n, _)| *n == name)
+                    .map(|(_, apps)| apps.iter().map(|s| s.to_string()).collect())
+                    .unwrap_or_default()
+            }
+        };
+
+        if apps.is_empty() {
+            return format!("No workspace template '{}' found. Available defaults: {}", name,
+                DEFAULT_TEMPLATES.iter().map(|(n, _)| *n).collect::<Vec<_>>().join(", "));
+        }
+
+        let mut launched = Vec::new();
+        let mut failed = Vec::new();
+
+        for app in &apps {
+            match std::process::Command::new(app).spawn() {
+                Ok(_) => launched.push(app.as_str()),
+                Err(e) => {
+                    // Try via swaymsg exec (for Wayland apps)
+                    match std::process::Command::new("swaymsg")
+                        .args(["exec", app])
+                        .spawn()
+                    {
+                        Ok(_) => launched.push(app.as_str()),
+                        Err(_) => failed.push(format!("{} ({})", app, e)),
+                    }
+                }
+            }
+        }
+
+        let mut report = format!("Applied workspace template '{}'.\n", name);
+        if !launched.is_empty() {
+            report.push_str(&format!("Launched: {}\n", launched.join(", ")));
+        }
+        if !failed.is_empty() {
+            report.push_str(&format!("Failed to launch: {}\n", failed.join(", ")));
+        }
+        report
     }
 }

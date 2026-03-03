@@ -7,6 +7,7 @@ pub fn register(reg: &mut ToolRegistry) {
     reg.register(Box::new(ListWindowsTool));
     reg.register(Box::new(FocusWindowTool));
     reg.register(Box::new(CloseWindowTool));
+    reg.register(Box::new(FocusContextTool));
 }
 
 /// Run wlrctl and return output.
@@ -163,5 +164,105 @@ impl Tool for CloseWindowTool {
             Ok(_) => format!("Closed window: {title}"),
             Err(e) => format!("Failed to close '{title}': {e}"),
         }
+    }
+}
+
+// ── Focus Context ──
+
+pub struct FocusContextTool;
+
+impl Tool for FocusContextTool {
+    fn name(&self) -> &'static str { "focus_context" }
+    fn permission(&self) -> PermissionLevel { PermissionLevel::Standard }
+    fn category(&self) -> &'static str { "window" }
+
+    fn definition(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "function",
+            "function": {
+                "name": "focus_context",
+                "description": "Organize windows for a task context. Lists all windows, classifies them by relevance to the given context (coding, browsing, writing, communication), focuses the most relevant one, and returns the full classification so you can suggest closing distractors.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "context": {
+                            "type": "string",
+                            "description": "Task context: coding, browsing, writing, communication, media, research"
+                        }
+                    },
+                    "required": ["context"]
+                }
+            }
+        })
+    }
+
+    fn execute(&self, _ctx: &ToolContext, args: &serde_json::Value) -> String {
+        let context = args.get("context").and_then(|v| v.as_str()).unwrap_or("general");
+
+        let output = match wlrctl(&["toplevel", "list"]) {
+            Ok(o) => o,
+            Err(e) => return format!("Error listing windows: {e}"),
+        };
+
+        if output.trim().is_empty() {
+            return "No open windows to organize.".to_string();
+        }
+
+        let windows: Vec<&str> = output.lines()
+            .filter(|l| !l.trim().is_empty())
+            .collect();
+
+        // Classify each window by relevance to context
+        let relevant_keywords: &[&str] = match context {
+            "coding" => &["terminal", "foot", "vim", "nvim", "code", "editor", "git", "cargo"],
+            "browsing" => &["firefox", "chromium", "browser", "chrome"],
+            "writing" => &["editor", "note", "text", "libreoffice", "writer", "gedit"],
+            "communication" => &["telegram", "chat", "slack", "discord", "mail", "email"],
+            "media" => &["mpv", "player", "music", "video", "spotify"],
+            "research" => &["firefox", "chromium", "browser", "terminal", "foot", "pdf"],
+            _ => &[],
+        };
+
+        let mut relevant = Vec::new();
+        let mut irrelevant = Vec::new();
+
+        for win in &windows {
+            let lower = win.to_lowercase();
+            // Skip yantrik itself
+            if lower.contains("yantrik") {
+                continue;
+            }
+            let is_relevant = relevant_keywords.iter().any(|kw| lower.contains(kw));
+            if is_relevant {
+                relevant.push(*win);
+            } else {
+                irrelevant.push(*win);
+            }
+        }
+
+        // Focus the first relevant window
+        if let Some(best) = relevant.first() {
+            let _ = wlrctl(&["toplevel", "focus", best]);
+        }
+
+        let mut report = format!("Context: {}\n\nRelevant windows ({}):\n", context, relevant.len());
+        for w in &relevant {
+            report.push_str(&format!("  [KEEP] {}\n", w));
+        }
+        if !irrelevant.is_empty() {
+            report.push_str(&format!("\nDistractors ({}):\n", irrelevant.len()));
+            for w in &irrelevant {
+                report.push_str(&format!("  [DISTRACTOR] {}\n", w));
+            }
+            report.push_str("\nAsk the user if they want to close the distractors.");
+        } else {
+            report.push_str("\nNo distractors found — all windows are relevant.");
+        }
+
+        if let Some(best) = relevant.first() {
+            report.push_str(&format!("\nFocused: {}", best));
+        }
+
+        report
     }
 }
