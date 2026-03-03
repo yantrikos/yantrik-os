@@ -36,6 +36,7 @@ impl ProactiveEngine {
         conn: &Connection,
     ) -> Option<ProactiveMessage> {
         if !self.config.enabled {
+            tracing::info!("Proactive disabled");
             return None;
         }
 
@@ -43,21 +44,47 @@ impl ProactiveEngine {
 
         // Respect cooldown between proactive messages
         let cooldown_secs = self.config.cooldown_minutes as f64 * 60.0;
-        if now - self.last_delivery_ts < cooldown_secs {
+        let elapsed = now - self.last_delivery_ts;
+        if elapsed < cooldown_secs {
+            tracing::info!(
+                elapsed_secs = elapsed as u64,
+                cooldown_secs = cooldown_secs as u64,
+                "Proactive cooldown active"
+            );
             return None;
         }
 
+        tracing::info!(
+            elapsed_secs = elapsed as u64,
+            "Proactive cooldown expired, checking urges"
+        );
+
         // Peek at top pending urge
         let pending = urge_queue.get_pending(conn, 1);
-        let urge = pending.first()?;
+        let urge = match pending.first() {
+            Some(u) => u,
+            None => {
+                tracing::info!("Proactive check: no pending urges");
+                return None;
+            }
+        };
 
         // Must exceed urgency threshold
         if urge.urgency < self.config.delivery_threshold {
+            tracing::info!(
+                urgency = urge.urgency,
+                threshold = self.config.delivery_threshold,
+                "Proactive check: urgency below threshold"
+            );
             return None;
         }
 
         // Must have a suggested message (instinct should populate this)
         if urge.suggested_message.is_empty() && urge.reason.is_empty() {
+            tracing::info!(
+                instinct = urge.instinct_name,
+                "Proactive check: no message text"
+            );
             return None;
         }
 

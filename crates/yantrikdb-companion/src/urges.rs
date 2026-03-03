@@ -43,36 +43,61 @@ impl UrgeQueue {
         .expect("failed to create urges table");
     }
 
-    /// Push an urge. If a matching cooldown_key exists, boost it instead.
+    /// Push an urge. If a matching pending cooldown_key exists, boost it.
+    /// If a delivered urge exists with the same key, recycle it to pending
+    /// so it can be re-delivered after the ProactiveEngine cooldown expires.
     /// Returns the urge_id if a new urge was created.
     pub fn push(&self, conn: &Connection, spec: &UrgeSpec) -> Option<String> {
         let now = now_ts();
 
         // Check for existing urge with same cooldown_key
         if !spec.cooldown_key.is_empty() {
-            let existing: Option<(String, f64)> = conn
+            let existing: Option<(String, f64, String)> = conn
                 .query_row(
-                    "SELECT urge_id, urgency FROM urges
+                    "SELECT urge_id, urgency, status FROM urges
                      WHERE cooldown_key = ?1 AND status IN ('pending', 'delivered')",
                     params![spec.cooldown_key],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
                 )
                 .ok();
 
-            if let Some((urge_id, old_urgency)) = existing {
-                let new_urgency = (old_urgency + self.config.boost_increment).min(1.0);
-                conn.execute(
-                    "UPDATE urges SET urgency = ?1, boost_count = boost_count + 1
-                     WHERE urge_id = ?2",
-                    params![new_urgency, urge_id],
-                )
-                .ok();
-                tracing::debug!(
-                    urge_id,
-                    old_urgency,
-                    new_urgency,
-                    "Boosted existing urge"
-                );
+            if let Some((urge_id, old_urgency, status)) = existing {
+                if status == "pending" {
+                    // Still pending — just boost urgency
+                    let new_urgency = (old_urgency + self.config.boost_increment).min(1.0);
+                    conn.execute(
+                        "UPDATE urges SET urgency = ?1, boost_count = boost_count + 1
+                         WHERE urge_id = ?2",
+                        params![new_urgency, urge_id],
+                    )
+                    .ok();
+                    tracing::debug!(urge_id, old_urgency, new_urgency, "Boosted pending urge");
+                } else {
+                    // Delivered — recycle to pending with fresh data so it can
+                    // be re-delivered once ProactiveEngine cooldown expires.
+                    let new_urgency = spec.urgency.max(old_urgency).min(1.0);
+                    let context_json =
+                        serde_json::to_string(&spec.context).unwrap_or_default();
+                    conn.execute(
+                        "UPDATE urges SET status = 'pending', urgency = ?1,
+                         reason = ?2, suggested_message = ?3, context = ?4,
+                         boost_count = boost_count + 1, delivered_at = NULL
+                         WHERE urge_id = ?5",
+                        params![
+                            new_urgency,
+                            spec.reason,
+                            spec.suggested_message,
+                            context_json,
+                            urge_id,
+                        ],
+                    )
+                    .ok();
+                    tracing::debug!(
+                        urge_id,
+                        new_urgency,
+                        "Recycled delivered urge back to pending"
+                    );
+                }
                 return None;
             }
         }
