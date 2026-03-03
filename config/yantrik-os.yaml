@@ -69,11 +69,11 @@ cognition:
   think_interval_minutes: 15
   think_interval_active_minutes: 5
   idle_think_interval_minutes: 30
-  proactive_urgency_threshold: 0.7
+  proactive_urgency_threshold: 0.4
 
 instincts:
   check_in_enabled: true
-  check_in_hours: 8.0
+  check_in_hours: 2.0
   emotional_awareness_enabled: true
   follow_up_enabled: true
   follow_up_min_hours: 4.0
@@ -93,8 +93,8 @@ bond:
 
 proactive:
   enabled: true
-  delivery_threshold: 0.7    # urgency threshold for auto-delivery
-  cooldown_minutes: 30        # min time between proactive messages
+  delivery_threshold: 0.4    # urgency threshold for auto-delivery
+  cooldown_minutes: 10        # min time between proactive messages
 
 evolution:
   formality_alpha: 0.05
