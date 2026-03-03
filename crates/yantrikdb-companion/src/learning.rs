@@ -96,7 +96,7 @@ pub fn extract_and_learn(
         ..Default::default()
     };
 
-    let response = match llm.chat(&messages, &config) {
+    let response = match llm.chat(&messages, &config, None) {
         Ok(r) => r,
         Err(e) => {
             tracing::warn!("Learning extraction failed: {e}");
@@ -379,7 +379,7 @@ fn reflect_on_exchange(
         ..Default::default()
     };
 
-    let response = match llm.chat(&messages, &config) {
+    let response = match llm.chat(&messages, &config, None) {
         Ok(r) => r,
         Err(e) => {
             tracing::debug!("Self-reflection failed: {e}");

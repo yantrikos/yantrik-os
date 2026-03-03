@@ -246,6 +246,28 @@ impl ToolRegistry {
             .map(|t| t.definition())
             .collect()
     }
+
+    /// Find tools in the same category as the given tool (for error recovery).
+    /// Returns up to 3 alternative tool names.
+    pub fn similar_tools(&self, tool_name: &str, max_permission: PermissionLevel) -> Vec<String> {
+        let category = self.tools.iter()
+            .find(|t| t.name() == tool_name)
+            .map(|t| t.category());
+        let category = match category {
+            Some(c) => c,
+            None => return Vec::new(),
+        };
+        self.tools
+            .iter()
+            .filter(|t| {
+                t.category() == category
+                    && t.name() != tool_name
+                    && t.permission() <= max_permission
+            })
+            .take(3)
+            .map(|t| t.name().to_string())
+            .collect()
+    }
 }
 
 /// Extract first sentence from description (for compact metadata).

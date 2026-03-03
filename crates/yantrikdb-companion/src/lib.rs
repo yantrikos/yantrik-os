@@ -14,6 +14,7 @@
 //!
 //! Zero HTTP servers. Everything runs in a single process.
 
+pub mod agent_loop;
 pub mod background;
 pub mod bond;
 pub mod companion;
@@ -34,6 +35,7 @@ pub mod security;
 pub mod telegram;
 pub mod task_manager;
 pub mod tool_cache;
+pub mod tool_traces;
 pub mod tools;
 pub mod types;
 pub mod urges;

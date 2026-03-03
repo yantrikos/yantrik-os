@@ -692,6 +692,49 @@ impl Default for MemoryEvolutionConfig {
     }
 }
 
+// ── Agent Loop Config ────────────────────────────────────────────────────────
+
+/// Configuration for the robust agent loop (nudge, error recovery, trace learning).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentConfig {
+    /// Maximum total tool-calling steps per query.
+    #[serde(default = "default_agent_max_steps")]
+    pub max_steps: usize,
+    /// Nudge the LLM when it responds without completing the task.
+    #[serde(default = "default_agent_true")]
+    pub nudge_on_empty: bool,
+    /// Maximum nudge messages per query before giving up.
+    #[serde(default = "default_agent_max_nudges")]
+    pub max_nudges: usize,
+    /// Suggest alternative tools when one fails.
+    #[serde(default = "default_agent_true")]
+    pub error_recovery: bool,
+    /// Enable tool chain trace learning.
+    #[serde(default = "default_agent_true")]
+    pub trace_learning: bool,
+    /// Minimum similarity threshold for trace hints (0.0–1.0).
+    #[serde(default = "default_trace_min_sim")]
+    pub trace_min_similarity: f32,
+}
+
+fn default_agent_max_steps() -> usize { 10 }
+fn default_agent_true() -> bool { true }
+fn default_agent_max_nudges() -> usize { 2 }
+fn default_trace_min_sim() -> f32 { 0.5 }
+
+impl Default for AgentConfig {
+    fn default() -> Self {
+        Self {
+            max_steps: default_agent_max_steps(),
+            nudge_on_empty: default_agent_true(),
+            max_nudges: default_agent_max_nudges(),
+            error_recovery: default_agent_true(),
+            trace_learning: default_agent_true(),
+            trace_min_similarity: default_trace_min_sim(),
+        }
+    }
+}
+
 /// Top-level companion configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompanionConfig {
@@ -731,6 +774,8 @@ pub struct CompanionConfig {
     pub telegram: TelegramConfig,
     #[serde(default)]
     pub memory_evolution: MemoryEvolutionConfig,
+    #[serde(default)]
+    pub agent: AgentConfig,
 }
 
 fn default_user_name() -> String {
@@ -758,6 +803,7 @@ impl Default for CompanionConfig {
             proactive: ProactiveConfig::default(),
             telegram: TelegramConfig::default(),
             memory_evolution: MemoryEvolutionConfig::default(),
+            agent: AgentConfig::default(),
         }
     }
 }

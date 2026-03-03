@@ -224,7 +224,7 @@ fn generate_proactive_message(
         ..Default::default()
     };
 
-    match service.llm.chat(&messages, &gen_config) {
+    match service.llm.chat(&messages, &gen_config, None) {
         Ok(response) => {
             let msg = crate::types::ProactiveMessage {
                 text: response.text,

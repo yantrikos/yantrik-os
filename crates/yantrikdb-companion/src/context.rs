@@ -41,8 +41,9 @@ pub fn build_messages(
     conversation_history: &[ChatMessage],
     personality: Option<&PersonalityProfile>,
     signals: Option<&ContextSignals>,
+    use_native_tools: bool,
 ) -> Vec<ChatMessage> {
-    let system_prompt = build_system_prompt(config, state, memories, urges, patterns, personality, signals);
+    let system_prompt = build_system_prompt(config, state, memories, urges, patterns, personality, signals, use_native_tools);
 
     let mut messages = vec![ChatMessage::system(system_prompt)];
 
@@ -87,6 +88,7 @@ fn build_system_prompt(
     patterns: &[serde_json::Value],
     personality: Option<&PersonalityProfile>,
     signals: Option<&ContextSignals>,
+    use_native_tools: bool,
 ) -> String {
     // Token budget for system prompt: leave room for history + user message + generation.
     // For small models (2048 ctx), aim for ~400 tokens system prompt.
@@ -260,7 +262,7 @@ fn build_system_prompt(
 
     // ── 12. Tool chaining guidance ──
     if !over_budget(&prompt) && config.tools.enabled {
-        prompt.push_str(&tool_chaining_instructions());
+        prompt.push_str(&tool_chaining_instructions(use_native_tools));
     }
 
     // ── 12b. Anti-injection instructions ──
@@ -330,31 +332,41 @@ fn response_instructions(level: BondLevel, name: &str, user: &str) -> String {
 }
 
 /// Tool chaining guidance — teaches the LLM to call tools properly.
-fn tool_chaining_instructions() -> String {
-    "TOOL CALLING RULES (CRITICAL):\n\
-     1. Call tools IMMEDIATELY using <tool_call> XML. Do NOT describe what you plan to do.\n\
-     2. If the tool you need is NOT listed, call discover_tools ONCE with a keyword.\n\
-     3. After discover_tools returns, USE the actual tool right away. Do NOT call discover_tools again.\n\
-     4. NEVER mention tool names, discovery, or tool internals in your response to the user.\n\
-     5. For multi-step tasks, call one tool per step. After each result, decide the next step.\n\
-     6. After all tool calls, give a SHORT natural response about what happened.\n\
-     7. BACKGROUND TASKS: For long-running commands (builds, downloads, data processing), \
-     use run_background instead of run_command. Check status with check_background_task.\n\
-     8. SCHEDULING: Use create_schedule for recurring tasks (daily, weekly, cron). \
-     Use set_reminder for one-time reminders. Use update_schedule to reschedule \
-     (e.g. after a birthday fires, set next_invoke to next year).\n\
-     9. SYSTEM ADMIN: You ARE the operating system. Use run_command for system tasks \
-     (timezone, date, package install, reboot, config changes). You have full admin access. \
-     Never say you can't do system operations — discover_tools and use run_command.\n\
-     10. MEMORY HYGIENE: You can curate your own memory. Use memory_stats to see health, \
-     review_memories to browse by domain/source, forget_memory to remove noise or duplicates, \
-     update_memory to re-classify, resolve_conflicts to clear stale conflicts, and \
-     purge_system_noise to bulk-clean system event noise. Take ownership of your memory health.\n\
-     11. REMEMBERING: When the user shares personal facts (name, location, city, timezone, age, \
-     job, interests, preferences, relationships, important dates), ALWAYS call the `remember` tool \
-     to save it. Personal facts are high importance (0.7-1.0). Use domain 'identity' for who they \
-     are, 'location' for where they are, 'preference' for likes/dislikes. Never lose user facts.\n\n"
-        .to_string()
+///
+/// For native tool calling (API backend with --jinja), the format-specific instructions
+/// are omitted since the chat template handles the tool call format natively.
+fn tool_chaining_instructions(use_native_tools: bool) -> String {
+    let format_rule = if use_native_tools {
+        "1. Call tools IMMEDIATELY when needed. Do NOT describe what you plan to do.\n"
+    } else {
+        "1. Call tools IMMEDIATELY using <tool_call> XML. Do NOT describe what you plan to do.\n"
+    };
+
+    format!(
+        "TOOL CALLING RULES (CRITICAL):\n\
+         {format_rule}\
+         2. If the tool you need is NOT listed, call discover_tools ONCE with a keyword.\n\
+         3. After discover_tools returns, USE the actual tool right away. Do NOT call discover_tools again.\n\
+         4. NEVER mention tool names, discovery, or tool internals in your response to the user.\n\
+         5. For multi-step tasks, call one tool per step. After each result, decide the next step.\n\
+         6. After all tool calls, give a SHORT natural response about what happened.\n\
+         7. BACKGROUND TASKS: For long-running commands (builds, downloads, data processing), \
+         use run_background instead of run_command. Check status with check_background_task.\n\
+         8. SCHEDULING: Use create_schedule for recurring tasks (daily, weekly, cron). \
+         Use set_reminder for one-time reminders. Use update_schedule to reschedule \
+         (e.g. after a birthday fires, set next_invoke to next year).\n\
+         9. SYSTEM ADMIN: You ARE the operating system. Use run_command for system tasks \
+         (timezone, date, package install, reboot, config changes). You have full admin access. \
+         Never say you can't do system operations — discover_tools and use run_command.\n\
+         10. MEMORY HYGIENE: You can curate your own memory. Use memory_stats to see health, \
+         review_memories to browse by domain/source, forget_memory to remove noise or duplicates, \
+         update_memory to re-classify, resolve_conflicts to clear stale conflicts, and \
+         purge_system_noise to bulk-clean system event noise. Take ownership of your memory health.\n\
+         11. REMEMBERING: When the user shares personal facts (name, location, city, timezone, age, \
+         job, interests, preferences, relationships, important dates), ALWAYS call the `remember` tool \
+         to save it. Personal facts are high importance (0.7-1.0). Use domain 'identity' for who they \
+         are, 'location' for where they are, 'preference' for likes/dislikes. Never lose user facts.\n\n"
+    )
 }
 
 /// Security instructions — teaches the LLM to resist prompt injection attacks.

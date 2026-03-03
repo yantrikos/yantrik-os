@@ -6,10 +6,11 @@
 
 use yantrikdb_core::YantrikDB;
 use yantrikdb_ml::{
-    ChatMessage, GenerationConfig, LLMBackend,
+    ChatMessage, GenerationConfig, LLMBackend, ToolCall,
     format_tools, parse_tool_calls, extract_text_content,
 };
 
+use crate::agent_loop::AgentLoop;
 use crate::bond::{BondLevel, BondTracker};
 use crate::config::CompanionConfig;
 use crate::context::{self, ContextSignals};
@@ -23,6 +24,7 @@ use crate::proactive::ProactiveEngine;
 use crate::sanitize;
 use crate::security::SecurityGuard;
 use crate::tool_cache::ToolCache;
+use crate::tool_traces::ToolTraces;
 use crate::tools::{self, PermissionLevel, ToolContext, ToolRegistry, parse_permission};
 use crate::types::{AgentResponse, CompanionState, ProactiveMessage};
 use crate::urges::UrgeQueue;
@@ -83,7 +85,15 @@ pub struct CompanionService {
     // Cached stable tools system message — prefix-cached by llama.cpp / Ollama.
     // Contains ALL tool definitions. Stays identical across calls so the
     // server's KV cache can reuse it.
+    // Used ONLY for non-API backends (candle, llama.cpp in-process).
     tools_system_message: String,
+
+    // Native tools JSON array — passed via API `tools` parameter for API backends.
+    // llama-server with --jinja renders these into the chat template natively.
+    native_core_tools: Vec<serde_json::Value>,
+
+    // Whether to use native OpenAI tool calling format (API backend with --jinja).
+    use_native_tools: bool,
 
     // Background task manager for long-running processes.
     task_manager: std::sync::Mutex<crate::task_manager::TaskManager>,
@@ -107,6 +117,9 @@ impl CompanionService {
         // Scheduler table
         crate::scheduler::Scheduler::ensure_table(db.conn());
 
+        // Tool trace learning table
+        ToolTraces::ensure_table(db.conn());
+
         // Memory evolution tables + backfill existing memories
         memory_evolution::ensure_tables(db.conn());
         memory_evolution::ensure_weaving_tables(db.conn());
@@ -115,15 +128,34 @@ impl CompanionService {
         // Build stable tools prefix — core tools only for KV caching.
         // Full tool set is discoverable via discover_tools meta-tool.
         let max_perm = parse_permission(&config.tools.max_permission);
-        let tools_system_message = if config.tools.enabled {
+        let use_native_tools = llm.backend_name() == "api";
+
+        // Native tools: JSON array for API `tools` parameter
+        let native_core_tools = if config.tools.enabled {
+            registry.definitions_for(CORE_TOOLS, max_perm)
+        } else {
+            Vec::new()
+        };
+
+        // Text-injected tools: only for non-API backends
+        let tools_system_message = if config.tools.enabled && !use_native_tools {
             let core_defs = registry.definitions_for(CORE_TOOLS, max_perm);
             tracing::info!(
                 core = core_defs.len(),
                 total = registry.definitions(max_perm).len(),
-                "Tools prefix: core tools for KV cache, rest via discover_tools"
+                "Tools prefix: text-injected for {} backend",
+                llm.backend_name(),
             );
             format_tools(&core_defs)
         } else {
+            if config.tools.enabled {
+                tracing::info!(
+                    core = native_core_tools.len(),
+                    total = registry.definitions(max_perm).len(),
+                    "Native tool calling: {} core tools via API tools parameter",
+                    native_core_tools.len(),
+                );
+            }
             String::new()
         };
 
@@ -164,6 +196,8 @@ impl CompanionService {
             guard,
             proactive_engine,
             tools_system_message,
+            native_core_tools,
+            use_native_tools,
             task_manager: std::sync::Mutex::new(task_mgr),
         }
     }
@@ -263,22 +297,25 @@ impl CompanionService {
             &self.conversation_history,
             personality.as_ref(),
             Some(&signals),
+            self.use_native_tools,
         );
 
         // Build message array — single system message (Qwen3.5 requires it):
-        // [0] system: stable tools prefix + per-query tools + context
+        // [0] system: context (+ text-injected tools for non-API backends)
         // [1..N-1] conversation history
         // [N] user query
         let max_perm = parse_permission(&self.config.tools.max_permission);
         let mut messages = Vec::with_capacity(context_messages.len() + 1);
 
-        // Prepend tools to the first system message from context_messages
-        let mut tools_prefix = String::new();
-        if !self.tools_system_message.is_empty() {
-            tools_prefix.push_str(&self.tools_system_message);
-        }
-        // Skip per-query tool selection for short greeting-like messages
+        // Build native tools array (for API backend) or text prefix (for non-API)
         let needs_tools = self.config.tools.enabled && user_text.split_whitespace().count() > 2;
+        let mut native_tools: Vec<serde_json::Value> = if self.use_native_tools {
+            self.native_core_tools.clone()
+        } else {
+            Vec::new()
+        };
+
+        // Per-query relevant tool selection
         if needs_tools {
             let relevant: Vec<_> = ToolCache::select_relevant(
                 self.db.conn(), &self.db, user_text, 10,
@@ -286,25 +323,66 @@ impl CompanionService {
                 let name = def["function"]["name"].as_str().unwrap_or("");
                 !CORE_TOOLS.contains(&name)
             }).take(5).collect();
-            if !relevant.is_empty() {
-                tools_prefix.push_str(&format_tools(&relevant));
-            }
-        }
 
-        // Merge tools prefix into the first system message
-        if !tools_prefix.is_empty() {
-            if let Some(first) = context_messages.first() {
-                let combined = format!("{}\n\n{}", tools_prefix, first.content);
-                messages.push(ChatMessage::system(&combined));
-                messages.extend_from_slice(&context_messages[1..]);
+            if self.use_native_tools {
+                // API backend: add to native tools array
+                native_tools.extend(relevant);
             } else {
-                messages.push(ChatMessage::system(&tools_prefix));
+                // Non-API backend: text-inject into system message
+                let mut tools_prefix = self.tools_system_message.clone();
+                if !relevant.is_empty() {
+                    tools_prefix.push_str(&format_tools(&relevant));
+                }
+                if !tools_prefix.is_empty() {
+                    if let Some(first) = context_messages.first() {
+                        let combined = format!("{}\n\n{}", tools_prefix, first.content);
+                        messages.push(ChatMessage::system(&combined));
+                        messages.extend_from_slice(&context_messages[1..]);
+                    } else {
+                        messages.push(ChatMessage::system(&tools_prefix));
+                    }
+                } else {
+                    messages.extend(context_messages.clone());
+                }
             }
-        } else {
-            messages.extend(context_messages);
         }
 
-        // Step 7: Call LLM with tool loop
+        // For API backend or when no tools needed: just use context messages directly
+        if messages.is_empty() {
+            if !self.use_native_tools && !self.tools_system_message.is_empty() && self.config.tools.enabled {
+                // Non-API with core tools but no per-query tools: still text-inject core
+                if let Some(first) = context_messages.first() {
+                    let combined = format!("{}\n\n{}", self.tools_system_message, first.content);
+                    messages.push(ChatMessage::system(&combined));
+                    messages.extend_from_slice(&context_messages[1..]);
+                } else {
+                    messages.push(ChatMessage::system(&self.tools_system_message));
+                }
+            } else {
+                messages.extend(context_messages);
+            }
+        }
+
+        // Tool chain learning: inject trace hints into system prompt
+        if self.config.agent.trace_learning && self.config.tools.enabled {
+            let hints = ToolTraces::find_similar(
+                self.db.conn(), &self.db, user_text, 3,
+                self.config.agent.trace_min_similarity,
+            );
+            if !hints.is_empty() {
+                let hint_text = ToolTraces::format_hints(&hints);
+                // Inject into system message
+                if let Some(sys_msg) = messages.first_mut() {
+                    sys_msg.content.push_str(&hint_text);
+                }
+                // Mark hints as used
+                for hint in &hints {
+                    ToolTraces::mark_used(self.db.conn(), &hint.trace_id);
+                }
+            }
+        }
+
+        // Step 7: Call LLM with robust agent loop
         let gen_config = GenerationConfig {
             max_tokens: self.config.llm.max_tokens,
             temperature: self.config.llm.temperature,
@@ -317,14 +395,20 @@ impl CompanionService {
             std::collections::HashSet::new();
         let mut response_text = String::new();
         let mut is_offline = false;
+        let mut agent_loop = AgentLoop::new(user_text, self.config.agent.max_nudges);
 
         // Discovery rounds are limited; actual tool rounds reset the counter.
-        // Hard cap of 15 total rounds prevents infinite loops.
         let mut discovery_budget = self.config.tools.max_tool_rounds;
-        let max_total_rounds = 15usize;
+        let max_total_rounds = self.config.agent.max_steps.max(15);
 
         for _round in 0..max_total_rounds {
-            let llm_response = match self.llm.chat(&messages, &gen_config) {
+            // Compute tools_param each iteration — native_tools may grow via discover_tools
+            let tools_param: Option<&[serde_json::Value]> = if self.use_native_tools && !native_tools.is_empty() {
+                Some(&native_tools)
+            } else {
+                None
+            };
+            let llm_response = match self.llm.chat(&messages, &gen_config, tools_param) {
                 Ok(r) => r,
                 Err(e) => {
                     tracing::warn!("LLM offline: {e:#}");
@@ -337,14 +421,33 @@ impl CompanionService {
                         &self.config.user_name,
                     );
                     is_offline = true;
+                    agent_loop.fail("LLM offline");
                     break;
                 }
             };
 
-            let tool_calls = parse_tool_calls(&llm_response.text);
+            // Use native tool_calls if available, fall back to text parsing
+            let tool_calls: Vec<ToolCall> = if !llm_response.tool_calls.is_empty() {
+                llm_response.tool_calls.clone()
+            } else {
+                parse_tool_calls(&llm_response.text)
+            };
 
             if tool_calls.is_empty() {
+                // Nudge on empty: if response is weak and we have budget, push LLM to try harder
+                if self.config.agent.nudge_on_empty && self.config.tools.enabled {
+                    if let Some(nudge) = agent_loop.maybe_nudge(&llm_response.text) {
+                        messages.push(ChatMessage::assistant(&llm_response.text));
+                        messages.push(ChatMessage::user(&nudge));
+                        tracing::debug!(
+                            nudge_count = agent_loop.nudge_count,
+                            "Nudging LLM to complete task"
+                        );
+                        continue;
+                    }
+                }
                 response_text = llm_response.text;
+                agent_loop.complete();
                 break;
             }
 
@@ -353,22 +456,37 @@ impl CompanionService {
             if !has_real_tool {
                 if discovery_budget == 0 {
                     response_text = extract_text_content(&llm_response.text);
+                    agent_loop.complete();
                     break;
                 }
                 discovery_budget -= 1;
             }
 
             let text_part = extract_text_content(&llm_response.text);
-            messages.push(ChatMessage::assistant(&llm_response.text));
+
+            // Add assistant message with proper format
+            if self.use_native_tools && !llm_response.api_tool_calls.is_empty() {
+                messages.push(ChatMessage::assistant_with_tool_calls(
+                    &llm_response.text,
+                    llm_response.api_tool_calls.clone(),
+                ));
+            } else {
+                messages.push(ChatMessage::assistant(&llm_response.text));
+            }
 
             let tc_pairs: Vec<(String, serde_json::Value)> = tool_calls
                 .iter()
                 .map(|c| (c.name.clone(), c.arguments.clone()))
                 .collect();
-            execute_tool_round(
+            execute_tool_round_tracked(
                 &self.registry, &mut self.guard, &self.db,
                 &tc_pairs, &mut messages, &mut tool_calls_made,
                 &mut injected_tool_names, max_perm, &self.task_manager,
+                self.use_native_tools,
+                &llm_response.api_tool_calls,
+                &mut native_tools,
+                &mut agent_loop,
+                self.config.agent.error_recovery,
             );
 
             if !text_part.is_empty() {
@@ -382,10 +500,11 @@ impl CompanionService {
                 tools = %tool_calls_made.join(", "),
                 "Non-streaming tool loop exhausted — requesting summary"
             );
+            agent_loop.status = crate::agent_loop::LoopStatus::MaxSteps;
             messages.push(ChatMessage::user(
                 "Summarize what you accomplished in 1-2 sentences. Do NOT call any more tools."
             ));
-            if let Ok(summary) = self.llm.chat(&messages, &gen_config) {
+            if let Ok(summary) = self.llm.chat(&messages, &gen_config, None) {
                 let text = extract_text_content(&summary.text);
                 if !text.is_empty() {
                     response_text = text;
@@ -394,6 +513,20 @@ impl CompanionService {
         }
         if response_text.is_empty() {
             response_text = "I'm here. How can I help?".to_string();
+        }
+
+        // Record tool chain trace for learning (only if tools were actually called)
+        if self.config.agent.trace_learning && agent_loop.any_success() && !tool_calls_made.is_empty() {
+            let outcome = match &agent_loop.status {
+                crate::agent_loop::LoopStatus::Completed => "success",
+                crate::agent_loop::LoopStatus::MaxSteps => "partial",
+                crate::agent_loop::LoopStatus::Failed(_) => "failed",
+                crate::agent_loop::LoopStatus::Running => "partial",
+            };
+            ToolTraces::record(
+                self.db.conn(), &self.db, user_text,
+                &agent_loop.chain_summary(), outcome,
+            );
         }
 
         // Clean up tool call XML from final response
@@ -579,17 +712,21 @@ impl CompanionService {
             &self.conversation_history,
             personality.as_ref(),
             Some(&signals),
+            self.use_native_tools,
         );
 
         // Build message array — single system message (Qwen3.5 requires it):
         let max_perm = parse_permission(&self.config.tools.max_permission);
         let mut messages = Vec::with_capacity(context_messages.len() + 1);
 
-        let mut tools_prefix = String::new();
-        if !self.tools_system_message.is_empty() {
-            tools_prefix.push_str(&self.tools_system_message);
-        }
+        // Build native tools array (for API backend) or text prefix (for non-API)
         let needs_tools = self.config.tools.enabled && user_text.split_whitespace().count() > 2;
+        let mut native_tools: Vec<serde_json::Value> = if self.use_native_tools {
+            self.native_core_tools.clone()
+        } else {
+            Vec::new()
+        };
+
         if needs_tools {
             let relevant: Vec<_> = ToolCache::select_relevant(
                 self.db.conn(), &self.db, user_text, 10,
@@ -597,24 +734,60 @@ impl CompanionService {
                 let name = def["function"]["name"].as_str().unwrap_or("");
                 !CORE_TOOLS.contains(&name)
             }).take(5).collect();
-            if !relevant.is_empty() {
-                tools_prefix.push_str(&format_tools(&relevant));
-            }
-        }
 
-        if !tools_prefix.is_empty() {
-            if let Some(first) = context_messages.first() {
-                let combined = format!("{}\n\n{}", tools_prefix, first.content);
-                messages.push(ChatMessage::system(&combined));
-                messages.extend_from_slice(&context_messages[1..]);
+            if self.use_native_tools {
+                native_tools.extend(relevant);
             } else {
-                messages.push(ChatMessage::system(&tools_prefix));
+                let mut tools_prefix = self.tools_system_message.clone();
+                if !relevant.is_empty() {
+                    tools_prefix.push_str(&format_tools(&relevant));
+                }
+                if !tools_prefix.is_empty() {
+                    if let Some(first) = context_messages.first() {
+                        let combined = format!("{}\n\n{}", tools_prefix, first.content);
+                        messages.push(ChatMessage::system(&combined));
+                        messages.extend_from_slice(&context_messages[1..]);
+                    } else {
+                        messages.push(ChatMessage::system(&tools_prefix));
+                    }
+                } else {
+                    messages.extend(context_messages.clone());
+                }
             }
-        } else {
-            messages.extend(context_messages);
         }
 
-        // Step 7: Call LLM with streaming + multi-round tool loop
+        if messages.is_empty() {
+            if !self.use_native_tools && !self.tools_system_message.is_empty() && self.config.tools.enabled {
+                if let Some(first) = context_messages.first() {
+                    let combined = format!("{}\n\n{}", self.tools_system_message, first.content);
+                    messages.push(ChatMessage::system(&combined));
+                    messages.extend_from_slice(&context_messages[1..]);
+                } else {
+                    messages.push(ChatMessage::system(&self.tools_system_message));
+                }
+            } else {
+                messages.extend(context_messages);
+            }
+        }
+
+        // Tool chain learning: inject trace hints into system prompt
+        if self.config.agent.trace_learning && self.config.tools.enabled {
+            let hints = ToolTraces::find_similar(
+                self.db.conn(), &self.db, user_text, 3,
+                self.config.agent.trace_min_similarity,
+            );
+            if !hints.is_empty() {
+                let hint_text = ToolTraces::format_hints(&hints);
+                if let Some(sys_msg) = messages.first_mut() {
+                    sys_msg.content.push_str(&hint_text);
+                }
+                for hint in &hints {
+                    ToolTraces::mark_used(self.db.conn(), &hint.trace_id);
+                }
+            }
+        }
+
+        // Step 7: Call LLM with streaming + robust agent loop
         let gen_config = GenerationConfig {
             max_tokens: self.config.llm.max_tokens,
             temperature: self.config.llm.temperature,
@@ -627,22 +800,39 @@ impl CompanionService {
             std::collections::HashSet::new();
         let mut response_text: String;
         let mut is_offline = false;
+        let mut agent_loop = AgentLoop::new(user_text, self.config.agent.max_nudges);
 
         // Round 1: streaming
         let mut streamed_text = String::new();
-        let llm_response = self.llm.chat_streaming(&messages, &gen_config, &mut |token| {
-            streamed_text.push_str(token);
-            on_token(token);
-        });
+        // Compute tools_param in a temporary scope so it drops before any mutable borrow of native_tools
+        let llm_response = {
+            let tools_param: Option<&[serde_json::Value]> = if self.use_native_tools && !native_tools.is_empty() {
+                Some(&native_tools)
+            } else {
+                None
+            };
+            self.llm.chat_streaming(&messages, &gen_config, tools_param, &mut |token| {
+                streamed_text.push_str(token);
+                on_token(token);
+            })
+        };
 
         match llm_response {
             Ok(r) => {
                 let full_text = if !streamed_text.is_empty() { &streamed_text } else { &r.text };
-                let tool_calls = parse_tool_calls(full_text);
+
+                // Use native tool_calls if available, fall back to text parsing
+                let tool_calls: Vec<ToolCall> = if !r.tool_calls.is_empty() {
+                    r.tool_calls.clone()
+                } else {
+                    parse_tool_calls(full_text)
+                };
+
                 if !tool_calls.is_empty() {
                     tracing::info!(
                         count = tool_calls.len(),
                         names = %tool_calls.iter().map(|c| c.name.as_str()).collect::<Vec<_>>().join(", "),
+                        native = !r.api_tool_calls.is_empty(),
                         "Tool calls detected in streaming response"
                     );
                 }
@@ -656,10 +846,7 @@ impl CompanionService {
                     // Tool calls found — enter multi-round tool loop (non-streaming)
                     let last_text_part = extract_text_content(full_text);
 
-                    // Filter long reasoning — if the LLM wrote a long chain-of-thought
-                    // before the tool call, hide it and show only the action.
                     let display_text = if last_text_part.len() > 120 {
-                        // Long reasoning — just show the tool action
                         String::new()
                     } else {
                         last_text_part.trim().to_string()
@@ -677,37 +864,58 @@ impl CompanionService {
                         ));
                     }
 
-                    messages.push(ChatMessage::assistant(full_text));
+                    // Add assistant message with proper format
+                    if self.use_native_tools && !r.api_tool_calls.is_empty() {
+                        messages.push(ChatMessage::assistant_with_tool_calls(
+                            full_text, r.api_tool_calls.clone(),
+                        ));
+                    } else {
+                        messages.push(ChatMessage::assistant(full_text));
+                    }
 
                     // Execute first round of tool calls
                     let tc_pairs: Vec<(String, serde_json::Value)> = tool_calls
                         .iter()
                         .map(|c| (c.name.clone(), c.arguments.clone()))
                         .collect();
-                    execute_tool_round(
+                    execute_tool_round_tracked(
                         &self.registry, &mut self.guard, &self.db,
                         &tc_pairs, &mut messages, &mut tool_calls_made,
                         &mut injected_tool_names, max_perm, &self.task_manager,
+                        self.use_native_tools,
+                        &r.api_tool_calls,
+                        &mut native_tools,
+                        &mut agent_loop,
+                        self.config.agent.error_recovery,
                     );
 
                     // Remaining rounds: discovery rounds are budget-limited,
                     // actual tool rounds run until the hard cap.
                     response_text = display_text.clone();
                     let mut discovery_budget = self.config.tools.max_tool_rounds.saturating_sub(1);
-                    let max_total_rounds = 15usize;
+                    let max_total_rounds = self.config.agent.max_steps.max(15);
 
                     for _round in 0..max_total_rounds {
-                        match self.llm.chat(&messages, &gen_config) {
+                        let tools_param: Option<&[serde_json::Value]> = if self.use_native_tools && !native_tools.is_empty() {
+                            Some(&native_tools)
+                        } else {
+                            None
+                        };
+                        match self.llm.chat(&messages, &gen_config, tools_param) {
                             Ok(r2) => {
-                                let tc2 = parse_tool_calls(&r2.text);
+                                let tc2: Vec<ToolCall> = if !r2.tool_calls.is_empty() {
+                                    r2.tool_calls.clone()
+                                } else {
+                                    parse_tool_calls(&r2.text)
+                                };
                                 if tc2.is_empty() {
                                     on_token("__REPLACE__");
                                     on_token(&r2.text);
                                     response_text = r2.text;
+                                    agent_loop.complete();
                                     break;
                                 }
 
-                                // Check if this round has actual tools
                                 let has_real_tool = tc2.iter().any(|c| c.name != "discover_tools");
                                 if !has_real_tool {
                                     if discovery_budget == 0 {
@@ -717,6 +925,7 @@ impl CompanionService {
                                             on_token(&fallback);
                                             response_text = fallback;
                                         }
+                                        agent_loop.complete();
                                         break;
                                     }
                                     discovery_budget -= 1;
@@ -745,15 +954,27 @@ impl CompanionService {
                                     ));
                                 }
 
-                                messages.push(ChatMessage::assistant(&r2.text));
+                                if self.use_native_tools && !r2.api_tool_calls.is_empty() {
+                                    messages.push(ChatMessage::assistant_with_tool_calls(
+                                        &r2.text, r2.api_tool_calls.clone(),
+                                    ));
+                                } else {
+                                    messages.push(ChatMessage::assistant(&r2.text));
+                                }
+
                                 let tc2_pairs: Vec<(String, serde_json::Value)> = tc2
                                     .iter()
                                     .map(|c| (c.name.clone(), c.arguments.clone()))
                                     .collect();
-                                execute_tool_round(
+                                execute_tool_round_tracked(
                                     &self.registry, &mut self.guard, &self.db,
                                     &tc2_pairs, &mut messages, &mut tool_calls_made,
                                     &mut injected_tool_names, max_perm, &self.task_manager,
+                                    self.use_native_tools,
+                                    &r2.api_tool_calls,
+                                    &mut native_tools,
+                                    &mut agent_loop,
+                                    self.config.agent.error_recovery,
                                 );
 
                                 if !round_text.is_empty() {
@@ -778,6 +999,7 @@ impl CompanionService {
                     // If loop exhausted without a clean text response,
                     // make one final LLM call asking for a summary.
                     if response_text.is_empty() || response_text.contains("[Using") {
+                        agent_loop.status = crate::agent_loop::LoopStatus::MaxSteps;
                         tracing::info!(
                             rounds = max_total_rounds,
                             tools = %tool_calls_made.join(", "),
@@ -786,7 +1008,7 @@ impl CompanionService {
                         messages.push(ChatMessage::user(
                             "Summarize what you accomplished in 1-2 sentences. Do NOT call any more tools."
                         ));
-                        match self.llm.chat(&messages, &gen_config) {
+                        match self.llm.chat(&messages, &gen_config, None) {
                             Ok(summary) => {
                                 let text = extract_text_content(&summary.text);
                                 if !text.is_empty() {
@@ -826,6 +1048,21 @@ impl CompanionService {
         if response_text.is_empty() {
             response_text = "I'm here. How can I help?".to_string();
         }
+
+        // Record tool chain trace for learning (streaming path)
+        if self.config.agent.trace_learning && agent_loop.any_success() && !tool_calls_made.is_empty() {
+            let outcome = match &agent_loop.status {
+                crate::agent_loop::LoopStatus::Completed => "success",
+                crate::agent_loop::LoopStatus::MaxSteps => "partial",
+                crate::agent_loop::LoopStatus::Failed(_) => "failed",
+                crate::agent_loop::LoopStatus::Running => "partial",
+            };
+            ToolTraces::record(
+                self.db.conn(), &self.db, user_text,
+                &agent_loop.chain_summary(), outcome,
+            );
+        }
+
         response_text = extract_text_content(&response_text);
 
         // SecurityGuard: filter output for sensitive info leaks
@@ -1118,6 +1355,10 @@ fn compute_recall_confidence(
 }
 
 /// Execute a round of tool calls with discover_tools schema injection.
+///
+/// When `use_native_tools` is true (API backend), tool results are sent as
+/// `role: "tool"` messages with `tool_call_id`, matching OpenAI format.
+/// When false (candle/llamacpp), results are sent as user messages with `<data:tool_result>` tags.
 fn execute_tool_round(
     registry: &ToolRegistry,
     guard: &mut SecurityGuard,
@@ -1128,6 +1369,9 @@ fn execute_tool_round(
     injected_tool_names: &mut std::collections::HashSet<String>,
     max_perm: PermissionLevel,
     task_manager: &std::sync::Mutex<crate::task_manager::TaskManager>,
+    use_native_tools: bool,
+    api_tool_calls: &[yantrikdb_ml::ApiToolCall],
+    native_tools: &mut Vec<serde_json::Value>,
 ) {
     let ctx = ToolContext {
         db,
@@ -1136,7 +1380,7 @@ fn execute_tool_round(
         task_manager: Some(task_manager),
     };
 
-    for (name, args) in tool_calls {
+    for (idx, (name, args)) in tool_calls.iter().enumerate() {
         tool_calls_made.push(name.clone());
 
         // For discover_tools, build a context with metadata
@@ -1159,13 +1403,19 @@ fn execute_tool_round(
         if name == "discover_tools" {
             let discovered = parse_discovered_tool_names(&result, injected_tool_names);
             if discovered.is_empty() {
-                // All tools already injected — override result to nudge LLM
                 let override_result = "All relevant tools are already available. Use them now.".to_string();
-                messages.push(ChatMessage::assistant(&format!(
-                    "<tool_call>\n{{\"name\": \"discover_tools\", \"arguments\": {}}}\n</tool_call>",
-                    serde_json::to_string(args).unwrap_or_default()
-                )));
-                messages.push(ChatMessage::user(&format!("[tool result: {}] {}", name, override_result)));
+                if use_native_tools {
+                    let call_id = api_tool_calls.get(idx)
+                        .map(|tc| tc.id.as_str())
+                        .unwrap_or("call_discover");
+                    messages.push(ChatMessage::tool(call_id, name, &override_result));
+                } else {
+                    messages.push(ChatMessage::assistant(&format!(
+                        "<tool_call>\n{{\"name\": \"discover_tools\", \"arguments\": {}}}\n</tool_call>",
+                        serde_json::to_string(args).unwrap_or_default()
+                    )));
+                    messages.push(ChatMessage::user(&format!("[tool result: {}] {}", name, override_result)));
+                }
                 continue;
             }
             {
@@ -1176,9 +1426,15 @@ fn execute_tool_round(
                         tools = %discovered.join(", "),
                         "Dynamic schema injection after discover_tools"
                     );
-                    let new_text = format_tools(&new_defs);
-                    if let Some(sys_msg) = messages.first_mut() {
-                        sys_msg.content.push_str(&new_text);
+                    if use_native_tools {
+                        // For API backend: add to native tools array
+                        native_tools.extend(new_defs);
+                    } else {
+                        // For non-API: text-inject into system message
+                        let new_text = format_tools(&new_defs);
+                        if let Some(sys_msg) = messages.first_mut() {
+                            sys_msg.content.push_str(&new_text);
+                        }
                     }
                     for n in &discovered {
                         injected_tool_names.insert(n.clone());
@@ -1188,11 +1444,145 @@ fn execute_tool_round(
         }
 
         let safe_result = sanitize::sanitize_tool_result(&result);
-        messages.push(ChatMessage::user(format!(
-            "<data:tool_result name=\"{}\">{}",
-            sanitize::escape_for_prompt(name),
-            safe_result,
-        )));
+
+        if use_native_tools {
+            // Native format: role="tool" with tool_call_id
+            let call_id = api_tool_calls.get(idx)
+                .map(|tc| tc.id.as_str())
+                .unwrap_or_else(|| "call_0");
+            messages.push(ChatMessage::tool(call_id, name, &safe_result));
+        } else {
+            // Legacy format: user message with data tag
+            messages.push(ChatMessage::user(format!(
+                "<data:tool_result name=\"{}\">{}",
+                sanitize::escape_for_prompt(name),
+                safe_result,
+            )));
+        }
+    }
+}
+
+/// Execute a round of tool calls with agent loop tracking + error recovery.
+///
+/// Delegates to `execute_tool_round` for actual execution, then records each
+/// step in the `AgentLoop` tracker. On tool failure, optionally injects an
+/// error recovery hint suggesting alternatives.
+fn execute_tool_round_tracked(
+    registry: &ToolRegistry,
+    guard: &mut SecurityGuard,
+    db: &YantrikDB,
+    tool_calls: &[(String, serde_json::Value)],
+    messages: &mut Vec<ChatMessage>,
+    tool_calls_made: &mut Vec<String>,
+    injected_tool_names: &mut std::collections::HashSet<String>,
+    max_perm: PermissionLevel,
+    task_manager: &std::sync::Mutex<crate::task_manager::TaskManager>,
+    use_native_tools: bool,
+    api_tool_calls: &[yantrikdb_ml::ApiToolCall],
+    native_tools: &mut Vec<serde_json::Value>,
+    agent_loop: &mut AgentLoop,
+    error_recovery: bool,
+) {
+    let ctx = ToolContext {
+        db,
+        max_permission: max_perm,
+        registry_metadata: None,
+        task_manager: Some(task_manager),
+    };
+
+    for (idx, (name, args)) in tool_calls.iter().enumerate() {
+        tool_calls_made.push(name.clone());
+
+        // Execute the tool
+        let result = if name == "discover_tools" {
+            let metadata = registry.list_metadata(max_perm);
+            let disc_ctx = ToolContext {
+                db,
+                max_permission: max_perm,
+                registry_metadata: Some(&metadata),
+                task_manager: Some(task_manager),
+            };
+            registry.execute(&disc_ctx, name, args)
+        } else {
+            registry.execute(&ctx, name, args)
+        };
+
+        guard.check_tool_result(name, &result, db);
+
+        // Determine success/failure for agent loop tracking
+        let is_error = result.starts_with("Error:")
+            || result.starts_with("error:")
+            || result.starts_with("Permission denied")
+            || result.starts_with("Tool not found")
+            || result.starts_with("BLOCKED");
+
+        // Record step in agent loop
+        agent_loop.record_step(name, args, &result, !is_error);
+
+        // Dynamic schema injection for discover_tools
+        if name == "discover_tools" {
+            let discovered = parse_discovered_tool_names(&result, injected_tool_names);
+            if discovered.is_empty() {
+                let override_result = "All relevant tools are already available. Use them now.".to_string();
+                if use_native_tools {
+                    let call_id = api_tool_calls.get(idx)
+                        .map(|tc| tc.id.as_str())
+                        .unwrap_or("call_discover");
+                    messages.push(ChatMessage::tool(call_id, name, &override_result));
+                } else {
+                    messages.push(ChatMessage::assistant(&format!(
+                        "<tool_call>\n{{\"name\": \"discover_tools\", \"arguments\": {}}}\n</tool_call>",
+                        serde_json::to_string(args).unwrap_or_default()
+                    )));
+                    messages.push(ChatMessage::user(&format!("[tool result: {}] {}", name, override_result)));
+                }
+                continue;
+            }
+            {
+                let refs: Vec<&str> = discovered.iter().map(|s| s.as_str()).collect();
+                let new_defs = registry.definitions_for(&refs, max_perm);
+                if !new_defs.is_empty() {
+                    tracing::info!(
+                        tools = %discovered.join(", "),
+                        "Dynamic schema injection after discover_tools"
+                    );
+                    if use_native_tools {
+                        native_tools.extend(new_defs);
+                    } else {
+                        let new_text = format_tools(&new_defs);
+                        if let Some(sys_msg) = messages.first_mut() {
+                            sys_msg.content.push_str(&new_text);
+                        }
+                    }
+                    for n in &discovered {
+                        injected_tool_names.insert(n.clone());
+                    }
+                }
+            }
+        }
+
+        let mut safe_result = sanitize::sanitize_tool_result(&result);
+
+        // Error recovery: append hint suggesting alternatives
+        if is_error && error_recovery && name != "discover_tools" {
+            let similar = registry.similar_tools(name, max_perm);
+            let hint = AgentLoop::error_recovery_hint(name, &safe_result, &similar);
+            safe_result = format!("{}\n{}", safe_result, hint);
+            tracing::debug!(tool = name, "Injected error recovery hint");
+        }
+
+        if use_native_tools {
+            let call_id = api_tool_calls.get(idx)
+                .map(|tc| tc.id.as_str())
+                .unwrap_or_else(|| "call_0");
+            messages.push(ChatMessage::tool(call_id, name, &safe_result));
+        } else {
+            messages.push(ChatMessage::user(format!(
+                "<data:tool_result name=\"{}\">{}",
+                sanitize::escape_for_prompt(name),
+                safe_result,
+            )));
+        }
     }
 }
 

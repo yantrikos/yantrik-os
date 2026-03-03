@@ -114,7 +114,7 @@ Write an updated diary entry (150-200 words, first person). This is your interna
             ..Default::default()
         };
 
-        match llm.chat(&messages, &config) {
+        match llm.chat(&messages, &config, None) {
             Ok(r) => {
                 let narrative = r.text.trim().to_string();
                 if !narrative.is_empty() {

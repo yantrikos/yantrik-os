@@ -451,7 +451,7 @@ pub fn run_consolidation(
                 ..Default::default()
             };
 
-            let response = match llm.chat(&messages, &gen) {
+            let response = match llm.chat(&messages, &gen, None) {
                 Ok(r) => r,
                 Err(_) => continue,
             };
@@ -659,7 +659,7 @@ pub fn detect_emerging_references(
             ..Default::default()
         };
 
-        let response = match llm.chat(&messages, &gen) {
+        let response = match llm.chat(&messages, &gen, None) {
             Ok(r) => r,
             Err(_) => continue,
         };
@@ -975,7 +975,7 @@ pub fn run_pruning(
             ..Default::default()
         };
 
-        let response = match llm.chat(&messages, &gen) {
+        let response = match llm.chat(&messages, &gen, None) {
             Ok(r) => r,
             Err(_) => continue,
         };
@@ -1205,7 +1205,7 @@ pub fn run_weaving_cycle(
             )),
         ];
 
-        let response = match llm.chat(&messages, &gen_config) {
+        let response = match llm.chat(&messages, &gen_config, None) {
             Ok(r) => r,
             Err(e) => {
                 tracing::debug!("Weaving LLM call failed: {e}");
