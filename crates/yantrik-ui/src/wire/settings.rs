@@ -10,6 +10,9 @@ use crate::{App, AccentPreset, ThemeMode};
 /// Accent color preset names in cycle order (matches AccentPreset.index).
 const ACCENT_PRESETS: &[&str] = &["cyan", "amber", "purple", "green", "pink"];
 
+/// Known wallpaper preset names.
+const WALLPAPER_PRESETS: &[&str] = &["aurora", "sunset", "ocean", "nebula"];
+
 /// All user-facing settings that persist across reboots.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -19,6 +22,7 @@ pub struct UserSettings {
     pub tool_permission: String,
     pub auto_lock_secs: i32,
     pub dnd_mode: bool,
+    pub wallpaper: String,
 }
 
 impl Default for UserSettings {
@@ -29,6 +33,7 @@ impl Default for UserSettings {
             tool_permission: "sensitive".into(),
             auto_lock_secs: 300,
             dnd_mode: false,
+            wallpaper: String::new(),
         }
     }
 }
@@ -211,6 +216,46 @@ pub fn wire(ui: &App, ctx: &AppContext) {
         }
         persist(&s);
         tracing::info!(from = current, to = next, "Auto-lock timeout changed");
+    });
+
+    // Wallpaper changed: preset name or file path
+    let ui_weak = ui.as_weak();
+    let s = settings.clone();
+    ui.on_wallpaper_changed(move |value| {
+        let Some(ui) = ui_weak.upgrade() else { return };
+        let wp = value.to_string();
+
+        // For preset names, just store them
+        if wp.is_empty() || WALLPAPER_PRESETS.contains(&wp.as_str()) {
+            ui.set_wallpaper_path(value.clone());
+            if let Ok(mut st) = s.lock() {
+                st.wallpaper = wp.clone();
+            }
+            persist(&s);
+            tracing::info!(wallpaper = %wp, "Wallpaper changed (preset)");
+            return;
+        }
+
+        // For file paths, validate and load the image
+        let path = std::path::Path::new(&wp);
+        if path.exists() && path.is_file() {
+            match slint::Image::load_from_path(path) {
+                Ok(img) => {
+                    ui.set_wallpaper_image(img);
+                    ui.set_wallpaper_path(value.clone());
+                    if let Ok(mut st) = s.lock() {
+                        st.wallpaper = wp.clone();
+                    }
+                    persist(&s);
+                    tracing::info!(wallpaper = %wp, "Wallpaper changed (custom image)");
+                }
+                Err(e) => {
+                    tracing::warn!(path = %wp, error = %e, "Failed to load wallpaper image");
+                }
+            }
+        } else {
+            tracing::warn!(path = %wp, "Wallpaper file not found");
+        }
     });
 }
 

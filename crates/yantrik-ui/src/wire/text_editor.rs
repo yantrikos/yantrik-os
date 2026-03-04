@@ -1,8 +1,9 @@
-//! Text Editor wiring — file loading, saving, and AI assist.
+//! Text Editor wiring — file loading, saving, AI assist, and find/replace.
 //!
 //! Save: if file has a path, saves directly. If untitled/new,
 //! opens an inline Save As dialog for the user to pick location + name.
 //! AI assist: summarize, improve, or custom prompt with document context.
+//! Find/Replace: case-insensitive search with match navigation and replacement.
 
 use std::cell::RefCell;
 use std::path::PathBuf;
@@ -92,13 +93,7 @@ pub fn wire(ui: &App, ctx: &AppContext) {
         ui.set_editor_save_error("".into());
     });
 
-    // Content changed — mark as modified
-    let ui_weak = ui.as_weak();
-    ui.on_editor_content_changed(move |_text| {
-        if let Some(ui) = ui_weak.upgrade() {
-            ui.set_editor_is_modified(true);
-        }
-    });
+    // Content changed — wired below (after find/replace setup) to include match recomputation
 
     // AI assist — send prompt with document context, stream response
     let ui_weak = ui.as_weak();
@@ -234,6 +229,174 @@ pub fn wire(ui: &App, ctx: &AppContext) {
         ui.set_editor_ai_response("".into());
         ui.set_editor_ai_prompt("".into());
         ui.set_editor_ai_is_working(false);
+    });
+
+    // ── Find & Replace ──
+
+    // Shared state: list of byte-offset positions for each match
+    let find_matches: Rc<RefCell<Vec<usize>>> = Rc::new(RefCell::new(Vec::new()));
+    // Current match index (0-based internally, displayed as 1-based)
+    let find_index: Rc<RefCell<usize>> = Rc::new(RefCell::new(0));
+
+    // Helper: recompute matches for current query in file content (wrapped in Rc for sharing)
+    let recompute_matches: Rc<dyn Fn(&App)> = {
+        let find_matches = find_matches.clone();
+        let find_index = find_index.clone();
+        Rc::new(move |ui: &App| {
+            let query = ui.get_editor_find_query().to_string();
+            let content = ui.get_editor_file_content().to_string();
+            let mut matches = Vec::new();
+
+            if !query.is_empty() {
+                let query_lower = query.to_lowercase();
+                let content_lower = content.to_lowercase();
+                let mut start = 0;
+                while let Some(pos) = content_lower[start..].find(&query_lower) {
+                    matches.push(start + pos);
+                    start += pos + query_lower.len();
+                }
+            }
+
+            let count = matches.len() as i32;
+            *find_matches.borrow_mut() = matches;
+
+            // Clamp index
+            let idx = if count == 0 {
+                0
+            } else {
+                let cur = *find_index.borrow();
+                if cur >= count as usize { 0 } else { cur }
+            };
+            *find_index.borrow_mut() = idx;
+
+            ui.set_editor_find_match_count(count);
+            ui.set_editor_find_current_match(if count > 0 { idx as i32 + 1 } else { 0 });
+        })
+    };
+
+    // Find query changed — recompute matches
+    let ui_weak = ui.as_weak();
+    let recompute = recompute_matches.clone();
+    ui.on_editor_find_query_changed(move |_query| {
+        let Some(ui) = ui_weak.upgrade() else { return };
+        recompute(&ui);
+    });
+
+    // Find next — advance to next match
+    let ui_weak = ui.as_weak();
+    let fm = find_matches.clone();
+    let fi = find_index.clone();
+    ui.on_editor_find_next(move || {
+        let Some(ui) = ui_weak.upgrade() else { return };
+        let matches = fm.borrow();
+        if matches.is_empty() {
+            return;
+        }
+        let mut idx = *fi.borrow();
+        idx = if idx + 1 >= matches.len() { 0 } else { idx + 1 };
+        *fi.borrow_mut() = idx;
+        ui.set_editor_find_current_match(idx as i32 + 1);
+    });
+
+    // Find prev — go to previous match
+    let ui_weak = ui.as_weak();
+    let fm = find_matches.clone();
+    let fi = find_index.clone();
+    ui.on_editor_find_prev(move || {
+        let Some(ui) = ui_weak.upgrade() else { return };
+        let matches = fm.borrow();
+        if matches.is_empty() {
+            return;
+        }
+        let mut idx = *fi.borrow();
+        idx = if idx == 0 { matches.len() - 1 } else { idx - 1 };
+        *fi.borrow_mut() = idx;
+        ui.set_editor_find_current_match(idx as i32 + 1);
+    });
+
+    // Replace current — replace the match at current index
+    let ui_weak = ui.as_weak();
+    let fm = find_matches.clone();
+    let fi = find_index.clone();
+    let recompute = recompute_matches.clone();
+    ui.on_editor_replace_current(move || {
+        let Some(ui) = ui_weak.upgrade() else { return };
+        let matches = fm.borrow().clone();
+        if matches.is_empty() {
+            return;
+        }
+        let idx = *fi.borrow();
+        if idx >= matches.len() {
+            return;
+        }
+        let query = ui.get_editor_find_query().to_string();
+        let replacement = ui.get_editor_replace_text().to_string();
+        let content = ui.get_editor_file_content().to_string();
+        let match_pos = matches[idx];
+
+        // Replace the exact occurrence (preserving original case in the replacement)
+        let before = &content[..match_pos];
+        let after = &content[match_pos + query.len()..];
+        let updated = format!("{}{}{}", before, replacement, after);
+
+        ui.set_editor_file_content(SharedString::from(&updated));
+        ui.set_editor_is_modified(true);
+
+        // Recompute matches after replacement
+        recompute(&ui);
+        tracing::debug!("Find & Replace: replaced occurrence at offset {}", match_pos);
+    });
+
+    // Replace all — replace every occurrence
+    let ui_weak = ui.as_weak();
+    let recompute = recompute_matches.clone();
+    ui.on_editor_replace_all(move || {
+        let Some(ui) = ui_weak.upgrade() else { return };
+        let query = ui.get_editor_find_query().to_string();
+        let replacement = ui.get_editor_replace_text().to_string();
+        if query.is_empty() {
+            return;
+        }
+        let content = ui.get_editor_file_content().to_string();
+
+        // Case-insensitive replace all: rebuild string from match positions
+        let query_lower = query.to_lowercase();
+        let content_lower = content.to_lowercase();
+        let mut result = String::with_capacity(content.len());
+        let mut last_end = 0;
+        let mut count = 0;
+
+        let mut start = 0;
+        while let Some(pos) = content_lower[start..].find(&query_lower) {
+            let abs_pos = start + pos;
+            result.push_str(&content[last_end..abs_pos]);
+            result.push_str(&replacement);
+            last_end = abs_pos + query.len();
+            start = abs_pos + query_lower.len();
+            count += 1;
+        }
+        result.push_str(&content[last_end..]);
+
+        if count > 0 {
+            ui.set_editor_file_content(SharedString::from(&result));
+            ui.set_editor_is_modified(true);
+            tracing::info!(count, "Find & Replace: replaced all occurrences");
+        }
+
+        // Recompute (should be 0 matches now if replacement differs from query)
+        recompute(&ui);
+    });
+
+    // Content changed — mark as modified + recompute find matches if bar is open
+    let ui_weak = ui.as_weak();
+    let recompute_on_edit = recompute_matches.clone();
+    ui.on_editor_content_changed(move |_text: SharedString| {
+        if let Some(ui) = ui_weak.upgrade() {
+            ui.set_editor_is_modified(true);
+            if ui.get_editor_show_find_bar() {
+                recompute_on_edit(&ui);
+            }
+        }
     });
 }
 

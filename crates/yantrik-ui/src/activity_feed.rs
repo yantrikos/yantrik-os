@@ -151,7 +151,7 @@ impl ActivityAccumulator {
                     self.current.cpu_sustained_high_secs += 10;
                 }
             }
-            SystemEvent::MemoryPressure { used_bytes, total_bytes } => {
+            SystemEvent::MemoryPressure { used_bytes, total_bytes, .. } => {
                 if *total_bytes > 0 {
                     let pct = *used_bytes as f32 / *total_bytes as f32 * 100.0;
                     self.current.memory_samples.push(pct);
@@ -289,6 +289,7 @@ impl ActivityAccumulator {
             SystemEvent::MemoryPressure {
                 used_bytes,
                 total_bytes,
+                ..
             } if *total_bytes > 0 => {
                 let pct = *used_bytes as f32 / *total_bytes as f32 * 100.0;
                 if pct >= 85.0 {

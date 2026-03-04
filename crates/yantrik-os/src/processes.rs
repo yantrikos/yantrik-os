@@ -75,9 +75,19 @@ pub fn run_process_monitor(tx: Sender<SystemEvent>, process_secs: u64, resource_
             });
 
             // Memory
+            let total = sys.total_memory();
+            let available = sys.available_memory();
+            let free = sys.free_memory();
+            let used = total.saturating_sub(available);
+            // cached/buffers = available - free (pages reclaimable by kernel)
+            let cached = available.saturating_sub(free);
             let _ = tx.send(SystemEvent::MemoryPressure {
-                used_bytes: sys.used_memory(),
-                total_bytes: sys.total_memory(),
+                used_bytes: used,
+                total_bytes: total,
+                cached_bytes: cached,
+                free_bytes: free,
+                swap_used_bytes: sys.used_swap(),
+                swap_total_bytes: sys.total_swap(),
             });
 
             // Disk (root mount)

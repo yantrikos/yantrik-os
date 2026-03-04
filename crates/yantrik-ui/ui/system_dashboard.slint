@@ -17,6 +17,16 @@ export component SystemDashboard inherits Rectangle {
     in property <float> cpu-usage: 0.0;
     in property <float> memory-usage: 0.0;
     in property <string> memory-text: "0 / 0 MB";
+    // Memory breakdown
+    in property <float> memory-used-percent: 0.0;
+    in property <float> memory-cached-percent: 0.0;
+    in property <string> memory-used-text: "";
+    in property <string> memory-cached-text: "";
+    in property <string> memory-total-text: "";
+    // Swap
+    in property <float> swap-usage: 0.0;
+    in property <string> swap-text: "";
+
     in property <int> battery-level: 100;
     in property <bool> battery-charging: false;
     in property <bool> wifi-connected: false;
@@ -132,7 +142,7 @@ export component SystemDashboard inherits Rectangle {
 
                         Rectangle { height: 1px; background: Theme.bg-elevated; }
 
-                        // Memory bar
+                        // Memory stacked bar
                         VerticalLayout {
                             spacing: 4px;
 
@@ -151,17 +161,129 @@ export component SystemDashboard inherits Rectangle {
                                 }
                             }
 
+                            // Stacked bar: [used (cyan)] [cached (amber)] [free (dark)]
+                            Rectangle {
+                                height: 8px;
+                                border-radius: 4px;
+                                background: Theme.bg-deep;
+                                clip: true;
+
+                                // Used segment (cyan)
+                                Rectangle {
+                                    x: 0px;
+                                    width: max(0px, parent.width * root.memory-used-percent / 100);
+                                    height: 100%;
+                                    background: root.memory-usage > 85 ? Theme.color-emotional :
+                                               root.memory-usage > 60 ? Theme.amber : Theme.cyan;
+                                    animate width { duration: 300ms; }
+                                }
+
+                                // Cached segment (amber)
+                                Rectangle {
+                                    x: max(0px, parent.width * root.memory-used-percent / 100);
+                                    width: max(0px, parent.width * root.memory-cached-percent / 100);
+                                    height: 100%;
+                                    background: Theme.amber;
+                                    opacity: 0.7;
+                                    animate x { duration: 300ms; }
+                                    animate width { duration: 300ms; }
+                                }
+                            }
+
+                            // Legend row
+                            HorizontalLayout {
+                                spacing: 12px;
+                                alignment: start;
+
+                                // Used dot + label
+                                HorizontalLayout {
+                                    spacing: 4px;
+                                    Rectangle {
+                                        width: 6px;
+                                        height: 6px;
+                                        y: (parent.height - 6px) / 2;
+                                        border-radius: 3px;
+                                        background: Theme.cyan;
+                                    }
+                                    Text {
+                                        text: "Used: " + root.memory-used-text;
+                                        color: Theme.text-dim;
+                                        font-size: 10px;
+                                    }
+                                }
+
+                                // Cached dot + label
+                                HorizontalLayout {
+                                    spacing: 4px;
+                                    Rectangle {
+                                        width: 6px;
+                                        height: 6px;
+                                        y: (parent.height - 6px) / 2;
+                                        border-radius: 3px;
+                                        background: Theme.amber;
+                                        opacity: 0.7;
+                                    }
+                                    Text {
+                                        text: "Cached: " + root.memory-cached-text;
+                                        color: Theme.text-dim;
+                                        font-size: 10px;
+                                    }
+                                }
+
+                                // Free dot + label
+                                HorizontalLayout {
+                                    spacing: 4px;
+                                    Rectangle {
+                                        width: 6px;
+                                        height: 6px;
+                                        y: (parent.height - 6px) / 2;
+                                        border-radius: 3px;
+                                        background: Theme.bg-deep;
+                                        border-width: 1px;
+                                        border-color: Theme.text-dim;
+                                    }
+                                    Text {
+                                        text: "Free: " + root.memory-total-text;
+                                        color: Theme.text-dim;
+                                        font-size: 10px;
+                                    }
+                                }
+                            }
+                        }
+
+                        Rectangle { height: 1px; background: Theme.bg-elevated; }
+
+                        // Swap bar
+                        VerticalLayout {
+                            spacing: 4px;
+
+                            HorizontalLayout {
+                                Text {
+                                    text: "Swap";
+                                    color: Theme.text-secondary;
+                                    font-size: Theme.font-body;
+                                    horizontal-stretch: 1;
+                                }
+                                Text {
+                                    text: root.swap-text;
+                                    color: root.swap-usage > 80 ? Theme.color-emotional :
+                                           root.swap-usage > 50 ? Theme.amber : Theme.text-dim;
+                                    font-size: Theme.font-small;
+                                }
+                            }
+
                             Rectangle {
                                 height: 6px;
                                 border-radius: 3px;
                                 background: Theme.bg-deep;
 
                                 Rectangle {
-                                    width: max(0px, parent.width * root.memory-usage / 100);
+                                    width: max(0px, parent.width * root.swap-usage / 100);
                                     height: 100%;
                                     border-radius: 3px;
-                                    background: root.memory-usage > 85 ? Theme.color-emotional :
-                                               root.memory-usage > 60 ? Theme.amber : Theme.cyan;
+                                    background: root.swap-usage > 80 ? Theme.color-emotional :
+                                               root.swap-usage > 50 ? Theme.amber : Theme.amber;
+                                    opacity: 0.8;
                                     animate width { duration: 300ms; }
                                 }
                             }

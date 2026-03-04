@@ -48,6 +48,12 @@ export component SettingsScreen inherits Rectangle {
     callback toggle-dark-mode();
     callback cycle-accent-color();
 
+    // Wallpaper
+    in-out property <string> wallpaper-path: "";
+    property <string> custom-wallpaper-input: "";
+    property <bool> custom-input-visible: false;
+    callback wallpaper-changed(string);
+
     // Interactive settings
     callback cycle-tool-permission();
     callback cycle-auto-lock();
@@ -570,6 +576,326 @@ export component SettingsScreen inherits Rectangle {
 
                                         animate border-color { duration: 200ms; }
                                         animate drop-shadow-color { duration: 200ms; }
+                                    }
+                                }
+                            }
+                        }
+
+                        // ── Wallpaper section ──
+                        Rectangle {
+                            background: @linear-gradient(135deg, #12111a80 0%, #0c0b1060 100%);
+                            border-radius: Theme.radius-card;
+                            border-width: 1px;
+                            border-color: #ffffff08;
+                            height: wp-layout.preferred-height;
+
+                            wp-layout := VerticalLayout {
+                                padding: 16px;
+                                spacing: 12px;
+
+                                Text {
+                                    text: "Wallpaper";
+                                    color: Theme.text-secondary;
+                                    font-size: Theme.font-body;
+                                }
+
+                                // Preset thumbnail row
+                                HorizontalLayout {
+                                    spacing: 10px;
+
+                                    // None (solid dark)
+                                    wp-none-ta := TouchArea {
+                                        width: 60px; height: 40px;
+                                        clicked => {
+                                            root.wallpaper-path = "";
+                                            root.custom-input-visible = false;
+                                            root.wallpaper-changed("");
+                                        }
+                                        Rectangle {
+                                            width: 60px; height: 40px;
+                                            border-radius: 6px;
+                                            background: @radial-gradient(circle, #0a0a1c 0%, #050510 50%, #020206 100%);
+                                            border-width: root.wallpaper-path == "" ? 2px : 1px;
+                                            border-color: root.wallpaper-path == "" ? Theme.cyan : (wp-none-ta.has-hover ? #ffffff30 : #ffffff10);
+                                            drop-shadow-blur: root.wallpaper-path == "" ? 4px : 0px;
+                                            drop-shadow-color: root.wallpaper-path == "" ? Theme.cyan-glow : transparent;
+
+                                            Text {
+                                                text: "None";
+                                                color: root.wallpaper-path == "" ? Theme.cyan : Theme.text-dim;
+                                                font-size: 9px;
+                                                horizontal-alignment: center;
+                                                vertical-alignment: center;
+                                            }
+
+                                            animate border-color { duration: 150ms; }
+                                            animate border-width { duration: 150ms; }
+                                        }
+                                    }
+
+                                    // Aurora (green/purple)
+                                    wp-aurora-ta := TouchArea {
+                                        width: 60px; height: 40px;
+                                        clicked => {
+                                            root.wallpaper-path = "aurora";
+                                            root.custom-input-visible = false;
+                                            root.wallpaper-changed("aurora");
+                                        }
+                                        Rectangle {
+                                            width: 60px; height: 40px;
+                                            border-radius: 6px;
+                                            clip: true;
+                                            background: @linear-gradient(135deg, #0d2818 0%, #1a0a2e 50%, #0a3020 100%);
+                                            border-width: root.wallpaper-path == "aurora" ? 2px : 1px;
+                                            border-color: root.wallpaper-path == "aurora" ? Theme.cyan : (wp-aurora-ta.has-hover ? #ffffff30 : #ffffff10);
+                                            drop-shadow-blur: root.wallpaper-path == "aurora" ? 4px : 0px;
+                                            drop-shadow-color: root.wallpaper-path == "aurora" ? Theme.cyan-glow : transparent;
+
+                                            // Mini glow accent
+                                            Rectangle {
+                                                x: 5px; y: 5px;
+                                                width: 30px; height: 20px;
+                                                border-radius: 10px;
+                                                background: @radial-gradient(circle, #30e87830 0%, transparent 70%);
+                                            }
+
+                                            Text {
+                                                y: parent.height - 12px;
+                                                text: "Aurora";
+                                                color: root.wallpaper-path == "aurora" ? Theme.cyan : Theme.text-dim;
+                                                font-size: 8px;
+                                                horizontal-alignment: center;
+                                                width: 100%;
+                                            }
+
+                                            animate border-color { duration: 150ms; }
+                                            animate border-width { duration: 150ms; }
+                                        }
+                                    }
+
+                                    // Sunset (orange/pink)
+                                    wp-sunset-ta := TouchArea {
+                                        width: 60px; height: 40px;
+                                        clicked => {
+                                            root.wallpaper-path = "sunset";
+                                            root.custom-input-visible = false;
+                                            root.wallpaper-changed("sunset");
+                                        }
+                                        Rectangle {
+                                            width: 60px; height: 40px;
+                                            border-radius: 6px;
+                                            clip: true;
+                                            background: @linear-gradient(180deg, #3d1020 0%, #d4503a 50%, #e88c30 100%);
+                                            border-width: root.wallpaper-path == "sunset" ? 2px : 1px;
+                                            border-color: root.wallpaper-path == "sunset" ? Theme.cyan : (wp-sunset-ta.has-hover ? #ffffff30 : #ffffff10);
+                                            drop-shadow-blur: root.wallpaper-path == "sunset" ? 4px : 0px;
+                                            drop-shadow-color: root.wallpaper-path == "sunset" ? Theme.cyan-glow : transparent;
+
+                                            Text {
+                                                y: parent.height - 12px;
+                                                text: "Sunset";
+                                                color: root.wallpaper-path == "sunset" ? #ffd6b0 : Theme.text-dim;
+                                                font-size: 8px;
+                                                horizontal-alignment: center;
+                                                width: 100%;
+                                            }
+
+                                            animate border-color { duration: 150ms; }
+                                            animate border-width { duration: 150ms; }
+                                        }
+                                    }
+
+                                    // Ocean (blue/teal)
+                                    wp-ocean-ta := TouchArea {
+                                        width: 60px; height: 40px;
+                                        clicked => {
+                                            root.wallpaper-path = "ocean";
+                                            root.custom-input-visible = false;
+                                            root.wallpaper-changed("ocean");
+                                        }
+                                        Rectangle {
+                                            width: 60px; height: 40px;
+                                            border-radius: 6px;
+                                            clip: true;
+                                            background: @linear-gradient(180deg, #041830 0%, #063050 50%, #0a4868 100%);
+                                            border-width: root.wallpaper-path == "ocean" ? 2px : 1px;
+                                            border-color: root.wallpaper-path == "ocean" ? Theme.cyan : (wp-ocean-ta.has-hover ? #ffffff30 : #ffffff10);
+                                            drop-shadow-blur: root.wallpaper-path == "ocean" ? 4px : 0px;
+                                            drop-shadow-color: root.wallpaper-path == "ocean" ? Theme.cyan-glow : transparent;
+
+                                            // Mini wave accent
+                                            Rectangle {
+                                                x: 10px; y: 15px;
+                                                width: 40px; height: 15px;
+                                                border-radius: 8px;
+                                                background: @radial-gradient(circle, #06b6d418 0%, transparent 70%);
+                                            }
+
+                                            Text {
+                                                y: parent.height - 12px;
+                                                text: "Ocean";
+                                                color: root.wallpaper-path == "ocean" ? #b0e0ff : Theme.text-dim;
+                                                font-size: 8px;
+                                                horizontal-alignment: center;
+                                                width: 100%;
+                                            }
+
+                                            animate border-color { duration: 150ms; }
+                                            animate border-width { duration: 150ms; }
+                                        }
+                                    }
+
+                                    // Nebula (purple/cyan)
+                                    wp-nebula-ta := TouchArea {
+                                        width: 60px; height: 40px;
+                                        clicked => {
+                                            root.wallpaper-path = "nebula";
+                                            root.custom-input-visible = false;
+                                            root.wallpaper-changed("nebula");
+                                        }
+                                        Rectangle {
+                                            width: 60px; height: 40px;
+                                            border-radius: 6px;
+                                            clip: true;
+                                            background: @linear-gradient(135deg, #1a0838 0%, #2e0e58 50%, #0a0828 100%);
+                                            border-width: root.wallpaper-path == "nebula" ? 2px : 1px;
+                                            border-color: root.wallpaper-path == "nebula" ? Theme.cyan : (wp-nebula-ta.has-hover ? #ffffff30 : #ffffff10);
+                                            drop-shadow-blur: root.wallpaper-path == "nebula" ? 4px : 0px;
+                                            drop-shadow-color: root.wallpaper-path == "nebula" ? Theme.cyan-glow : transparent;
+
+                                            // Mini nebula accent
+                                            Rectangle {
+                                                x: 15px; y: 8px;
+                                                width: 30px; height: 20px;
+                                                border-radius: 10px;
+                                                background: @radial-gradient(circle, #a855f728 0%, transparent 70%);
+                                            }
+                                            Rectangle {
+                                                x: 25px; y: 15px;
+                                                width: 25px; height: 18px;
+                                                border-radius: 9px;
+                                                background: @radial-gradient(circle, #06b6d420 0%, transparent 70%);
+                                            }
+
+                                            Text {
+                                                y: parent.height - 12px;
+                                                text: "Nebula";
+                                                color: root.wallpaper-path == "nebula" ? #d0b0ff : Theme.text-dim;
+                                                font-size: 8px;
+                                                horizontal-alignment: center;
+                                                width: 100%;
+                                            }
+
+                                            animate border-color { duration: 150ms; }
+                                            animate border-width { duration: 150ms; }
+                                        }
+                                    }
+                                }
+
+                                // Custom wallpaper button + path input
+                                HorizontalLayout {
+                                    spacing: 8px;
+
+                                    wp-custom-ta := TouchArea {
+                                        width: custom-btn-rect.preferred-width;
+                                        height: 32px;
+                                        clicked => {
+                                            root.custom-input-visible = !root.custom-input-visible;
+                                        }
+                                        custom-btn-rect := Rectangle {
+                                            width: custom-btn-text.preferred-width + 24px;
+                                            height: 32px;
+                                            border-radius: 8px;
+                                            background: wp-custom-ta.has-hover ? Theme.hover-fill-strong : Theme.hover-fill;
+                                            border-width: 1px;
+                                            border-color: root.custom-input-visible ? Theme.cyan-dim : #ffffff10;
+
+                                            custom-btn-text := Text {
+                                                text: "Custom...";
+                                                color: root.custom-input-visible ? Theme.cyan : Theme.text-secondary;
+                                                font-size: 12px;
+                                                horizontal-alignment: center;
+                                                vertical-alignment: center;
+                                            }
+                                        }
+                                    }
+
+                                    // Show active wallpaper label
+                                    if root.wallpaper-path != "" && root.wallpaper-path != "aurora" && root.wallpaper-path != "sunset" && root.wallpaper-path != "ocean" && root.wallpaper-path != "nebula" : Text {
+                                        text: root.wallpaper-path;
+                                        color: Theme.text-dim;
+                                        font-size: 11px;
+                                        vertical-alignment: center;
+                                        horizontal-stretch: 1;
+                                        overflow: elide;
+                                    }
+                                }
+
+                                // Custom path input row (shown when "Custom..." toggled)
+                                if root.custom-input-visible : HorizontalLayout {
+                                    spacing: 8px;
+
+                                    Rectangle {
+                                        horizontal-stretch: 1;
+                                        height: 32px;
+                                        border-radius: 8px;
+                                        background: #0808100a;
+                                        border-width: 1px;
+                                        border-color: #ffffff10;
+
+                                        wp-input := TextInput {
+                                            x: 8px;
+                                            width: parent.width - 16px;
+                                            height: 100%;
+                                            text <=> root.custom-wallpaper-input;
+                                            color: Theme.text-primary;
+                                            font-size: 12px;
+                                            vertical-alignment: center;
+
+                                            accepted => {
+                                                if root.custom-wallpaper-input != "" {
+                                                    root.wallpaper-path = root.custom-wallpaper-input;
+                                                    root.wallpaper-changed(root.custom-wallpaper-input);
+                                                }
+                                            }
+                                        }
+
+                                        // Placeholder text
+                                        if root.custom-wallpaper-input == "" : Text {
+                                            x: 8px;
+                                            text: "/path/to/image.png";
+                                            color: Theme.text-dim;
+                                            font-size: 12px;
+                                            vertical-alignment: center;
+                                            opacity: 0.5;
+                                        }
+                                    }
+
+                                    wp-apply-ta := TouchArea {
+                                        width: 60px;
+                                        height: 32px;
+                                        clicked => {
+                                            if root.custom-wallpaper-input != "" {
+                                                root.wallpaper-path = root.custom-wallpaper-input;
+                                                root.wallpaper-changed(root.custom-wallpaper-input);
+                                            }
+                                        }
+                                        Rectangle {
+                                            width: 60px; height: 32px;
+                                            border-radius: 8px;
+                                            background: wp-apply-ta.has-hover ? Theme.cyan-dim : Theme.hover-fill;
+                                            border-width: 1px;
+                                            border-color: Theme.cyan-dim;
+
+                                            Text {
+                                                text: "Apply";
+                                                color: Theme.cyan;
+                                                font-size: 11px;
+                                                font-weight: 600;
+                                                horizontal-alignment: center;
+                                                vertical-alignment: center;
+                                            }
+                                        }
                                     }
                                 }
                             }

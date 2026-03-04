@@ -198,18 +198,46 @@ pub fn wire(ui: &App, ctx: &AppContext) {
             if ui.get_current_screen() == 10 {
                 ui.set_sys_cpu_usage(snap.cpu_usage_percent);
                 ui.set_sys_memory_usage(snap.memory_usage_percent());
-                let used_mb = snap.memory_used_bytes / (1024 * 1024);
-                let total_mb = snap.memory_total_bytes / (1024 * 1024);
-                let mem_text = if total_mb >= 1024 {
-                    format!(
-                        "{:.1} / {:.1} GB",
-                        used_mb as f64 / 1024.0,
-                        total_mb as f64 / 1024.0
-                    )
-                } else {
-                    format!("{} / {} MB", used_mb, total_mb)
-                };
+
+                let total = snap.memory_total_bytes;
+                let used = snap.memory_used_bytes;
+                let cached = snap.memory_cached_bytes;
+                let free = snap.memory_free_bytes;
+
+                // Overall memory text (used / total)
+                let mem_text = format!(
+                    "{} / {}",
+                    format_bytes(used),
+                    format_bytes(total)
+                );
                 ui.set_sys_memory_text(mem_text.into());
+
+                // Memory breakdown percentages
+                if total > 0 {
+                    let used_pct = (used as f64 / total as f64 * 100.0) as f32;
+                    let cached_pct = (cached as f64 / total as f64 * 100.0) as f32;
+                    ui.set_sys_memory_used_percent(used_pct);
+                    ui.set_sys_memory_cached_percent(cached_pct);
+                }
+                ui.set_sys_memory_used_text(format_bytes(used).into());
+                ui.set_sys_memory_cached_text(format_bytes(cached).into());
+                // "Free" label shows the actual free (not cached) memory
+                ui.set_sys_memory_total_text(format_bytes(free).into());
+
+                // Swap
+                let swap_total = snap.swap_total_bytes;
+                let swap_used = snap.swap_used_bytes;
+                if swap_total > 0 {
+                    let swap_pct = (swap_used as f64 / swap_total as f64 * 100.0) as f32;
+                    ui.set_sys_swap_usage(swap_pct);
+                    ui.set_sys_swap_text(
+                        format!("{} / {}", format_bytes(swap_used), format_bytes(swap_total)).into(),
+                    );
+                } else {
+                    ui.set_sys_swap_usage(0.0);
+                    ui.set_sys_swap_text("N/A".into());
+                }
+
                 ui.set_sys_wifi_ssid(
                     snap.network_ssid.clone().unwrap_or_default().into(),
                 );
@@ -430,5 +458,22 @@ fn handle_keybind(ui: &App, action: &str) {
         other => {
             tracing::debug!(action = other, "Unknown keybind action");
         }
+    }
+}
+
+/// Format a byte count as a human-readable string (KB / MB / GB).
+fn format_bytes(bytes: u64) -> String {
+    const KB: u64 = 1024;
+    const MB: u64 = 1024 * 1024;
+    const GB: u64 = 1024 * 1024 * 1024;
+
+    if bytes >= GB {
+        format!("{:.1} GB", bytes as f64 / GB as f64)
+    } else if bytes >= MB {
+        format!("{:.0} MB", bytes as f64 / MB as f64)
+    } else if bytes >= KB {
+        format!("{:.0} KB", bytes as f64 / KB as f64)
+    } else {
+        format!("{} B", bytes)
     }
 }

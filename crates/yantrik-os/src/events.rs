@@ -60,10 +60,18 @@ pub enum SystemEvent {
         usage_percent: f32,
     },
     MemoryPressure {
-        /// Used memory in bytes.
+        /// Used memory in bytes (total - available).
         used_bytes: u64,
         /// Total memory in bytes.
         total_bytes: u64,
+        /// Cached/buffers memory in bytes (available - free).
+        cached_bytes: u64,
+        /// Free memory in bytes (MemFree, not available).
+        free_bytes: u64,
+        /// Swap used in bytes.
+        swap_used_bytes: u64,
+        /// Swap total in bytes.
+        swap_total_bytes: u64,
     },
     DiskPressure {
         mount_point: String,
@@ -113,6 +121,10 @@ pub struct SystemSnapshot {
     pub cpu_usage_percent: f32,
     pub memory_used_bytes: u64,
     pub memory_total_bytes: u64,
+    pub memory_cached_bytes: u64,
+    pub memory_free_bytes: u64,
+    pub swap_used_bytes: u64,
+    pub swap_total_bytes: u64,
 
     // Disk
     pub disk_available_bytes: u64,
@@ -151,9 +163,20 @@ impl SystemSnapshot {
             SystemEvent::CpuPressure { usage_percent } => {
                 self.cpu_usage_percent = *usage_percent;
             }
-            SystemEvent::MemoryPressure { used_bytes, total_bytes } => {
+            SystemEvent::MemoryPressure {
+                used_bytes,
+                total_bytes,
+                cached_bytes,
+                free_bytes,
+                swap_used_bytes,
+                swap_total_bytes,
+            } => {
                 self.memory_used_bytes = *used_bytes;
                 self.memory_total_bytes = *total_bytes;
+                self.memory_cached_bytes = *cached_bytes;
+                self.memory_free_bytes = *free_bytes;
+                self.swap_used_bytes = *swap_used_bytes;
+                self.swap_total_bytes = *swap_total_bytes;
             }
             SystemEvent::DiskPressure { available_bytes, total_bytes, .. } => {
                 self.disk_available_bytes = *available_bytes;

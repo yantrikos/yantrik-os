@@ -80,6 +80,34 @@ impl AppContext {
         ui.global::<AccentPreset>().set_index(accent_idx);
         ui.set_settings_accent_color(user_settings.accent_color.into());
 
+        // Wallpaper (persisted)
+        if !user_settings.wallpaper.is_empty() {
+            let wp = &user_settings.wallpaper;
+            ui.set_wallpaper_path(wp.as_str().into());
+            // For custom file paths (not presets), load the image
+            let presets = ["aurora", "sunset", "ocean", "nebula"];
+            if !presets.contains(&wp.as_str()) {
+                let path = std::path::Path::new(wp.as_str());
+                if path.exists() && path.is_file() {
+                    match slint::Image::load_from_path(path) {
+                        Ok(img) => {
+                            ui.set_wallpaper_image(img);
+                            tracing::info!(wallpaper = %wp, "Restored custom wallpaper");
+                        }
+                        Err(e) => {
+                            tracing::warn!(path = %wp, error = %e, "Failed to restore wallpaper image, clearing");
+                            ui.set_wallpaper_path("".into());
+                        }
+                    }
+                } else {
+                    tracing::warn!(path = %wp, "Saved wallpaper file not found, clearing");
+                    ui.set_wallpaper_path("".into());
+                }
+            } else {
+                tracing::info!(wallpaper = %wp, "Restored preset wallpaper");
+            }
+        }
+
         // Community theme overrides
         load_theme_overrides(ui);
 

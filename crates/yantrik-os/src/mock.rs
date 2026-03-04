@@ -78,9 +78,17 @@ pub fn run_mock_observer(tx: Sender<SystemEvent>) {
             // Simulate ~400MB used out of 1GB
             let base = 400_000_000u64;
             let jitter = ((tick as f64 * 0.3).sin() * 50_000_000.0) as u64;
+            let used = base + jitter;
+            let total: u64 = 1_000_000_000;
+            let cached: u64 = 150_000_000; // ~150 MB cached
+            let free = total.saturating_sub(used).saturating_sub(cached);
             let _ = tx.send(SystemEvent::MemoryPressure {
-                used_bytes: base + jitter,
-                total_bytes: 1_000_000_000,
+                used_bytes: used,
+                total_bytes: total,
+                cached_bytes: cached,
+                free_bytes: free,
+                swap_used_bytes: 50_000_000,   // ~50 MB swap used
+                swap_total_bytes: 500_000_000, // ~500 MB swap total
             });
         }
 

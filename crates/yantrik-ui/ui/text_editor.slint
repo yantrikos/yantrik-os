@@ -24,12 +24,25 @@ export component TextEditorScreen inherits Rectangle {
     in property <string> ai-response: "";
     in property <bool> ai-is-working: false;
 
+    // Find & Replace state
+    in-out property <bool> show-find-bar: false;
+    in-out property <string> find-query: "";
+    in-out property <string> replace-text: "";
+    in property <int> find-match-count: 0;
+    in property <int> find-current-match: 0;
+    in-out property <bool> show-replace-row: false;
+
     callback save-file();
     callback save-file-as(string, string);
     callback content-changed(string);
     callback ai-request(string);       // Send prompt with document context
     callback ai-insert();              // Insert AI response into document
     callback ai-dismiss();             // Close AI panel
+    callback find-next();
+    callback find-prev();
+    callback replace-current();
+    callback replace-all();
+    callback find-query-changed(string);
 
     VerticalLayout {
         spacing: 0px;
@@ -74,10 +87,45 @@ export component TextEditorScreen inherits Rectangle {
                     }
                 }
 
-                // Right: AI button + Save button
+                // Right: Find + AI button + Save button
                 HorizontalLayout {
                     spacing: 6px;
                     alignment: end;
+
+                    // Find button (Ctrl+F)
+                    find-btn-ta := TouchArea {
+                        width: 56px;
+                        height: 32px;
+                        clicked => {
+                            root.show-find-bar = !root.show-find-bar;
+                            if !root.show-find-bar {
+                                root.find-query = "";
+                                root.replace-text = "";
+                                root.show-replace-row = false;
+                                root.find-query-changed("");
+                            }
+                        }
+
+                        Rectangle {
+                            width: 56px;
+                            height: 32px;
+                            border-radius: 8px;
+                            background: root.show-find-bar
+                                ? Theme.cyan
+                                : (find-btn-ta.has-hover ? Theme.hover-fill-strong : Theme.hover-fill);
+                            border-width: root.show-find-bar ? 0px : 1px;
+                            border-color: Theme.border-subtle;
+
+                            Text {
+                                text: "Find";
+                                color: root.show-find-bar ? Theme.bg-deep : Theme.text-secondary;
+                                font-size: 12px;
+                                font-weight: root.show-find-bar ? 600 : 400;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
 
                     // AI assist button
                     ai-btn-ta := TouchArea {
@@ -140,6 +188,256 @@ export component TextEditorScreen inherits Rectangle {
         }
 
         Rectangle { height: 1px; background: Theme.separator; }
+
+        // ── Find & Replace bar ──
+        if root.show-find-bar : Rectangle {
+            height: find-bar-layout.preferred-height;
+            background: @linear-gradient(135deg, #12111ae0 0%, #0c0b10c0 100%);
+            border-width: 1px;
+            border-color: Theme.cyan-dim;
+
+            find-bar-layout := VerticalLayout {
+                padding: 8px;
+                padding-left: 12px;
+                padding-right: 12px;
+                spacing: 6px;
+
+                // Row 1: Search input + match count + prev/next + close
+                HorizontalLayout {
+                    spacing: 6px;
+
+                    // Search icon
+                    Text {
+                        text: "\u{26B2}";
+                        color: Theme.cyan;
+                        font-size: 14px;
+                        vertical-alignment: center;
+                        width: 18px;
+                    }
+
+                    // Search input
+                    Rectangle {
+                        horizontal-stretch: 1;
+                        height: 30px;
+                        border-radius: 8px;
+                        background: #0a091080;
+                        border-width: 1px;
+                        border-color: root.find-query != "" && root.find-match-count > 0
+                            ? Theme.cyan-dim
+                            : (root.find-query != "" ? Theme.color-emotional : Theme.border-subtle);
+
+                        find-input := TextInput {
+                            x: 10px;
+                            y: (parent.height - self.preferred-height) / 2;
+                            width: parent.width - 20px;
+                            color: Theme.text-primary;
+                            font-size: 13px;
+                            text <=> root.find-query;
+                            input-type: text;
+                            single-line: true;
+                            accepted => { root.find-next(); }
+                            edited => { root.find-query-changed(self.text); }
+                        }
+                    }
+
+                    // Match count badge
+                    if root.find-query != "" : Rectangle {
+                        width: match-count-text.preferred-width + 16px;
+                        height: 24px;
+                        border-radius: 12px;
+                        background: root.find-match-count > 0 ? Theme.tint-cyan : #ff444430;
+
+                        match-count-text := Text {
+                            text: root.find-match-count > 0
+                                ? "\{root.find-current-match} of \{root.find-match-count}"
+                                : "0";
+                            color: root.find-match-count > 0 ? Theme.cyan : Theme.color-emotional;
+                            font-size: 11px;
+                            font-weight: 500;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
+
+                    // Prev match
+                    find-prev-ta := TouchArea {
+                        width: 28px;
+                        height: 28px;
+                        clicked => { root.find-prev(); }
+
+                        Rectangle {
+                            width: 28px;
+                            height: 28px;
+                            border-radius: 6px;
+                            background: find-prev-ta.has-hover ? Theme.hover-fill-strong : transparent;
+
+                            Text {
+                                text: "\u{25B2}";
+                                color: Theme.text-secondary;
+                                font-size: 10px;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+
+                    // Next match
+                    find-next-ta := TouchArea {
+                        width: 28px;
+                        height: 28px;
+                        clicked => { root.find-next(); }
+
+                        Rectangle {
+                            width: 28px;
+                            height: 28px;
+                            border-radius: 6px;
+                            background: find-next-ta.has-hover ? Theme.hover-fill-strong : transparent;
+
+                            Text {
+                                text: "\u{25BC}";
+                                color: Theme.text-secondary;
+                                font-size: 10px;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+
+                    // Toggle replace row
+                    find-expand-ta := TouchArea {
+                        width: 28px;
+                        height: 28px;
+                        clicked => { root.show-replace-row = !root.show-replace-row; }
+
+                        Rectangle {
+                            width: 28px;
+                            height: 28px;
+                            border-radius: 6px;
+                            background: find-expand-ta.has-hover ? Theme.hover-fill-strong
+                                : (root.show-replace-row ? Theme.hover-fill : transparent);
+
+                            Text {
+                                text: root.show-replace-row ? "\u{25BD}" : "\u{25B7}";
+                                color: root.show-replace-row ? Theme.cyan : Theme.text-dim;
+                                font-size: 10px;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+
+                    // Close find bar
+                    find-close-ta := TouchArea {
+                        width: 24px;
+                        height: 24px;
+                        clicked => {
+                            root.show-find-bar = false;
+                            root.find-query = "";
+                            root.replace-text = "";
+                            root.show-replace-row = false;
+                            root.find-query-changed("");
+                        }
+
+                        Rectangle {
+                            width: 24px;
+                            height: 24px;
+                            border-radius: 6px;
+                            background: find-close-ta.has-hover ? Theme.hover-fill-strong : transparent;
+
+                            Text {
+                                text: "\u{00D7}";
+                                color: Theme.text-dim;
+                                font-size: 16px;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                }
+
+                // Row 2: Replace input + Replace + Replace All (expandable)
+                if root.show-replace-row && !root.is-readonly : HorizontalLayout {
+                    spacing: 6px;
+
+                    // Spacer to align with search input (icon width + spacing)
+                    Rectangle { width: 18px; }
+
+                    // Replace input
+                    Rectangle {
+                        horizontal-stretch: 1;
+                        height: 30px;
+                        border-radius: 8px;
+                        background: #0a091080;
+                        border-width: 1px;
+                        border-color: Theme.border-subtle;
+
+                        replace-input := TextInput {
+                            x: 10px;
+                            y: (parent.height - self.preferred-height) / 2;
+                            width: parent.width - 20px;
+                            color: Theme.text-primary;
+                            font-size: 13px;
+                            text <=> root.replace-text;
+                            input-type: text;
+                            single-line: true;
+                            accepted => { root.replace-current(); }
+                        }
+                    }
+
+                    // Replace button
+                    replace-btn-ta := TouchArea {
+                        width: 68px;
+                        height: 28px;
+                        clicked => { root.replace-current(); }
+
+                        Rectangle {
+                            width: 68px;
+                            height: 28px;
+                            border-radius: 8px;
+                            background: replace-btn-ta.has-hover ? Theme.cyan : Theme.hover-fill-strong;
+                            border-width: replace-btn-ta.has-hover ? 0px : 1px;
+                            border-color: Theme.cyan-dim;
+
+                            Text {
+                                text: "Replace";
+                                color: replace-btn-ta.has-hover ? Theme.bg-deep : Theme.cyan;
+                                font-size: 11px;
+                                font-weight: 600;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+
+                    // Replace All button
+                    replace-all-ta := TouchArea {
+                        width: 80px;
+                        height: 28px;
+                        clicked => { root.replace-all(); }
+
+                        Rectangle {
+                            width: 80px;
+                            height: 28px;
+                            border-radius: 8px;
+                            background: replace-all-ta.has-hover ? Theme.cyan : Theme.hover-fill-strong;
+                            border-width: replace-all-ta.has-hover ? 0px : 1px;
+                            border-color: Theme.cyan-dim;
+
+                            Text {
+                                text: "Replace All";
+                                color: replace-all-ta.has-hover ? Theme.bg-deep : Theme.cyan;
+                                font-size: 11px;
+                                font-weight: 600;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if root.show-find-bar : Rectangle { height: 1px; background: Theme.separator; }
 
         // ── AI assist panel ──
         if root.show-ai-panel : Rectangle {

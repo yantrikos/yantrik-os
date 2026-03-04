@@ -168,7 +168,7 @@ pub fn event_to_memory(event: &yantrik_os::SystemEvent) -> Option<(String, Strin
                 0.5,
             ))
         }
-        SystemEvent::MemoryPressure { used_bytes, total_bytes } if *total_bytes > 0 => {
+        SystemEvent::MemoryPressure { used_bytes, total_bytes, .. } if *total_bytes > 0 => {
             let pct = *used_bytes as f32 / *total_bytes as f32 * 100.0;
             if pct >= 85.0 {
                 Some((

@@ -201,6 +201,9 @@ export component App inherits Window {
     callback cycle-accent-color();
     callback cycle-tool-permission();
     callback cycle-auto-lock();
+    in-out property <string> wallpaper-path: "";
+    in property <image> wallpaper-image;
+    callback wallpaper-changed(string);
 
     // File browser state (screen 8)
     in property <string> file-browser-path: "~";
@@ -255,6 +258,15 @@ export component App inherits Window {
     in property <[ProcessData]> sys-top-processes: [];
     in property <[float]> sys-cpu-history: [];
     in property <[float]> sys-memory-history: [];
+    // Memory breakdown
+    in property <float> sys-memory-used-percent: 0.0;
+    in property <float> sys-memory-cached-percent: 0.0;
+    in property <string> sys-memory-used-text: "";
+    in property <string> sys-memory-cached-text: "";
+    in property <string> sys-memory-total-text: "";
+    // Swap
+    in property <float> sys-swap-usage: 0.0;
+    in property <string> sys-swap-text: "";
 
     // Image Viewer state (screen 11)
     in property <image> viewer-image;
@@ -285,6 +297,18 @@ export component App inherits Window {
     callback editor-ai-request(string);
     callback editor-ai-insert();
     callback editor-ai-dismiss();
+    // Editor Find & Replace
+    in-out property <bool> editor-show-find-bar: false;
+    in-out property <string> editor-find-query: "";
+    in-out property <string> editor-replace-text: "";
+    in property <int> editor-find-match-count: 0;
+    in property <int> editor-find-current-match: 0;
+    in-out property <bool> editor-show-replace-row: false;
+    callback editor-find-next();
+    callback editor-find-prev();
+    callback editor-replace-current();
+    callback editor-replace-all();
+    callback editor-find-query-changed(string);
 
     // Media Player state (screen 13)
     in property <string> player-track-name: "";
@@ -419,6 +443,9 @@ export component App inherits Window {
             pending-count: root.pending-count;
             settings-incognito-mode: root.settings-incognito-mode;
             dnd-mode: root.dnd-mode;
+            // Wallpaper
+            wallpaper-path: root.wallpaper-path;
+            wallpaper-image: root.wallpaper-image;
             // Companion
             is-thinking: root.is-thinking;
             has-urges: root.has-urges;
@@ -619,6 +646,8 @@ export component App inherits Window {
                 cycle-accent-color => { root.cycle-accent-color(); }
                 cycle-tool-permission => { root.cycle-tool-permission(); }
                 cycle-auto-lock => { root.cycle-auto-lock(); }
+                wallpaper-path <=> root.wallpaper-path;
+                wallpaper-changed(wp) => { root.wallpaper-changed(wp); }
                 back-pressed => {
                     root.current-screen = 1;
                     root.navigate(1);
@@ -738,6 +767,13 @@ export component App inherits Window {
                 top-processes: root.sys-top-processes;
                 cpu-history: root.sys-cpu-history;
                 memory-history: root.sys-memory-history;
+                memory-used-percent: root.sys-memory-used-percent;
+                memory-cached-percent: root.sys-memory-cached-percent;
+                memory-used-text: root.sys-memory-used-text;
+                memory-cached-text: root.sys-memory-cached-text;
+                memory-total-text: root.sys-memory-total-text;
+                swap-usage: root.sys-swap-usage;
+                swap-text: root.sys-swap-text;
                 back-pressed => {
                     root.current-screen = 1;
                     root.navigate(1);
@@ -805,6 +841,17 @@ export component App inherits Window {
                 ai-request(prompt) => { root.editor-ai-request(prompt); }
                 ai-insert => { root.editor-ai-insert(); }
                 ai-dismiss => { root.editor-ai-dismiss(); }
+                show-find-bar <=> root.editor-show-find-bar;
+                find-query <=> root.editor-find-query;
+                replace-text <=> root.editor-replace-text;
+                find-match-count: root.editor-find-match-count;
+                find-current-match: root.editor-find-current-match;
+                show-replace-row <=> root.editor-show-replace-row;
+                find-next => { root.editor-find-next(); }
+                find-prev => { root.editor-find-prev(); }
+                replace-current => { root.editor-replace-current(); }
+                replace-all => { root.editor-replace-all(); }
+                find-query-changed(q) => { root.editor-find-query-changed(q); }
             }
         }
 

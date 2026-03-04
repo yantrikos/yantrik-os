@@ -170,7 +170,7 @@ impl ProactiveFeature for ResourceGuardian {
                 }
             }
 
-            SystemEvent::MemoryPressure { used_bytes, total_bytes } => {
+            SystemEvent::MemoryPressure { used_bytes, total_bytes, .. } => {
                 if *total_bytes > 0 {
                     let percent = *used_bytes as f32 / *total_bytes as f32 * 100.0;
                     if percent >= self.memory_warning_percent
@@ -391,6 +391,10 @@ mod tests {
         let event = SystemEvent::MemoryPressure {
             used_bytes: 900_000_000,
             total_bytes: 1_000_000_000, // 90% used
+            cached_bytes: 50_000_000,
+            free_bytes: 50_000_000,
+            swap_used_bytes: 0,
+            swap_total_bytes: 0,
         };
 
         let urges = guardian.on_event(&event, &ctx);

@@ -144,7 +144,7 @@ impl ProactiveFeature for ToolSuggester {
             }
 
             // High memory → suggest freeing
-            SystemEvent::MemoryPressure { used_bytes, total_bytes } if *total_bytes > 0 => {
+            SystemEvent::MemoryPressure { used_bytes, total_bytes, .. } if *total_bytes > 0 => {
                 let percent = *used_bytes as f32 / *total_bytes as f32 * 100.0;
                 if percent > 80.0 && self.should_fire("memory_cleanup") {
                     urges.push(Urge {
