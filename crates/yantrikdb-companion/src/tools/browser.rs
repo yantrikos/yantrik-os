@@ -1311,9 +1311,15 @@ impl Tool for BrowserSeeTool {
     }
 
     fn execute(&self, _ctx: &ToolContext, args: &serde_json::Value) -> String {
-        let question = args.get("question")
+        let user_question = args.get("question")
             .and_then(|v| v.as_str())
-            .unwrap_or("Describe this webpage. List all visible interactive elements: buttons, links, forms, text fields, dropdowns. Be specific about their labels and positions on the page.");
+            .unwrap_or("Describe this webpage layout and all visible interactive elements.");
+
+        // Append coordinate instructions so vision model outputs pixel positions.
+        let question = format!(
+            "{user_question}\n\
+             List each interactive element as: description at (x, y)"
+        );
 
         // 1. Take CDP screenshot
         let (mut ws, tab) = match connect_first_tab() {
@@ -1331,7 +1337,17 @@ impl Tool for BrowserSeeTool {
             None => return "Error: no screenshot data".to_string(),
         };
 
-        // 2. Save screenshot (for reference)
+        // 2. Get viewport dimensions (for coordinate reference)
+        let viewport = cdp_send(&mut ws, "Runtime.evaluate", json!({
+            "expression": "JSON.stringify({w: window.innerWidth, h: window.innerHeight})"
+        })).ok()
+            .and_then(|r| r["result"]["value"].as_str().map(String::from))
+            .and_then(|s| serde_json::from_str::<Value>(&s).ok());
+        let (vp_w, vp_h) = viewport.as_ref()
+            .map(|v| (v["w"].as_u64().unwrap_or(1280), v["h"].as_u64().unwrap_or(720)))
+            .unwrap_or((1280, 720));
+
+        // 3. Save screenshot (for reference)
         let ts = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -1341,12 +1357,17 @@ impl Tool for BrowserSeeTool {
             let _ = std::fs::write(&img_path, &bytes);
         }
 
-        // 3. Send to vision model
+        // Append viewport size so coordinates are grounded
+        let question_with_dims = format!(
+            "{question}\nViewport: {vp_w}x{vp_h} pixels."
+        );
+
+        // 4. Send to vision model
         let payload = serde_json::json!({
             "model": self.model,
             "messages": [{
                 "role": "user",
-                "content": question,
+                "content": question_with_dims,
                 "images": [b64_data]
             }],
             "stream": false
@@ -1361,7 +1382,7 @@ impl Tool for BrowserSeeTool {
         let output = match std::process::Command::new("curl")
             .args([
                 "-fsSL",
-                "--max-time", "60",
+                "--max-time", "120",
                 "-H", "Content-Type: application/json",
                 "-d", &format!("@{payload_path}"),
                 &url,
@@ -1395,8 +1416,8 @@ impl Tool for BrowserSeeTool {
         let element_count = if elements.is_empty() { 0 } else { elements.lines().count() };
 
         // 5. Combine vision analysis + element list
-        let mut out = format!("Page: {}\nURL: {}\n\n", tab.title, tab.url);
-        out.push_str("--- Vision Analysis ---\n");
+        let mut out = format!("Page: {}\nURL: {}\nViewport: {}x{} pixels\n\n", tab.title, tab.url, vp_w, vp_h);
+        out.push_str("--- Vision Analysis (with coordinates) ---\n");
         out.push_str(vision_text);
         out.push_str("\n\n");
         out.push_str(&format!("--- Interactive Elements ({element_count}) ---\n"));
@@ -1409,8 +1430,12 @@ impl Tool for BrowserSeeTool {
                 .join("\n");
             out.push_str(&limited);
         }
-        out.push_str("\n\nUse browser_click_element or browser_type_element with the [N] number to interact.");
-        out.push_str("\nOr use browser_click_xy / browser_type_xy with pixel coordinates from the screenshot.");
+        out.push_str(&format!(
+            "\n\nTO INTERACT: Use browser_click_xy(x, y) and browser_type_xy(x, y, text) \
+             with pixel coordinates from the vision analysis above. \
+             Viewport is {vp_w}x{vp_h}. These work on ANY website.\n\
+             Alternatively, use browser_click_element(N) / browser_type_element(N, text) with the [N] numbers."
+        ));
 
         out
     }

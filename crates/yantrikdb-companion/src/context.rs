@@ -380,15 +380,19 @@ fn tool_chaining_instructions(use_native_tools: bool) -> String {
          13. RESEARCH FIRST: When you don't know how to do something, use web_search to find \
          instructions BEFORE attempting it. Read the results, plan your steps, then execute. \
          Don't guess — search, learn, then act.\n\
-         14. BROWSER VISION: Use browser_see when you need to visually understand a page — \
-         it takes a screenshot and analyzes it with vision AI. Use it for complex SPAs, \
-         dynamic UIs, or when browser_snapshot's element list isn't enough. The typical flow: \
-         browse → browser_see (to understand layout) → browser_click_element/browser_type_element \
-         (to interact) → browser_see (to verify). You can SEE the page — use your eyes!\n\
-         15. COORDINATE-BASED INTERACTION: For sites where element numbers don't work (React, \
-         Shadow DOM, dynamic UIs), use browser_click_xy and browser_type_xy with pixel coordinates \
-         from browser_see screenshots. These use real CDP mouse/keyboard events that work with \
-         ANY website. Flow: browser_see → identify coordinates → browser_click_xy/browser_type_xy.\n\n"
+         14. BROWSER INTERACTION — PREFERRED FLOW:\n\
+         a) browse(url) — navigate to the page\n\
+         b) browser_see() — take a screenshot with vision AI. The response includes pixel \
+            coordinates (x, y) for every interactive element.\n\
+         c) browser_click_xy(x, y) — click at those coordinates. Works on ANY website.\n\
+         d) browser_type_xy(x, y, text) — type text at those coordinates.\n\
+         e) browser_see() again — verify the result.\n\
+         This is the PRIMARY method. It uses real mouse/keyboard events via CDP and works \
+         with React, Shadow DOM, SPAs, and any framework. ALWAYS use coordinates from \
+         browser_see, NEVER guess coordinates.\n\
+         FALLBACK: browser_click_element(N) / browser_type_element(N, text) with [N] numbers \
+         from browser_snapshot — use ONLY for simple static HTML pages where elements are \
+         clearly numbered.\n\n"
     )
 }
 

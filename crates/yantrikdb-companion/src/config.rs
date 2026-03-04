@@ -59,6 +59,10 @@ pub struct LLMConfig {
     /// API key (required for OpenAI/Claude/DeepSeek, optional for Ollama/vLLM).
     #[serde(default)]
     pub api_key: Option<String>,
+    /// Separate model for vision tasks (browser_see). Defaults to "qwen3.5:9b".
+    /// Use a lighter model here since vision inference is compute-heavy.
+    #[serde(default)]
+    pub vision_model: Option<String>,
     /// Path to GGUF model file (for in-process inference).
     #[serde(default)]
     pub gguf_path: Option<String>,
@@ -114,6 +118,7 @@ impl Default for LLMConfig {
             api_base_url: None,
             api_model: None,
             api_key: None,
+            vision_model: None,
             gguf_path: None,
             tokenizer_path: None,
             model_dir: None,
