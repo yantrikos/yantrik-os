@@ -168,6 +168,7 @@ impl AppContext {
                 tg_config,
                 bridge.clone(),
                 ui.as_weak(),
+                voice_config.clone(),
             )))
         } else {
             None
