@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use slint::{ComponentHandle, ModelRc, SharedString, Timer, TimerMode, VecModel};
 
-use crate::app_context::AppContext;
+use crate::app_context::{self, AppContext};
 use crate::mime_dispatch::{self, FileAction};
 use crate::app_context::FileClipOp;
 use crate::{
@@ -52,6 +52,8 @@ fn wire_lock(ui: &App) {
         if let Some(ui) = ui_weak_lock.upgrade() {
             ui.set_current_screen(3);
             ui.set_lock_error("".into());
+            ui.set_lock_date_text(app_context::current_date_text().into());
+            ui.set_lock_greeting(ui.get_greeting_text());
             tracing::info!("Screen locked");
         }
     });
@@ -772,6 +774,15 @@ fn wire_notifications(ui: &App, ctx: &AppContext) {
             store.borrow_mut().mark_read(id_num);
             notifications::sync_to_ui(&store.borrow(), &ui_weak);
         }
+    });
+
+    // Clear all notifications for a specific app group
+    let store = ctx.notification_store.clone();
+    let ui_weak = ui.as_weak();
+    ui.on_notification_clear_group(move |app_name| {
+        store.borrow_mut().clear_group(&app_name.to_string());
+        notifications::sync_to_ui(&store.borrow(), &ui_weak);
+        tracing::debug!(app = %app_name, "Notification group cleared");
     });
 }
 

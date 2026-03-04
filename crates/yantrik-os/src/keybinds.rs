@@ -9,8 +9,10 @@
 //! - Super+T     → open-terminal
 //! - Super+E     → open-files
 //! - Super+S     → open-settings
-//! - Print       → screenshot (full screen)
-//! - Shift+Print → screenshot-region (select region)
+//! - Print       → screenshot (full screen, save to file)
+//! - Shift+Print → screenshot-region (select region, save to file)
+//! - Ctrl+Print  → screenshot-clipboard (full screen, copy to clipboard)
+//! - Ctrl+Shift+Print → screenshot-clipboard-region (select region, copy to clipboard)
 //! - Super+Space → open-lens (alternative)
 //! - Super+Left  → snap window to left half
 //! - Super+Right → snap window to right half
@@ -72,6 +74,16 @@ pub const DEFAULT_KEYBINDS: &[Keybind] = &[
         key: "S-Print",
         action: "screenshot-region",
         description: "Take screenshot (select region)",
+    },
+    Keybind {
+        key: "C-Print",
+        action: "screenshot-clipboard",
+        description: "Screenshot to clipboard (full screen)",
+    },
+    Keybind {
+        key: "C-S-Print",
+        action: "screenshot-clipboard-region",
+        description: "Screenshot to clipboard (select region)",
     },
     Keybind {
         key: "W-S-q",

@@ -1,8 +1,10 @@
 //! Screenshot wire module — captures screen via grim/slurp and shows a notification.
 //!
 //! Called from the keybind handler in `system_poll.rs`:
-//! - Print       -> `take_screenshot(FullScreen)`
-//! - Shift+Print -> `take_screenshot(Region)`
+//! - Print         -> `take_screenshot(FullScreen)`       (save to file)
+//! - Shift+Print   -> `take_screenshot(Region)`           (save to file)
+//! - Ctrl+Print    -> `take_screenshot(ClipboardFull)`    (copy to clipboard)
+//! - Ctrl+S+Print  -> `take_screenshot(ClipboardRegion)`  (copy to clipboard)
 
 use crate::app_context::AppContext;
 use crate::App;
@@ -21,23 +23,34 @@ pub fn wire(_ui: &App, _ctx: &AppContext) {
 ///
 /// This is called from the keybind handler (`system_poll::handle_keybind`).
 /// Runs grim/slurp on a background thread to avoid blocking the UI event loop.
+///
+/// For file modes, the toast shows the saved filename.
+/// For clipboard modes, the toast shows "Copied to clipboard".
 pub fn take_screenshot(ui_weak: slint::Weak<App>, mode: yantrik_os::screenshot::CaptureMode) {
     std::thread::spawn(move || {
         match yantrik_os::screenshot::capture(mode) {
-            Ok(path) => {
-                // Extract just the filename for the notification text
-                let filename = std::path::Path::new(&path)
-                    .file_name()
-                    .map(|f| f.to_string_lossy().to_string())
-                    .unwrap_or_else(|| path.clone());
+            Ok(msg) => {
+                // Clipboard modes return "Copied to clipboard";
+                // file modes return the absolute path.
+                let toast_body = if msg.starts_with('/') {
+                    // File path — extract just the filename for a cleaner toast
+                    let filename = std::path::Path::new(&msg)
+                        .file_name()
+                        .map(|f| f.to_string_lossy().to_string())
+                        .unwrap_or_else(|| msg.clone());
+                    format!("Saved: {filename}")
+                } else {
+                    // Clipboard or other message — show as-is
+                    msg.clone()
+                };
 
-                tracing::info!(path = %path, "Screenshot captured");
+                tracing::info!(result = %msg, "Screenshot captured");
 
                 let _ = slint::invoke_from_event_loop(move || {
                     super::toast::push_toast(
                         &ui_weak,
                         "Screenshot",
-                        &format!("Saved: {filename}"),
+                        &toast_body,
                         "",
                         0, // low urgency
                     );

@@ -59,7 +59,8 @@ pub struct AppContext {
     pub browser_filter: Rc<RefCell<String>>,
     pub summary_timer: Rc<RefCell<Option<Timer>>>,
     pub telegram: Option<Arc<crate::telegram::TelegramHandle>>,
-    pub terminal: Rc<RefCell<Option<TerminalHandle>>>,
+    pub terminals: Rc<RefCell<Vec<TerminalHandle>>>,
+    pub terminal_active: Rc<RefCell<usize>>,
     pub user_name: String,
 }
 
@@ -232,7 +233,7 @@ impl AppContext {
             scorer: Rc::new(RefCell::new(features::UrgencyScorer::new())),
             system_snapshot: Rc::new(RefCell::new(yantrik_os::SystemSnapshot::default())),
             accumulator: Rc::new(RefCell::new(ActivityAccumulator::new())),
-            notification_store: Rc::new(RefCell::new(notifications::NotificationStore::new())),
+            notification_store: Rc::new(RefCell::new(notifications::NotificationStore::load())),
             voice_config,
             image_viewer_state: Rc::new(RefCell::new(ImageViewerState::default())),
             editor_file_path: Rc::new(RefCell::new(String::new())),
@@ -245,7 +246,8 @@ impl AppContext {
             browser_filter: Rc::new(RefCell::new(String::new())),
             summary_timer: Rc::new(RefCell::new(None)),
             telegram,
-            terminal: Rc::new(RefCell::new(None)),
+            terminals: Rc::new(RefCell::new(Vec::new())),
+            terminal_active: Rc::new(RefCell::new(0)),
             user_name,
         }
     }
@@ -275,6 +277,46 @@ pub fn time_of_day_greeting() -> String {
         18..=21 => "Good evening".to_string(),
         _ => "Good night".to_string(),
     }
+}
+
+/// Get current date as a human-readable string, e.g. "Tuesday, March 4".
+pub fn current_date_text() -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+
+    let days_since_epoch = (now / 86400) as i64;
+
+    // Day of week: 0=Thu, 1=Fri, 2=Sat, 3=Sun, 4=Mon, 5=Tue, 6=Wed
+    let dow_index = ((days_since_epoch % 7 + 7) % 7) as usize;
+    let day_names = ["Thursday", "Friday", "Saturday", "Sunday", "Monday", "Tuesday", "Wednesday"];
+    let day_name = day_names[dow_index];
+
+    let (_year, month, day) = days_to_civil(days_since_epoch);
+
+    let month_names = [
+        "January", "February", "March", "April", "May", "June",
+        "July", "August", "September", "October", "November", "December",
+    ];
+    let month_name = month_names[(month - 1) as usize];
+
+    format!("{}, {} {}", day_name, month_name, day)
+}
+
+/// Convert days since Unix epoch to (year, month, day).
+fn days_to_civil(days: i64) -> (i64, u32, u32) {
+    let z = days + 719468;
+    let era = if z >= 0 { z } else { z - 146096 } / 146097;
+    let doe = (z - era * 146097) as u32;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    (y, m, d)
 }
 
 /// Load community theme overrides from ~/.config/yantrik/theme-override.yaml.

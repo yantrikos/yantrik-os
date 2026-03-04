@@ -1,8 +1,15 @@
 // Terminal — AI-native terminal emulator.
 // Screen 14. Opens from dock "Terminal" icon.
 // PTY-backed with vt100 emulation; AI watches output for errors.
+// Supports up to 8 tabs, each with an independent PTY session.
 
 import { Theme } from "theme.slint";
+
+export struct TerminalTabData {
+    title: string,
+    is-active: bool,
+    is-alive: bool,
+}
 
 export component TerminalScreen inherits Rectangle {
     background: #0c0c10;
@@ -17,11 +24,19 @@ export component TerminalScreen inherits Rectangle {
     in property <string> ai-suggestion: "";
     in property <bool> has-suggestion: false;
 
+    // Tab state
+    in property <int> tab-count: 1;
+    in property <int> active-tab: 0;
+    in property <[TerminalTabData]> tabs: [];
+
     // Callbacks to Rust
     callback terminal-key-pressed(KeyEvent) -> EventResult;
     callback request-ai-help();
     callback dismiss-suggestion();
     callback restart-terminal();
+    callback switch-tab(int);
+    callback new-tab();
+    callback close-tab(int);
 
     VerticalLayout {
         spacing: 0px;
@@ -93,6 +108,118 @@ export component TerminalScreen inherits Rectangle {
         }
 
         // Separator
+        Rectangle { height: 1px; background: Theme.separator; }
+
+        // ── Tab bar ──
+        if root.tab-count > 0 : Rectangle {
+            height: 30px;
+            background: Theme.bg-surface;
+
+            HorizontalLayout {
+                padding-left: 4px;
+                padding-right: 4px;
+                spacing: 0px;
+                alignment: start;
+
+                // Tab items
+                for tab[idx] in root.tabs : TouchArea {
+                    width: 130px;
+                    height: 30px;
+                    clicked => { root.switch-tab(idx); }
+
+                    Rectangle {
+                        width: 130px;
+                        height: 30px;
+                        background: tab.is-active ? #0c0c10 : (parent.has-hover ? Theme.hover-fill : Theme.bg-surface);
+
+                        // Active tab top accent line
+                        if tab.is-active : Rectangle {
+                            x: 0px;
+                            y: 0px;
+                            width: parent.width;
+                            height: 2px;
+                            background: Theme.cyan;
+                        }
+
+                        HorizontalLayout {
+                            padding-left: 10px;
+                            padding-right: 4px;
+                            spacing: 4px;
+                            alignment: space-between;
+
+                            HorizontalLayout {
+                                spacing: 5px;
+                                alignment: start;
+
+                                // Alive indicator dot
+                                Text {
+                                    text: tab.is-alive ? "●" : "○";
+                                    color: tab.is-alive ? (tab.is-active ? Theme.cyan : Theme.text-dim) : Theme.text-dim;
+                                    font-size: 7px;
+                                    vertical-alignment: center;
+                                }
+
+                                // Tab title
+                                Text {
+                                    text: tab.title;
+                                    color: tab.is-active ? Theme.text-primary : Theme.text-secondary;
+                                    font-size: 12px;
+                                    font-weight: tab.is-active ? 600 : 400;
+                                    vertical-alignment: center;
+                                    overflow: elide;
+                                }
+                            }
+
+                            // Close button (x)
+                            close-ta := TouchArea {
+                                width: 18px;
+                                height: 18px;
+                                clicked => { root.close-tab(idx); }
+
+                                Rectangle {
+                                    width: 18px;
+                                    height: 18px;
+                                    border-radius: 4px;
+                                    background: close-ta.has-hover ? Theme.hover-fill-strong : transparent;
+
+                                    Text {
+                                        text: "×";
+                                        color: close-ta.has-hover ? Theme.text-primary : Theme.text-dim;
+                                        font-size: 13px;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // New tab button (+)
+                if root.tab-count < 8 : TouchArea {
+                    width: 28px;
+                    height: 30px;
+                    clicked => { root.new-tab(); }
+
+                    Rectangle {
+                        width: 28px;
+                        height: 30px;
+                        background: parent.has-hover ? Theme.hover-fill : transparent;
+
+                        Text {
+                            text: "+";
+                            color: Theme.text-dim;
+                            font-size: 16px;
+                            font-weight: 400;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Tab bar separator
         Rectangle { height: 1px; background: Theme.separator; }
 
         // ── Terminal output area ──

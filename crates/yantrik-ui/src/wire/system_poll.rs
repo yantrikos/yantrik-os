@@ -10,7 +10,7 @@ use slint::{ComponentHandle, Timer, TimerMode};
 
 use slint::{ModelRc, VecModel};
 
-use crate::app_context::AppContext;
+use crate::app_context::{self, AppContext};
 use crate::{cards, features, lock, system_context, windows, App, DockItem, ProcessData, WindowItem};
 
 /// Maximum number of data points in the chart history ring buffer.
@@ -183,6 +183,8 @@ pub fn wire(ui: &App, ctx: &AppContext) {
             {
                 ui.set_current_screen(3);
                 ui.set_lock_error("".into());
+                ui.set_lock_date_text(app_context::current_date_text().into());
+                ui.set_lock_greeting(ui.get_greeting_text());
                 tracing::info!(idle_secs = snap.idle_seconds, "Auto-locked due to idle");
             }
         }
@@ -342,6 +344,8 @@ fn handle_keybind(ui: &App, action: &str) {
         "lock-screen" => {
             ui.set_current_screen(3);
             ui.set_lock_error("".into());
+            ui.set_lock_date_text(app_context::current_date_text().into());
+            ui.set_lock_greeting(ui.get_greeting_text());
             tracing::info!("Screen locked via hotkey");
         }
         "open-terminal" => {
@@ -365,6 +369,18 @@ fn handle_keybind(ui: &App, action: &str) {
             super::screenshot::take_screenshot(
                 ui.as_weak(),
                 yantrik_os::screenshot::CaptureMode::Region,
+            );
+        }
+        "screenshot-clipboard" => {
+            super::screenshot::take_screenshot(
+                ui.as_weak(),
+                yantrik_os::screenshot::CaptureMode::ClipboardFull,
+            );
+        }
+        "screenshot-clipboard-region" => {
+            super::screenshot::take_screenshot(
+                ui.as_weak(),
+                yantrik_os::screenshot::CaptureMode::ClipboardRegion,
             );
         }
         "power-menu" => {

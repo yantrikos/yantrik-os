@@ -1,5 +1,6 @@
 // Notification Center — persistent notification history.
 // Screen 9. All captured D-Bus notifications with urgency, app name, time.
+// Grouped by app-name with collapsible sections, unread dots, per-group clear.
 
 import { Theme } from "theme.slint";
 
@@ -11,6 +12,10 @@ export struct NotificationData {
     urgency: int,  // 0=low, 1=normal, 2=critical
     time-ago: string,
     is-read: bool,
+    // Grouping fields
+    is-group-header: bool,
+    group-name: string,
+    group-count: int,
 }
 
 export component NotificationCenter inherits Rectangle {
@@ -23,6 +28,7 @@ export component NotificationCenter inherits Rectangle {
     callback clear-all();
     callback mark-all-read();
     callback notification-tapped(string);
+    callback clear-group(string);
 
     VerticalLayout {
         spacing: 0px;
@@ -125,7 +131,7 @@ export component NotificationCenter inherits Rectangle {
 
             VerticalLayout {
                 padding: 12px;
-                spacing: 8px;
+                spacing: 6px;
                 alignment: start;
 
                 // Empty state
@@ -148,72 +154,159 @@ export component NotificationCenter inherits Rectangle {
                     }
                 }
 
-                // Notification cards
-                for notif in root.notifications : Rectangle {
-                    background: notif.is-read ? Theme.bg-card : Theme.bg-elevated;
-                    border-radius: Theme.radius-card;
-                    border-width: notif.urgency == 2 ? 1px : 0px;
-                    border-color: notif.urgency == 2 ? Theme.color-emotional : transparent;
-                    height: notif-content.preferred-height;
+                // Notification cards (grouped with headers)
+                for notif[idx] in root.notifications : VerticalLayout {
+                    spacing: 0px;
 
-                    TouchArea {
-                        clicked => { root.notification-tapped(notif.id); }
+                    // Group headers get a distinct style
+                    if notif.is-group-header : Rectangle {
+                        height: group-header-layout.preferred-height;
+                        background: transparent;
+
+                        group-header-layout := VerticalLayout {
+                            spacing: 0px;
+
+                            HorizontalLayout {
+                                padding-top: idx > 0 ? 10px : 4px;
+                                padding-bottom: 6px;
+                                padding-left: 4px;
+                                padding-right: 4px;
+                                spacing: 8px;
+                                alignment: start;
+
+                                // App icon placeholder (first letter)
+                                Rectangle {
+                                    width: 28px;
+                                    height: 28px;
+                                    border-radius: 7px;
+                                    background: Theme.bg-elevated;
+
+                                    Text {
+                                        text: notif.group-name;
+                                        color: Theme.cyan;
+                                        font-size: 11px;
+                                        font-weight: 700;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                        overflow: elide;
+                                    }
+                                }
+
+                                // Group name
+                                Text {
+                                    text: notif.group-name;
+                                    color: Theme.text-primary;
+                                    font-size: 13px;
+                                    font-weight: 600;
+                                    letter-spacing: 0.5px;
+                                    vertical-alignment: center;
+                                    horizontal-stretch: 1;
+                                }
+
+                                // Count badge
+                                Rectangle {
+                                    width: max(20px, group-count-text.preferred-width + 10px);
+                                    height: 20px;
+                                    border-radius: 10px;
+                                    background: Theme.bg-elevated;
+
+                                    group-count-text := Text {
+                                        text: notif.group-count;
+                                        color: Theme.text-dim;
+                                        font-size: 10px;
+                                        font-weight: 600;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+                                }
+
+                                // Per-group clear button
+                                TouchArea {
+                                    width: 28px;
+                                    height: 28px;
+                                    clicked => { root.clear-group(notif.group-name); }
+                                    Rectangle {
+                                        width: 100%; height: 100%;
+                                        border-radius: 7px;
+                                        background: parent.has-hover ? Theme.hover-fill : transparent;
+                                        Text {
+                                            text: "✕";
+                                            color: Theme.text-dim;
+                                            font-size: 12px;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Separator line
+                            Rectangle {
+                                height: 1px;
+                                background: Theme.separator;
+                            }
+                        }
                     }
 
-                    notif-content := VerticalLayout {
-                        padding: 12px;
-                        spacing: 4px;
+                    // Regular notification card
+                    if !notif.is-group-header : Rectangle {
+                        background: notif.is-read ? Theme.bg-card : Theme.bg-elevated;
+                        border-radius: Theme.radius-card;
+                        border-width: notif.urgency == 2 ? 1px : 0px;
+                        border-color: notif.urgency == 2 ? Theme.color-emotional : transparent;
+                        height: notif-content.preferred-height;
 
-                        HorizontalLayout {
-                            spacing: 8px;
+                        TouchArea {
+                            clicked => { root.notification-tapped(notif.id); }
+                        }
 
-                            // Urgency dot
-                            Rectangle {
-                                width: 8px;
-                                height: 8px;
-                                y: 4px;
-                                border-radius: 4px;
-                                background: notif.urgency == 2 ? Theme.color-emotional :
-                                            notif.urgency == 0 ? Theme.text-dim :
-                                            Theme.amber;
-                                opacity: notif.is-read ? 0.3 : 1.0;
+                        notif-content := VerticalLayout {
+                            padding: 12px;
+                            spacing: 4px;
+
+                            HorizontalLayout {
+                                spacing: 8px;
+
+                                // Unread indicator dot
+                                Rectangle {
+                                    width: 8px;
+                                    height: 8px;
+                                    y: 4px;
+                                    border-radius: 4px;
+                                    background: !notif.is-read ?
+                                        (notif.urgency == 2 ? Theme.color-emotional :
+                                         notif.urgency == 0 ? Theme.text-dim :
+                                         Theme.amber) :
+                                        transparent;
+                                }
+
+                                // Summary
+                                Text {
+                                    text: notif.summary;
+                                    color: notif.is-read ? Theme.text-secondary : Theme.text-primary;
+                                    font-size: Theme.font-body;
+                                    font-weight: notif.is-read ? 400 : 500;
+                                    horizontal-stretch: 1;
+                                    vertical-alignment: center;
+                                    overflow: elide;
+                                }
+
+                                // Time ago
+                                Text {
+                                    text: notif.time-ago;
+                                    color: Theme.text-dim;
+                                    font-size: 10px;
+                                    vertical-alignment: center;
+                                }
                             }
 
-                            // App name
-                            Text {
-                                text: notif.app-name;
-                                color: Theme.text-secondary;
-                                font-size: 11px;
-                                font-weight: 600;
-                                letter-spacing: 1px;
-                                vertical-alignment: center;
-                                horizontal-stretch: 1;
-                            }
-
-                            // Time ago
-                            Text {
-                                text: notif.time-ago;
+                            // Body (only if different from summary)
+                            if notif.body != "" && notif.body != notif.summary : Text {
+                                text: notif.body;
                                 color: Theme.text-dim;
-                                font-size: 10px;
-                                vertical-alignment: center;
+                                font-size: Theme.font-small;
+                                wrap: word-wrap;
                             }
-                        }
-
-                        // Summary
-                        Text {
-                            text: notif.summary;
-                            color: notif.is-read ? Theme.text-secondary : Theme.text-primary;
-                            font-size: Theme.font-body;
-                            font-weight: notif.is-read ? 400 : 500;
-                            wrap: word-wrap;
-                        }
-
-                        // Body (only if different from summary)
-                        if notif.body != "" && notif.body != notif.summary : Text {
-                            text: notif.body;
-                            color: Theme.text-dim;
-                            font-size: Theme.font-small;
-                            wrap: word-wrap;
                         }
                     }
                 }

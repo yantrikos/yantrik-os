@@ -14,7 +14,7 @@ use crate::filebrowser;
 use crate::notifications;
 use crate::{
     App, BondData, BreadcrumbSegment, FileEntry, OpinionData, ProcessData, SharedRefData,
-    UrgeCardData,
+    TerminalTabData, UrgeCardData,
 };
 
 /// Wire on_navigate callback.
@@ -27,7 +27,8 @@ pub fn wire(ui: &App, ctx: &AppContext) {
     let browser_show_hidden = ctx.browser_show_hidden.clone();
     let notification_store = ctx.notification_store.clone();
     let system_snapshot = ctx.system_snapshot.clone();
-    let terminal = ctx.terminal.clone();
+    let terminals = ctx.terminals.clone();
+    let terminal_active = ctx.terminal_active.clone();
     let term_poll_timer: Rc<RefCell<Option<Timer>>> = Rc::new(RefCell::new(None));
 
     ui.on_navigate(move |screen| {
@@ -194,16 +195,17 @@ pub fn wire(ui: &App, ctx: &AppContext) {
                     ui.set_sys_top_processes(ModelRc::new(VecModel::from(procs)));
                 }
             }
-            // Terminal screen — spawn PTY if needed, start poll timer
+            // Terminal screen — spawn first tab if no tabs exist, start poll timer
             14 => {
-                // Spawn terminal if not already running
+                // Spawn first terminal tab if none exist
                 {
-                    let mut guard = terminal.borrow_mut();
-                    if guard.is_none() || !guard.as_ref().map_or(false, |t| t.is_alive()) {
+                    let mut tabs = terminals.borrow_mut();
+                    if tabs.is_empty() {
                         match crate::terminal::TerminalHandle::spawn(24, 80) {
                             Ok(th) => {
-                                *guard = Some(th);
-                                tracing::info!("Terminal spawned");
+                                tabs.push(th);
+                                *terminal_active.borrow_mut() = 0;
+                                tracing::info!("Terminal tab 1 spawned");
                             }
                             Err(e) => {
                                 tracing::error!(error = %e, "Failed to spawn terminal");
@@ -212,11 +214,30 @@ pub fn wire(ui: &App, ctx: &AppContext) {
                     }
                 }
 
-                // Start the output poll timer
+                // Sync tab UI state and start poll timer
                 if let Some(ui) = ui_weak.upgrade() {
+                    {
+                        let tabs = terminals.borrow();
+                        let active = *terminal_active.borrow();
+                        // Build tab data for UI
+                        let tab_data: Vec<TerminalTabData> = tabs
+                            .iter()
+                            .enumerate()
+                            .map(|(i, th)| TerminalTabData {
+                                title: slint::format!("Shell {}", i + 1),
+                                is_active: i == active,
+                                is_alive: th.is_alive(),
+                            })
+                            .collect();
+                        ui.set_terminal_tab_count(tabs.len() as i32);
+                        ui.set_terminal_active_tab(active as i32);
+                        ui.set_terminal_tabs(ModelRc::new(VecModel::from(tab_data)));
+                    }
+
                     super::terminal::start_poll_timer(
                         &ui,
-                        &terminal,
+                        &terminals,
+                        &terminal_active,
                         &bridge,
                         &term_poll_timer,
                     );
