@@ -361,12 +361,88 @@ impl Tool for LifeSearchTool {
     }
 }
 
+// ── Recall Preferences Tool ──────────────────────────────────────────────────
+
+/// Query memory for user preferences filtered by domain/category.
+pub struct RecallPreferencesTool;
+
+impl Tool for RecallPreferencesTool {
+    fn name(&self) -> &'static str { "recall_preferences" }
+    fn permission(&self) -> PermissionLevel { PermissionLevel::Safe }
+    fn category(&self) -> &'static str { "life_assistant" }
+
+    fn definition(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "function",
+            "function": {
+                "name": "recall_preferences",
+                "description": "Recall the user's preferences and past choices for a specific category. Use this before searching to personalize results. Categories: food, travel, shopping, work, health, hobby, location, general.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "category": {
+                            "type": "string",
+                            "description": "Preference category to search (e.g., 'food', 'travel', 'shopping')"
+                        },
+                        "query": {
+                            "type": "string",
+                            "description": "Optional refinement query (e.g., 'cuisine type', 'budget range')"
+                        }
+                    },
+                    "required": ["category"]
+                }
+            }
+        })
+    }
+
+    fn execute(&self, ctx: &ToolContext, args: &serde_json::Value) -> String {
+        let category = args.get("category").and_then(|v| v.as_str()).unwrap_or("general");
+        let query_refinement = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
+
+        // Build search query combining category + refinement
+        let search_query = if query_refinement.is_empty() {
+            format!("{} preferences", category)
+        } else {
+            format!("{} {} preferences", category, query_refinement)
+        };
+
+        // Search memory with broader limit
+        let results = match ctx.db.recall_text(&search_query, 15) {
+            Ok(r) => r,
+            Err(e) => return format!("Preference recall failed: {e}"),
+        };
+
+        // Filter to preference-related domains
+        let preference_domains = [
+            "preference", "identity", "location", "food", "travel",
+            "shopping", "work", "health", "hobby", "finance", category,
+        ];
+
+        let relevant: Vec<_> = results.iter()
+            .filter(|r| preference_domains.contains(&r.domain.as_str()))
+            .take(8)
+            .collect();
+
+        if relevant.is_empty() {
+            return format!("No preferences found for '{}'. The user hasn't shared any {} preferences yet.", category, category);
+        }
+
+        let mut output = format!("User preferences for '{}':\n", category);
+        for r in &relevant {
+            let confidence = (r.scores.similarity * 100.0).round() / 100.0;
+            output.push_str(&format!("- {} (domain: {}, match: {:.0}%)\n", r.text, r.domain, confidence * 100.0));
+        }
+        output
+    }
+}
+
 // ── Registration ────────────────────────────────────────────────────────────
 
 /// Register all life assistant tools with the tool registry.
-pub fn register(reg: &mut ToolRegistry) {
+pub fn register(reg: &mut ToolRegistry, ollama_base: &str, model: &str) {
     reg.register(Box::new(LifeSearchTool));
-    orchestrator::register(reg);
+    reg.register(Box::new(RecallPreferencesTool));
+    orchestrator::register(reg, ollama_base, model);
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────────

@@ -391,7 +391,16 @@ pub fn build_registry(config: &CompanionConfig) -> ToolRegistry {
     memory_hygiene::register(&mut reg);
     clipboard::register(&mut reg);
     automation::register(&mut reg);
-    crate::life_assistant::register(&mut reg);
+    // Life assistant tools — need Ollama for LLM extraction
+    if config.llm.is_api_backend() {
+        let api_url = config.llm.resolve_api_base_url().unwrap_or_default();
+        let la_ollama = api_url.trim_end_matches("/v1").trim_end_matches('/').to_string();
+        let la_model = config.llm.api_model.as_deref().unwrap_or("qwen3.5:9b");
+        crate::life_assistant::register(&mut reg, &la_ollama, la_model);
+    } else {
+        // Fallback: register with empty ollama (heuristic-only extraction)
+        crate::life_assistant::register(&mut reg, "", "");
+    }
 
     // Conditionally register Home Assistant tools
     let ha = &config.home_assistant;

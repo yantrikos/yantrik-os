@@ -58,6 +58,9 @@ RULES:
 - Skip tool calls, memory searches, system operations — only extract from conversation content.
 - Skip greetings-only messages, but DO extract facts even from short messages like "I'm in Dallas" or "I'm 30".
 - NEVER extract system events: app starts/stops, CPU/memory/battery/network/disk changes, file operations, process lists. These are logged separately.
+- When the user expresses preferences (likes/dislikes, favorite things, preferred styles, dietary restrictions, budget ranges), extract with domain "preference" and importance >= 0.7.
+- Preference examples: "I love Thai food" → domain: preference, importance: 0.8. "I prefer window seats" → domain: preference, importance: 0.7.
+- When user confirms a search choice ("I'll go with restaurant X", "book that hotel"), extract with domain "preference", importance: 0.7.
 - Max 5 memories per exchange."#;
 
 /// Extract and learn from a conversation exchange.

@@ -47,10 +47,12 @@ pub const CORE_TOOLS: &[&str] = &[
     "browser_see",
     // Web search (lightweight, no browser needed)
     "web_search",
-    // Life assistant (real-world search intent parsing)
-    "life_search",
+    // Life assistant (real-world search + ranking + preferences)
+    "life_search", "rank_results", "recall_preferences",
     // Browser lifecycle (cleanup zombie processes)
     "browser_cleanup", "browser_status",
+    // User fact persistence
+    "save_user_fact",
     // Utility
     "calculator",
 ];
