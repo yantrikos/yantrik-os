@@ -8,6 +8,8 @@
 
 pub mod events;
 pub mod observer;
+pub mod screenshot;
+pub mod dbus_notif;
 
 mod battery;
 mod files;

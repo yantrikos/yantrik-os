@@ -9,7 +9,8 @@
 //! - Super+T     → open-terminal
 //! - Super+E     → open-files
 //! - Super+S     → open-settings
-//! - Print       → screenshot
+//! - Print       → screenshot (full screen)
+//! - Shift+Print → screenshot-region (select region)
 //! - Super+Space → open-lens (alternative)
 
 use crossbeam_channel::Sender;
@@ -61,7 +62,12 @@ pub const DEFAULT_KEYBINDS: &[Keybind] = &[
     Keybind {
         key: "Print",
         action: "screenshot",
-        description: "Take screenshot",
+        description: "Take screenshot (full screen)",
+    },
+    Keybind {
+        key: "S-Print",
+        action: "screenshot-region",
+        description: "Take screenshot (select region)",
     },
     Keybind {
         key: "W-S-q",

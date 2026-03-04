@@ -1,7 +1,9 @@
 // System Dashboard — resource visualization.
 // Screen 10. CPU, RAM, battery, network, top processes.
+// Real-time CPU and memory charts with 60-second history.
 
 import { Theme } from "theme.slint";
+import { LineChart } from "components/line_chart.slint";
 
 export struct ProcessData {
     name: string,
@@ -22,6 +24,10 @@ export component SystemDashboard inherits Rectangle {
     in property <int> wifi-signal: 0;
     in property <string> uptime-text: "";
     in property <[ProcessData]> top-processes: [];
+
+    // Chart history (last 60 data points, 0.0-1.0 normalized)
+    in property <[float]> cpu-history: [];
+    in property <[float]> memory-history: [];
 
     callback back-pressed();
 
@@ -161,6 +167,38 @@ export component SystemDashboard inherits Rectangle {
                             }
                         }
                     }
+                }
+
+                // ── Resource graphs section ──
+                Text {
+                    text: "HISTORY (60s)";
+                    color: Theme.text-dim;
+                    font-size: 11px;
+                    letter-spacing: 2px;
+                }
+
+                LineChart {
+                    title: "CPU";
+                    values: root.cpu-history;
+                    current-text: Math.round(root.cpu-usage) + "%";
+                    accent-color: root.cpu-usage > 80 ? Theme.color-emotional :
+                                  root.cpu-usage > 50 ? Theme.amber : Theme.cyan;
+                    accent-glow: root.cpu-usage > 80 ? #e86b6b40 :
+                                 root.cpu-usage > 50 ? Theme.amber-glow : Theme.cyan-glow;
+                    height: 140px;
+                    width: 100%;
+                }
+
+                LineChart {
+                    title: "MEMORY";
+                    values: root.memory-history;
+                    current-text: root.memory-text;
+                    accent-color: root.memory-usage > 85 ? Theme.color-emotional :
+                                  root.memory-usage > 60 ? Theme.amber : Theme.cyan;
+                    accent-glow: root.memory-usage > 85 ? #e86b6b40 :
+                                 root.memory-usage > 60 ? Theme.amber-glow : Theme.cyan-glow;
+                    height: 140px;
+                    width: 100%;
                 }
 
                 // ── Status section ──

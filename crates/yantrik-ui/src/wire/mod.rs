@@ -16,6 +16,7 @@ mod lens;
 pub mod media_player;
 mod navigate;
 mod power;
+pub mod screenshot;
 pub mod settings;
 mod system_poll;
 pub mod text_editor;
@@ -47,5 +48,6 @@ pub fn wire_all(ui: &App, ctx: &AppContext) {
     media_player::wire(ui, ctx);
     terminal::wire(ui, ctx);
     notes::wire(ui, ctx);
+    screenshot::wire(ui, ctx);
     callbacks::wire(ui, ctx);
 }

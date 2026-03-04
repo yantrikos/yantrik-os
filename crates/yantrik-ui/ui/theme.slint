@@ -2,9 +2,68 @@
 // A sci-fi neural aesthetic: the companion's mind visualized.
 // Supports dark (default) and light modes via ThemeMode.dark toggle.
 // Community themes can override key tokens via ThemeOverrides global.
+// Accent color presets via AccentPreset global (index-based).
 
 export global ThemeMode {
     in-out property <bool> dark: true;
+}
+
+// Accent color presets — index selects which accent palette is active.
+// 0 = cyan (default), 1 = amber, 2 = purple, 3 = green, 4 = pink
+export global AccentPreset {
+    in-out property <int> index: 0;
+
+    // Resolved accent colors — reactive to index + dark mode.
+    // Primary accent
+    out property <color> accent:
+        index == 0 ? (ThemeMode.dark ? #5ac8d4 : #1a8a94)   // cyan
+      : index == 1 ? (ThemeMode.dark ? #e8b44c : #9a7020)   // amber
+      : index == 2 ? (ThemeMode.dark ? #b484e0 : #7840b0)   // purple
+      : index == 3 ? (ThemeMode.dark ? #6cd480 : #2a8a3a)   // green
+      :               (ThemeMode.dark ? #e87898 : #c04068);  // pink
+
+    out property <color> accent-light:
+        index == 0 ? (ThemeMode.dark ? #7ee0e8 : #40a8b4)
+      : index == 1 ? (ThemeMode.dark ? #f0cc78 : #b88838)
+      : index == 2 ? (ThemeMode.dark ? #cca0f0 : #9060c8)
+      : index == 3 ? (ThemeMode.dark ? #90e8a0 : #48a858)
+      :               (ThemeMode.dark ? #f098b4 : #d06080);
+
+    out property <color> accent-dim:
+        index == 0 ? (ThemeMode.dark ? #3a8a94 : #80c8d0)
+      : index == 1 ? (ThemeMode.dark ? #a07a30 : #c8a860)
+      : index == 2 ? (ThemeMode.dark ? #7a50a0 : #b090d0)
+      : index == 3 ? (ThemeMode.dark ? #3a7a48 : #80c090)
+      :               (ThemeMode.dark ? #a04868 : #d898b0);
+
+    out property <color> accent-glow:
+        index == 0 ? (ThemeMode.dark ? #5ac8d450 : #5ac8d430)
+      : index == 1 ? (ThemeMode.dark ? #e8b44c50 : #e8b44c30)
+      : index == 2 ? (ThemeMode.dark ? #b484e050 : #b484e030)
+      : index == 3 ? (ThemeMode.dark ? #6cd48050 : #6cd48030)
+      :               (ThemeMode.dark ? #e8789850 : #e8789830);
+
+    out property <color> accent-glow-strong:
+        index == 0 ? (ThemeMode.dark ? #5ac8d480 : #5ac8d450)
+      : index == 1 ? (ThemeMode.dark ? #e8b44c80 : #e8b44c50)
+      : index == 2 ? (ThemeMode.dark ? #b484e080 : #b484e050)
+      : index == 3 ? (ThemeMode.dark ? #6cd48080 : #6cd48050)
+      :               (ThemeMode.dark ? #e8789880 : #e8789850);
+
+    out property <color> tint:
+        index == 0 ? (ThemeMode.dark ? #5ac8d420 : #1a8a9a18)
+      : index == 1 ? (ThemeMode.dark ? #e8b44c20 : #9a702018)
+      : index == 2 ? (ThemeMode.dark ? #b484e020 : #7840b018)
+      : index == 3 ? (ThemeMode.dark ? #6cd48020 : #2a8a3a18)
+      :               (ThemeMode.dark ? #e8789820 : #c0406818);
+
+    // Label for current accent (for settings display)
+    out property <string> label:
+        index == 0 ? "Cyan"
+      : index == 1 ? "Amber"
+      : index == 2 ? "Purple"
+      : index == 3 ? "Green"
+      :              "Pink";
 }
 
 // Community theme overrides — set from ~/.config/yantrik/theme-override.yaml.
@@ -60,6 +119,15 @@ export global Theme {
     out property <color> holo-blue-glow:  ThemeMode.dark ? #4ab8f050 : #4ab8f030;
     out property <color> holo-core:       ThemeMode.dark ? #80e0ff : #40b0d0;
     out property <color> holo-edge:       ThemeMode.dark ? #2060a040 : #2060a020;
+
+    // Accent palette — resolved from AccentPreset global.
+    // Components can use Theme.accent instead of hardcoded cyan for accent-aware styling.
+    out property <color> accent:             AccentPreset.accent;
+    out property <color> accent-light:       AccentPreset.accent-light;
+    out property <color> accent-dim:         AccentPreset.accent-dim;
+    out property <color> accent-glow:        AccentPreset.accent-glow;
+    out property <color> accent-glow-strong: AccentPreset.accent-glow-strong;
+    out property <color> tint-accent:        AccentPreset.tint;
 
     // Instinct colors
     out property <color> color-pattern:   ThemeMode.dark ? #c48bd4 : #9040a0;

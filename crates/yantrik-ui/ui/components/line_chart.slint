@@ -1,0 +1,134 @@
+// LineChart — reusable real-time chart component.
+// Renders a series of data points as a filled area chart with a glowing top edge.
+// Uses positioned rectangles (one per data point) since Slint doesn't support
+// dynamic Path construction from model data.
+//
+// Usage:
+//   LineChart {
+//       title: "CPU";
+//       values: [...];  // 0.0-1.0 normalized, last 60 points
+//       current-text: "42%";
+//       accent-color: Theme.cyan;
+//   }
+
+import { Theme } from "../theme.slint";
+
+export component LineChart inherits Rectangle {
+    in property <string> title: "CPU";
+    in property <[float]> values: [];
+    in property <string> current-text: "0%";
+    in property <color> accent-color: Theme.cyan;
+    in property <color> accent-glow: Theme.cyan-glow;
+
+    // Chart dimensions
+    property <length> chart-left: 0px;
+    property <length> chart-top: 44px;
+    property <length> chart-width: root.width;
+    property <length> chart-height: root.height - 44px - 8px;
+
+    min-height: 140px;
+    border-radius: Theme.radius-card;
+    background: Theme.bg-card;
+    clip: true;
+
+    // ── Header row: title + current value ──
+    HorizontalLayout {
+        x: 14px;
+        y: 10px;
+        width: root.width - 28px;
+        height: 28px;
+        alignment: space-between;
+
+        Text {
+            text: root.title;
+            color: Theme.text-secondary;
+            font-size: 12px;
+            letter-spacing: 1.5px;
+            vertical-alignment: center;
+        }
+
+        Text {
+            text: root.current-text;
+            color: root.accent-color;
+            font-size: 20px;
+            font-weight: 700;
+            vertical-alignment: center;
+        }
+    }
+
+    // ── Grid lines (25%, 50%, 75%) ──
+    Rectangle {
+        x: root.chart-left;
+        y: root.chart-top + root.chart-height * 0.25;
+        width: root.chart-width;
+        height: 1px;
+        background: Theme.bg-elevated;
+        opacity: 0.5;
+    }
+    Rectangle {
+        x: root.chart-left;
+        y: root.chart-top + root.chart-height * 0.50;
+        width: root.chart-width;
+        height: 1px;
+        background: Theme.bg-elevated;
+        opacity: 0.5;
+    }
+    Rectangle {
+        x: root.chart-left;
+        y: root.chart-top + root.chart-height * 0.75;
+        width: root.chart-width;
+        height: 1px;
+        background: Theme.bg-elevated;
+        opacity: 0.5;
+    }
+
+    // ── Chart area: one bar per data point ──
+    // Each bar is a thin rectangle whose height = value * chart-height.
+    // Positioned from the bottom of the chart area.
+    for val[idx] in root.values : Rectangle {
+        // Evenly space bars across chart width
+        x: root.chart-left + (root.chart-width * idx / max(1, root.values.length));
+        width: max(1px, root.chart-width / max(1, root.values.length));
+
+        // Bar height from bottom
+        height: max(1px, root.chart-height * clamp(val, 0.0, 1.0));
+        y: root.chart-top + root.chart-height - self.height;
+
+        // Gradient fill: brighter at top, fading down
+        background: root.accent-color;
+        opacity: 0.25 + 0.15 * clamp(val, 0.0, 1.0);
+    }
+
+    // ── Glow line on top edge of each bar (the "line" in line chart) ──
+    for val[idx] in root.values : Rectangle {
+        x: root.chart-left + (root.chart-width * idx / max(1, root.values.length));
+        width: max(1px, root.chart-width / max(1, root.values.length));
+        height: 2px;
+        y: root.chart-top + root.chart-height - max(1px, root.chart-height * clamp(val, 0.0, 1.0));
+
+        background: root.accent-color;
+        opacity: 0.8;
+    }
+
+    // ── Glow bloom on the top edge (softer, wider) ──
+    for val[idx] in root.values : Rectangle {
+        x: root.chart-left + (root.chart-width * idx / max(1, root.values.length)) - 1px;
+        width: max(3px, root.chart-width / max(1, root.values.length) + 2px);
+        height: 4px;
+        y: root.chart-top + root.chart-height - max(1px, root.chart-height * clamp(val, 0.0, 1.0)) - 1px;
+
+        background: root.accent-glow;
+        opacity: 0.4;
+        border-radius: 2px;
+    }
+
+    // ── Bottom edge baseline ──
+    Rectangle {
+        x: root.chart-left;
+        y: root.chart-top + root.chart-height - 1px;
+        width: root.chart-width;
+        height: 1px;
+        background: Theme.bg-elevated;
+        opacity: 0.6;
+    }
+}

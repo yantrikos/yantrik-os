@@ -3,7 +3,7 @@
 //! and injects system context into the LLM prompt.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
 
 use slint::{ComponentHandle, Timer, TimerMode};
@@ -12,6 +12,9 @@ use slint::{ModelRc, VecModel};
 
 use crate::app_context::AppContext;
 use crate::{cards, features, lock, system_context, windows, App, DockItem, ProcessData, WindowItem};
+
+/// Maximum number of data points in the chart history ring buffer.
+const CHART_HISTORY_LEN: usize = 60;
 
 /// Wire the system poll timer.
 pub fn wire(ui: &App, ctx: &AppContext) {
@@ -274,6 +277,52 @@ pub fn wire(ui: &App, ctx: &AppContext) {
 
     // Keep timer alive for the duration of the app
     std::mem::forget(timer);
+
+    // ── Chart history timer (1-second) ──
+    wire_chart_history(ui, ctx);
+}
+
+/// Wire a 1-second timer that maintains 60-point ring buffers for CPU and
+/// memory usage, pushing them to the UI as `[float]` models for the chart.
+fn wire_chart_history(ui: &App, ctx: &AppContext) {
+    let ui_weak = ui.as_weak();
+    let snapshot = ctx.system_snapshot.clone();
+
+    let cpu_buf: RefCell<VecDeque<f32>> = RefCell::new(VecDeque::with_capacity(CHART_HISTORY_LEN));
+    let mem_buf: RefCell<VecDeque<f32>> = RefCell::new(VecDeque::with_capacity(CHART_HISTORY_LEN));
+
+    let chart_timer = Timer::default();
+    chart_timer.start(TimerMode::Repeated, Duration::from_secs(1), move || {
+        let snap = snapshot.borrow();
+        let cpu_normalized = (snap.cpu_usage_percent / 100.0).clamp(0.0, 1.0);
+        let mem_normalized = (snap.memory_usage_percent() / 100.0).clamp(0.0, 1.0);
+
+        {
+            let mut cpu = cpu_buf.borrow_mut();
+            if cpu.len() >= CHART_HISTORY_LEN {
+                cpu.pop_front();
+            }
+            cpu.push_back(cpu_normalized);
+        }
+        {
+            let mut mem = mem_buf.borrow_mut();
+            if mem.len() >= CHART_HISTORY_LEN {
+                mem.pop_front();
+            }
+            mem.push_back(mem_normalized);
+        }
+
+        if let Some(ui) = ui_weak.upgrade() {
+            if ui.get_current_screen() == 10 {
+                let cpu_vec: Vec<f32> = cpu_buf.borrow().iter().copied().collect();
+                let mem_vec: Vec<f32> = mem_buf.borrow().iter().copied().collect();
+                ui.set_sys_cpu_history(ModelRc::new(VecModel::from(cpu_vec)));
+                ui.set_sys_memory_history(ModelRc::new(VecModel::from(mem_vec)));
+            }
+        }
+    });
+
+    std::mem::forget(chart_timer);
 }
 
 /// Handle a keybind action.
@@ -301,16 +350,16 @@ fn handle_keybind(ui: &App, action: &str) {
             ui.invoke_navigate(7);
         }
         "screenshot" => {
-            let _ = std::process::Command::new("grim")
-                .arg(format!(
-                    "{}/screenshot-{}.png",
-                    std::env::var("HOME").unwrap_or_default(),
-                    std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap()
-                        .as_secs()
-                ))
-                .spawn();
+            super::screenshot::take_screenshot(
+                ui.as_weak(),
+                yantrik_os::screenshot::CaptureMode::FullScreen,
+            );
+        }
+        "screenshot-region" => {
+            super::screenshot::take_screenshot(
+                ui.as_weak(),
+                yantrik_os::screenshot::CaptureMode::Region,
+            );
         }
         "power-menu" => {
             if ui.get_current_screen() == 1 {

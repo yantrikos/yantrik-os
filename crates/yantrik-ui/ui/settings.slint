@@ -2,7 +2,7 @@
 // Screen 7. Glassmorphic cards with glowing borders.
 // Section headers with scan-line animation.
 
-import { Theme } from "theme.slint";
+import { Theme, AccentPreset } from "theme.slint";
 
 export component SettingsScreen inherits Rectangle {
     background: Theme.bg-deep;
@@ -42,7 +42,9 @@ export component SettingsScreen inherits Rectangle {
 
     // Appearance
     in-out property <bool> dark-mode: true;
+    in-out property <string> accent-color: "cyan";
     callback toggle-dark-mode();
+    callback cycle-accent-color();
 
     // Interactive settings
     callback cycle-tool-permission();
@@ -234,6 +236,75 @@ export component SettingsScreen inherits Rectangle {
                                         }
                                     }
                                 }
+                            }
+                        }
+                    }
+                }
+
+                // Accent color picker row
+                Rectangle {
+                    background: @linear-gradient(135deg, #12111a80 0%, #0c0b1060 100%);
+                    border-radius: Theme.radius-card;
+                    border-width: 1px;
+                    border-color: #ffffff08;
+                    height: 52px;
+
+                    HorizontalLayout {
+                        padding-left: 16px;
+                        padding-right: 16px;
+
+                        Text {
+                            text: "Accent color";
+                            color: Theme.text-secondary;
+                            font-size: Theme.font-body;
+                            horizontal-stretch: 1;
+                            vertical-alignment: center;
+                        }
+
+                        accent-ta := TouchArea {
+                            width: accent-pill.preferred-width + 8px;
+                            height: 36px;
+                            clicked => { root.cycle-accent-color(); }
+
+                            accent-pill := Rectangle {
+                                width: accent-swatch.width + accent-label.preferred-width + 20px;
+                                height: 28px;
+                                y: (parent.height - self.height) / 2;
+                                border-radius: 14px;
+                                background: accent-ta.has-hover ? Theme.hover-fill-strong : Theme.hover-fill;
+                                border-width: 1px;
+                                border-color: AccentPreset.accent-dim;
+                                drop-shadow-blur: 4px;
+                                drop-shadow-color: AccentPreset.accent-glow;
+
+                                HorizontalLayout {
+                                    padding-left: 8px;
+                                    padding-right: 10px;
+                                    spacing: 6px;
+                                    alignment: center;
+
+                                    // Color swatch dot
+                                    accent-swatch := Rectangle {
+                                        width: 12px;
+                                        height: 12px;
+                                        y: (parent.height - 12px) / 2;
+                                        border-radius: 6px;
+                                        background: AccentPreset.accent;
+                                        drop-shadow-blur: 4px;
+                                        drop-shadow-color: AccentPreset.accent-glow;
+                                    }
+
+                                    accent-label := Text {
+                                        text: AccentPreset.label;
+                                        color: AccentPreset.accent;
+                                        font-size: 11px;
+                                        font-weight: 600;
+                                        vertical-alignment: center;
+                                    }
+                                }
+
+                                animate border-color { duration: 200ms; }
+                                animate drop-shadow-color { duration: 200ms; }
                             }
                         }
                     }

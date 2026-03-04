@@ -4,7 +4,7 @@
 //   11=image_viewer, 12=text_editor, 13=media_player, 14=terminal, 15=notes.
 // The AI IS the shell — Intent Lens is the primary interaction.
 
-import { Theme, ThemeMode, ThemeOverrides } from "theme.slint";
+import { Theme, ThemeMode, ThemeOverrides, AccentPreset } from "theme.slint";
 import { BootScreen } from "boot.slint";
 import { OnboardingScreen } from "onboarding.slint";
 import { DesktopScreen } from "desktop.slint";
@@ -32,7 +32,7 @@ import { WindowItem } from "components/window_switcher.slint";
 import { DockItem, AppDock } from "components/app_dock.slint";
 import { WindowFrame } from "components/window_frame.slint";
 
-export { ThemeMode, ThemeOverrides, ContentBlock, MessageData, UrgeCardData, BondData, OpinionData, SharedRefData, MemoryItem, LensResult, WhisperCardItem, FileEntry, BreadcrumbSegment, FileDetailData, NotificationData, ProcessData, ClipboardEntryData, AppGridItem, WindowItem, DockItem, NoteEntry }
+export { ThemeMode, ThemeOverrides, AccentPreset, ContentBlock, MessageData, UrgeCardData, BondData, OpinionData, SharedRefData, MemoryItem, LensResult, WhisperCardItem, FileEntry, BreadcrumbSegment, FileDetailData, NotificationData, ProcessData, ClipboardEntryData, AppGridItem, WindowItem, DockItem, NoteEntry }
 
 export component App inherits Window {
     title: "Yantrik OS";
@@ -180,8 +180,10 @@ export component App inherits Window {
     in property <string> settings-llm-api-model: "";
     in-out property <bool> settings-dark-mode: true;
     in-out property <bool> settings-incognito-mode: false;
+    in-out property <string> settings-accent-color: "cyan";
     callback toggle-dark-mode();
     callback toggle-incognito-mode();
+    callback cycle-accent-color();
     callback cycle-tool-permission();
     callback cycle-auto-lock();
 
@@ -234,6 +236,8 @@ export component App inherits Window {
     in property <string> sys-wifi-ssid: "";
     in property <int> sys-wifi-signal: 0;
     in property <[ProcessData]> sys-top-processes: [];
+    in property <[float]> sys-cpu-history: [];
+    in property <[float]> sys-memory-history: [];
 
     // Image Viewer state (screen 11)
     in property <image> viewer-image;
@@ -569,8 +573,10 @@ export component App inherits Window {
                 notification-count: root.notification-unread-count;
                 dark-mode <=> root.settings-dark-mode;
                 incognito-mode <=> root.settings-incognito-mode;
+                accent-color <=> root.settings-accent-color;
                 toggle-dark-mode => { root.toggle-dark-mode(); }
                 toggle-incognito-mode => { root.toggle-incognito-mode(); }
+                cycle-accent-color => { root.cycle-accent-color(); }
                 cycle-tool-permission => { root.cycle-tool-permission(); }
                 cycle-auto-lock => { root.cycle-auto-lock(); }
                 back-pressed => {
@@ -688,6 +694,8 @@ export component App inherits Window {
                 wifi-signal: root.sys-wifi-signal;
                 uptime-text: root.sys-uptime-text;
                 top-processes: root.sys-top-processes;
+                cpu-history: root.sys-cpu-history;
+                memory-history: root.sys-memory-history;
                 back-pressed => {
                     root.current-screen = 1;
                     root.navigate(1);

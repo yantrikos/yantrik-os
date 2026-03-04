@@ -23,7 +23,7 @@ use crate::system_context;
 use crate::wire::image_viewer::ImageViewerState;
 use crate::terminal::TerminalHandle;
 use crate::wire::media_player::MpvHandle;
-use crate::{App, ThemeMode, ThemeOverrides, MessageData, UrgeCardData, WhisperCardItem};
+use crate::{App, AccentPreset, ThemeMode, ThemeOverrides, MessageData, UrgeCardData, WhisperCardItem};
 
 /// Clipboard operation for file browser copy/cut.
 #[derive(Clone, Debug)]
@@ -66,10 +66,17 @@ pub struct AppContext {
 impl AppContext {
     /// Initialize all shared state. Moves setup logic that used to live in main().
     pub fn init(config: CompanionConfig, ui: &App) -> Self {
-        // Theme mode (load persisted preference, default dark)
-        let dark = crate::wire::settings::load_theme_preference();
-        ui.global::<ThemeMode>().set_dark(dark);
-        ui.set_settings_dark_mode(dark);
+        // Load persisted user settings (theme, tool perm, auto-lock, etc.)
+        let user_settings = crate::wire::settings::load();
+        ui.global::<ThemeMode>().set_dark(user_settings.dark_mode);
+        ui.set_settings_dark_mode(user_settings.dark_mode);
+        ui.set_settings_tool_permission(user_settings.tool_permission.clone().into());
+        ui.set_settings_auto_lock_secs(user_settings.auto_lock_secs);
+
+        // Accent color (persisted)
+        let accent_idx = crate::wire::settings::accent_name_to_index(&user_settings.accent_color);
+        ui.global::<AccentPreset>().set_index(accent_idx);
+        ui.set_settings_accent_color(user_settings.accent_color.into());
 
         // Community theme overrides
         load_theme_overrides(ui);
@@ -95,8 +102,7 @@ impl AppContext {
         ui.set_settings_model_name(config.llm.hub_repo.clone().into());
         ui.set_settings_max_context(config.llm.max_context_tokens as i32);
         ui.set_settings_max_tokens(config.llm.max_tokens as i32);
-        ui.set_settings_tool_permission(config.tools.max_permission.clone().into());
-        ui.set_settings_auto_lock_secs(crate::lock::DEFAULT_IDLE_LOCK_SECS as i32);
+        // tool_permission and auto_lock_secs already loaded from persisted settings above
 
         // LLM backend settings
         ui.set_settings_llm_backend(config.llm.backend.clone().into());
