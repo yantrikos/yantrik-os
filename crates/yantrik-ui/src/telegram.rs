@@ -191,24 +191,49 @@ fn poller_loop(
                     let token_rx = bridge.send_message(update.text);
                     let mut response = String::new();
                     let mut typing_refresh = std::time::Instant::now();
+                    let mut status_update_count = 0u32;
 
-                    // Collect all streaming tokens.
+                    // Collect streaming tokens with timeout-based progress updates.
                     // __REPLACE__ means "discard everything so far, next token is the new start".
-                    // This can happen multiple times (tool progress → final response).
-                    while let Ok(token) = token_rx.recv() {
-                        if token == "__DONE__" {
-                            break;
-                        }
-                        if token == "__REPLACE__" {
-                            response.clear();
-                            continue;
-                        }
-                        response.push_str(&token);
+                    // Never kill the work — only exit on __DONE__ or channel drop (crash).
+                    loop {
+                        match token_rx.recv_timeout(std::time::Duration::from_secs(30)) {
+                            Ok(token) => {
+                                if token == "__DONE__" {
+                                    break;
+                                }
+                                if token == "__REPLACE__" {
+                                    response.clear();
+                                    continue;
+                                }
+                                response.push_str(&token);
 
-                        // Refresh typing indicator every 4s (Telegram expires it after 5s)
-                        if typing_refresh.elapsed().as_secs() >= 4 {
-                            let _ = yantrikdb_companion::telegram::send_typing(&config);
-                            typing_refresh = std::time::Instant::now();
+                                // Refresh typing indicator every 4s (Telegram expires it after 5s)
+                                if typing_refresh.elapsed().as_secs() >= 4 {
+                                    let _ = yantrikdb_companion::telegram::send_typing(&config);
+                                    typing_refresh = std::time::Instant::now();
+                                }
+                            }
+                            Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
+                                // No tokens for 30s — send periodic status update
+                                status_update_count += 1;
+                                let _ = yantrikdb_companion::telegram::send_typing(&config);
+                                if status_update_count == 1 {
+                                    let _ = yantrikdb_companion::telegram::send_message(
+                                        &config, "Still working on it...",
+                                    );
+                                }
+                                tracing::info!(
+                                    count = status_update_count,
+                                    "Telegram: no tokens for 30s, sending status update"
+                                );
+                            }
+                            Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
+                                // Channel dropped — companion crashed
+                                tracing::error!("Token channel disconnected — companion may have crashed");
+                                response = "Something went wrong. Please try again.".to_string();
+                                break;
+                            }
                         }
                     }
 
@@ -389,20 +414,43 @@ fn handle_voice_message(
     let token_rx = bridge.send_message(transcribed);
     let mut response = String::new();
     let mut typing_refresh = std::time::Instant::now();
+    let mut status_update_count = 0u32;
 
-    while let Ok(token) = token_rx.recv() {
-        if token == "__DONE__" {
-            break;
-        }
-        if token == "__REPLACE__" {
-            response.clear();
-            continue;
-        }
-        response.push_str(&token);
+    loop {
+        match token_rx.recv_timeout(std::time::Duration::from_secs(30)) {
+            Ok(token) => {
+                if token == "__DONE__" {
+                    break;
+                }
+                if token == "__REPLACE__" {
+                    response.clear();
+                    continue;
+                }
+                response.push_str(&token);
 
-        if typing_refresh.elapsed().as_secs() >= 4 {
-            let _ = yantrikdb_companion::telegram::send_typing(config);
-            typing_refresh = std::time::Instant::now();
+                if typing_refresh.elapsed().as_secs() >= 4 {
+                    let _ = yantrikdb_companion::telegram::send_typing(config);
+                    typing_refresh = std::time::Instant::now();
+                }
+            }
+            Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
+                status_update_count += 1;
+                let _ = yantrikdb_companion::telegram::send_typing(config);
+                if status_update_count == 1 {
+                    let _ = yantrikdb_companion::telegram::send_message(
+                        config, "Still working on it...",
+                    );
+                }
+                tracing::info!(
+                    count = status_update_count,
+                    "Telegram voice: no tokens for 30s, sending status update"
+                );
+            }
+            Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
+                tracing::error!("Token channel disconnected — companion may have crashed");
+                response = "Something went wrong. Please try again.".to_string();
+                break;
+            }
         }
     }
 

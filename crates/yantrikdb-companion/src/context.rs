@@ -340,9 +340,13 @@ fn response_instructions(level: BondLevel, name: &str, user: &str) -> String {
 /// are omitted since the chat template handles the tool call format natively.
 fn tool_chaining_instructions(use_native_tools: bool) -> String {
     let format_rule = if use_native_tools {
-        "1. Call tools IMMEDIATELY when needed. Do NOT describe what you plan to do.\n"
+        "1. Call tools IMMEDIATELY when needed. Do NOT describe what you plan to do — CALL THE TOOL.\n\
+         CRITICAL: NEVER narrate or roleplay tool actions. Saying \"I clicked the button\" without \
+         actually calling browser_click_element is LYING. If you need to interact, CALL the tool. \
+         The user can see whether you actually called tools or just talked about it.\n"
     } else {
-        "1. Call tools IMMEDIATELY using <tool_call> XML. Do NOT describe what you plan to do.\n"
+        "1. Call tools IMMEDIATELY using <tool_call> XML. Do NOT describe what you plan to do.\n\
+         CRITICAL: NEVER narrate or roleplay tool actions. You MUST generate actual <tool_call> XML.\n"
     };
 
     format!(
@@ -380,7 +384,11 @@ fn tool_chaining_instructions(use_native_tools: bool) -> String {
          it takes a screenshot and analyzes it with vision AI. Use it for complex SPAs, \
          dynamic UIs, or when browser_snapshot's element list isn't enough. The typical flow: \
          browse → browser_see (to understand layout) → browser_click_element/browser_type_element \
-         (to interact) → browser_see (to verify). You can SEE the page — use your eyes!\n\n"
+         (to interact) → browser_see (to verify). You can SEE the page — use your eyes!\n\
+         15. COORDINATE-BASED INTERACTION: For sites where element numbers don't work (React, \
+         Shadow DOM, dynamic UIs), use browser_click_xy and browser_type_xy with pixel coordinates \
+         from browser_see screenshots. These use real CDP mouse/keyboard events that work with \
+         ANY website. Flow: browser_see → identify coordinates → browser_click_xy/browser_type_xy.\n\n"
     )
 }
 

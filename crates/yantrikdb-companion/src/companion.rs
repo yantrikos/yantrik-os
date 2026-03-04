@@ -36,25 +36,32 @@ pub const CORE_TOOLS: &[&str] = &[
     "remember", "recall", "discover_tools",
     // Files & system
     "run_command", "read_file", "write_file", "list_files", "search_files",
-    "system_info", "current_time",
+    "system_info", "date_calc", "disk_usage",
+    // Process & diagnostics
+    "list_processes", "diagnose_process",
     // Scheduling & reminders
     "set_reminder", "create_schedule", "list_schedules",
     // Communication
-    "telegram_send",
-    // Browser (web interaction)
-    "browse", "browser_snapshot", "browser_click_element", "browser_type_element",
+    "telegram_send", "send_notification",
+    // Browser (full workflow — launch → navigate → interact → read)
+    "launch_browser", "browse", "browser_snapshot", "browser_scroll",
+    "browser_click_element", "browser_type_element", "browser_search",
     // Browser vision (screenshot + AI analysis)
     "browser_see",
+    // Browser coordinate-based interaction (works with ANY site — React, Shadow DOM, etc.)
+    "browser_click_xy", "browser_type_xy",
     // Web search (lightweight, no browser needed)
     "web_search",
     // Life assistant (real-world search + ranking + preferences)
-    "life_search", "rank_results", "recall_preferences",
+    "life_search", "recall_preferences", "save_user_fact",
+    // Life assistant sub-tools (search pipeline)
+    "search_sources", "extract_search_results", "rank_results",
     // Browser lifecycle (cleanup zombie processes)
     "browser_cleanup", "browser_status",
-    // User fact persistence
-    "save_user_fact",
+    // Network & HTTP
+    "http_fetch", "network_diagnose",
     // Utility
-    "calculator",
+    "calculate", "screenshot",
 ];
 
 /// The companion agent — memory + inference + instincts + bond + evolution in one struct.
@@ -1028,6 +1035,15 @@ impl CompanionService {
                                     .iter()
                                     .map(|c| (c.name.clone(), c.arguments.clone()))
                                     .collect();
+
+                                // Show "running" progress before tool execution
+                                // so the user sees feedback during potentially long ops
+                                on_token("__REPLACE__");
+                                on_token(&format!(
+                                    "[Running {}...]\n",
+                                    names2.join(", "),
+                                ));
+
                                 execute_tool_round_tracked(
                                     &self.registry, &mut self.guard, &self.db,
                                     &tc2_pairs, &mut messages, &mut tool_calls_made,

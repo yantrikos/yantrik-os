@@ -36,7 +36,7 @@ impl Instinct for SerendipityInstinct {
 
                 // Truncate long memories
                 let display = if memory_text.len() > 120 {
-                    format!("{}...", &memory_text[..117])
+                    format!("{}...", &memory_text[..memory_text.floor_char_boundary(117)])
                 } else {
                     memory_text.to_string()
                 };

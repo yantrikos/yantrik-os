@@ -302,7 +302,7 @@ fn first_sentence(text: &str, max_len: usize) -> String {
 /// Log a tool execution to YantrikDB memory for AI self-recall.
 fn audit_log(db: &YantrikDB, tool_name: &str, args: &serde_json::Value, result: &str) {
     let summary = summarize_json(args);
-    let result_preview = if result.len() > 200 { &result[..200] } else { result };
+    let result_preview = &result[..result.floor_char_boundary(200.min(result.len()))];
     let text = format!("Tool: {tool_name}({summary}) → {result_preview}");
     let _ = db.record_text(
         &text,
@@ -329,11 +329,11 @@ fn summarize_json(val: &serde_json::Value) -> String {
                 .map(|(k, v)| {
                     let short = match v {
                         serde_json::Value::String(s) if s.len() > 30 => {
-                            format!("\"{}…\"", &s[..30])
+                            format!("\"{}…\"", &s[..s.floor_char_boundary(30)])
                         }
                         _ => {
                             let s = v.to_string();
-                            if s.len() > 30 { format!("{}…", &s[..30]) } else { s }
+                            if s.len() > 30 { format!("{}…", &s[..s.floor_char_boundary(30)]) } else { s }
                         }
                     };
                     format!("{k}={short}")

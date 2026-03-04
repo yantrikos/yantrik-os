@@ -21,7 +21,7 @@ pub fn send_message(config: &TelegramConfig, text: &str) -> Result<(), String> {
     let url = format!("https://api.telegram.org/bot{}/sendMessage", token);
 
     // Truncate to Telegram's 4096 char limit
-    let text = if text.len() > 4096 { &text[..4096] } else { text };
+    let text = if text.len() > 4096 { &text[..text.floor_char_boundary(4096)] } else { text };
 
     // Escape HTML entities so LLM output with <, >, & doesn't break formatting
     let escaped = text
