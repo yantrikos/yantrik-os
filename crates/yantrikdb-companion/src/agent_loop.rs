@@ -175,7 +175,12 @@ pub fn max_calls_for_tool(tool_name: &str) -> usize {
         | "browser_type_element" | "browser_scroll" | "browser_search"
         | "browser_read" | "browser_click" | "browser_type"
         | "browser_screenshot" | "browser_tabs" | "launch_browser"
-        | "browser_see" | "web_search" => 25,
+        | "browser_see" | "web_search"
+        | "browser_cleanup" | "browser_status" => 25,
+
+        // Life assistant: search orchestration may need several iterations
+        "life_search" | "search_sources" | "extract_search_results"
+        | "deduplicate_results" => 15,
 
         // File tools: may need to read/search many files
         "read_file" | "write_file" | "list_files" | "search_files"

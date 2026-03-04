@@ -39,6 +39,7 @@
 //! - artifacts:  generate_fix_summary, list_fixes, read_fix
 //! - home_assistant: ha_get_state, ha_call_service, ha_list_entities
 //! - browser:    launch_browser, browse, browser_read, browser_click, browser_type, browser_screenshot, browser_tabs, browser_search
+//! - browser_lifecycle: browser_cleanup, browser_status (+ watchdog_check, kill_all_browsers)
 //! - background_tasks: run_background, list_background_tasks, check_background_task, stop_background_task
 //! - clipboard:  clipboard_history, clipboard_analyze, clipboard_fetch_url, clipboard_transform, text_action
 //! - automation: create_automation, list_automations, run_automation, delete_automation, toggle_automation
@@ -79,6 +80,7 @@ pub mod ssh;
 pub mod artifacts;
 pub mod home_assistant;
 pub mod browser;
+pub mod browser_lifecycle;
 pub mod discovery;
 pub mod background_tasks;
 pub mod scheduler;
@@ -382,12 +384,14 @@ pub fn build_registry(config: &CompanionConfig) -> ToolRegistry {
     ssh::register(&mut reg);
     artifacts::register(&mut reg);
     browser::register(&mut reg);
+    browser_lifecycle::register(&mut reg);
     discovery::register(&mut reg);
     background_tasks::register(&mut reg);
     scheduler::register(&mut reg);
     memory_hygiene::register(&mut reg);
     clipboard::register(&mut reg);
     automation::register(&mut reg);
+    crate::life_assistant::register(&mut reg);
 
     // Conditionally register Home Assistant tools
     let ha = &config.home_assistant;
