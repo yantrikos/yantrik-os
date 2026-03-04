@@ -31,7 +31,7 @@ impl Tool for DiscoverToolsTool {
             "type": "function",
             "function": {
                 "name": "discover_tools",
-                "description": "Search available tools by keyword or category. Returns a compact list of matching tools with their names and descriptions. Use this when you need a capability not in your current tool set. After discovery, you can call the discovered tools directly in your next response.",
+                "description": "Search available tools by keyword or category. Returns a compact list of matching tools with their names and descriptions. Use this when you need a capability not in your current tool set. After discovery, you can call the discovered tools directly in your next response. Use list_all=true to see every tool.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -42,6 +42,10 @@ impl Tool for DiscoverToolsTool {
                         "category": {
                             "type": "string",
                             "description": "Filter by category (e.g. 'browser', 'git', 'docker', 'files', 'network')"
+                        },
+                        "list_all": {
+                            "type": "boolean",
+                            "description": "Set to true to list ALL available tools with brief descriptions"
                         }
                     }
                 }
@@ -52,11 +56,22 @@ impl Tool for DiscoverToolsTool {
     fn execute(&self, ctx: &ToolContext, args: &serde_json::Value) -> String {
         let query = args.get("query").and_then(|v| v.as_str());
         let category = args.get("category").and_then(|v| v.as_str());
+        let list_all = args.get("list_all").and_then(|v| v.as_bool()).unwrap_or(false);
+
+        tracing::debug!(
+            ?query, ?category, list_all,
+            "discover_tools called"
+        );
 
         let metadata = match ctx.registry_metadata {
             Some(m) => m,
             None => return "Error: tool metadata not available".to_string(),
         };
+
+        // list_all → compact listing of every tool grouped by category
+        if list_all {
+            return list_all_tools(metadata);
+        }
 
         // No filters → category summary
         if query.is_none() && category.is_none() {
@@ -108,6 +123,37 @@ impl Tool for DiscoverToolsTool {
         out.push_str("\nYou can now call any of these tools directly.");
         out
     }
+}
+
+/// Compact listing of ALL tools grouped by category.
+/// Each tool gets: name — short description (≤60 chars).
+fn list_all_tools(metadata: &[super::ToolMetadata]) -> String {
+    let mut by_cat: std::collections::BTreeMap<&str, Vec<&super::ToolMetadata>> =
+        std::collections::BTreeMap::new();
+    for m in metadata {
+        by_cat.entry(m.category).or_default().push(m);
+    }
+
+    let mut out = format!("All {} available tools:\n\n", metadata.len());
+    for (cat, tools) in &by_cat {
+        out.push_str(&format!("[{}]\n", cat));
+        for t in tools {
+            // Truncate description to ~60 chars for compactness
+            let desc = if t.description.len() > 60 {
+                let mut boundary = 60;
+                while boundary > 0 && !t.description.is_char_boundary(boundary) {
+                    boundary -= 1;
+                }
+                format!("{}...", &t.description[..boundary])
+            } else {
+                t.description.clone()
+            };
+            out.push_str(&format!("  {} — {}\n", t.name, desc));
+        }
+        out.push('\n');
+    }
+    out.push_str("Call any tool directly, or use discover_tools(query=...) for full details.");
+    out
 }
 
 fn category_summary(metadata: &[super::ToolMetadata]) -> String {

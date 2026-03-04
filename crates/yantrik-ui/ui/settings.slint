@@ -19,6 +19,8 @@ export component SettingsScreen inherits Rectangle {
 
     // Security
     in property <int> auto-lock-secs: 300;
+    in-out property <bool> incognito-mode: false;
+    callback toggle-incognito-mode();
 
     // Network
     in property <bool> wifi-connected: false;
@@ -664,6 +666,41 @@ export component SettingsScreen inherits Rectangle {
                                 text: " Enabled";
                                 color: Theme.color-reminder;
                                 font-size: Theme.font-body;
+                            }
+                        }
+
+                        Rectangle { height: 1px; background: #ffffff08; }
+
+                        incognito-ta := TouchArea {
+                            height: 24px;
+                            clicked => { root.toggle-incognito-mode(); }
+
+                            HorizontalLayout {
+                                Text {
+                                    text: "Incognito";
+                                    color: Theme.text-secondary;
+                                    font-size: Theme.font-body;
+                                    horizontal-stretch: 1;
+                                }
+                                Rectangle {
+                                    width: incognito-tag.preferred-width + 16px;
+                                    height: 24px;
+                                    border-radius: 12px;
+                                    background: root.incognito-mode ? Theme.color-emotional : (incognito-ta.has-hover ? Theme.hover-fill-strong : Theme.hover-fill);
+                                    border-width: 1px;
+                                    border-color: root.incognito-mode ? Theme.color-emotional : Theme.border-subtle;
+                                    drop-shadow-blur: root.incognito-mode ? 6px : 0;
+                                    drop-shadow-color: root.incognito-mode ? #e86b6b40 : transparent;
+
+                                    incognito-tag := Text {
+                                        text: root.incognito-mode ? "ON" : "OFF";
+                                        color: root.incognito-mode ? #ffffff : Theme.text-primary;
+                                        font-size: 11px;
+                                        font-weight: 600;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+                                }
                             }
                         }
                     }

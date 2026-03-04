@@ -315,6 +315,18 @@ pub struct InstinctSettings {
     pub conflict_alerting_enabled: bool,
     #[serde(default = "default_conflict_threshold")]
     pub conflict_alert_threshold: usize,
+    /// Enable predictive workflow instinct.
+    #[serde(default = "default_evolution_enabled")]
+    pub predictive_workflow_enabled: bool,
+    /// Enable morning/evening routine instinct.
+    #[serde(default = "default_evolution_enabled")]
+    pub routine_enabled: bool,
+    /// Enable cognitive load monitor instinct.
+    #[serde(default = "default_evolution_enabled")]
+    pub cognitive_load_enabled: bool,
+    /// Enable smart updates instinct.
+    #[serde(default = "default_evolution_enabled")]
+    pub smart_updates_enabled: bool,
     /// Enable memory weaver instinct (proactive graph building during idle).
     #[serde(default = "default_evolution_enabled")]
     pub memory_weaver_enabled: bool,
@@ -354,6 +366,10 @@ impl Default for InstinctSettings {
             pattern_surfacing_enabled: true,
             conflict_alerting_enabled: true,
             conflict_alert_threshold: default_conflict_threshold(),
+            predictive_workflow_enabled: true,
+            routine_enabled: true,
+            cognitive_load_enabled: true,
+            smart_updates_enabled: true,
             memory_weaver_enabled: true,
             memory_weaver_idle_minutes: default_weaver_idle_minutes(),
             memory_weaver_min_memories: default_weaver_min_memories(),
@@ -717,7 +733,7 @@ pub struct AgentConfig {
     pub trace_min_similarity: f32,
 }
 
-fn default_agent_max_steps() -> usize { 10 }
+fn default_agent_max_steps() -> usize { 30 }
 fn default_agent_true() -> bool { true }
 fn default_agent_max_nudges() -> usize { 2 }
 fn default_trace_min_sim() -> f32 { 0.5 }

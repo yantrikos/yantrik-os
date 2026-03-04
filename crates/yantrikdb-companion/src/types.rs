@@ -69,6 +69,13 @@ pub struct CompanionState {
     pub shared_references_count: usize,
     /// Whether bond level changed on the last interaction.
     pub bond_level_changed: bool,
+    // Phase 2: Proactive Intelligence fields
+    pub current_hour: u32,
+    pub current_day_of_week: u32,
+    pub idle_seconds: f64,
+    pub interactions_last_hour: u32,
+    pub workflow_hints: Vec<serde_json::Value>,
+    pub maintenance_report: Vec<serde_json::Value>,
 }
 
 /// Response from handle_message().

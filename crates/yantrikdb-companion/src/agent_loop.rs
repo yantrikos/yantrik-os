@@ -165,6 +165,33 @@ impl AgentLoop {
     }
 }
 
+/// Per-tool call limits based on tool category.
+/// Browser tools need many iterations (snapshot→click→snapshot→type→snapshot...),
+/// while memory tools rarely need more than a few calls.
+pub fn max_calls_for_tool(tool_name: &str) -> usize {
+    match tool_name {
+        // Browser tools: web automation requires many round-trips
+        "browse" | "browser_snapshot" | "browser_click_element"
+        | "browser_type_element" | "browser_scroll" | "browser_search"
+        | "browser_read" | "browser_click" | "browser_type"
+        | "browser_screenshot" | "browser_tabs" | "launch_browser"
+        | "browser_see" | "web_search" => 25,
+
+        // File tools: may need to read/search many files
+        "read_file" | "write_file" | "list_files" | "search_files"
+        | "manage_files" | "file_info" => 10,
+
+        // Shell: multi-step debugging/building
+        "run_command" => 15,
+
+        // Memory: rarely needs many calls
+        "remember" | "recall" => 6,
+
+        // Everything else: reasonable default
+        _ => 10,
+    }
+}
+
 /// Summarize tool arguments — keep keys, truncate large values.
 fn summarize_args(args: &serde_json::Value) -> String {
     match args {

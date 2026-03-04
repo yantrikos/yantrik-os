@@ -16,6 +16,7 @@ use yantrikdb_ml::ApiLLM;
 
 use slint::{Model, ModelRc, SharedString, VecModel};
 
+use crate::ambient::AmbientState;
 use crate::{App, UrgeCardData};
 
 /// Commands from the UI thread to the companion worker.
@@ -66,6 +67,10 @@ pub enum CompanionCommand {
         importance: f64,
         /// Decay constant in seconds. 0.0 = permanent.
         decay: f64,
+    },
+    /// Toggle incognito mode (no data persistence).
+    SetIncognitoMode {
+        enabled: bool,
     },
     /// Run a background think cycle.
     Think {
@@ -151,6 +156,8 @@ pub struct CompanionBridge {
     online: Arc<AtomicBool>,
     /// Cached bond level (1-5) — updated by worker thread, read by UI features.
     cached_bond_level: Arc<std::sync::atomic::AtomicU8>,
+    /// Ambient intelligence state — sentiment, cognitive load.
+    ambient: AmbientState,
 }
 
 impl CompanionBridge {
@@ -161,9 +168,11 @@ impl CompanionBridge {
         let online_w = online.clone();
         let cached_bond_level = Arc::new(std::sync::atomic::AtomicU8::new(1));
         let bond_w = cached_bond_level.clone();
+        let ambient = AmbientState::new();
+        let ambient_w = ambient.clone();
 
         let worker_handle = std::thread::spawn(move || {
-            worker_loop(config, cmd_rx, ui_weak, online_w, bond_w);
+            worker_loop(config, cmd_rx, ui_weak, online_w, bond_w, ambient_w);
         });
 
         Self {
@@ -171,6 +180,7 @@ impl CompanionBridge {
             worker_handle: Some(worker_handle),
             online,
             cached_bond_level,
+            ambient,
         }
     }
 
@@ -254,6 +264,16 @@ impl CompanionBridge {
         });
     }
 
+    /// Toggle incognito mode (no data persistence while active).
+    pub fn set_incognito(&self, enabled: bool) {
+        let _ = self.cmd_tx.send(CompanionCommand::SetIncognitoMode { enabled });
+    }
+
+    /// Get ambient intelligence state (sentiment, cognitive_load).
+    pub fn ambient_state(&self) -> (f32, f32) {
+        (self.ambient.sentiment(), self.ambient.cognitive_load())
+    }
+
     /// Trigger a think cycle with current focus interruptibility.
     pub fn think(&self, interruptibility: f32) {
         let _ = self.cmd_tx.send(CompanionCommand::Think { interruptibility });
@@ -281,6 +301,7 @@ fn worker_loop(
     ui_weak: slint::Weak<App>,
     online: Arc<AtomicBool>,
     cached_bond: Arc<std::sync::atomic::AtomicU8>,
+    ambient: AmbientState,
 ) {
     // Build companion on this thread (owns SQLite connection)
     let mut companion = build_companion(config);
@@ -295,6 +316,9 @@ fn worker_loop(
     loop {
         match cmd_rx.recv() {
             Ok(CompanionCommand::SendMessage { text, token_tx }) => {
+                // Update ambient sentiment from user message
+                ambient.update_from_message(&text);
+
                 tracing::info!(text = %text, "Processing message");
                 let start = std::time::Instant::now();
                 let mut token_count = 0u32;
@@ -417,7 +441,14 @@ fn worker_loop(
                     .collect();
                 let _ = reply_tx.send(snapshots);
             }
+            Ok(CompanionCommand::SetIncognitoMode { enabled }) => {
+                companion.set_incognito(enabled);
+                tracing::info!(incognito = enabled, "Incognito mode toggled");
+            }
             Ok(CompanionCommand::RecordSystemEvent { text, domain, importance }) => {
+                if companion.is_incognito() {
+                    tracing::debug!("Incognito: skipping RecordSystemEvent");
+                } else {
                 // Sanitize system event data before storing as memory.
                 // System events come from D-Bus/inotify — external input.
                 let safe_text: String = text.chars()
@@ -453,6 +484,7 @@ fn worker_loop(
                     "text": safe_text,
                     "importance": safe_importance,
                 }));
+                }
             }
             Ok(CompanionCommand::SetSystemContext { context }) => {
                 // Poll background tasks and append summary to system context
@@ -476,27 +508,29 @@ fn worker_loop(
                 companion.set_system_context(full_ctx);
             }
             Ok(CompanionCommand::RecordSnapshot { text }) => {
-                let safe: String = text
-                    .chars()
-                    .filter(|c| !c.is_control() || *c == '\n')
-                    .take(2000)
-                    .collect();
-                if let Err(e) = companion.db.record_text(
-                    &safe,
-                    "episodic",
-                    0.6,
-                    0.0,
-                    604800.0, // 7-day decay
-                    &serde_json::json!({}),
-                    "default",
-                    0.95,
-                    "system/snapshot",
-                    "system",
-                    None,
-                ) {
-                    tracing::warn!(error = %e, "Failed to record system snapshot");
-                } else {
-                    tracing::debug!("Hourly system snapshot stored");
+                if !companion.is_incognito() {
+                    let safe: String = text
+                        .chars()
+                        .filter(|c| !c.is_control() || *c == '\n')
+                        .take(2000)
+                        .collect();
+                    if let Err(e) = companion.db.record_text(
+                        &safe,
+                        "episodic",
+                        0.6,
+                        0.0,
+                        604800.0, // 7-day decay
+                        &serde_json::json!({}),
+                        "default",
+                        0.95,
+                        "system/snapshot",
+                        "system",
+                        None,
+                    ) {
+                        tracing::warn!(error = %e, "Failed to record system snapshot");
+                    } else {
+                        tracing::debug!("Hourly system snapshot stored");
+                    }
                 }
             }
             Ok(CompanionCommand::RecordIssue {
@@ -504,28 +538,30 @@ fn worker_loop(
                 importance,
                 decay,
             }) => {
-                let safe: String = text
-                    .chars()
-                    .filter(|c| !c.is_control())
-                    .take(500)
-                    .collect();
-                let safe_importance = importance.clamp(0.0, 1.0);
-                if let Err(e) = companion.db.record_text(
-                    &safe,
-                    "episodic",
-                    safe_importance,
-                    -0.3, // negative valence — it's a problem
-                    decay,
-                    &serde_json::json!({"issue": true}),
-                    "default",
-                    1.0, // max consolidation — never prune issues
-                    "system/issue",
-                    "system",
-                    None,
-                ) {
-                    tracing::warn!(error = %e, "Failed to record system issue");
-                } else {
-                    tracing::info!(text = %safe, "System issue recorded to memory");
+                if !companion.is_incognito() {
+                    let safe: String = text
+                        .chars()
+                        .filter(|c| !c.is_control())
+                        .take(500)
+                        .collect();
+                    let safe_importance = importance.clamp(0.0, 1.0);
+                    if let Err(e) = companion.db.record_text(
+                        &safe,
+                        "episodic",
+                        safe_importance,
+                        -0.3, // negative valence — it's a problem
+                        decay,
+                        &serde_json::json!({"issue": true}),
+                        "default",
+                        1.0, // max consolidation — never prune issues
+                        "system/issue",
+                        "system",
+                        None,
+                    ) {
+                        tracing::warn!(error = %e, "Failed to record system issue");
+                    } else {
+                        tracing::info!(text = %safe, "System issue recorded to memory");
+                    }
                 }
             }
             Ok(CompanionCommand::Think { interruptibility }) => {

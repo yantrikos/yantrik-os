@@ -210,6 +210,8 @@ impl AppContext {
         registry.register(Box::new(features::tool_suggester::ToolSuggester::new()));
         registry.register(Box::new(features::network_watcher::NetworkWatcher::new()));
         registry.register(Box::new(features::clipboard_intelligence::ClipboardIntelligence::new(clip_history.clone())));
+        registry.register(Box::new(features::screen_watcher::ScreenWatcher::new()));
+        registry.register(Box::new(features::project_consciousness::ProjectConsciousness::new()));
 
         Self {
             bridge,

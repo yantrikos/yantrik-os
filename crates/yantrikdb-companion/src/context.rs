@@ -99,6 +99,9 @@ fn build_system_prompt(
     let user = &config.user_name;
     let level = state.bond_level;
 
+    // ── 0. Disable Qwen3.5 thinking mode (wastes tokens on internal reasoning) ──
+    prompt.push_str("/no_think\n");
+
     // ── 1. Identity (always) ──
     prompt.push_str(&format!("You are {name}, {user}'s personal companion.\n"));
 
@@ -367,8 +370,17 @@ fn tool_chaining_instructions(use_native_tools: bool) -> String {
          to save it. Personal facts are high importance (0.7-1.0). Use domain 'identity' for who they \
          are, 'location' for where they are, 'preference' for likes/dislikes. Never lose user facts.\n\
          12. TOOL EFFICIENCY: Use the BEST tool for the job. Prefer specific tools (current_time, \
-         list_files, disk_usage) over generic ones (run_command). Never call the same tool more than \
-         3 times for a single query — if results aren't satisfactory, summarize what you have.\n\n"
+         list_files, disk_usage) over generic ones (run_command). Browser tools (browser_snapshot, \
+         browser_click_element, etc.) can be called many times — web automation requires it. \
+         For other tools, avoid calling the same one more than 5 times.\n\
+         13. RESEARCH FIRST: When you don't know how to do something, use web_search to find \
+         instructions BEFORE attempting it. Read the results, plan your steps, then execute. \
+         Don't guess — search, learn, then act.\n\
+         14. BROWSER VISION: Use browser_see when you need to visually understand a page — \
+         it takes a screenshot and analyzes it with vision AI. Use it for complex SPAs, \
+         dynamic UIs, or when browser_snapshot's element list isn't enough. The typical flow: \
+         browse → browser_see (to understand layout) → browser_click_element/browser_type_element \
+         (to interact) → browser_see (to verify). You can SEE the page — use your eyes!\n\n"
     )
 }
 

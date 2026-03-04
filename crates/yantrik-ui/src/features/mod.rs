@@ -14,6 +14,8 @@ pub mod notification_relay;
 pub mod tool_suggester;
 pub mod network_watcher;
 pub mod clipboard_intelligence;
+pub mod screen_watcher;
+pub mod project_consciousness;
 
 use std::collections::HashMap;
 use yantrik_os::{SystemEvent, SystemSnapshot};
@@ -56,6 +58,10 @@ pub enum UrgeCategory {
     Shell,
     /// App notification (from D-Bus notification daemon).
     Notification,
+    /// Computer vision / screen awareness.
+    Vision,
+    /// Project context / workspace awareness.
+    Project,
 }
 
 /// What the user did with an urge.

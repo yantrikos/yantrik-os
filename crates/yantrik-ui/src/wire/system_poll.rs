@@ -158,6 +158,13 @@ pub fn wire(ui: &App, ctx: &AppContext) {
             ui.set_battery_charging(snap.battery_charging);
             ui.set_wifi_connected(snap.network_connected);
 
+            // Ambient Intelligence: push sentiment, cognitive load, time-of-day
+            let (sentiment, cognitive_load) = bridge.ambient_state();
+            let time_of_day = crate::ambient::AmbientState::time_of_day();
+            ui.set_particle_sentiment(sentiment);
+            ui.set_particle_cognitive_load(cognitive_load);
+            ui.set_particle_time_of_day(time_of_day);
+
             // Auto-lock on idle (only from desktop screen, 0 = disabled)
             let lock_timeout = ui.get_settings_auto_lock_secs() as u64;
             if lock_timeout > 0

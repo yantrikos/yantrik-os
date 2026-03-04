@@ -41,6 +41,12 @@ pub const CORE_TOOLS: &[&str] = &[
     "set_reminder", "create_schedule", "list_schedules",
     // Communication
     "telegram_send",
+    // Browser (web interaction)
+    "browse", "browser_snapshot", "browser_click_element", "browser_type_element",
+    // Browser vision (screenshot + AI analysis)
+    "browser_see",
+    // Web search (lightweight, no browser needed)
+    "web_search",
     // Utility
     "calculator",
 ];
@@ -100,6 +106,9 @@ pub struct CompanionService {
 
     // Event buffer for automation matching (drained during think cycles).
     pub recent_events: Vec<(String, serde_json::Value)>,
+
+    // Incognito mode — when true, no data is persisted from interactions.
+    pub incognito: bool,
 }
 
 impl CompanionService {
@@ -122,6 +131,10 @@ impl CompanionService {
 
         // Automation table
         crate::automation::AutomationStore::ensure_table(db.conn());
+
+        // Phase 2: Proactive intelligence tables
+        ensure_workflow_table(db.conn());
+        ensure_maintenance_table(db.conn());
 
         // Tool trace learning table
         ToolTraces::ensure_table(db.conn());
@@ -206,7 +219,19 @@ impl CompanionService {
             use_native_tools,
             task_manager: std::sync::Mutex::new(task_mgr),
             recent_events: Vec::new(),
+            incognito: false,
         }
+    }
+
+    /// Toggle incognito mode (no data persistence).
+    pub fn set_incognito(&mut self, enabled: bool) {
+        self.incognito = enabled;
+        tracing::info!(enabled, "Incognito mode toggled");
+    }
+
+    /// Whether incognito mode is active.
+    pub fn is_incognito(&self) -> bool {
+        self.incognito
     }
 
     /// Buffer a system event for automation matching during think cycles.
@@ -268,7 +293,9 @@ impl CompanionService {
         let urge_ids: Vec<String> = urges.iter().map(|u| u.urge_id.clone()).collect();
 
         // Detect humor reaction from previous exchange
-        learning::detect_humor_reaction(self.db.conn(), user_text);
+        if !self.incognito {
+            learning::detect_humor_reaction(self.db.conn(), user_text);
+        }
 
         // Step 5: Evaluate instincts on interaction
         let state = self.build_state();
@@ -508,6 +535,7 @@ impl CompanionService {
                 &mut native_tools,
                 &mut agent_loop,
                 self.config.agent.error_recovery,
+                self.incognito,
             );
 
             if !text_part.is_empty() {
@@ -537,7 +565,7 @@ impl CompanionService {
         }
 
         // Record tool chain trace for learning (only if tools were actually called)
-        if self.config.agent.trace_learning && agent_loop.any_success() && !tool_calls_made.is_empty() {
+        if !self.incognito && self.config.agent.trace_learning && agent_loop.any_success() && !tool_calls_made.is_empty() {
             let outcome = match &agent_loop.status {
                 crate::agent_loop::LoopStatus::Completed => "success",
                 crate::agent_loop::LoopStatus::MaxSteps => "partial",
@@ -550,8 +578,9 @@ impl CompanionService {
             );
         }
 
-        // Clean up tool call XML from final response
+        // Clean up tool call XML and Qwen3.5 thinking blocks from final response
         response_text = extract_text_content(&response_text);
+        response_text = strip_think_tags(&response_text);
 
         // SecurityGuard: filter output for sensitive info leaks
         response_text = self.guard.check_response(&response_text, &self.db);
@@ -572,62 +601,65 @@ impl CompanionService {
         self.last_interaction_ts = now_ts();
         self.session_turn_count += 1;
 
-        // Step 8: Learn from this exchange (skip if offline — LLM needed)
-        //   V25: Clean tool artifacts from response before learning
-        if !is_offline {
-            let clean_response = sanitize::clean_response_for_learning(
-                &response_text, &tool_calls_made,
-            );
-            learning::extract_and_learn(
-                &self.db, &*self.llm, user_text, &clean_response,
-                &self.config.memory_evolution,
-            );
-        }
-
-        // Step 8b: Update conversation context for smart recall (Gap 1)
-        memory_evolution::update_conversation_context(self.db.conn(), user_text, &memories);
-
-        // Step 9: Score bond + tick evolution (always runs — tracks interaction count)
-        if self.config.bond.enabled {
-            let (new_level, level_changed) = BondTracker::score_interaction(
-                self.db.conn(),
-                user_text,
-                &response_text,
-                memories.len(),
-            );
-            self.bond_level = new_level;
-            self.bond_level_changed = level_changed;
-
-            let bond_state = BondTracker::get_state(self.db.conn());
-            self.bond_score = bond_state.bond_score;
-
-            // Tick personality evolution
-            Evolution::tick(
-                self.db.conn(),
-                new_level,
-                self.config.evolution.formality_alpha,
-            );
-
-            // Check if narrative needs updating (skip if offline)
+        // Steps 8-9: Skip all persistence in incognito mode
+        if !self.incognito {
+            // Step 8: Learn from this exchange (skip if offline — LLM needed)
+            //   V25: Clean tool artifacts from response before learning
             if !is_offline {
-                let needs_narrative = Narrative::tick_interaction(
-                    self.db.conn(),
-                    self.config.narrative.update_interval_interactions,
+                let clean_response = sanitize::clean_response_for_learning(
+                    &response_text, &tool_calls_made,
                 );
-                if needs_narrative {
-                    let self_texts: Vec<String> = self_memories
-                        .iter()
-                        .map(|m| m.text.clone())
-                        .collect();
-                    Narrative::update(
+                learning::extract_and_learn(
+                    &self.db, &*self.llm, user_text, &clean_response,
+                    &self.config.memory_evolution,
+                );
+            }
+
+            // Step 8b: Update conversation context for smart recall (Gap 1)
+            memory_evolution::update_conversation_context(self.db.conn(), user_text, &memories);
+
+            // Step 9: Score bond + tick evolution (always runs — tracks interaction count)
+            if self.config.bond.enabled {
+                let (new_level, level_changed) = BondTracker::score_interaction(
+                    self.db.conn(),
+                    user_text,
+                    &response_text,
+                    memories.len(),
+                );
+                self.bond_level = new_level;
+                self.bond_level_changed = level_changed;
+
+                let bond_state = BondTracker::get_state(self.db.conn());
+                self.bond_score = bond_state.bond_score;
+
+                // Tick personality evolution
+                Evolution::tick(
+                    self.db.conn(),
+                    new_level,
+                    self.config.evolution.formality_alpha,
+                );
+
+                // Check if narrative needs updating (skip if offline)
+                if !is_offline {
+                    let needs_narrative = Narrative::tick_interaction(
                         self.db.conn(),
-                        &*self.llm,
-                        &self.config.user_name,
-                        new_level,
-                        bond_state.bond_score,
-                        &self_texts,
-                        self.config.narrative.max_tokens,
+                        self.config.narrative.update_interval_interactions,
                     );
+                    if needs_narrative {
+                        let self_texts: Vec<String> = self_memories
+                            .iter()
+                            .map(|m| m.text.clone())
+                            .collect();
+                        Narrative::update(
+                            self.db.conn(),
+                            &*self.llm,
+                            &self.config.user_name,
+                            new_level,
+                            bond_state.bond_score,
+                            &self_texts,
+                            self.config.narrative.max_tokens,
+                        );
+                    }
                 }
             }
         }
@@ -689,7 +721,9 @@ impl CompanionService {
         let urges = self.urge_queue.pop_for_interaction(self.db.conn(), 2);
         let urge_ids: Vec<String> = urges.iter().map(|u| u.urge_id.clone()).collect();
 
-        learning::detect_humor_reaction(self.db.conn(), user_text);
+        if !self.incognito {
+            learning::detect_humor_reaction(self.db.conn(), user_text);
+        }
 
         let state = self.build_state();
         for instinct in &self.instincts {
@@ -908,6 +942,7 @@ impl CompanionService {
                         &mut native_tools,
                         &mut agent_loop,
                         self.config.agent.error_recovery,
+                        self.incognito,
                     );
 
                     // Remaining rounds: discovery rounds are budget-limited,
@@ -996,6 +1031,7 @@ impl CompanionService {
                                     &mut native_tools,
                                     &mut agent_loop,
                                     self.config.agent.error_recovery,
+                                    self.incognito,
                                 );
 
                                 if !round_text.is_empty() {
@@ -1071,7 +1107,7 @@ impl CompanionService {
         }
 
         // Record tool chain trace for learning (streaming path)
-        if self.config.agent.trace_learning && agent_loop.any_success() && !tool_calls_made.is_empty() {
+        if !self.incognito && self.config.agent.trace_learning && agent_loop.any_success() && !tool_calls_made.is_empty() {
             let outcome = match &agent_loop.status {
                 crate::agent_loop::LoopStatus::Completed => "success",
                 crate::agent_loop::LoopStatus::MaxSteps => "partial",
@@ -1085,6 +1121,7 @@ impl CompanionService {
         }
 
         response_text = extract_text_content(&response_text);
+        response_text = strip_think_tags(&response_text);
 
         // SecurityGuard: filter output for sensitive info leaks
         response_text = self.guard.check_response(&response_text, &self.db);
@@ -1103,61 +1140,64 @@ impl CompanionService {
         self.last_interaction_ts = now_ts();
         self.session_turn_count += 1;
 
-        // Step 8: Learn from this exchange (skip if offline — LLM needed)
-        //   V25: Clean tool artifacts from response before learning
-        if !is_offline {
-            let clean_response = sanitize::clean_response_for_learning(
-                &response_text, &tool_calls_made,
-            );
-            learning::extract_and_learn(
-                &self.db, &*self.llm, user_text, &clean_response,
-                &self.config.memory_evolution,
-            );
-        }
-
-        // Step 8b: Update conversation context for smart recall (Gap 1)
-        memory_evolution::update_conversation_context(self.db.conn(), user_text, &memories);
-
-        // Step 9: Score bond + tick evolution (always runs — tracks interaction count)
-        if self.config.bond.enabled {
-            let (new_level, level_changed) = BondTracker::score_interaction(
-                self.db.conn(),
-                user_text,
-                &response_text,
-                memories.len(),
-            );
-            self.bond_level = new_level;
-            self.bond_level_changed = level_changed;
-
-            let bond_state = BondTracker::get_state(self.db.conn());
-            self.bond_score = bond_state.bond_score;
-
-            Evolution::tick(
-                self.db.conn(),
-                new_level,
-                self.config.evolution.formality_alpha,
-            );
-
-            // Check if narrative needs updating (skip if offline)
+        // Steps 8-9: Skip all persistence in incognito mode
+        if !self.incognito {
+            // Step 8: Learn from this exchange (skip if offline — LLM needed)
+            //   V25: Clean tool artifacts from response before learning
             if !is_offline {
-                let needs_narrative = Narrative::tick_interaction(
-                    self.db.conn(),
-                    self.config.narrative.update_interval_interactions,
+                let clean_response = sanitize::clean_response_for_learning(
+                    &response_text, &tool_calls_made,
                 );
-                if needs_narrative {
-                    let self_texts: Vec<String> = self_memories
-                        .iter()
-                        .map(|m| m.text.clone())
-                        .collect();
-                    Narrative::update(
+                learning::extract_and_learn(
+                    &self.db, &*self.llm, user_text, &clean_response,
+                    &self.config.memory_evolution,
+                );
+            }
+
+            // Step 8b: Update conversation context for smart recall (Gap 1)
+            memory_evolution::update_conversation_context(self.db.conn(), user_text, &memories);
+
+            // Step 9: Score bond + tick evolution (always runs — tracks interaction count)
+            if self.config.bond.enabled {
+                let (new_level, level_changed) = BondTracker::score_interaction(
+                    self.db.conn(),
+                    user_text,
+                    &response_text,
+                    memories.len(),
+                );
+                self.bond_level = new_level;
+                self.bond_level_changed = level_changed;
+
+                let bond_state = BondTracker::get_state(self.db.conn());
+                self.bond_score = bond_state.bond_score;
+
+                Evolution::tick(
+                    self.db.conn(),
+                    new_level,
+                    self.config.evolution.formality_alpha,
+                );
+
+                // Check if narrative needs updating (skip if offline)
+                if !is_offline {
+                    let needs_narrative = Narrative::tick_interaction(
                         self.db.conn(),
-                        &*self.llm,
-                        &self.config.user_name,
-                        new_level,
-                        bond_state.bond_score,
-                        &self_texts,
-                        self.config.narrative.max_tokens,
+                        self.config.narrative.update_interval_interactions,
                     );
+                    if needs_narrative {
+                        let self_texts: Vec<String> = self_memories
+                            .iter()
+                            .map(|m| m.text.clone())
+                            .collect();
+                        Narrative::update(
+                            self.db.conn(),
+                            &*self.llm,
+                            &self.config.user_name,
+                            new_level,
+                            bond_state.bond_score,
+                            &self_texts,
+                            self.config.narrative.max_tokens,
+                        );
+                    }
                 }
             }
         }
@@ -1179,9 +1219,25 @@ impl CompanionService {
             .map(|s| s.active_memories)
             .unwrap_or(0);
 
+        // Time fields
+        let now = now_ts();
+        let dt = chrono_from_ts(now);
+        let current_hour = dt.0;
+        let current_day_of_week = dt.1;
+        let idle_seconds = now - self.last_interaction_ts;
+
+        // Interaction density (last hour)
+        let interactions_last_hour = count_recent_interactions(self.db.conn(), now - 3600.0);
+
+        // Workflow hints for current hour
+        let workflow_hints = query_workflow_hints(self.db.conn());
+
+        // Maintenance report
+        let maintenance_report = query_maintenance_log(self.db.conn());
+
         CompanionState {
             last_interaction_ts: self.last_interaction_ts,
-            current_ts: now_ts(),
+            current_ts: now,
             session_active: self.session_turn_count > 0,
             conversation_turn_count: self.session_turn_count,
             recent_valence_avg: self.recent_valence_avg,
@@ -1197,6 +1253,13 @@ impl CompanionService {
             opinions_count: Evolution::count_opinions(self.db.conn()),
             shared_references_count: Evolution::count_shared_references(self.db.conn()),
             bond_level_changed: self.bond_level_changed,
+            // Phase 2: Proactive intelligence
+            current_hour,
+            current_day_of_week,
+            idle_seconds,
+            interactions_last_hour,
+            workflow_hints,
+            maintenance_report,
         }
     }
 
@@ -1393,12 +1456,14 @@ fn execute_tool_round(
     use_native_tools: bool,
     api_tool_calls: &[yantrikdb_ml::ApiToolCall],
     native_tools: &mut Vec<serde_json::Value>,
+    incognito: bool,
 ) {
     let ctx = ToolContext {
         db,
         max_permission: max_perm,
         registry_metadata: None,
         task_manager: Some(task_manager),
+        incognito,
     };
 
     for (idx, (name, args)) in tool_calls.iter().enumerate() {
@@ -1412,6 +1477,7 @@ fn execute_tool_round(
                 max_permission: max_perm,
                 registry_metadata: Some(&metadata),
                 task_manager: Some(task_manager),
+                incognito,
             };
             registry.execute(&disc_ctx, name, args)
         } else {
@@ -1464,7 +1530,8 @@ fn execute_tool_round(
             }
         }
 
-        let safe_result = sanitize::sanitize_tool_result(&result);
+        let max_len = sanitize::max_result_len_for_tool(name);
+        let safe_result = sanitize::sanitize_tool_result_with_limit(&result, max_len);
 
         if use_native_tools {
             // Native format: role="tool" with tool_call_id
@@ -1503,19 +1570,22 @@ fn execute_tool_round_tracked(
     native_tools: &mut Vec<serde_json::Value>,
     agent_loop: &mut AgentLoop,
     error_recovery: bool,
+    incognito: bool,
 ) {
     let ctx = ToolContext {
         db,
         max_permission: max_perm,
         registry_metadata: None,
         task_manager: Some(task_manager),
+        incognito,
     };
 
     for (idx, (name, args)) in tool_calls.iter().enumerate() {
         tool_calls_made.push(name.clone());
 
-        // Runaway detection: stop if same tool called 3+ times already
-        if let Some(stop_msg) = agent_loop.runaway_check(name, 3) {
+        // Runaway detection: category-aware limits (browser=25, files=10, shell=15, etc.)
+        let max_for_tool = crate::agent_loop::max_calls_for_tool(name);
+        if let Some(stop_msg) = agent_loop.runaway_check(name, max_for_tool) {
             tracing::warn!(tool = name, "Runaway tool loop detected — injecting stop");
             if use_native_tools {
                 let call_id = api_tool_calls.get(idx)
@@ -1536,6 +1606,7 @@ fn execute_tool_round_tracked(
                 max_permission: max_perm,
                 registry_metadata: Some(&metadata),
                 task_manager: Some(task_manager),
+                incognito,
             };
             registry.execute(&disc_ctx, name, args)
         } else {
@@ -1596,7 +1667,8 @@ fn execute_tool_round_tracked(
             }
         }
 
-        let mut safe_result = sanitize::sanitize_tool_result(&result);
+        let max_len = sanitize::max_result_len_for_tool(name);
+        let mut safe_result = sanitize::sanitize_tool_result_with_limit(&result, max_len);
 
         // Error recovery: append hint suggesting alternatives
         if is_error && error_recovery && name != "discover_tools" {
@@ -1649,4 +1721,131 @@ fn now_ts() -> f64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_secs_f64()
+}
+
+// ── Phase 2: Proactive Intelligence helpers ─────────────────────────────────
+
+/// Extract (hour, day_of_week) from a Unix timestamp using simple math (UTC).
+fn chrono_from_ts(ts: f64) -> (u32, u32) {
+    let secs = ts as i64;
+    let day_seconds = ((secs % 86400) + 86400) % 86400;
+    let hour = (day_seconds / 3600) as u32;
+    // Day of week: Jan 1 1970 was Thursday (4). 0=Sun..6=Sat
+    let days_since_epoch = secs / 86400;
+    let dow = (((days_since_epoch % 7) + 4) % 7) as u32;
+    (hour, dow)
+}
+
+fn ensure_workflow_table(conn: &rusqlite::Connection) {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS workflow_observations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            hour INTEGER NOT NULL,
+            day_of_week INTEGER NOT NULL,
+            activity TEXT NOT NULL,
+            observed_at REAL NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_workflow_hour ON workflow_observations(hour);",
+    )
+    .ok();
+}
+
+fn ensure_maintenance_table(conn: &rusqlite::Connection) {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS maintenance_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_name TEXT NOT NULL,
+            started_at REAL NOT NULL,
+            completed_at REAL,
+            status TEXT NOT NULL DEFAULT 'running',
+            summary TEXT,
+            reported INTEGER NOT NULL DEFAULT 0
+        );",
+    )
+    .ok();
+}
+
+/// Query workflow hints: aggregated activity counts by hour.
+fn query_workflow_hints(conn: &rusqlite::Connection) -> Vec<serde_json::Value> {
+    let mut stmt = match conn.prepare(
+        "SELECT hour, activity, COUNT(DISTINCT CAST(observed_at / 86400 AS INTEGER)) as days_observed
+         FROM workflow_observations
+         WHERE observed_at > ?1
+         GROUP BY hour, activity
+         HAVING days_observed >= 3
+         ORDER BY hour, days_observed DESC",
+    ) {
+        Ok(s) => s,
+        Err(_) => return vec![],
+    };
+
+    let cutoff = now_ts() - 30.0 * 86400.0; // last 30 days
+    stmt.query_map(rusqlite::params![cutoff], |row| {
+        Ok(serde_json::json!({
+            "hour": row.get::<_, i64>(0)?,
+            "activity": row.get::<_, String>(1)?,
+            "days_observed": row.get::<_, i64>(2)?,
+        }))
+    })
+    .ok()
+    .map(|rows| rows.filter_map(|r| r.ok()).collect())
+    .unwrap_or_default()
+}
+
+/// Count interactions in the last hour from bond events.
+fn count_recent_interactions(conn: &rusqlite::Connection, since_ts: f64) -> u32 {
+    conn.query_row(
+        "SELECT COUNT(*) FROM bond_events WHERE timestamp > ?1",
+        rusqlite::params![since_ts],
+        |row| row.get::<_, u32>(0),
+    )
+    .unwrap_or(0)
+}
+
+/// Query recent maintenance log entries (last 24h, unreported first).
+fn query_maintenance_log(conn: &rusqlite::Connection) -> Vec<serde_json::Value> {
+    let mut stmt = match conn.prepare(
+        "SELECT task_name, started_at, completed_at, status, summary, reported
+         FROM maintenance_log
+         WHERE started_at > ?1
+         ORDER BY reported ASC, started_at DESC
+         LIMIT 10",
+    ) {
+        Ok(s) => s,
+        Err(_) => return vec![],
+    };
+
+    let cutoff = now_ts() - 86400.0;
+    stmt.query_map(rusqlite::params![cutoff], |row| {
+        Ok(serde_json::json!({
+            "task_name": row.get::<_, String>(0)?,
+            "started_at": row.get::<_, f64>(1)?,
+            "completed_at": row.get::<_, Option<f64>>(2)?,
+            "status": row.get::<_, String>(3)?,
+            "summary": row.get::<_, Option<String>>(4)?,
+            "reported": row.get::<_, bool>(5)?,
+        }))
+    })
+    .ok()
+    .map(|rows| rows.filter_map(|r| r.ok()).collect())
+    .unwrap_or_default()
+}
+
+/// Strip Qwen3.5 `<think>...</think>` reasoning blocks from LLM output.
+/// These are internal reasoning tokens that shouldn't be shown to the user.
+fn strip_think_tags(text: &str) -> String {
+    let mut result = String::new();
+    let mut remaining = text;
+    while let Some(start) = remaining.find("<think>") {
+        result.push_str(&remaining[..start]);
+        let after = &remaining[start + "<think>".len()..];
+        if let Some(end) = after.find("</think>") {
+            remaining = &after[end + "</think>".len()..];
+        } else {
+            // Unclosed think tag — drop everything after it
+            return result.trim().to_string();
+        }
+    }
+    result.push_str(remaining);
+    result.trim().to_string()
 }

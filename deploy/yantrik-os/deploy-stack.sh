@@ -223,27 +223,70 @@ fi
 # ── Step 4: Download models ──
 echo "[4/8] Downloading AI models..."
 
+# Local model cache (LAN-local nginx on Proxmox LXC)
+MODEL_CACHE="http://192.168.4.92:8888"
+CACHE_OK=false
+if curl -sf --connect-timeout 3 "$MODEL_CACHE/" >/dev/null 2>&1; then
+    echo "  Local model cache available at $MODEL_CACHE"
+    CACHE_OK=true
+else
+    echo "  Local model cache not reachable, falling back to HuggingFace"
+fi
+
 # MiniLM embedder (~87MB)
 if [ ! -f "$MODEL_DIR/embedder/model.safetensors" ]; then
     echo "  Downloading MiniLM embedder (~87MB)..."
-    HF_EMB="https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main"
-    for f in config.json tokenizer.json tokenizer_config.json special_tokens_map.json model.safetensors; do
-        wget -q -O "$MODEL_DIR/embedder/$f" "$HF_EMB/$f"
-    done
-    echo "  Embedder downloaded"
+    if $CACHE_OK && curl -sf --connect-timeout 3 "$MODEL_CACHE/embedder/model.safetensors" -o /dev/null; then
+        for f in config.json tokenizer.json tokenizer_config.json special_tokens_map.json model.safetensors; do
+            wget -q -O "$MODEL_DIR/embedder/$f" "$MODEL_CACHE/embedder/$f"
+        done
+        echo "  Embedder downloaded (from LAN cache)"
+    else
+        HF_EMB="https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main"
+        for f in config.json tokenizer.json tokenizer_config.json special_tokens_map.json model.safetensors; do
+            wget -q -O "$MODEL_DIR/embedder/$f" "$HF_EMB/$f"
+        done
+        echo "  Embedder downloaded (from HuggingFace)"
+    fi
 else
     echo "  Embedder already present"
 fi
 
-# Qwen2.5-3B-Instruct GGUF (~1.7GB) — desktop-grade model
+# Whisper tiny (~146MB) — speech-to-text model
+if [ ! -f "$MODEL_DIR/whisper/model.safetensors" ]; then
+    echo "  Downloading Whisper tiny (~146MB)..."
+    if $CACHE_OK && curl -sf --connect-timeout 3 "$MODEL_CACHE/whisper/model.safetensors" -o /dev/null; then
+        for f in config.json tokenizer.json model.safetensors; do
+            wget -q -O "$MODEL_DIR/whisper/$f" "$MODEL_CACHE/whisper/$f"
+        done
+        echo "  Whisper downloaded (from LAN cache)"
+    else
+        HF_WHISPER="https://huggingface.co/openai/whisper-tiny/resolve/main"
+        for f in config.json tokenizer.json model.safetensors; do
+            wget -q -O "$MODEL_DIR/whisper/$f" "$HF_WHISPER/$f"
+        done
+        echo "  Whisper downloaded (from HuggingFace)"
+    fi
+else
+    echo "  Whisper already present"
+fi
+
+# Qwen2.5-3B-Instruct GGUF (~1.7GB) — desktop-grade model (local LLM fallback)
 if [ ! -f "$MODEL_DIR/llm/qwen2.5-3b-instruct-q4_k_m.gguf" ]; then
     echo "  Downloading Qwen2.5-3B GGUF (~1.7GB)..."
-    HF_LLM="https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/main"
-    HF_TOK="https://huggingface.co/Qwen/Qwen2.5-3B-Instruct/resolve/main"
-    wget -q -O "$MODEL_DIR/llm/qwen2.5-3b-instruct-q4_k_m.gguf" "$HF_LLM/qwen2.5-3b-instruct-q4_k_m.gguf"
-    wget -q -O "$MODEL_DIR/llm/tokenizer.json" "$HF_TOK/tokenizer.json"
-    wget -q -O "$MODEL_DIR/llm/config.json" "$HF_TOK/config.json"
-    echo "  LLM downloaded"
+    if $CACHE_OK && curl -sf --connect-timeout 3 "$MODEL_CACHE/qwen2.5-3b/qwen2.5-3b-instruct-q4_k_m.gguf" -o /dev/null; then
+        wget -q -O "$MODEL_DIR/llm/qwen2.5-3b-instruct-q4_k_m.gguf" "$MODEL_CACHE/qwen2.5-3b/qwen2.5-3b-instruct-q4_k_m.gguf"
+        wget -q -O "$MODEL_DIR/llm/tokenizer.json" "$MODEL_CACHE/qwen2.5-3b/tokenizer.json" 2>/dev/null || true
+        wget -q -O "$MODEL_DIR/llm/config.json" "$MODEL_CACHE/qwen2.5-3b/config.json" 2>/dev/null || true
+        echo "  LLM downloaded (from LAN cache)"
+    else
+        HF_LLM="https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/main"
+        HF_TOK="https://huggingface.co/Qwen/Qwen2.5-3B-Instruct/resolve/main"
+        wget -q -O "$MODEL_DIR/llm/qwen2.5-3b-instruct-q4_k_m.gguf" "$HF_LLM/qwen2.5-3b-instruct-q4_k_m.gguf"
+        wget -q -O "$MODEL_DIR/llm/tokenizer.json" "$HF_TOK/tokenizer.json"
+        wget -q -O "$MODEL_DIR/llm/config.json" "$HF_TOK/config.json"
+        echo "  LLM downloaded (from HuggingFace)"
+    fi
 else
     echo "  LLM already present"
 fi

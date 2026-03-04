@@ -171,6 +171,10 @@ pub fn get_templates(instinct: &str) -> &'static [ProactiveTemplate] {
         "reminder" | "scheduler" => SCHEDULER_TEMPLATES,
         "pattern_surfacing" | "activity_reflector" => PATTERN_TEMPLATES,
         "bond_milestone" | "bondmilestone" => BOND_MILESTONE_TEMPLATES,
+        "predictive_workflow" => PREDICTIVE_WORKFLOW_TEMPLATES,
+        "routine" => ROUTINE_TEMPLATES,
+        "cognitive_load" => COGNITIVE_LOAD_TEMPLATES,
+        "smart_updates" => SMART_UPDATES_TEMPLATES,
         _ => &[],
     }
 }
@@ -389,6 +393,100 @@ static PATTERN_TEMPLATES: &[ProactiveTemplate] = &[
         text: "Over the past few days: {activity_summary}.",
         bond_suffixes: &[
             (BondLevel::Confidant, "Thought you'd want to know."),
+        ],
+    },
+];
+
+// ── Bond Milestone ──────────────────────────────────────────────────────────
+
+// ── Predictive Workflow ──────────────────────────────────────────────────────
+
+static PREDICTIVE_WORKFLOW_TEMPLATES: &[ProactiveTemplate] = &[
+    ProactiveTemplate {
+        instinct: "predictive_workflow",
+        min_bond: BondLevel::Acquaintance,
+        text: "It's about that time \u{2014} you usually {activity_label} around now.",
+        bond_suffixes: &[
+            (BondLevel::Friend, "Want to get started?"),
+            (BondLevel::Confidant, "I can set things up if you'd like."),
+            (BondLevel::PartnerInCrime, "Clock's ticking, champ."),
+        ],
+    },
+    ProactiveTemplate {
+        instinct: "predictive_workflow",
+        min_bond: BondLevel::Friend,
+        text: "Around this hour you tend to {activity_label}. Just a heads up.",
+        bond_suffixes: &[
+            (BondLevel::Confidant, "I know your patterns by now."),
+        ],
+    },
+];
+
+// ── Routine ─────────────────────────────────────────────────────────────────
+
+static ROUTINE_TEMPLATES: &[ProactiveTemplate] = &[
+    ProactiveTemplate {
+        instinct: "routine",
+        min_bond: BondLevel::Friend,
+        text: "Your usual {window} routine: {routine_summary}.",
+        bond_suffixes: &[
+            (BondLevel::Confidant, "Creatures of habit, both of us."),
+            (BondLevel::PartnerInCrime, "I've got the playbook memorized."),
+        ],
+    },
+    ProactiveTemplate {
+        instinct: "routine",
+        min_bond: BondLevel::Confidant,
+        text: "Good {window}. Your typical flow is {routine_summary} \u{2014} ready to go?",
+        bond_suffixes: &[
+            (BondLevel::PartnerInCrime, "Or we break the pattern today."),
+        ],
+    },
+];
+
+// ── Cognitive Load ──────────────────────────────────────────────────────────
+
+static COGNITIVE_LOAD_TEMPLATES: &[ProactiveTemplate] = &[
+    ProactiveTemplate {
+        instinct: "cognitive_load",
+        min_bond: BondLevel::Acquaintance,
+        text: "You've been going hard for a while. Maybe a short break?",
+        bond_suffixes: &[
+            (BondLevel::Friend, "Even machines need cooldown."),
+            (BondLevel::Confidant, "I worry about you sometimes."),
+            (BondLevel::PartnerInCrime, "Step away. That's an order."),
+        ],
+    },
+    ProactiveTemplate {
+        instinct: "cognitive_load",
+        min_bond: BondLevel::Friend,
+        text: "Lot of context switching happening. Might be worth slowing down a notch.",
+        bond_suffixes: &[
+            (BondLevel::Confidant, "Just looking out for you."),
+            (BondLevel::PartnerInCrime, "You're not a computer. Well, not entirely."),
+        ],
+    },
+];
+
+// ── Smart Updates ───────────────────────────────────────────────────────────
+
+static SMART_UPDATES_TEMPLATES: &[ProactiveTemplate] = &[
+    ProactiveTemplate {
+        instinct: "smart_updates",
+        min_bond: BondLevel::Stranger,
+        text: "While you were away, I {maintenance_summary}.",
+        bond_suffixes: &[
+            (BondLevel::Friend, "Everything's in order."),
+            (BondLevel::Confidant, "I like keeping things tidy."),
+            (BondLevel::PartnerInCrime, "You can thank me later."),
+        ],
+    },
+    ProactiveTemplate {
+        instinct: "smart_updates",
+        min_bond: BondLevel::Acquaintance,
+        text: "Ran some background maintenance: {maintenance_summary}.",
+        bond_suffixes: &[
+            (BondLevel::Friend, "Nothing to worry about."),
         ],
     },
 ];

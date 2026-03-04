@@ -86,6 +86,8 @@ pub mod telegram;
 pub mod memory_hygiene;
 pub mod clipboard;
 pub mod automation;
+pub mod vision;
+pub mod canvas;
 pub mod plugin;
 
 use crate::config::CompanionConfig;
@@ -158,6 +160,8 @@ pub struct ToolContext<'a> {
     pub registry_metadata: Option<&'a [ToolMetadata]>,
     /// Background task manager for long-running processes.
     pub task_manager: Option<&'a std::sync::Mutex<crate::task_manager::TaskManager>>,
+    /// When true, tools that persist data should skip saving.
+    pub incognito: bool,
 }
 
 /// Compact tool metadata for discovery (no full JSON schema).
@@ -405,6 +409,19 @@ pub fn build_registry(config: &CompanionConfig) -> ToolRegistry {
         } else {
             tracing::warn!("Telegram enabled but bot_token or chat_id missing — skipping");
         }
+    }
+
+    // Register vision tools (if using API backend like Ollama with vision support)
+    if config.llm.is_api_backend() {
+        // Convert OpenAI-compat URL to Ollama native URL for vision
+        // e.g. "http://host:11434/v1" → "http://host:11434"
+        let api_url = config.llm.resolve_api_base_url().unwrap_or_default();
+        let ollama_base = api_url.trim_end_matches("/v1").trim_end_matches('/').to_string();
+        let model = config.llm.api_model.as_deref().unwrap_or("qwen3.5:9b");
+        vision::register(&mut reg, &ollama_base, model);
+        canvas::register(&mut reg, &ollama_base, model);
+        browser::register_vision(&mut reg, &ollama_base, model);
+        tracing::info!(base = %ollama_base, model, "Vision & Canvas tools registered");
     }
 
     // Load YAML plugins from ~/.config/yantrik/plugins/

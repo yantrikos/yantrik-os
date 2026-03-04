@@ -12,3 +12,8 @@ members = [
 # Without this, quantized LLM inference is ~100x slower.
 [profile.dev.package."*"]
 opt-level = 2
+
+# Local override: adds "thinking": false to API requests for Qwen3.5/DeepSeek
+[patch."https://github.com/spranab/yantrikdb.git"]
+yantrikdb-ml = { path = "crates/yantrikdb-ml" }
+yantrikdb-core = { path = "crates/yantrikdb-core" }

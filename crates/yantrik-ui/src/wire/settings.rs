@@ -6,7 +6,7 @@ use crate::app_context::AppContext;
 use crate::{App, ThemeMode};
 
 /// Wire settings callbacks.
-pub fn wire(ui: &App, _ctx: &AppContext) {
+pub fn wire(ui: &App, ctx: &AppContext) {
     let ui_weak = ui.as_weak();
     ui.on_toggle_dark_mode(move || {
         let Some(ui) = ui_weak.upgrade() else { return };
@@ -28,6 +28,17 @@ pub fn wire(ui: &App, _ctx: &AppContext) {
         };
         ui.set_settings_tool_permission(next.into());
         tracing::info!(from = %current, to = next, "Tool permission level changed");
+    });
+
+    // Incognito mode toggle — no persistence, resets on boot
+    let ui_weak = ui.as_weak();
+    let bridge = ctx.bridge.clone();
+    ui.on_toggle_incognito_mode(move || {
+        let Some(ui) = ui_weak.upgrade() else { return };
+        let new_val = !ui.get_settings_incognito_mode();
+        ui.set_settings_incognito_mode(new_val);
+        bridge.set_incognito(new_val);
+        tracing::info!(incognito = new_val, "Incognito mode toggled from UI");
     });
 
     // Cycle auto-lock timeout: 30s → 1m → 2m → 5m → 10m → never → 30s

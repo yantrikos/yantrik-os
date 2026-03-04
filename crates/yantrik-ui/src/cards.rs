@@ -17,7 +17,9 @@ fn category_rgb(cat: &features::UrgeCategory) -> (f32, f32, f32) {
         features::UrgeCategory::Focus => (0.77, 0.55, 0.83),          // purple
         features::UrgeCategory::Celebration => (0.55, 0.91, 0.42),    // green
         features::UrgeCategory::Shell => (0.91, 0.48, 0.29),          // orange-red
-        features::UrgeCategory::Notification => (0.40, 0.70, 0.92),  // blue
+        features::UrgeCategory::Notification => (0.40, 0.70, 0.92),   // blue
+        features::UrgeCategory::Vision => (0.35, 0.85, 0.95),         // bright cyan
+        features::UrgeCategory::Project => (0.95, 0.75, 0.30),        // gold
     }
 }
 
@@ -194,6 +196,12 @@ pub fn push_queue_cards(ui_weak: &slint::Weak<App>, scored: &[features::ScoredUr
                 }
                 features::UrgeCategory::Notification => {
                     slint::Color::from_rgb_u8(0x66, 0xB3, 0xEB)
+                }
+                features::UrgeCategory::Vision => {
+                    slint::Color::from_rgb_u8(0x5A, 0xD9, 0xF2)
+                }
+                features::UrgeCategory::Project => {
+                    slint::Color::from_rgb_u8(0xF2, 0xBF, 0x4D)
                 }
             };
 

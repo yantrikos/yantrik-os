@@ -18,3 +18,7 @@ memory.db.bak
 # IDE
 .vscode/
 .idea/
+
+# Claude Code (local settings with permissions, API keys in MCP config)
+.mcp.json
+.claude/settings.local.json

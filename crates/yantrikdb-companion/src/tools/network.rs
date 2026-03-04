@@ -211,3 +211,4 @@ fn strip_html(html: &str) -> String {
 
     result.trim().to_string()
 }
+

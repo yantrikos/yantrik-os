@@ -50,6 +50,12 @@ pub fn wrap_data_full(label: &str, content: &str) -> String {
 /// Sanitize a tool result before feeding it back to the LLM as a user message.
 /// Strips dangerous content and truncates to prevent context flooding.
 pub fn sanitize_tool_result(result: &str) -> String {
+    sanitize_tool_result_with_limit(result, MAX_TOOL_RESULT_LEN)
+}
+
+/// Sanitize a tool result with a custom truncation limit.
+/// Use `max_result_len_for_tool()` to get the right limit per tool category.
+pub fn sanitize_tool_result_with_limit(result: &str, max_len: usize) -> String {
     let mut s = result.to_string();
 
     // 1. Strip null bytes
@@ -68,7 +74,21 @@ pub fn sanitize_tool_result(result: &str) -> String {
     s = escape_for_prompt(&s);
 
     // 5. Truncate
-    truncate(&s, MAX_TOOL_RESULT_LEN).to_string()
+    truncate(&s, max_len).to_string()
+}
+
+/// Per-tool result size limits. Browser tools need much more room than memory tools.
+pub fn max_result_len_for_tool(tool_name: &str) -> usize {
+    match tool_name {
+        // browser_snapshot/see: 200+ elements × ~80 chars + page text + vision analysis
+        "browser_snapshot" | "browser_see" => 20_000,
+        // browse/read: page content + elements
+        "browse" | "browser_read" | "web_search" => 12_000,
+        // File & shell: command output and file contents can be long
+        "read_file" | "search_files" | "run_command" | "http_fetch" => 8_000,
+        // Everything else: default
+        _ => MAX_TOOL_RESULT_LEN,
+    }
 }
 
 /// Strip ANSI escape sequences from text.

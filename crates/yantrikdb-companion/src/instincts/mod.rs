@@ -7,6 +7,7 @@ mod activity_reflector;
 mod automation;
 mod bond_milestone;
 mod check_in;
+mod cognitive_load;
 mod conflict_alerting;
 mod emotional_awareness;
 mod follow_up;
@@ -14,10 +15,13 @@ mod humor;
 mod memory_weaver;
 mod morning_brief;
 mod pattern_surfacing;
+mod predictive_workflow;
 mod reminder;
+mod routine;
 mod scheduler;
 mod self_awareness;
 mod serendipity;
+mod smart_updates;
 mod weather_watch;
 
 use crate::config::InstinctSettings;
@@ -27,6 +31,7 @@ pub use activity_reflector::ActivityReflectorInstinct;
 pub use automation::AutomationInstinct;
 pub use bond_milestone::BondMilestoneInstinct;
 pub use check_in::CheckInInstinct;
+pub use cognitive_load::CognitiveLoadInstinct;
 pub use conflict_alerting::ConflictAlertingInstinct;
 pub use emotional_awareness::EmotionalAwarenessInstinct;
 pub use follow_up::FollowUpInstinct;
@@ -34,10 +39,13 @@ pub use humor::HumorInstinct;
 pub use memory_weaver::MemoryWeaverInstinct;
 pub use morning_brief::MorningBriefInstinct;
 pub use pattern_surfacing::PatternSurfacingInstinct;
+pub use predictive_workflow::PredictiveWorkflowInstinct;
 pub use reminder::ReminderInstinct;
+pub use routine::RoutineInstinct;
 pub use scheduler::SchedulerInstinct;
 pub use self_awareness::SelfAwarenessInstinct;
 pub use serendipity::SerendipityInstinct;
+pub use smart_updates::SmartUpdatesInstinct;
 pub use weather_watch::WeatherWatchInstinct;
 
 /// Trait for companion instincts.
@@ -101,6 +109,20 @@ pub fn load_instincts(settings: &InstinctSettings) -> Vec<Box<dyn Instinct>> {
     instincts.push(Box::new(WeatherWatchInstinct::new()));
     instincts.push(Box::new(ActivityReflectorInstinct));
     instincts.push(Box::new(SerendipityInstinct));
+
+    // Phase 2: Proactive intelligence
+    if settings.predictive_workflow_enabled {
+        instincts.push(Box::new(PredictiveWorkflowInstinct::new()));
+    }
+    if settings.routine_enabled {
+        instincts.push(Box::new(RoutineInstinct::new()));
+    }
+    if settings.cognitive_load_enabled {
+        instincts.push(Box::new(CognitiveLoadInstinct::new()));
+    }
+    if settings.smart_updates_enabled {
+        instincts.push(Box::new(SmartUpdatesInstinct::new()));
+    }
 
     instincts
 }

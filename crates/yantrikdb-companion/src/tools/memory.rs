@@ -50,6 +50,10 @@ impl Tool for RememberTool {
     }
 
     fn execute(&self, ctx: &ToolContext, args: &serde_json::Value) -> String {
+        if ctx.incognito {
+            return "Incognito mode is active \u{2014} memory not saved.".to_string();
+        }
+
         let text = args.get("text").and_then(|v| v.as_str()).unwrap_or_default();
         if text.is_empty() {
             return "Error: text is required".to_string();

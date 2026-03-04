@@ -146,6 +146,14 @@ export component App inherits Window {
     in property <string> notification-text: "";
     in-out property <bool> show-notification: false;
 
+    // Ambient Intelligence state
+    in property <float> particle-sentiment: 0.0;
+    in property <float> particle-cognitive-load: 0.0;
+    in property <float> particle-time-of-day: 0.5;
+
+    // Project Consciousness
+    in property <string> active-project: "";
+
     // Focus mode (Workspace Morph)
     in-out property <bool> focus-mode: false;
     in property <string> focus-remaining: "";
@@ -171,7 +179,9 @@ export component App inherits Window {
     in property <string> settings-llm-api-url: "";
     in property <string> settings-llm-api-model: "";
     in-out property <bool> settings-dark-mode: true;
+    in-out property <bool> settings-incognito-mode: false;
     callback toggle-dark-mode();
+    callback toggle-incognito-mode();
     callback cycle-tool-permission();
     callback cycle-auto-lock();
 
@@ -368,6 +378,7 @@ export component App inherits Window {
             battery-charging: root.battery-charging;
             wifi-connected: root.wifi-connected;
             pending-count: root.pending-count;
+            settings-incognito-mode: root.settings-incognito-mode;
             // Companion
             is-thinking: root.is-thinking;
             has-urges: root.has-urges;
@@ -375,6 +386,12 @@ export component App inherits Window {
             is-listening: root.is-listening;
             greeting-text: root.greeting-text;
             memory-count: root.memory-count;
+            // Ambient Intelligence
+            particle-sentiment: root.particle-sentiment;
+            particle-cognitive-load: root.particle-cognitive-load;
+            particle-time-of-day: root.particle-time-of-day;
+            // Project Consciousness
+            active-project: root.active-project;
             // Intent Lens
             lens-open <=> root.lens-open;
             lens-results: root.lens-results;
@@ -551,7 +568,9 @@ export component App inherits Window {
                 version-text: root.settings-version;
                 notification-count: root.notification-unread-count;
                 dark-mode <=> root.settings-dark-mode;
+                incognito-mode <=> root.settings-incognito-mode;
                 toggle-dark-mode => { root.toggle-dark-mode(); }
+                toggle-incognito-mode => { root.toggle-incognito-mode(); }
                 cycle-tool-permission => { root.cycle-tool-permission(); }
                 cycle-auto-lock => { root.cycle-auto-lock(); }
                 back-pressed => {

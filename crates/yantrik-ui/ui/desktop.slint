@@ -44,6 +44,7 @@ export component DesktopScreen inherits Rectangle {
     in property <bool> battery-charging: false;
     in property <bool> wifi-connected: false;
     in property <int> pending-count: 0;
+    in property <bool> settings-incognito-mode: false;
 
     // Companion state
     in property <bool> is-thinking: false;
@@ -52,6 +53,14 @@ export component DesktopScreen inherits Rectangle {
     in property <bool> is-listening: false;
     in property <string> greeting-text: "Hello";
     in property <int> memory-count: 0;
+
+    // Ambient Intelligence
+    in property <float> particle-sentiment: 0.0;
+    in property <float> particle-cognitive-load: 0.0;
+    in property <float> particle-time-of-day: 0.5;
+
+    // Project Consciousness
+    in property <string> active-project: "";
 
     // Intent Lens state
     in-out property <bool> lens-open: false;
@@ -137,6 +146,8 @@ export component DesktopScreen inherits Rectangle {
         wifi-connected: root.wifi-connected;
         pending-count: root.pending-count;
         whisper-hint-count: root.whisper-hint-count;
+        incognito-enabled: root.settings-incognito-mode;
+        active-project: root.active-project;
         anchor-clicked => { root.lens-open = !root.lens-open; root.open-lens(); }
         queue-clicked => { root.lens-open = true; root.open-lens(); }
         whisper-hint-clicked => { root.whisper-hint-clicked(); }
@@ -229,7 +240,7 @@ export component DesktopScreen inherits Rectangle {
             background: @radial-gradient(circle, #f0f0f4 0%, #e4e4ec 50%, #d8d8e0 100%);
         }
 
-        // Particle field (neurons + nebula clouds)
+        // Particle field (neurons + nebula clouds + ambient intelligence)
         ParticleField {
             width: 100%;
             height: 100%;
@@ -237,8 +248,14 @@ export component DesktopScreen inherits Rectangle {
             intensity: root.focus-mode ? 0.15 : 0.7;
             is-thinking: root.is-thinking;
             has-urges: root.has-urges;
+            sentiment: root.particle-sentiment;
+            cognitive-load: root.particle-cognitive-load;
+            time-of-day: root.particle-time-of-day;
 
             animate intensity { duration: 300ms; }
+            animate sentiment { duration: 2000ms; }
+            animate cognitive-load { duration: 1000ms; }
+            animate time-of-day { duration: 5000ms; }
         }
 
         // ── Greeting (center of desktop, hidden in focus mode) ──

@@ -32,6 +32,7 @@ use std::path::PathBuf;
 use yantrikdb_companion::CompanionConfig;
 
 mod activity_feed;
+mod ambient;
 mod app_context;
 // NOTE: #[allow(dead_code)] required to avoid rustc 1.93.1 ICE in check_mod_deathness.
 #[allow(dead_code)]

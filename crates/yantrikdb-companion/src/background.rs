@@ -215,6 +215,11 @@ pub fn run_think_cycle(service: &mut CompanionService) {
         }
     }
 
+    // 10. Record workflow observation (Phase 2: Predictive Workflow)
+    if !service.incognito && service.idle_seconds() < 300.0 {
+        record_workflow_observation(service);
+    }
+
     tracing::debug!(
         triggers = state.pending_triggers.len(),
         patterns = patterns.len(),
@@ -318,6 +323,7 @@ fn generate_proactive_message(
                     max_permission: max_perm,
                     registry_metadata: None,
                     task_manager: Some(&service.task_manager),
+                    incognito: service.incognito,
                 };
                 for tc in &tool_calls {
                     tracing::info!(tool = %tc.name, "Auto-executing tool from automation");
@@ -383,4 +389,103 @@ fn now_ts() -> f64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_secs_f64()
+}
+
+/// Record a workflow observation for the current hour.
+/// Classifies recent activity from topics/tool calls into activity categories.
+fn record_workflow_observation(service: &CompanionService) {
+    let now = now_ts();
+    let secs = now as i64;
+    let day_seconds = ((secs % 86400) + 86400) % 86400;
+    let hour = day_seconds / 3600;
+    let days_since_epoch = secs / 86400;
+    let dow = ((days_since_epoch % 7) + 4) % 7;
+
+    // Classify from recent conversation topics or tool usage
+    let activity = classify_recent_activity(service);
+
+    service
+        .db
+        .conn()
+        .execute(
+            "INSERT INTO workflow_observations (hour, day_of_week, activity, observed_at)
+             VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![hour, dow, activity, now],
+        )
+        .ok();
+
+    // Prune old observations (>30 days)
+    service
+        .db
+        .conn()
+        .execute(
+            "DELETE FROM workflow_observations WHERE observed_at < ?1",
+            rusqlite::params![now - 30.0 * 86400.0],
+        )
+        .ok();
+}
+
+/// Classify recent activity into a category based on recent memories/triggers.
+fn classify_recent_activity(service: &CompanionService) -> &'static str {
+    // Check recent tool calls from bond events for activity signals
+    let recent_text: String = service
+        .db
+        .recall_text("recent activity", 3)
+        .unwrap_or_default()
+        .into_iter()
+        .take(3)
+        .map(|r| r.text)
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    let lower = recent_text.to_lowercase();
+
+    if lower.contains("code") || lower.contains("debug") || lower.contains("compile")
+        || lower.contains("commit") || lower.contains("function") || lower.contains("error")
+        || lower.contains("build") || lower.contains("test")
+    {
+        "coding"
+    } else if lower.contains("email") || lower.contains("message") || lower.contains("chat")
+        || lower.contains("telegram") || lower.contains("slack") || lower.contains("call")
+    {
+        "communication"
+    } else if lower.contains("research") || lower.contains("search") || lower.contains("read")
+        || lower.contains("learn") || lower.contains("article") || lower.contains("paper")
+    {
+        "research"
+    } else if lower.contains("update") || lower.contains("install") || lower.contains("server")
+        || lower.contains("disk") || lower.contains("memory") || lower.contains("process")
+    {
+        "system_admin"
+    } else if lower.contains("plan") || lower.contains("schedule") || lower.contains("todo")
+        || lower.contains("task") || lower.contains("meeting") || lower.contains("organize")
+    {
+        "planning"
+    } else {
+        "general"
+    }
+}
+
+/// Record a maintenance task result in the maintenance_log table.
+pub fn record_maintenance_result(
+    conn: &rusqlite::Connection,
+    task_name: &str,
+    summary: &str,
+) {
+    let now = now_ts();
+    conn.execute(
+        "INSERT INTO maintenance_log (task_name, started_at, completed_at, status, summary)
+         VALUES (?1, ?2, ?2, 'completed', ?3)",
+        rusqlite::params![task_name, now, summary],
+    )
+    .ok();
+}
+
+/// Mark maintenance log entries as reported.
+pub fn mark_maintenance_reported(conn: &rusqlite::Connection) {
+    conn.execute(
+        "UPDATE maintenance_log SET reported = 1 WHERE reported = 0",
+        [],
+    )
+    .ok();
 }
