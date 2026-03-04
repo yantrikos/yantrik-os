@@ -11,6 +11,7 @@ pub fn register(reg: &mut ToolRegistry) {
     reg.register(Box::new(NetworkDnsTool));
     reg.register(Box::new(NetworkDnsSetTool));
     reg.register(Box::new(NetworkVpnStatusTool));
+    reg.register(Box::new(NetworkDiagnoseTool));
 }
 
 /// Validate a hostname or IP (no shell metacharacters).
@@ -540,6 +541,143 @@ impl Tool for NetworkVpnStatusTool {
             "No VPN connections detected.".to_string()
         } else {
             info.join("\n")
+        }
+    }
+}
+
+// ── Network Diagnose ──
+
+pub struct NetworkDiagnoseTool;
+
+impl Tool for NetworkDiagnoseTool {
+    fn name(&self) -> &'static str { "network_diagnose" }
+    fn permission(&self) -> PermissionLevel { PermissionLevel::Safe }
+    fn category(&self) -> &'static str { "networking" }
+
+    fn definition(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "function",
+            "function": {
+                "name": "network_diagnose",
+                "description": "Run a full network health check: DNS latency, gateway ping, internet connectivity, and WiFi info. Use when the user says internet is slow or not working.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {}
+                }
+            }
+        })
+    }
+
+    fn execute(&self, _ctx: &ToolContext, _args: &serde_json::Value) -> String {
+        let mut report = Vec::new();
+
+        // 1. Read DNS server from /etc/resolv.conf
+        let dns_server = std::fs::read_to_string("/etc/resolv.conf")
+            .ok()
+            .and_then(|content| {
+                content.lines()
+                    .find(|l| l.starts_with("nameserver"))
+                    .and_then(|l| l.split_whitespace().nth(1))
+                    .map(String::from)
+            })
+            .unwrap_or_else(|| "unknown".to_string());
+
+        // 2. DNS latency test
+        let dns_start = std::time::Instant::now();
+        let dns_ok = std::process::Command::new("nslookup")
+            .arg("example.com")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or_else(|_| {
+                // Fallback to getent
+                std::process::Command::new("getent")
+                    .args(["hosts", "example.com"])
+                    .output()
+                    .map(|o| o.status.success())
+                    .unwrap_or(false)
+            });
+        let dns_ms = dns_start.elapsed().as_millis();
+
+        if dns_ok {
+            let assessment = if dns_ms > 500 {
+                format!("SLOW ({}ms via {}). Consider switching to 1.1.1.1 or 8.8.8.8.", dns_ms, dns_server)
+            } else {
+                format!("OK ({}ms via {}).", dns_ms, dns_server)
+            };
+            report.push(format!("DNS: {}", assessment));
+        } else {
+            report.push(format!("DNS: FAILED via {}. Name resolution broken.", dns_server));
+        }
+
+        // 3. Gateway ping
+        let gateway = std::process::Command::new("sh")
+            .arg("-c")
+            .arg("ip route show default | awk '{print $3}' | head -1")
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap_or_default();
+
+        if !gateway.is_empty() {
+            match std::process::Command::new("ping")
+                .args(["-c", "1", "-W", "3", &gateway])
+                .output()
+            {
+                Ok(o) if o.status.success() => {
+                    let text = String::from_utf8_lossy(&o.stdout);
+                    let latency = text.lines()
+                        .find(|l| l.contains("time="))
+                        .and_then(|l| l.split("time=").nth(1))
+                        .and_then(|t| t.split_whitespace().next())
+                        .unwrap_or("?");
+                    report.push(format!("Gateway ({}): OK ({}ms).", gateway, latency));
+                }
+                _ => {
+                    report.push(format!("Gateway ({}): UNREACHABLE. Router may be down or WiFi disconnected.", gateway));
+                }
+            }
+        } else {
+            report.push("Gateway: No default route found. Network not configured.".to_string());
+        }
+
+        // 4. Internet connectivity
+        match std::process::Command::new("ping")
+            .args(["-c", "1", "-W", "5", "1.1.1.1"])
+            .output()
+        {
+            Ok(o) if o.status.success() => {
+                let text = String::from_utf8_lossy(&o.stdout);
+                let latency = text.lines()
+                    .find(|l| l.contains("time="))
+                    .and_then(|l| l.split("time=").nth(1))
+                    .and_then(|t| t.split_whitespace().next())
+                    .unwrap_or("?");
+                report.push(format!("Internet: OK ({}ms to 1.1.1.1).", latency));
+            }
+            _ => {
+                report.push("Internet: UNREACHABLE. Cannot reach 1.1.1.1.".to_string());
+            }
+        }
+
+        // 5. WiFi info (if available)
+        if let Ok(o) = std::process::Command::new("sh")
+            .arg("-c")
+            .arg("iw dev 2>/dev/null | grep -E 'ssid|signal|channel' | head -3")
+            .output()
+        {
+            if o.status.success() {
+                let text = String::from_utf8_lossy(&o.stdout);
+                if !text.trim().is_empty() {
+                    report.push(format!("WiFi: {}", text.lines().map(|l| l.trim()).collect::<Vec<_>>().join(", ")));
+                }
+            }
+        }
+
+        if report.is_empty() {
+            "Could not run network diagnostics.".to_string()
+        } else {
+            report.join("\n")
         }
     }
 }

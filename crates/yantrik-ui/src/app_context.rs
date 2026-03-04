@@ -207,6 +207,7 @@ impl AppContext {
         registry.register(Box::new(features::error_companion::ErrorCompanion::new()));
         registry.register(Box::new(features::notification_relay::NotificationRelay::new()));
         registry.register(Box::new(features::tool_suggester::ToolSuggester::new()));
+        registry.register(Box::new(features::network_watcher::NetworkWatcher::new()));
 
         Self {
             bridge,

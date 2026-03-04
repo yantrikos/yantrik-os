@@ -12,6 +12,7 @@ pub mod error_companion;
 pub mod focus_flow;
 pub mod notification_relay;
 pub mod tool_suggester;
+pub mod network_watcher;
 
 use std::collections::HashMap;
 use yantrik_os::{SystemEvent, SystemSnapshot};

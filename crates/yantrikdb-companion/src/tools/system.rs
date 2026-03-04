@@ -1,4 +1,4 @@
-//! System tools — kill_process, send_notification, system_control.
+//! System tools — kill_process, send_notification, system_control, battery_forecast.
 
 use super::{Tool, ToolContext, ToolRegistry, PermissionLevel};
 
@@ -6,6 +6,7 @@ pub fn register(reg: &mut ToolRegistry) {
     reg.register(Box::new(KillProcessTool));
     reg.register(Box::new(SendNotificationTool));
     reg.register(Box::new(SystemControlTool));
+    reg.register(Box::new(BatteryForecastTool));
 }
 
 /// Processes that must never be killed by the AI.
@@ -216,6 +217,100 @@ fn run_wpctl(args: &str) -> String {
             format!("wpctl failed: {err}")
         }
         Err(e) => format!("Error (wpctl not available?): {e}"),
+    }
+}
+
+// ── Battery Forecast ──
+
+pub struct BatteryForecastTool;
+
+impl Tool for BatteryForecastTool {
+    fn name(&self) -> &'static str { "battery_forecast" }
+    fn permission(&self) -> PermissionLevel { PermissionLevel::Safe }
+    fn category(&self) -> &'static str { "system" }
+
+    fn definition(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "function",
+            "function": {
+                "name": "battery_forecast",
+                "description": "Get battery status with a time forecast — current level, charging state, and estimated wall-clock time until empty or full.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {}
+                }
+            }
+        })
+    }
+
+    fn execute(&self, _ctx: &ToolContext, _args: &serde_json::Value) -> String {
+        let bat_dir = "/sys/class/power_supply/BAT0";
+
+        // Check if battery exists
+        if !std::path::Path::new(bat_dir).exists() {
+            return "No battery device detected (running in VM or desktop?).".to_string();
+        }
+
+        let read_sysfs = |name: &str| -> Option<String> {
+            std::fs::read_to_string(format!("{}/{}", bat_dir, name))
+                .ok()
+                .map(|s| s.trim().to_string())
+        };
+
+        let capacity: u8 = read_sysfs("capacity")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+
+        let status = read_sysfs("status").unwrap_or_else(|| "Unknown".to_string());
+        let discharging = status == "Discharging";
+
+        // Try time_to_empty_now (seconds) or time_to_full_now
+        let time_secs: Option<u64> = if discharging {
+            read_sysfs("time_to_empty_now").and_then(|s| s.parse().ok())
+        } else {
+            read_sysfs("time_to_full_now").and_then(|s| s.parse().ok())
+        };
+
+        // Fallback: compute from charge_now, charge_full, current_now
+        let time_secs = time_secs.or_else(|| {
+            let charge_now: u64 = read_sysfs("charge_now").and_then(|s| s.parse().ok())?;
+            let current_now: u64 = read_sysfs("current_now").and_then(|s| s.parse().ok()).filter(|&c| c > 0)?;
+            if discharging {
+                Some(charge_now * 3600 / current_now)
+            } else {
+                let charge_full: u64 = read_sysfs("charge_full").and_then(|s| s.parse().ok())?;
+                let remaining = charge_full.saturating_sub(charge_now);
+                Some(remaining * 3600 / current_now)
+            }
+        });
+
+        let mut report = format!("Battery at {}%, {}.", capacity, status.to_lowercase());
+
+        if let Some(secs) = time_secs {
+            let mins = secs / 60;
+            let hours = mins / 60;
+            let rem_mins = mins % 60;
+
+            // Wall-clock projection
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            let target = now + secs;
+            // Format as HH:MM (24h local — assume UTC offset from TZ)
+            let target_hour = ((target / 3600) % 24) as u32;
+            let target_min = ((target / 60) % 60) as u32;
+            let period = if target_hour < 12 { "AM" } else { "PM" };
+            let display_hour = if target_hour == 0 { 12 } else if target_hour > 12 { target_hour - 12 } else { target_hour };
+
+            let action = if discharging { "Empty" } else { "Full" };
+            report.push_str(&format!(
+                " {} by {}:{:02} {} ({}h {}m remaining).",
+                action, display_hour, target_min, period, hours, rem_mins
+            ));
+        }
+
+        report
     }
 }
 

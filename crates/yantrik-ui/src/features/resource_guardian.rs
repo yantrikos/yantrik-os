@@ -74,10 +74,13 @@ impl ProactiveFeature for ResourceGuardian {
                 if !charging {
                     if *level <= self.battery_critical && self.should_fire("battery_critical") {
                         let body = match time_to_empty_mins {
-                            Some(mins) => format!(
-                                "Battery at {}% \u{2014} about {} minutes left. Plug in soon.",
-                                level, mins
-                            ),
+                            Some(mins) => {
+                                let clock = mins_to_clock_time(*mins);
+                                format!(
+                                    "Battery at {}% \u{2014} about {} minutes left, empty around {}. Plug in soon.",
+                                    level, mins, clock
+                                )
+                            }
                             None => format!("Battery at {}%. Plug in now.", level),
                         };
                         urges.push(Urge {
@@ -91,10 +94,13 @@ impl ProactiveFeature for ResourceGuardian {
                         });
                     } else if *level <= self.battery_warning && self.should_fire("battery_warning") {
                         let body = match time_to_empty_mins {
-                            Some(mins) => format!(
-                                "Battery at {}% \u{2014} roughly {} minutes remaining.",
-                                level, mins
-                            ),
+                            Some(mins) => {
+                                let clock = mins_to_clock_time(*mins);
+                                format!(
+                                    "Battery at {}% \u{2014} roughly {} minutes left, empty around {}.",
+                                    level, mins, clock
+                                )
+                            }
                             None => format!("Battery at {}%. Consider plugging in.", level),
                         };
                         urges.push(Urge {
@@ -170,18 +176,25 @@ impl ProactiveFeature for ResourceGuardian {
                     if percent >= self.memory_warning_percent
                         && self.should_fire("memory_warning")
                     {
-                        let used_mb = *used_bytes / 1_000_000;
-                        let total_mb = *total_bytes / 1_000_000;
-                        // V15: Action-first — identify top memory consumer
-                        let top = top_cpu_process(ctx);
-                        let top_note = top.map(|(name, _)| format!(" Top process: {}.", name)).unwrap_or_default();
+                        let used_gb = *used_bytes as f64 / 1_000_000_000.0;
+                        let total_gb = *total_bytes as f64 / 1_000_000_000.0;
+                        // Narrative: identify top CPU consumers + tool hint
+                        let top_procs = top_processes(ctx, 3);
+                        let top_note = if top_procs.is_empty() {
+                            String::new()
+                        } else {
+                            let names: Vec<String> = top_procs.iter()
+                                .map(|(name, cpu)| format!("{} ({:.0}%)", name, cpu))
+                                .collect();
+                            format!(" Top CPU: {}.", names.join(", "))
+                        };
                         urges.push(Urge {
                             id: format!("rg:memory:{:.0}", percent),
                             source: "resource_guardian".into(),
                             title: "Memory pressure".into(),
                             body: format!(
-                                "RAM at {:.0}% ({} / {} MB).{}",
-                                percent, used_mb, total_mb, top_note
+                                "RAM at {:.0}% ({:.1}/{:.1} GB).{} Ask me to diagnose_process for details.",
+                                percent, used_gb, total_gb, top_note
                             ),
                             urgency: 0.65,
                             confidence: 0.9,
@@ -203,7 +216,7 @@ impl ProactiveFeature for ResourceGuardian {
                             source: "resource_guardian".into(),
                             title: "Disk almost full".into(),
                             body: format!(
-                                "Only {:.1} GB free on {}. Consider cleaning up.",
+                                "Only {:.1} GB free on {}. Ask me to analyze_disk to find what's taking space.",
                                 avail_gb, mount_point
                             ),
                             urgency: 0.75,
@@ -257,12 +270,35 @@ impl ProactiveFeature for ResourceGuardian {
 
 /// Find the top CPU-consuming process from the system snapshot.
 fn top_cpu_process(ctx: &FeatureContext) -> Option<(String, f32)> {
-    ctx.system
+    top_processes(ctx, 1).into_iter().next()
+}
+
+/// Find the top N CPU-consuming processes from the system snapshot.
+fn top_processes(ctx: &FeatureContext, count: usize) -> Vec<(String, f32)> {
+    let mut procs: Vec<_> = ctx.system
         .running_processes
         .iter()
-        .max_by(|a, b| a.cpu_percent.partial_cmp(&b.cpu_percent).unwrap_or(std::cmp::Ordering::Equal))
-        .filter(|p| p.cpu_percent > 5.0) // Only report if it's actually consuming significant CPU
+        .filter(|p| p.cpu_percent > 5.0)
+        .collect();
+    procs.sort_by(|a, b| b.cpu_percent.partial_cmp(&a.cpu_percent).unwrap_or(std::cmp::Ordering::Equal));
+    procs.into_iter()
+        .take(count)
         .map(|p| (p.name.clone(), p.cpu_percent))
+        .collect()
+}
+
+/// Convert minutes-from-now to a wall-clock time string like "3:47 PM".
+fn mins_to_clock_time(mins: u32) -> String {
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let target = now_secs + (mins as u64) * 60;
+    let target_hour = ((target / 3600) % 24) as u32;
+    let target_min = ((target / 60) % 60) as u32;
+    let period = if target_hour < 12 { "AM" } else { "PM" };
+    let display_hour = if target_hour == 0 { 12 } else if target_hour > 12 { target_hour - 12 } else { target_hour };
+    format!("{}:{:02} {}", display_hour, target_min, period)
 }
 
 #[cfg(test)]

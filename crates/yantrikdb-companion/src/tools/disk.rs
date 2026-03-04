@@ -1,4 +1,4 @@
-//! Disk tools — disk_usage, mount_info.
+//! Disk tools — disk_usage, mount_info, dir_size, analyze_disk.
 
 use super::{Tool, ToolContext, ToolRegistry, PermissionLevel, validate_path};
 
@@ -6,6 +6,7 @@ pub fn register(reg: &mut ToolRegistry) {
     reg.register(Box::new(DiskUsageTool));
     reg.register(Box::new(MountInfoTool));
     reg.register(Box::new(DirSizeTool));
+    reg.register(Box::new(AnalyzeDiskTool));
 }
 
 // ── Disk Usage ──
@@ -176,6 +177,112 @@ impl Tool for DirSizeTool {
             }
             Ok(o) => format!("du failed: {}", String::from_utf8_lossy(&o.stderr)),
             Err(e) => format!("Error: {e}"),
+        }
+    }
+}
+
+// ── Analyze Disk ──
+
+pub struct AnalyzeDiskTool;
+
+impl Tool for AnalyzeDiskTool {
+    fn name(&self) -> &'static str { "analyze_disk" }
+    fn permission(&self) -> PermissionLevel { PermissionLevel::Safe }
+    fn category(&self) -> &'static str { "disk" }
+
+    fn definition(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "function",
+            "function": {
+                "name": "analyze_disk",
+                "description": "Analyze a directory for disk space usage: subdirectory sizes, old files, and file type breakdown. Great for finding what's eating disk space.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "description": "Directory to analyze (default: ~/)"}
+                    }
+                }
+            }
+        })
+    }
+
+    fn execute(&self, _ctx: &ToolContext, args: &serde_json::Value) -> String {
+        let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("~/");
+
+        let expanded = match validate_path(path) {
+            Ok(p) => p,
+            Err(e) => return format!("Error: {e}"),
+        };
+
+        let mut report = Vec::new();
+
+        // 1. Subdirectory sizes (top 10, sorted by size)
+        if let Ok(o) = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(&format!("du -sh {}/* 2>/dev/null | sort -rh | head -10", expanded))
+            .output()
+        {
+            if o.status.success() {
+                let text = String::from_utf8_lossy(&o.stdout);
+                if !text.trim().is_empty() {
+                    report.push(format!("Largest items in {}:", path));
+                    for line in text.lines() {
+                        report.push(format!("  {}", line));
+                    }
+                }
+            }
+        }
+
+        // 2. Old files (>30 days, summarized)
+        if let Ok(o) = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(&format!(
+                "find {} -maxdepth 2 -type f -mtime +30 -printf '%s\\n' 2>/dev/null | awk '{{s+=$1; c++}} END {{printf \"%d files, %.0f\\n\", c, s}}'",
+                expanded
+            ))
+            .output()
+        {
+            if o.status.success() {
+                let text = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                if !text.is_empty() && !text.starts_with("0 files") {
+                    let parts: Vec<&str> = text.splitn(2, ", ").collect();
+                    if parts.len() == 2 {
+                        let count = parts[0];
+                        let bytes: u64 = parts[1].trim().parse().unwrap_or(0);
+                        let size_str = super::format_size(bytes);
+                        report.push(format!("\nOlder than 30 days: {} (~{}).", count, size_str));
+                    }
+                }
+            }
+        }
+
+        // 3. File type breakdown (top 8 extensions by count)
+        if let Ok(o) = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(&format!(
+                "find {} -maxdepth 2 -type f -name '*.*' 2>/dev/null | sed 's/.*\\.//' | sort | uniq -c | sort -rn | head -8",
+                expanded
+            ))
+            .output()
+        {
+            if o.status.success() {
+                let text = String::from_utf8_lossy(&o.stdout);
+                if !text.trim().is_empty() {
+                    report.push("\nFile types:".to_string());
+                    for line in text.lines() {
+                        let trimmed = line.trim();
+                        if !trimmed.is_empty() {
+                            report.push(format!("  {}", trimmed));
+                        }
+                    }
+                }
+            }
+        }
+
+        if report.is_empty() {
+            format!("Could not analyze {}. Directory may be empty or inaccessible.", path)
+        } else {
+            report.join("\n")
         }
     }
 }
