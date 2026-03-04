@@ -433,8 +433,11 @@ pub fn build_registry(config: &CompanionConfig) -> ToolRegistry {
         let model = config.llm.api_model.as_deref().unwrap_or("qwen3.5:9b");
         vision::register(&mut reg, &ollama_base, model);
         canvas::register(&mut reg, &ollama_base, model);
-        browser::register_vision(&mut reg, &ollama_base, model);
-        tracing::info!(base = %ollama_base, model, "Vision & Canvas tools registered");
+        // Use lighter model for browser_see — vision on 27B is too slow (timeouts).
+        // 9B is fast enough for coordinate extraction from screenshots.
+        let vision_model = config.llm.vision_model.as_deref().unwrap_or("qwen3.5:9b");
+        browser::register_vision(&mut reg, &ollama_base, vision_model);
+        tracing::info!(base = %ollama_base, model, vision_model, "Vision & Canvas tools registered");
     }
 
     // Load YAML plugins from ~/.config/yantrik/plugins/
