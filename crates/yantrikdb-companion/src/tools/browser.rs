@@ -230,6 +230,11 @@ impl Tool for LaunchBrowserTool {
     }
 
     fn execute(&self, _ctx: &ToolContext, args: &serde_json::Value) -> String {
+        // Run watchdog check before launch — kill zombies from previous sessions
+        if let Some(warning) = super::browser_lifecycle::watchdog_check() {
+            tracing::info!("launch_browser pre-flight: {}", warning);
+        }
+
         // Check if already running
         if is_browser_running() {
             return "Browser already running (CDP on port 9222).".to_string();

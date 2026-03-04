@@ -38,6 +38,7 @@ pub mod telegram;
 pub mod task_manager;
 pub mod tool_cache;
 pub mod tool_traces;
+pub mod life_assistant;
 pub mod tools;
 pub mod types;
 pub mod urges;
