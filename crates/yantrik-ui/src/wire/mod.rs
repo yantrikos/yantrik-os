@@ -6,6 +6,7 @@
 //! To add a new feature: create a new file, add `mod` + one `wire()` call here.
 //! main.rs stays untouched.
 
+mod about;
 mod app_grid;
 mod callbacks;
 mod chat;
@@ -21,6 +22,7 @@ pub mod settings;
 mod system_poll;
 pub mod text_editor;
 mod timers;
+pub mod toast;
 mod voice_mode;
 pub mod terminal;
 pub mod notes;
@@ -49,5 +51,7 @@ pub fn wire_all(ui: &App, ctx: &AppContext) {
     terminal::wire(ui, ctx);
     notes::wire(ui, ctx);
     screenshot::wire(ui, ctx);
+    toast::wire(ui, ctx);
+    about::wire(ui, ctx);
     callbacks::wire(ui, ctx);
 }

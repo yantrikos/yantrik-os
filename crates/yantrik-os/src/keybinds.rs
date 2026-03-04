@@ -12,6 +12,10 @@
 //! - Print       → screenshot (full screen)
 //! - Shift+Print → screenshot-region (select region)
 //! - Super+Space → open-lens (alternative)
+//! - Super+Left  → snap window to left half
+//! - Super+Right → snap window to right half
+//! - Super+Up    → maximize window
+//! - Super+Down  → unsnap / restore window
 
 use crossbeam_channel::Sender;
 
@@ -94,6 +98,27 @@ pub const DEFAULT_KEYBINDS: &[Keybind] = &[
         action: "close-window",
         description: "Close window",
     },
+    // ── Snap zones (labwc-native, no D-Bus) ──
+    Keybind {
+        key: "W-Left",
+        action: "snap-left",
+        description: "Snap window to left half",
+    },
+    Keybind {
+        key: "W-Right",
+        action: "snap-right",
+        description: "Snap window to right half",
+    },
+    Keybind {
+        key: "W-Up",
+        action: "snap-maximize",
+        description: "Maximize window",
+    },
+    Keybind {
+        key: "W-Down",
+        action: "snap-restore",
+        description: "Unsnap / restore window",
+    },
 ];
 
 // ── D-Bus service ──
@@ -146,7 +171,7 @@ pub fn generate_labwc_keybinds() -> String {
     let mut xml = String::from("  <keyboard>\n");
 
     for bind in DEFAULT_KEYBINDS {
-        // Special cases: Alt+Tab and Alt+F4 use native labwc actions
+        // Special cases: native labwc actions (no D-Bus roundtrip)
         match bind.action {
             "next-window" => {
                 xml.push_str(&format!(
@@ -157,6 +182,30 @@ pub fn generate_labwc_keybinds() -> String {
             "close-window" => {
                 xml.push_str(&format!(
                     "    <!-- {} -->\n    <keybind key=\"{}\">\n      <action name=\"Close\" />\n    </keybind>\n",
+                    bind.description, bind.key
+                ));
+            }
+            "snap-left" => {
+                xml.push_str(&format!(
+                    "    <!-- {} -->\n    <keybind key=\"{}\">\n      <action name=\"SnapToEdge\"><direction>left</direction></action>\n    </keybind>\n",
+                    bind.description, bind.key
+                ));
+            }
+            "snap-right" => {
+                xml.push_str(&format!(
+                    "    <!-- {} -->\n    <keybind key=\"{}\">\n      <action name=\"SnapToEdge\"><direction>right</direction></action>\n    </keybind>\n",
+                    bind.description, bind.key
+                ));
+            }
+            "snap-maximize" => {
+                xml.push_str(&format!(
+                    "    <!-- {} -->\n    <keybind key=\"{}\">\n      <action name=\"Maximize\" />\n    </keybind>\n",
+                    bind.description, bind.key
+                ));
+            }
+            "snap-restore" => {
+                xml.push_str(&format!(
+                    "    <!-- {} -->\n    <keybind key=\"{}\">\n      <action name=\"UnMaximize\" />\n    </keybind>\n",
                     bind.description, bind.key
                 ));
             }

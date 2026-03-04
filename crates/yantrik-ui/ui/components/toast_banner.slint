@@ -1,0 +1,126 @@
+import { Theme } from "../theme.slint";
+
+export struct ToastData {
+    id: int,
+    app-name: string,
+    summary: string,
+    body: string,
+    urgency: int,      // 0=low, 1=normal, 2=critical
+    icon-char: string,  // first char of app name
+}
+
+export component ToastBanner inherits Rectangle {
+    in property <[ToastData]> toasts: [];
+    callback toast-clicked(int);    // toast id
+    callback toast-dismissed(int);  // toast id
+
+    width: 100%;
+    height: 100%;
+    // No background — overlay on top of content
+
+    // Show up to 3 toasts stacked from top-right
+    for toast[idx] in root.toasts : Rectangle {
+        x: parent.width - 380px;
+        y: 32px + idx * 80px;
+        width: 360px;
+        height: 72px;
+        border-radius: 14px;
+        background: @linear-gradient(135deg, #1a1a2440 0%, #0c0c1840 100%);
+        border-width: 1px;
+        border-color: toast.urgency == 2 ? #e86b6b40 : #5ac8d420;
+        drop-shadow-blur: 20px;
+        drop-shadow-color: #00000060;
+        opacity: 0.97;
+        clip: true;
+
+        // Urgency accent bar on left
+        Rectangle {
+            x: 0; y: 0;
+            width: 3px;
+            height: parent.height;
+            background: toast.urgency == 2 ? #e86b6b :
+                        toast.urgency == 1 ? #e8b44c : #5ac8d4;
+        }
+
+        TouchArea {
+            width: 100%;
+            height: 100%;
+            clicked => { root.toast-clicked(toast.id); }
+        }
+
+        HorizontalLayout {
+            padding-left: 14px;
+            padding-right: 14px;
+            spacing: 10px;
+
+            // App icon circle
+            Rectangle {
+                width: 36px;
+                height: 36px;
+                y: (parent.height - 36px) / 2;
+                border-radius: 18px;
+                background: toast.urgency == 2 ? #e86b6b20 :
+                            toast.urgency == 1 ? #e8b44c20 : #5ac8d420;
+
+                Text {
+                    text: toast.icon-char;
+                    color: toast.urgency == 2 ? #e86b6b :
+                           toast.urgency == 1 ? #e8b44c : #5ac8d4;
+                    font-size: 14px;
+                    font-weight: 700;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+
+            // Text content
+            VerticalLayout {
+                horizontal-stretch: 1;
+                alignment: center;
+                spacing: 2px;
+
+                // App name
+                HorizontalLayout {
+                    spacing: 6px;
+                    Text {
+                        text: toast.app-name;
+                        color: Theme.text-dim;
+                        font-size: 10px;
+                        letter-spacing: 1px;
+                    }
+                }
+
+                Text {
+                    text: toast.summary;
+                    color: Theme.text-primary;
+                    font-size: 13px;
+                    font-weight: 500;
+                    overflow: elide;
+                }
+
+                if toast.body != "" : Text {
+                    text: toast.body;
+                    color: Theme.text-secondary;
+                    font-size: 11px;
+                    overflow: elide;
+                }
+            }
+
+            // Dismiss X button
+            TouchArea {
+                width: 24px;
+                height: 24px;
+                y: (parent.height - 24px) / 2;
+                clicked => { root.toast-dismissed(toast.id); }
+
+                Text {
+                    text: "\u{00D7}";
+                    color: Theme.text-dim;
+                    font-size: 16px;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+        }
+    }
+}

@@ -80,6 +80,8 @@ pub enum LensAction {
     OpenSettings,
     /// Open file browser (screen 8).
     OpenFileBrowser,
+    /// Copy text to the clipboard (used by calculator results).
+    CopyToClipboard(String),
     /// Close the Lens, nothing else.
     #[allow(dead_code)]
     CloseLens,
@@ -90,6 +92,9 @@ pub enum LensAction {
 /// Parse an action_id string into a concrete LensAction.
 /// `installed_apps` is the scanned .desktop entries for resolving `launch:` by app_id.
 pub fn resolve_action(action_id: &str, installed_apps: &[DesktopEntry]) -> LensAction {
+    if action_id.starts_with("copy-result:") {
+        return LensAction::CopyToClipboard(action_id["copy-result:".len()..].to_string());
+    }
     if action_id.starts_with("launch:") {
         let app_id = &action_id[7..];
         // First check installed .desktop apps
@@ -624,9 +629,50 @@ pub fn frecency_to_recents(entries: &[&crate::frecency::FrecencyEntry]) -> Vec<L
         .collect()
 }
 
+// ── Percentage & Math formatting helpers ──
+
+/// Evaluate percentage expressions: "X% of Y" → X/100 * Y, "X% off Y" → Y - X/100 * Y.
+fn eval_percentage(input: &str) -> Option<String> {
+    let lower = input.to_lowercase();
+
+    // "X% of Y"
+    if let Some(idx) = lower.find("% of ") {
+        let pct_str = input[..idx].trim();
+        let val_str = input[idx + 5..].trim();
+        let pct: f64 = pct_str.parse().ok()?;
+        let val: f64 = val_str.parse().ok()?;
+        let result = pct / 100.0 * val;
+        return Some(format_math_result(result));
+    }
+
+    // "X% off Y"
+    if let Some(idx) = lower.find("% off ") {
+        let pct_str = input[..idx].trim();
+        let val_str = input[idx + 6..].trim();
+        let pct: f64 = pct_str.parse().ok()?;
+        let val: f64 = val_str.parse().ok()?;
+        let result = val - (pct / 100.0 * val);
+        return Some(format_math_result(result));
+    }
+
+    None
+}
+
+/// Format a math result: integers without decimals, floats trimmed of trailing zeros.
+fn format_math_result(result: f64) -> String {
+    if result == result.floor() && result.abs() < 1e15 {
+        format!("= {}", result as i64)
+    } else {
+        format!("= {:.6}", result)
+            .trim_end_matches('0')
+            .trim_end_matches('.')
+            .to_string()
+    }
+}
+
 // ── Inline Instant Answers ──
 
-/// Try to produce an inline answer for common queries (math, time, battery, date).
+/// Try to produce an inline answer for common queries (math, time, battery, date, percentages).
 /// Returns None if the query doesn't match any instant-answer pattern.
 pub fn instant_answer(query: &str, snapshot: &yantrik_os::SystemSnapshot) -> Option<LensResult> {
     let lower = query.trim().to_lowercase();
@@ -661,14 +707,21 @@ pub fn instant_answer(query: &str, snapshot: &yantrik_os::SystemSnapshot) -> Opt
         return Some(answer_result("Battery", &val, "🔋", "system:status"));
     }
 
-    // Math: try to evaluate simple expressions
+    // Percentage: "X% of Y" or "X% off Y"
+    if let Some(val) = eval_percentage(query.trim()) {
+        // Strip "= " prefix for the clipboard value
+        let copy_val = val.strip_prefix("= ").unwrap_or(&val);
+        let action = format!("copy-result:{}", copy_val);
+        return Some(answer_result("Calculate", &val, "🧮", &action));
+    }
+
+    // Math: try to evaluate expressions (including functions and constants)
     if let Some(result) = eval_math(query.trim()) {
-        let val = if result == result.floor() && result.abs() < 1e15 {
-            format!("= {}", result as i64)
-        } else {
-            format!("= {:.6}", result).trim_end_matches('0').trim_end_matches('.').to_string()
-        };
-        return Some(answer_result("Calculate", &val, "🧮", ""));
+        let val = format_math_result(result);
+        // Strip "= " prefix for the clipboard value
+        let copy_val = val.strip_prefix("= ").unwrap_or(&val);
+        let action = format!("copy-result:{}", copy_val);
+        return Some(answer_result("Calculate", &val, "🧮", &action));
     }
 
     None
@@ -699,15 +752,44 @@ fn format_epoch_date(epoch_secs: u64) -> String {
 }
 
 /// Recursive-descent math evaluator.
-/// Handles: +, -, *, /, ^, %, parentheses, and negative numbers.
+/// Handles: +, -, *, /, ^, %, parentheses, negative numbers,
+/// functions (sqrt, sin, cos, tan, log, ln, abs, ceil, floor, round),
+/// and constants (pi, e).
 /// Returns None if the input isn't a valid math expression.
 pub fn eval_math(input: &str) -> Option<f64> {
-    // Quick check: must contain at least one operator or parentheses to be math
-    if !input.chars().any(|c| matches!(c, '+' | '-' | '*' | '/' | '^' | '%' | '(' | ')')) {
+    // Quick check: must contain at least one operator, function call, or parentheses to be math
+    let has_operator = input
+        .chars()
+        .any(|c| matches!(c, '+' | '-' | '*' | '/' | '^' | '%' | '(' | ')'));
+    let has_function = [
+        "sqrt", "sin", "cos", "tan", "log", "ln", "abs", "ceil", "floor", "round", "pi",
+    ]
+    .iter()
+    .any(|f| input.to_lowercase().contains(f));
+
+    if !has_operator && !has_function {
         return None;
     }
-    // Must not contain alphabetic chars (except 'e' for scientific notation)
-    if input.chars().any(|c| c.is_alphabetic() && c != 'e' && c != 'E') {
+
+    // Must not contain alphabetic chars that aren't known functions/constants
+    // (prevent "hello + 5" from being evaluated)
+    let lower = input.to_lowercase();
+    let cleaned = lower
+        .replace("sqrt", "")
+        .replace("sin", "")
+        .replace("cos", "")
+        .replace("tan", "")
+        .replace("log", "")
+        .replace("ln", "")
+        .replace("abs", "")
+        .replace("ceil", "")
+        .replace("floor", "")
+        .replace("round", "")
+        .replace("pi", "");
+    if cleaned
+        .chars()
+        .any(|c| c.is_alphabetic() && c != 'e')
+    {
         return None;
     }
 
@@ -774,6 +856,8 @@ fn parse_atom(tokens: &[char], pos: &mut usize) -> Option<f64> {
     if *pos >= tokens.len() {
         return None;
     }
+
+    // Parenthesized expression
     if tokens[*pos] == '(' {
         *pos += 1;
         let val = parse_expr(tokens, pos)?;
@@ -781,23 +865,74 @@ fn parse_atom(tokens: &[char], pos: &mut usize) -> Option<f64> {
             return None;
         }
         *pos += 1;
-        Some(val)
-    } else {
-        // Parse number
+        return Some(val);
+    }
+
+    // Try to read a word (function name or constant)
+    if tokens[*pos].is_alphabetic() {
         let start = *pos;
-        while *pos < tokens.len()
-            && (tokens[*pos].is_ascii_digit() || tokens[*pos] == '.'
-                || ((tokens[*pos] == 'e' || tokens[*pos] == 'E')
-                    && *pos + 1 < tokens.len()))
-        {
+        while *pos < tokens.len() && tokens[*pos].is_alphabetic() {
             *pos += 1;
         }
-        if *pos == start {
+        let word: String = tokens[start..*pos].iter().collect();
+        let word_lower = word.to_lowercase();
+
+        // Constants
+        match word_lower.as_str() {
+            "pi" => return Some(std::f64::consts::PI),
+            "e" if *pos >= tokens.len() || tokens[*pos] != '(' => {
+                // Only treat as Euler's number if not followed by '('
+                return Some(std::f64::consts::E);
+            }
+            _ => {}
+        }
+
+        // Functions: must be followed by '('
+        if *pos >= tokens.len() || tokens[*pos] != '(' {
             return None;
         }
-        let num_str: String = tokens[start..*pos].iter().collect();
-        num_str.parse::<f64>().ok()
+        *pos += 1; // skip '('
+        let arg = parse_expr(tokens, pos)?;
+        if *pos >= tokens.len() || tokens[*pos] != ')' {
+            return None;
+        }
+        *pos += 1; // skip ')'
+
+        return match word_lower.as_str() {
+            "sqrt" => Some(arg.sqrt()),
+            "sin" => Some(arg.to_radians().sin()),
+            "cos" => Some(arg.to_radians().cos()),
+            "tan" => Some(arg.to_radians().tan()),
+            "log" => Some(arg.log10()),
+            "ln" => Some(arg.ln()),
+            "abs" => Some(arg.abs()),
+            "ceil" => Some(arg.ceil()),
+            "floor" => Some(arg.floor()),
+            "round" => Some(arg.round()),
+            _ => None,
+        };
     }
+
+    // Number
+    let start = *pos;
+    while *pos < tokens.len() && (tokens[*pos].is_ascii_digit() || tokens[*pos] == '.') {
+        *pos += 1;
+    }
+    // Handle scientific notation
+    if *pos < tokens.len() && (tokens[*pos] == 'e' || tokens[*pos] == 'E') {
+        *pos += 1;
+        if *pos < tokens.len() && (tokens[*pos] == '+' || tokens[*pos] == '-') {
+            *pos += 1;
+        }
+        while *pos < tokens.len() && tokens[*pos].is_ascii_digit() {
+            *pos += 1;
+        }
+    }
+    if start == *pos {
+        return None;
+    }
+    let num_str: String = tokens[start..*pos].iter().collect();
+    num_str.parse::<f64>().ok()
 }
 
 // ── Smart Intent: NL → tool matching ──
@@ -1324,7 +1459,10 @@ fn looks_like_math(s: &str) -> bool {
     let has_digit = s.chars().any(|c| c.is_ascii_digit());
     let has_op = s.contains('+') || s.contains('-') || s.contains('*') || s.contains('/')
         || s.contains('^') || s.contains('%');
-    has_digit && has_op && s.len() < 100
+    let has_func = ["sqrt(", "sin(", "cos(", "tan(", "log(", "ln(", "abs(", "ceil(", "floor(", "round("]
+        .iter()
+        .any(|f| s.to_lowercase().contains(f));
+    (has_digit && has_op || has_func) && s.len() < 100
 }
 
 fn has_unit_keyword(s: &str) -> bool {

@@ -303,6 +303,28 @@ fn wire_result_selected(ui: &App, ctx: &AppContext) {
                     ui.invoke_navigate(8);
                 }
             }
+            lens::LensAction::CopyToClipboard(text) => {
+                // Copy calculator result to clipboard via wl-copy
+                let mut child = match std::process::Command::new("wl-copy")
+                    .stdin(std::process::Stdio::piped())
+                    .spawn()
+                {
+                    Ok(c) => c,
+                    Err(e) => {
+                        tracing::error!(error = %e, "Failed to run wl-copy");
+                        return;
+                    }
+                };
+                if let Some(stdin) = child.stdin.as_mut() {
+                    use std::io::Write;
+                    let _ = stdin.write_all(text.as_bytes());
+                }
+                let _ = child.wait();
+                tracing::info!("Calculator result copied to clipboard");
+                if let Some(ui) = ui_weak.upgrade() {
+                    ui.set_lens_open(false);
+                }
+            }
             lens::LensAction::CloseLens => {
                 if let Some(ui) = ui_weak.upgrade() {
                     ui.set_lens_open(false);

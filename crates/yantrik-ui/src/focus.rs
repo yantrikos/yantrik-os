@@ -41,8 +41,13 @@ pub fn start(ui: &App, duration_secs: u32) {
         if let Some(ui) = ui_weak.upgrade() {
             if *r == 0 {
                 end(&ui);
-                ui.set_notification_text("Focus session complete. Nice work.".into());
-                ui.set_show_notification(true);
+                crate::wire::toast::push_toast(
+                    &ui_weak,
+                    "Focus",
+                    "Session complete. Nice work.",
+                    "",
+                    0, // low urgency
+                );
                 tracing::info!("Focus mode completed (timer expired)");
             } else {
                 ui.set_focus_remaining(SharedString::from(format_mmss(*r)));

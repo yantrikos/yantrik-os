@@ -90,6 +90,12 @@ pub fn wire(ui: &App, ctx: &AppContext) {
                         );
                     }
                 }
+                // Push toast banner (only on desktop screen, not in focus mode)
+                if let Some(ui_ref) = ui_weak.upgrade() {
+                    if !ui_ref.get_focus_mode() && ui_ref.get_current_screen() == 1 {
+                        super::toast::push_toast(&ui_weak, app, summary, body, *urgency);
+                    }
+                }
             }
         }
 

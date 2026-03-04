@@ -722,9 +722,14 @@ fn worker_loop(
                                     is_streaming: false,
                                     blocks: ModelRc::default(),
                                 });
-                                // Also show notification
-                                ui.set_notification_text(notif_text.into());
-                                ui.set_show_notification(true);
+                                // Also show toast notification
+                                crate::wire::toast::push_toast(
+                                    &weak,
+                                    "Companion",
+                                    &notif_text,
+                                    "",
+                                    1, // normal urgency
+                                );
                             }
                         });
 

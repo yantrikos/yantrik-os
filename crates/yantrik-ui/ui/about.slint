@@ -1,0 +1,364 @@
+// About screen — system info panel for Yantrik OS.
+// Screen 16. Read-only info cards showing hardware & OS details.
+
+import { Theme } from "theme.slint";
+
+export component AboutScreen inherits Rectangle {
+    background: Theme.bg-deep;
+
+    // Data fields (all read-only, populated from Rust)
+    in property <string> hostname: "";
+    in property <string> kernel: "";
+    in property <string> cpu-model: "";
+    in property <string> ram-total: "";
+    in property <string> disk-info: "";
+    in property <string> uptime-text: "";
+    in property <string> version-text: "0.3.0";
+    in property <string> build-date: "";
+
+    callback back-pressed();
+
+    VerticalLayout {
+        width: 100%;
+        height: 100%;
+
+        // ── Header bar (56px) ──
+        Rectangle {
+            height: 56px;
+            background: Theme.bg-surface;
+
+            HorizontalLayout {
+                padding-left: 12px;
+                padding-right: 16px;
+                spacing: 12px;
+
+                // Back button
+                Rectangle {
+                    width: 36px;
+                    height: 36px;
+                    y: (parent.height - 36px) / 2;
+                    border-radius: 18px;
+                    background: ta-back.has-hover ? Theme.hover-fill-strong : transparent;
+
+                    ta-back := TouchArea {
+                        clicked => { root.back-pressed(); }
+                    }
+
+                    Text {
+                        text: "\u{2190}";
+                        color: Theme.text-primary;
+                        font-size: 20px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+
+                // Title
+                Text {
+                    text: "About";
+                    color: Theme.text-primary;
+                    font-size: Theme.font-title;
+                    font-weight: 600;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                }
+            }
+        }
+
+        // ── Scrollable content ──
+        Flickable {
+            viewport-height: content-col.preferred-height + 40px;
+
+            content-col := VerticalLayout {
+                padding: 20px;
+                spacing: 20px;
+
+                // ── Logo / Identity section ──
+                Rectangle {
+                    background: Theme.bg-card;
+                    border-radius: Theme.radius-card;
+                    border-width: 1px;
+                    border-color: #ffffff08;
+                    height: logo-col.preferred-height;
+
+                    logo-col := VerticalLayout {
+                        padding: 24px;
+                        spacing: 12px;
+                        alignment: center;
+
+                        Text {
+                            text: "Yantrik OS";
+                            color: Theme.amber;
+                            font-size: 28px;
+                            font-weight: 700;
+                            letter-spacing: 2px;
+                            horizontal-alignment: center;
+                        }
+
+                        HorizontalLayout {
+                            alignment: center;
+                            spacing: 8px;
+
+                            Rectangle {
+                                width: v-label.preferred-width + 16px;
+                                height: 24px;
+                                border-radius: 12px;
+                                background: Theme.tint-cyan;
+                                border-width: 1px;
+                                border-color: Theme.cyan-dim;
+
+                                v-label := Text {
+                                    text: "v" + root.version-text;
+                                    color: Theme.cyan;
+                                    font-size: 11px;
+                                    font-weight: 600;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+
+                        Text {
+                            text: "AI-native desktop shell";
+                            color: Theme.text-dim;
+                            font-size: Theme.font-small;
+                            horizontal-alignment: center;
+                        }
+                    }
+                }
+
+                // ── DEVICE section header ──
+                HorizontalLayout {
+                    spacing: 8px;
+                    Rectangle {
+                        width: 3px; height: 14px;
+                        border-radius: 1.5px;
+                        background: Theme.cyan;
+                        drop-shadow-blur: 4px;
+                        drop-shadow-color: Theme.cyan-glow;
+                    }
+                    Text {
+                        text: "DEVICE";
+                        color: Theme.text-dim;
+                        font-size: 11px;
+                        letter-spacing: 2px;
+                        vertical-alignment: center;
+                    }
+                }
+
+                // ── Device info card ──
+                Rectangle {
+                    background: Theme.bg-card;
+                    border-radius: Theme.radius-card;
+                    border-width: 1px;
+                    border-color: #ffffff08;
+                    height: device-col.preferred-height;
+
+                    device-col := VerticalLayout {
+                        padding: 16px;
+                        spacing: 0px;
+
+                        // Hostname row
+                        Rectangle {
+                            height: 44px;
+                            HorizontalLayout {
+                                padding-left: 4px;
+                                padding-right: 4px;
+                                Text {
+                                    text: "Hostname";
+                                    color: Theme.text-secondary;
+                                    font-size: Theme.font-body;
+                                    vertical-alignment: center;
+                                    horizontal-stretch: 1;
+                                }
+                                Text {
+                                    text: root.hostname;
+                                    color: Theme.text-primary;
+                                    font-size: Theme.font-body;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+                        Rectangle { height: 1px; background: #ffffff06; }
+
+                        // Kernel row
+                        Rectangle {
+                            height: 44px;
+                            HorizontalLayout {
+                                padding-left: 4px;
+                                padding-right: 4px;
+                                Text {
+                                    text: "Kernel";
+                                    color: Theme.text-secondary;
+                                    font-size: Theme.font-body;
+                                    vertical-alignment: center;
+                                    horizontal-stretch: 1;
+                                }
+                                Text {
+                                    text: root.kernel;
+                                    color: Theme.text-primary;
+                                    font-size: Theme.font-body;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+                        Rectangle { height: 1px; background: #ffffff06; }
+
+                        // CPU row
+                        Rectangle {
+                            height: 44px;
+                            HorizontalLayout {
+                                padding-left: 4px;
+                                padding-right: 4px;
+                                Text {
+                                    text: "CPU";
+                                    color: Theme.text-secondary;
+                                    font-size: Theme.font-body;
+                                    vertical-alignment: center;
+                                    horizontal-stretch: 1;
+                                }
+                                Text {
+                                    text: root.cpu-model;
+                                    color: Theme.text-primary;
+                                    font-size: Theme.font-body;
+                                    vertical-alignment: center;
+                                    overflow: elide;
+                                    max-width: 280px;
+                                }
+                            }
+                        }
+                        Rectangle { height: 1px; background: #ffffff06; }
+
+                        // RAM row
+                        Rectangle {
+                            height: 44px;
+                            HorizontalLayout {
+                                padding-left: 4px;
+                                padding-right: 4px;
+                                Text {
+                                    text: "RAM";
+                                    color: Theme.text-secondary;
+                                    font-size: Theme.font-body;
+                                    vertical-alignment: center;
+                                    horizontal-stretch: 1;
+                                }
+                                Text {
+                                    text: root.ram-total;
+                                    color: Theme.text-primary;
+                                    font-size: Theme.font-body;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+                        Rectangle { height: 1px; background: #ffffff06; }
+
+                        // Disk row
+                        Rectangle {
+                            height: 44px;
+                            HorizontalLayout {
+                                padding-left: 4px;
+                                padding-right: 4px;
+                                Text {
+                                    text: "Disk";
+                                    color: Theme.text-secondary;
+                                    font-size: Theme.font-body;
+                                    vertical-alignment: center;
+                                    horizontal-stretch: 1;
+                                }
+                                Text {
+                                    text: root.disk-info;
+                                    color: Theme.text-primary;
+                                    font-size: Theme.font-body;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // ── RUNTIME section header ──
+                HorizontalLayout {
+                    spacing: 8px;
+                    Rectangle {
+                        width: 3px; height: 14px;
+                        border-radius: 1.5px;
+                        background: Theme.amber;
+                        drop-shadow-blur: 4px;
+                        drop-shadow-color: Theme.amber-glow;
+                    }
+                    Text {
+                        text: "RUNTIME";
+                        color: Theme.text-dim;
+                        font-size: 11px;
+                        letter-spacing: 2px;
+                        vertical-alignment: center;
+                    }
+                }
+
+                // ── Runtime info card ──
+                Rectangle {
+                    background: Theme.bg-card;
+                    border-radius: Theme.radius-card;
+                    border-width: 1px;
+                    border-color: #ffffff08;
+                    height: runtime-col.preferred-height;
+
+                    runtime-col := VerticalLayout {
+                        padding: 16px;
+                        spacing: 0px;
+
+                        // Uptime row
+                        Rectangle {
+                            height: 44px;
+                            HorizontalLayout {
+                                padding-left: 4px;
+                                padding-right: 4px;
+                                Text {
+                                    text: "Uptime";
+                                    color: Theme.text-secondary;
+                                    font-size: Theme.font-body;
+                                    vertical-alignment: center;
+                                    horizontal-stretch: 1;
+                                }
+                                Text {
+                                    text: root.uptime-text;
+                                    color: Theme.text-primary;
+                                    font-size: Theme.font-body;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+                        Rectangle { height: 1px; background: #ffffff06; }
+
+                        // Build date row
+                        Rectangle {
+                            height: 44px;
+                            HorizontalLayout {
+                                padding-left: 4px;
+                                padding-right: 4px;
+                                Text {
+                                    text: "Build Date";
+                                    color: Theme.text-secondary;
+                                    font-size: Theme.font-body;
+                                    vertical-alignment: center;
+                                    horizontal-stretch: 1;
+                                }
+                                Text {
+                                    text: root.build-date;
+                                    color: Theme.text-primary;
+                                    font-size: Theme.font-body;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Bottom spacer
+                Rectangle {
+                    height: 40px;
+                }
+            }
+        }
+    }
+}

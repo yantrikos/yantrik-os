@@ -34,12 +34,13 @@ pub fn take_screenshot(ui_weak: slint::Weak<App>, mode: yantrik_os::screenshot::
                 tracing::info!(path = %path, "Screenshot captured");
 
                 let _ = slint::invoke_from_event_loop(move || {
-                    if let Some(ui) = ui_weak.upgrade() {
-                        ui.set_notification_text(
-                            format!("Screenshot saved: {filename}").into(),
-                        );
-                        ui.set_show_notification(true);
-                    }
+                    super::toast::push_toast(
+                        &ui_weak,
+                        "Screenshot",
+                        &format!("Saved: {filename}"),
+                        "",
+                        0, // low urgency
+                    );
                 });
             }
             Err(e) => {
@@ -52,12 +53,13 @@ pub fn take_screenshot(ui_weak: slint::Weak<App>, mode: yantrik_os::screenshot::
                 tracing::warn!(error = %e, "Screenshot capture failed");
 
                 let _ = slint::invoke_from_event_loop(move || {
-                    if let Some(ui) = ui_weak.upgrade() {
-                        ui.set_notification_text(
-                            format!("Screenshot failed: {e}").into(),
-                        );
-                        ui.set_show_notification(true);
-                    }
+                    super::toast::push_toast(
+                        &ui_weak,
+                        "Screenshot",
+                        &format!("Failed: {e}"),
+                        "",
+                        2, // critical urgency
+                    );
                 });
             }
         }

@@ -1080,6 +1080,38 @@ export component SettingsScreen inherits Rectangle {
                     }
                 }
 
+                // About Yantrik OS — detailed system info
+                Rectangle {
+                    background: @linear-gradient(135deg, #12111a80 0%, #0c0b1060 100%);
+                    border-radius: Theme.radius-card;
+                    border-width: 1px;
+                    border-color: #ffffff08;
+                    height: 52px;
+
+                    TouchArea {
+                        clicked => { root.navigate-to(16); }
+                    }
+
+                    HorizontalLayout {
+                        padding-left: 16px;
+                        padding-right: 16px;
+
+                        Text {
+                            text: "About Yantrik OS";
+                            color: Theme.text-primary;
+                            font-size: Theme.font-body;
+                            horizontal-stretch: 1;
+                            vertical-alignment: center;
+                        }
+                        Text {
+                            text: "\u{2192}";
+                            color: Theme.cyan-dim;
+                            font-size: 18px;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+
                 // Bottom spacer
                 Rectangle {
                     height: 40px;
