@@ -234,6 +234,50 @@ pub fn build_results(
         }
     }
 
+    // Text actions: "rewrite", "summarize", "translate", "fix grammar", "proofread"
+    if lower.starts_with("rewrite") || lower.starts_with("make formal") || lower.starts_with("make casual") {
+        if companion_online {
+            let style = if lower.contains("casual") { "casually" } else { "formally" };
+            results.push(lr("ask", SharedString::from(format!("Rewrite {} clipboard text", style)),
+                "AI rewrites text from your clipboard", "R",
+                SharedString::from(format!("ask:Read my clipboard with read_clipboard, rewrite the text {}, and put the result back with write_clipboard", style))));
+        }
+    }
+    if lower.starts_with("summarize") || lower.starts_with("summarise") || lower == "tldr" {
+        if companion_online {
+            results.push(lr("ask", "Summarize clipboard text",
+                "AI summarizes text from your clipboard", "S",
+                "ask:Read my clipboard with read_clipboard, summarize the text concisely, and put the summary back with write_clipboard"));
+        }
+    }
+    if lower.starts_with("translate") {
+        if companion_online {
+            let lang = lower.strip_prefix("translate to ").unwrap_or(
+                lower.strip_prefix("translate ").unwrap_or("English")
+            );
+            let lang = capitalize(lang.trim());
+            results.push(lr("ask", SharedString::from(format!("Translate to {}", lang)),
+                "AI translates clipboard text", "T",
+                SharedString::from(format!("ask:Read my clipboard with read_clipboard, translate the text to {}, and put the translation back with write_clipboard", lang))));
+        }
+    }
+    if lower.starts_with("fix grammar") || lower.starts_with("fix spelling")
+        || lower.starts_with("proofread") || lower.starts_with("grammar")
+    {
+        if companion_online {
+            results.push(lr("ask", "Fix grammar & spelling",
+                "AI proofreads clipboard text", "G",
+                "ask:Read my clipboard with read_clipboard, fix all grammar and spelling errors, and put the corrected text back with write_clipboard"));
+        }
+    }
+    if lower.starts_with("explain") && !lower.contains("error") {
+        if companion_online {
+            results.push(lr("ask", "Explain clipboard text",
+                "AI explains the text in your clipboard", "E",
+                "ask:Read my clipboard with read_clipboard and explain the text in simple terms"));
+        }
+    }
+
     // File operations: "show downloads", "list files", "what's in ~/X"
     if lower.starts_with("show ") || lower.starts_with("list ") || lower.contains("downloads")
         || lower.starts_with("what's in ")

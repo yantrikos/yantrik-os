@@ -40,6 +40,7 @@
 //! - home_assistant: ha_get_state, ha_call_service, ha_list_entities
 //! - browser:    launch_browser, browse, browser_read, browser_click, browser_type, browser_screenshot, browser_tabs, browser_search
 //! - background_tasks: run_background, list_background_tasks, check_background_task, stop_background_task
+//! - clipboard:  clipboard_history, clipboard_analyze, clipboard_fetch_url, clipboard_transform, text_action
 //! - plugin:     (dynamic — loaded from ~/.config/yantrik/plugins/*.yaml)
 
 pub mod memory;
@@ -82,6 +83,7 @@ pub mod background_tasks;
 pub mod scheduler;
 pub mod telegram;
 pub mod memory_hygiene;
+pub mod clipboard;
 pub mod plugin;
 
 use crate::config::CompanionConfig;
@@ -378,6 +380,7 @@ pub fn build_registry(config: &CompanionConfig) -> ToolRegistry {
     background_tasks::register(&mut reg);
     scheduler::register(&mut reg);
     memory_hygiene::register(&mut reg);
+    clipboard::register(&mut reg);
 
     // Conditionally register Home Assistant tools
     let ha = &config.home_assistant;
