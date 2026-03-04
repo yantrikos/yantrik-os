@@ -1,10 +1,10 @@
 //! Multi-Source Browser Orchestration + Structured Data Extraction.
 //!
 //! Searches multiple websites sequentially via CDP browser automation,
-//! extracts structured data from page text using heuristics, and
+//! extracts structured data from page text using LLM + heuristic fallback, and
 //! deduplicates results across sources.
 //!
-//! Tools: `search_sources`, `extract_search_results`
+//! Tools: `search_sources`, `extract_search_results`, `rank_results`
 
 use std::collections::HashMap;
 use std::net::TcpStream;
@@ -1086,9 +1086,140 @@ impl Tool for SearchSourcesTool {
     }
 }
 
+// ── LLM-powered extraction ──
+
+/// Extract structured data from page text using an Ollama LLM call.
+/// Falls back to heuristic `extract_from_text()` if the LLM is unavailable or fails.
+fn llm_extract(
+    ollama_base: &str,
+    model: &str,
+    page_text: &str,
+    fields: &str,
+    source: &str,
+    max: usize,
+) -> String {
+    // Truncate page text to avoid token limits
+    let truncated = if page_text.len() > 4000 {
+        &page_text[..4000]
+    } else {
+        page_text
+    };
+
+    let prompt = format!(
+        r#"Extract structured data from this web page text. Return a JSON array of items.
+Each item should be a JSON object with these fields: {fields}
+Source: {source}
+Return ONLY valid JSON: [{{"field1": "value", ...}}, ...]
+Max {max} items. Skip items with no useful data. If no items can be extracted, return [].
+
+Page text:
+{truncated}"#,
+        fields = fields,
+        source = source,
+        max = max,
+        truncated = truncated,
+    );
+
+    let payload = json!({
+        "model": model,
+        "messages": [{
+            "role": "user",
+            "content": prompt
+        }],
+        "stream": false,
+        "options": {
+            "temperature": 0.0
+        }
+    });
+
+    let payload_path = "/tmp/yantrik-extract-payload.json";
+    if let Err(e) = std::fs::write(payload_path, payload.to_string()) {
+        tracing::warn!("Failed to write LLM payload: {e}, falling back to heuristic");
+        return extract_from_text(page_text, fields, source, max);
+    }
+
+    let url = format!("{}/api/chat", ollama_base);
+    let output = match std::process::Command::new("curl")
+        .args([
+            "-fsSL",
+            "--max-time", "60",
+            "-H", "Content-Type: application/json",
+            "-d", &format!("@{payload_path}"),
+            &url,
+        ])
+        .output()
+    {
+        Ok(o) => o,
+        Err(e) => {
+            tracing::warn!("LLM curl failed: {e}, falling back to heuristic");
+            let _ = std::fs::remove_file(payload_path);
+            return extract_from_text(page_text, fields, source, max);
+        }
+    };
+
+    let _ = std::fs::remove_file(payload_path);
+
+    if !output.status.success() {
+        tracing::warn!("LLM request failed, falling back to heuristic");
+        return extract_from_text(page_text, fields, source, max);
+    }
+
+    let response: Value = match serde_json::from_slice(&output.stdout) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!("LLM response not JSON: {e}, falling back to heuristic");
+            return extract_from_text(page_text, fields, source, max);
+        }
+    };
+
+    let content = match response["message"]["content"].as_str() {
+        Some(c) => c.trim(),
+        None => {
+            tracing::warn!("No content in LLM response, falling back to heuristic");
+            return extract_from_text(page_text, fields, source, max);
+        }
+    };
+
+    // Strip markdown code block if present
+    let json_str = if content.starts_with("```") {
+        content.lines()
+            .skip(1)
+            .take_while(|l| !l.starts_with("```"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    } else {
+        content.to_string()
+    };
+
+    // Validate it's a JSON array
+    let items: Vec<Value> = match serde_json::from_str(&json_str) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!("LLM returned invalid JSON array: {e}, falling back to heuristic");
+            return extract_from_text(page_text, fields, source, max);
+        }
+    };
+
+    // Format into structured output matching the heuristic format
+    let count = items.len().min(max);
+    let taken: Vec<Value> = items.into_iter().take(max).collect();
+    let result = json!({
+        "extracted_items": taken,
+        "total_found": count,
+        "source": source,
+        "fields_requested": fields.split(',').map(|f| f.trim()).collect::<Vec<_>>(),
+        "extraction_method": "llm",
+    });
+
+    serde_json::to_string_pretty(&result).unwrap_or_else(|_| "{}".to_string())
+}
+
 // ── Tool: extract_search_results ──
 
-pub struct ExtractResultsTool;
+pub struct ExtractResultsTool {
+    pub ollama_base: String,
+    pub model: String,
+}
 
 impl Tool for ExtractResultsTool {
     fn name(&self) -> &'static str { "extract_search_results" }
@@ -1100,7 +1231,7 @@ impl Tool for ExtractResultsTool {
             "type": "function",
             "function": {
                 "name": "extract_search_results",
-                "description": "Extract structured data from web page text. Used after browsing a search results page (via search_sources or browse). Provide the raw page text and the fields you want to extract. Returns a JSON array of items with the requested fields, extracted using heuristic pattern matching.",
+                "description": "Extract structured data from web page text using AI. Used after browsing a search results page (via search_sources or browse). Provide the raw page text and the fields you want to extract. Returns a JSON array of items with the requested fields.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -1146,7 +1277,8 @@ impl Tool for ExtractResultsTool {
             .and_then(|v| v.as_u64())
             .unwrap_or(5) as usize;
 
-        extract_from_text(page_text, fields, source, max)
+        // Try LLM extraction first, falls back to heuristic internally
+        llm_extract(&self.ollama_base, &self.model, page_text, fields, source, max)
     }
 }
 
@@ -1253,10 +1385,201 @@ impl Tool for DeduplicateResultsTool {
     }
 }
 
+// ── Tool: rank_results ──
+
+pub struct RankResultsTool;
+
+impl Tool for RankResultsTool {
+    fn name(&self) -> &'static str { "rank_results" }
+    fn permission(&self) -> PermissionLevel { PermissionLevel::Safe }
+    fn category(&self) -> &'static str { "life_assistant" }
+
+    fn definition(&self) -> serde_json::Value {
+        json!({
+            "type": "function",
+            "function": {
+                "name": "rank_results",
+                "description": "Rank and score extracted search results using weighted criteria. Pass the items from extract_search_results or deduplicate_results. Optionally specify the task type (to use template ranking config) and user priorities to boost specific factors.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "items": {
+                            "type": "string",
+                            "description": "JSON array of items to rank (from extraction/dedup)"
+                        },
+                        "task_type": {
+                            "type": "string",
+                            "description": "Task type for template ranking config (e.g., 'find_restaurant')"
+                        },
+                        "user_priorities": {
+                            "type": "string",
+                            "description": "Comma-separated priorities to boost (e.g., 'rating,price')"
+                        },
+                        "max_results": {
+                            "type": "integer",
+                            "description": "Max results to return (default: 5)"
+                        }
+                    },
+                    "required": ["items"]
+                }
+            }
+        })
+    }
+
+    fn execute(&self, _ctx: &ToolContext, args: &serde_json::Value) -> String {
+        let items_json = match args.get("items").and_then(|v| v.as_str()) {
+            Some(j) if !j.is_empty() => j,
+            _ => return json!({"error": "items JSON string is required"}).to_string(),
+        };
+
+        let items: Vec<Value> = match serde_json::from_str(items_json) {
+            Ok(v) => v,
+            Err(e) => return json!({"error": format!("Invalid JSON: {e}")}).to_string(),
+        };
+
+        let task_type = args.get("task_type").and_then(|v| v.as_str());
+        let user_priorities: Vec<&str> = args.get("user_priorities")
+            .and_then(|v| v.as_str())
+            .map(|s| s.split(',').map(|p| p.trim()).collect())
+            .unwrap_or_default();
+
+        let max_results = args.get("max_results")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(5) as usize;
+
+        // Get ranking config from template if available
+        let registry = super::TaskTemplateRegistry::new();
+        let template_ranking = task_type.and_then(|tt| registry.get(tt)).map(|t| &t.ranking);
+
+        // Default ranking factors
+        let default_factors: Vec<(&str, f64, bool)> = vec![
+            ("rating", 0.4, false),    // higher is better
+            ("price", 0.2, true),      // lower is better (inverted)
+            ("reviews", 0.2, false),   // higher is better
+            ("distance", 0.1, true),   // lower is better (inverted)
+            ("confidence", 0.1, false), // higher is better
+        ];
+
+        // Score each item
+        let mut scored: Vec<(Value, f64, Vec<String>)> = items.into_iter().map(|item| {
+            let mut total_score = 0.0;
+            let mut total_weight = 0.0;
+            let mut explanations: Vec<String> = Vec::new();
+
+            // Use template factors if available, otherwise defaults
+            if let Some(ranking) = template_ranking {
+                for factor in &ranking.factors {
+                    let is_inverted = matches!(factor.order, super::SortOrder::Ascending);
+                    let weight = if user_priorities.contains(&factor.field.as_str()) {
+                        factor.weight * 1.5
+                    } else {
+                        factor.weight
+                    };
+
+                    if let Some(score) = score_field(&item, &factor.field, is_inverted) {
+                        total_score += score * weight;
+                        total_weight += weight;
+                        explanations.push(format!("{}={:.1}×{:.1}", factor.field, score, weight));
+                    }
+                }
+            } else {
+                for (field, weight, inverted) in &default_factors {
+                    let w = if user_priorities.contains(field) {
+                        weight * 1.5
+                    } else {
+                        *weight
+                    };
+
+                    if let Some(score) = score_field(&item, field, *inverted) {
+                        total_score += score * w;
+                        total_weight += w;
+                        explanations.push(format!("{}={:.1}×{:.1}", field, score, w));
+                    }
+                }
+            }
+
+            let final_score = if total_weight > 0.0 {
+                total_score / total_weight
+            } else {
+                0.5 // neutral if no factors matched
+            };
+
+            (item, final_score, explanations)
+        }).collect();
+
+        // Sort by score descending
+        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+        // Build output
+        let ranked: Vec<Value> = scored.into_iter().take(max_results).enumerate().map(|(i, (item, score, expl))| {
+            let mut obj = item.as_object().cloned().unwrap_or_default();
+            obj.insert("_rank".to_string(), json!(i + 1));
+            obj.insert("_score".to_string(), json!((score * 100.0).round() / 100.0));
+            obj.insert("_scoring".to_string(), json!(expl.join(", ")));
+            Value::Object(obj)
+        }).collect();
+
+        let output = json!({
+            "ranked_items": ranked,
+            "total_scored": ranked.len(),
+            "task_type": task_type.unwrap_or("generic"),
+            "user_priorities": user_priorities,
+        });
+
+        serde_json::to_string_pretty(&output).unwrap_or_else(|_| "{}".to_string())
+    }
+}
+
+/// Score a single field from an item, normalizing to 0.0-1.0.
+fn score_field(item: &Value, field: &str, inverted: bool) -> Option<f64> {
+    let val = item.get(field)?;
+
+    let raw_score = if let Some(n) = val.as_f64() {
+        match field {
+            "rating" | "stars" => n / 5.0,          // normalize X/5 to 0-1
+            "reviews" | "review_count" => {
+                // Log-scale: 1 review = 0, 1000 reviews = ~1.0
+                (n.max(1.0).ln() / 1000_f64.ln()).min(1.0)
+            }
+            "confidence" => n,
+            _ => n.min(1.0),
+        }
+    } else if let Some(s) = val.as_str() {
+        match field {
+            "price" => {
+                // Dollar signs: $ = 1.0, $$ = 0.75, $$$ = 0.5, $$$$ = 0.25
+                let dollars = s.chars().filter(|c| *c == '$').count();
+                if dollars > 0 {
+                    Some(1.0 - (dollars as f64 - 1.0) * 0.25).map(|v| v.max(0.0))
+                        .unwrap_or(0.5)
+                } else if let Ok(n) = s.trim_start_matches('$').replace(',', "").parse::<f64>() {
+                    // Numeric price: normalize to 0-1 where $0=1.0, $100=0.0
+                    (1.0 - n / 100.0).max(0.0).min(1.0)
+                } else {
+                    return None;
+                }
+            }
+            "rating" => {
+                // String rating like "4.5"
+                s.parse::<f64>().ok().map(|n| n / 5.0)?
+            }
+            _ => return None,
+        }
+    } else {
+        return None;
+    };
+
+    Some(if inverted { 1.0 - raw_score } else { raw_score })
+}
+
 // ── Registration ──
 
-pub fn register(reg: &mut ToolRegistry) {
+pub fn register(reg: &mut ToolRegistry, ollama_base: &str, model: &str) {
     reg.register(Box::new(SearchSourcesTool));
-    reg.register(Box::new(ExtractResultsTool));
+    reg.register(Box::new(ExtractResultsTool {
+        ollama_base: ollama_base.to_string(),
+        model: model.to_string(),
+    }));
     reg.register(Box::new(DeduplicateResultsTool));
+    reg.register(Box::new(RankResultsTool));
 }

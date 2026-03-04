@@ -12,6 +12,7 @@ pub fn register(reg: &mut ToolRegistry) {
     reg.register(Box::new(FormOpinionTool));
     reg.register(Box::new(CreateInsideJokeTool));
     reg.register(Box::new(CheckBondTool));
+    reg.register(Box::new(SaveUserFactTool));
 }
 
 // ── Remember ──
@@ -401,5 +402,82 @@ impl Tool for CheckBondTool {
             state.vulnerability_events,
             state.shared_references,
         )
+    }
+}
+
+// ── Save User Fact ──
+
+pub struct SaveUserFactTool;
+
+impl Tool for SaveUserFactTool {
+    fn name(&self) -> &'static str { "save_user_fact" }
+    fn permission(&self) -> PermissionLevel { PermissionLevel::Standard }
+    fn category(&self) -> &'static str { "memory" }
+
+    fn definition(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "function",
+            "function": {
+                "name": "save_user_fact",
+                "description": "Save a confirmed user fact or preference as a high-importance, long-lived memory. Use when the user explicitly confirms a preference, identity fact, or important personal detail. More persistent than regular 'remember' — lasts 30 days with high importance.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "fact": {
+                            "type": "string",
+                            "description": "The confirmed fact to save (e.g., 'User prefers Thai food', 'User lives in Dallas')"
+                        },
+                        "domain": {
+                            "type": "string",
+                            "description": "Fact category: preference, identity, location, health, work, family, finance, hobby, travel, general"
+                        },
+                        "confidence": {
+                            "type": "number",
+                            "description": "How confident we are about this fact (0.0-1.0, default: 0.9)"
+                        }
+                    },
+                    "required": ["fact", "domain"]
+                }
+            }
+        })
+    }
+
+    fn execute(&self, ctx: &ToolContext, args: &serde_json::Value) -> String {
+        if ctx.incognito {
+            return "Incognito mode is active — fact not saved.".to_string();
+        }
+
+        let fact = args.get("fact").and_then(|v| v.as_str()).unwrap_or_default();
+        if fact.is_empty() {
+            return "Error: fact is required".to_string();
+        }
+
+        let raw_domain = args.get("domain").and_then(|v| v.as_str()).unwrap_or("general");
+        let domain = crate::sanitize::validate_domain(raw_domain);
+        let confidence = args.get("confidence").and_then(|v| v.as_f64()).unwrap_or(0.9);
+
+        // Write-time dedup — check if we already have this fact
+        if crate::learning::is_duplicate(ctx.db, fact) {
+            return format!("Already have a similar fact: {fact}");
+        }
+
+        // High importance (0.8), long half-life (30 days), semantic memory type
+        let importance = crate::sanitize::clamp_importance(0.8 * confidence);
+        match ctx.db.record_text(
+            fact,
+            "semantic",      // confirmed facts are semantic, not episodic
+            importance,
+            0.0,             // neutral valence
+            2_592_000.0,     // 30-day half-life (vs 7 days for regular memories)
+            &serde_json::json!({}),
+            "default",
+            0.95,            // high embedding confidence
+            domain,
+            "companion",
+            None,
+        ) {
+            Ok(rid) => format!("Fact saved: {fact} (domain: {domain}, id: {rid})"),
+            Err(e) => format!("Failed to save fact: {e}"),
+        }
     }
 }

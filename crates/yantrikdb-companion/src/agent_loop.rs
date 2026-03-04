@@ -180,7 +180,7 @@ pub fn max_calls_for_tool(tool_name: &str) -> usize {
 
         // Life assistant: search orchestration may need several iterations
         "life_search" | "search_sources" | "extract_search_results"
-        | "deduplicate_results" => 15,
+        | "deduplicate_results" | "rank_results" | "recall_preferences" => 15,
 
         // File tools: may need to read/search many files
         "read_file" | "write_file" | "list_files" | "search_files"
@@ -190,7 +190,7 @@ pub fn max_calls_for_tool(tool_name: &str) -> usize {
         "run_command" => 15,
 
         // Memory: rarely needs many calls
-        "remember" | "recall" => 6,
+        "remember" | "recall" | "save_user_fact" => 6,
 
         // Everything else: reasonable default
         _ => 10,
