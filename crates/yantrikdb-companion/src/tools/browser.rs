@@ -36,6 +36,8 @@ pub fn register(reg: &mut ToolRegistry) {
     reg.register(Box::new(BrowserTypeElementTool));
     reg.register(Box::new(BrowserScrollTool));
     reg.register(Box::new(WebSearchTool));
+    reg.register(Box::new(BrowserClickXYTool));
+    reg.register(Box::new(BrowserTypeXYTool));
 }
 
 // ── CDP helpers ──
@@ -903,7 +905,7 @@ impl Tool for WebSearchTool {
         if raw.starts_with("NO_STRUCTURED_RESULTS") {
             // Fallback to plain text results
             let text = raw.strip_prefix("NO_STRUCTURED_RESULTS\n").unwrap_or(&raw);
-            let truncated = if text.len() > 4000 { &text[..4000] } else { text };
+            let truncated = if text.len() > 4000 { &text[..text.floor_char_boundary(4000)] } else { text };
             return format!("Search results for: {query}\n\n{truncated}");
         }
 
@@ -1408,7 +1410,223 @@ impl Tool for BrowserSeeTool {
             out.push_str(&limited);
         }
         out.push_str("\n\nUse browser_click_element or browser_type_element with the [N] number to interact.");
+        out.push_str("\nOr use browser_click_xy / browser_type_xy with pixel coordinates from the screenshot.");
 
         out
+    }
+}
+
+// ── Browser Click at Coordinates ──
+//
+// Uses CDP Input.dispatchMouseEvent for real native-level mouse clicks.
+// Works with ANY website regardless of framework (React, Angular, Shadow DOM).
+// Coordinates come from browser_see screenshots.
+
+pub struct BrowserClickXYTool;
+
+impl Tool for BrowserClickXYTool {
+    fn name(&self) -> &'static str { "browser_click_xy" }
+    fn permission(&self) -> PermissionLevel { PermissionLevel::Standard }
+    fn category(&self) -> &'static str { "browser" }
+
+    fn definition(&self) -> serde_json::Value {
+        json!({
+            "type": "function",
+            "function": {
+                "name": "browser_click_xy",
+                "description": "Click at pixel coordinates (x, y) on the page. Use browser_see first to see the page and identify where to click. Coordinates are in viewport pixels matching the screenshot. Works with any website including React, Shadow DOM, etc.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "x": {"type": "integer", "description": "X pixel coordinate (from left edge of viewport)"},
+                        "y": {"type": "integer", "description": "Y pixel coordinate (from top edge of viewport)"},
+                        "double_click": {"type": "boolean", "description": "Double-click instead of single click (default: false)"}
+                    },
+                    "required": ["x", "y"]
+                }
+            }
+        })
+    }
+
+    fn execute(&self, _ctx: &ToolContext, args: &serde_json::Value) -> String {
+        let x = args.get("x").and_then(|v| v.as_f64()).unwrap_or(-1.0);
+        let y = args.get("y").and_then(|v| v.as_f64()).unwrap_or(-1.0);
+        let double_click = args.get("double_click").and_then(|v| v.as_bool()).unwrap_or(false);
+
+        if x < 0.0 || y < 0.0 {
+            return "Error: x and y coordinates are required (positive integers)".to_string();
+        }
+
+        let (mut ws, _tab) = match connect_first_tab() {
+            Ok(v) => v,
+            Err(e) => return format!("Error: {e}"),
+        };
+
+        let click_count = if double_click { 2 } else { 1 };
+
+        // CDP Input.dispatchMouseEvent: move → press → release
+        // This triggers real browser-level mouse events that work with any framework.
+        if let Err(e) = cdp_send(&mut ws, "Input.dispatchMouseEvent", json!({
+            "type": "mouseMoved",
+            "x": x,
+            "y": y,
+        })) {
+            return format!("Mouse move error: {e}");
+        }
+
+        if let Err(e) = cdp_send(&mut ws, "Input.dispatchMouseEvent", json!({
+            "type": "mousePressed",
+            "x": x,
+            "y": y,
+            "button": "left",
+            "clickCount": click_count,
+        })) {
+            return format!("Mouse press error: {e}");
+        }
+
+        if let Err(e) = cdp_send(&mut ws, "Input.dispatchMouseEvent", json!({
+            "type": "mouseReleased",
+            "x": x,
+            "y": y,
+            "button": "left",
+            "clickCount": click_count,
+        })) {
+            return format!("Mouse release error: {e}");
+        }
+
+        // Brief wait for DOM changes
+        std::thread::sleep(Duration::from_millis(500));
+
+        // Try to identify what was clicked using JS
+        let what = eval_js(&mut ws, &format!(
+            "(() => {{ const el = document.elementFromPoint({x}, {y}); \
+             if (!el) return 'empty area'; \
+             const tag = el.tagName.toLowerCase(); \
+             const text = (el.textContent || el.value || '').trim().substring(0, 80); \
+             return tag + (text ? ': ' + text : ''); \
+            }})()"
+        )).unwrap_or_else(|_| "unknown".to_string());
+
+        format!("Clicked at ({}, {}) — {}", x as i64, y as i64, what)
+    }
+}
+
+// ── Browser Type at Coordinates ──
+//
+// Click at coordinates to focus, then use CDP Input for typing.
+// Works with shadow DOM, contenteditable, React inputs, etc.
+
+pub struct BrowserTypeXYTool;
+
+impl Tool for BrowserTypeXYTool {
+    fn name(&self) -> &'static str { "browser_type_xy" }
+    fn permission(&self) -> PermissionLevel { PermissionLevel::Standard }
+    fn category(&self) -> &'static str { "browser" }
+
+    fn definition(&self) -> serde_json::Value {
+        json!({
+            "type": "function",
+            "function": {
+                "name": "browser_type_xy",
+                "description": "Click at coordinates (x, y) to focus an input field, then type text using keyboard events. Works with any input including React, Shadow DOM, contenteditable divs. Use browser_see first to identify the input location.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "x": {"type": "integer", "description": "X pixel coordinate of the input field"},
+                        "y": {"type": "integer", "description": "Y pixel coordinate of the input field"},
+                        "text": {"type": "string", "description": "Text to type"},
+                        "clear_first": {"type": "boolean", "description": "Select all and delete before typing (default: true)"},
+                        "submit": {"type": "boolean", "description": "Press Enter after typing (default: false)"}
+                    },
+                    "required": ["x", "y", "text"]
+                }
+            }
+        })
+    }
+
+    fn execute(&self, _ctx: &ToolContext, args: &serde_json::Value) -> String {
+        let x = args.get("x").and_then(|v| v.as_f64()).unwrap_or(-1.0);
+        let y = args.get("y").and_then(|v| v.as_f64()).unwrap_or(-1.0);
+        let text = args.get("text").and_then(|v| v.as_str()).unwrap_or_default();
+        let clear_first = args.get("clear_first").and_then(|v| v.as_bool()).unwrap_or(true);
+        let submit = args.get("submit").and_then(|v| v.as_bool()).unwrap_or(false);
+
+        if x < 0.0 || y < 0.0 || text.is_empty() {
+            return "Error: x, y coordinates and text are required".to_string();
+        }
+
+        if text.len() > 5000 {
+            return "Error: text too long (max 5000 chars)".to_string();
+        }
+
+        let (mut ws, _tab) = match connect_first_tab() {
+            Ok(v) => v,
+            Err(e) => return format!("Error: {e}"),
+        };
+
+        // 1. Click at coordinates to focus the field
+        for evt in &["mouseMoved", "mousePressed", "mouseReleased"] {
+            let mut params = json!({ "type": evt, "x": x, "y": y });
+            if *evt != "mouseMoved" {
+                params["button"] = json!("left");
+                params["clickCount"] = json!(1);
+            }
+            if let Err(e) = cdp_send(&mut ws, "Input.dispatchMouseEvent", params) {
+                return format!("Click error: {e}");
+            }
+        }
+        std::thread::sleep(Duration::from_millis(200));
+
+        // 2. Clear existing content if requested (Ctrl+A, then Delete)
+        if clear_first {
+            let _ = cdp_send(&mut ws, "Input.dispatchKeyEvent", json!({
+                "type": "keyDown",
+                "key": "a",
+                "code": "KeyA",
+                "modifiers": 2,
+            }));
+            let _ = cdp_send(&mut ws, "Input.dispatchKeyEvent", json!({
+                "type": "keyUp",
+                "key": "a",
+                "code": "KeyA",
+                "modifiers": 2,
+            }));
+            let _ = cdp_send(&mut ws, "Input.dispatchKeyEvent", json!({
+                "type": "keyDown",
+                "key": "Backspace",
+                "code": "Backspace",
+            }));
+            let _ = cdp_send(&mut ws, "Input.dispatchKeyEvent", json!({
+                "type": "keyUp",
+                "key": "Backspace",
+                "code": "Backspace",
+            }));
+            std::thread::sleep(Duration::from_millis(100));
+        }
+
+        // 3. Type text using CDP insertText (handles all frameworks)
+        if let Err(e) = cdp_send(&mut ws, "Input.insertText", json!({
+            "text": text,
+        })) {
+            return format!("Type error: {e}");
+        }
+
+        // 4. Submit if requested
+        if submit {
+            let _ = cdp_send(&mut ws, "Input.dispatchKeyEvent", json!({
+                "type": "keyDown",
+                "key": "Enter",
+                "code": "Enter",
+            }));
+            let _ = cdp_send(&mut ws, "Input.dispatchKeyEvent", json!({
+                "type": "keyUp",
+                "key": "Enter",
+                "code": "Enter",
+            }));
+            std::thread::sleep(Duration::from_millis(500));
+        }
+
+        let preview = if text.len() > 50 { &text[..text.floor_char_boundary(50)] } else { text };
+        format!("Typed at ({}, {}): \"{}\"", x as i64, y as i64, preview)
     }
 }

@@ -29,7 +29,7 @@ warn() { echo -e "${YELLOW}    $1${NC}"; }
 if [ "$1" != "--skip-build" ]; then
     step "Building via WSL2..."
     wsl.exe -d Ubuntu -- bash -lc \
-        'cd /mnt/c/Users/sync/OneDrive/Documents/GitHub/yantrik-os && \
+        'cd /mnt/c/Users/sync/codes/yantrik-os && \
          RUSTFLAGS="-A warnings" CARGO_TARGET_DIR=/home/yantrik/target-yantrik \
          cargo build --release -p yantrik-ui -p yantrik 2>&1 | tail -5'
     echo ""

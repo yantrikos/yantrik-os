@@ -197,7 +197,12 @@ impl CompanionBridge {
     /// Send a message and get a channel to receive streaming tokens.
     pub fn send_message(&self, text: String) -> Receiver<String> {
         let (token_tx, token_rx) = crossbeam_channel::unbounded();
-        let _ = self.cmd_tx.send(CompanionCommand::SendMessage { text, token_tx });
+        if self.cmd_tx.send(CompanionCommand::SendMessage { text, token_tx: token_tx.clone() }).is_err() {
+            tracing::error!("Companion worker thread is dead — cannot send message");
+            let _ = token_tx.send("__REPLACE__".to_string());
+            let _ = token_tx.send("Companion service crashed. Please restart the application.".to_string());
+            let _ = token_tx.send("__DONE__".to_string());
+        }
         token_rx
     }
 
@@ -322,36 +327,70 @@ fn worker_loop(
                 tracing::info!(text = %text, "Processing message");
                 let start = std::time::Instant::now();
                 let mut token_count = 0u32;
-                let response = companion.handle_message_streaming(&text, |token| {
-                    if token_count == 0 {
+
+                // Wrap in catch_unwind so a panic in handle_message_streaming
+                // doesn't kill the worker thread (which would make ALL future
+                // messages silently fail).
+                let result = {
+                    let token_tx_ref = &token_tx;
+                    let token_count_ref = &mut token_count;
+                    let start_ref = &start;
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        companion.handle_message_streaming(&text, |token| {
+                            if *token_count_ref == 0 {
+                                tracing::info!(
+                                    elapsed_ms = start_ref.elapsed().as_millis(),
+                                    "First token generated"
+                                );
+                            }
+                            *token_count_ref += 1;
+                            let _ = token_tx_ref.send(token.to_string());
+                        })
+                    }))
+                };
+
+                match result {
+                    Ok(response) => {
+                        // V22: Use response.offline_mode to track LLM status
+                        let ok = !response.offline_mode;
+                        online.store(ok, Ordering::Relaxed);
+                        if response.offline_mode {
+                            tracing::info!("Response served by offline responder");
+                        }
+
                         tracing::info!(
                             elapsed_ms = start.elapsed().as_millis(),
-                            "First token generated"
+                            tokens = token_count,
+                            online = ok,
+                            offline_mode = response.offline_mode,
+                            "Generation complete"
                         );
                     }
-                    token_count += 1;
-                    let _ = token_tx.send(token.to_string());
-                });
-
-                // V22: Use response.offline_mode to track LLM status
-                let ok = !response.offline_mode;
-                online.store(ok, Ordering::Relaxed);
-                if response.offline_mode {
-                    tracing::info!("Response served by offline responder");
+                    Err(panic_info) => {
+                        let msg = if let Some(s) = panic_info.downcast_ref::<&str>() {
+                            s.to_string()
+                        } else if let Some(s) = panic_info.downcast_ref::<String>() {
+                            s.clone()
+                        } else {
+                            "unknown panic".to_string()
+                        };
+                        tracing::error!(
+                            panic = %msg,
+                            elapsed_ms = start.elapsed().as_millis(),
+                            "Companion panicked during message handling — recovering"
+                        );
+                        let _ = token_tx.send("__REPLACE__".to_string());
+                        let _ = token_tx.send(
+                            "Something went wrong internally. Please try again.".to_string()
+                        );
+                    }
                 }
 
-                tracing::info!(
-                    elapsed_ms = start.elapsed().as_millis(),
-                    tokens = token_count,
-                    online = ok,
-                    offline_mode = response.offline_mode,
-                    "Generation complete"
-                );
-                // Sentinel to indicate generation is done
+                // Sentinel to indicate generation is done (sent in all cases)
                 let _ = token_tx.send("__DONE__".to_string());
 
                 // Push updated state (includes online status)
-                push_state(&companion, &ui_weak, ok);
+                push_state(&companion, &ui_weak, online.load(Ordering::Relaxed));
                 // V15: Update cached bond level for UI features
                 cached_bond.store(companion.bond_level().as_u8(), Ordering::Relaxed);
             }

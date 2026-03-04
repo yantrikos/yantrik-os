@@ -86,7 +86,7 @@ impl Tool for ReadClipboardTool {
                 if text.is_empty() {
                     "Clipboard is empty.".to_string()
                 } else {
-                    let truncated = if text.len() > 1000 { &text[..1000] } else { &text };
+                    let truncated = if text.len() > 1000 { &text[..text.floor_char_boundary(1000)] } else { &text };
                     format!("Clipboard contents:\n{truncated}")
                 }
             }
@@ -267,7 +267,7 @@ impl Tool for ReadFileTool {
         match std::fs::read_to_string(&expanded) {
             Ok(content) => {
                 if content.len() > 2000 {
-                    format!("{}\n... (truncated, {} total bytes)", &content[..2000], content.len())
+                    format!("{}\n... (truncated, {} total bytes)", &content[..content.floor_char_boundary(2000)], content.len())
                 } else {
                     content
                 }
@@ -349,11 +349,12 @@ impl Tool for RunCommandTool {
                 let stderr = String::from_utf8_lossy(&output.stderr);
                 let mut result = String::new();
                 if !stdout.is_empty() {
-                    let truncated = if stdout.len() > 2000 { &stdout[..2000] } else { &stdout };
+                    let truncated = if stdout.len() > 2000 { &stdout[..stdout.floor_char_boundary(2000)] } else { &stdout };
                     result.push_str(truncated);
                 }
                 if !stderr.is_empty() {
-                    result.push_str(&format!("\nStderr: {}", &stderr[..stderr.len().min(500)]));
+                    let end = stderr.floor_char_boundary(stderr.len().min(500));
+                    result.push_str(&format!("\nStderr: {}", &stderr[..end]));
                 }
                 if result.is_empty() {
                     "(no output)".to_string()

@@ -1100,7 +1100,7 @@ fn llm_extract(
 ) -> String {
     // Truncate page text to avoid token limits
     let truncated = if page_text.len() > 4000 {
-        &page_text[..4000]
+        &page_text[..page_text.floor_char_boundary(4000)]
     } else {
         page_text
     };
