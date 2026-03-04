@@ -90,10 +90,14 @@ pub fn wire(ui: &App, ctx: &AppContext) {
                         );
                     }
                 }
-                // Push toast banner (only on desktop screen, not in focus mode)
+                // Push toast banner (only on desktop screen, not in focus mode, respects DND)
                 if let Some(ui_ref) = ui_weak.upgrade() {
                     if !ui_ref.get_focus_mode() && ui_ref.get_current_screen() == 1 {
-                        super::toast::push_toast(&ui_weak, app, summary, body, *urgency);
+                        // DND check: skip toast if DND is on, UNLESS critical (urgency == 2)
+                        let dnd = ui_ref.get_dnd_mode();
+                        if !dnd || *urgency == 2 {
+                            super::toast::push_toast(&ui_weak, app, summary, body, *urgency);
+                        }
                     }
                 }
             }
@@ -382,6 +386,19 @@ fn handle_keybind(ui: &App, action: &str) {
                 ui.as_weak(),
                 yantrik_os::screenshot::CaptureMode::ClipboardRegion,
             );
+        }
+        "clipboard-history" => {
+            if ui.get_current_screen() == 1 {
+                ui.set_clip_panel_open(!ui.get_clip_panel_open());
+            }
+        }
+        "toggle-dnd" => {
+            let will_enable = !ui.get_dnd_mode();
+            // Invoke the callback so settings persistence fires too
+            ui.invoke_toggle_dnd_mode();
+            let msg = if will_enable { "Do Not Disturb: ON" } else { "Do Not Disturb: OFF" };
+            super::toast::push_toast(&ui.as_weak(), "System", msg, "", 0);
+            tracing::info!(dnd = will_enable, "Do Not Disturb toggled via hotkey");
         }
         "power-menu" => {
             if ui.get_current_screen() == 1 {

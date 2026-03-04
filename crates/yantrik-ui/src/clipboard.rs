@@ -91,15 +91,14 @@ impl ClipHistory {
         self.entries.iter().take(n).collect()
     }
 
-    /// Search entries by substring.
-    #[allow(dead_code)]
+    /// Search entries by substring (case-insensitive).
     pub fn search(&self, query: &str) -> Vec<(usize, &ClipEntry)> {
         let lower = query.to_lowercase();
         self.entries
             .iter()
             .enumerate()
             .filter(|(_, e)| e.content.to_lowercase().contains(&lower))
-            .take(6)
+            .take(20)
             .collect()
     }
 

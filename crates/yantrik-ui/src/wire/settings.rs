@@ -18,6 +18,7 @@ pub struct UserSettings {
     pub accent_color: String,
     pub tool_permission: String,
     pub auto_lock_secs: i32,
+    pub dnd_mode: bool,
 }
 
 impl Default for UserSettings {
@@ -27,6 +28,7 @@ impl Default for UserSettings {
             accent_color: "cyan".into(),
             tool_permission: "sensitive".into(),
             auto_lock_secs: 300,
+            dnd_mode: false,
         }
     }
 }
@@ -173,6 +175,20 @@ pub fn wire(ui: &App, ctx: &AppContext) {
         ui.set_settings_incognito_mode(new_val);
         bridge.set_incognito(new_val);
         tracing::info!(incognito = new_val, "Incognito mode toggled");
+    });
+
+    // Do Not Disturb toggle — persists across reboots
+    let ui_weak = ui.as_weak();
+    let s = settings.clone();
+    ui.on_toggle_dnd_mode(move || {
+        let Some(ui) = ui_weak.upgrade() else { return };
+        let new_val = !ui.get_dnd_mode();
+        ui.set_dnd_mode(new_val);
+        if let Ok(mut st) = s.lock() {
+            st.dnd_mode = new_val;
+        }
+        persist(&s);
+        tracing::info!(dnd = new_val, "Do Not Disturb toggled");
     });
 
     // Cycle auto-lock timeout: 30s → 1m → 2m → 5m → 10m → never → 30s

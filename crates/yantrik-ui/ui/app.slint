@@ -117,7 +117,9 @@ export component App inherits Window {
     // Clipboard panel state
     in-out property <bool> clip-panel-open: false;
     in property <[ClipboardEntryData]> clip-panel-entries: [];
+    in-out property <string> clip-search-query: "";
     callback clipboard-paste(int);
+    callback clipboard-search(string);
 
     // Power menu state
     in-out property <bool> power-menu-open: false;
@@ -161,6 +163,10 @@ export component App inherits Window {
     // Project Consciousness
     in property <string> active-project: "";
 
+    // Do Not Disturb mode
+    in-out property <bool> dnd-mode: false;
+    callback toggle-dnd-mode();
+
     // Focus mode (Workspace Morph)
     in-out property <bool> focus-mode: false;
     in property <string> focus-remaining: "";
@@ -203,6 +209,7 @@ export component App inherits Window {
     in property <[BreadcrumbSegment]> file-breadcrumbs: [];
     in property <bool> file-has-clipboard: false;
     in-out property <bool> file-show-hidden: false;
+    in-out property <bool> file-grid-view: false;
     callback file-navigate-dir(string);
     callback file-open(string);
     callback file-go-up();
@@ -411,6 +418,7 @@ export component App inherits Window {
             wifi-connected: root.wifi-connected;
             pending-count: root.pending-count;
             settings-incognito-mode: root.settings-incognito-mode;
+            dnd-mode: root.dnd-mode;
             // Companion
             is-thinking: root.is-thinking;
             has-urges: root.has-urges;
@@ -444,7 +452,9 @@ export component App inherits Window {
             // Clipboard panel
             clip-panel-open <=> root.clip-panel-open;
             clip-panel-entries: root.clip-panel-entries;
+            clip-search-query <=> root.clip-search-query;
             clipboard-paste(idx) => { root.clipboard-paste(idx); }
+            clipboard-search(query) => { root.clipboard-search(query); }
             // Power menu
             power-menu-open <=> root.power-menu-open;
             power-action(action) => { root.power-action(action); }
@@ -601,9 +611,11 @@ export component App inherits Window {
                 notification-count: root.notification-unread-count;
                 dark-mode <=> root.settings-dark-mode;
                 incognito-mode <=> root.settings-incognito-mode;
+                dnd-mode <=> root.dnd-mode;
                 accent-color <=> root.settings-accent-color;
                 toggle-dark-mode => { root.toggle-dark-mode(); }
                 toggle-incognito-mode => { root.toggle-incognito-mode(); }
+                toggle-dnd-mode => { root.toggle-dnd-mode(); }
                 cycle-accent-color => { root.cycle-accent-color(); }
                 cycle-tool-permission => { root.cycle-tool-permission(); }
                 cycle-auto-lock => { root.cycle-auto-lock(); }
@@ -640,6 +652,7 @@ export component App inherits Window {
                 breadcrumbs: root.file-breadcrumbs;
                 has-clipboard: root.file-has-clipboard;
                 show-hidden <=> root.file-show-hidden;
+                grid-view <=> root.file-grid-view;
                 file-details: root.file-detail-data;
                 free-space-text: root.file-free-space-text;
                 can-go-back: root.file-can-go-back;

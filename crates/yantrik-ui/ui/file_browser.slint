@@ -40,6 +40,7 @@ export component FileBrowser inherits Rectangle {
     in property <[BreadcrumbSegment]> breadcrumbs: [];
     in property <bool> has-clipboard: false;
     in-out property <bool> show-hidden: false;
+    in-out property <bool> grid-view: false;
     in-out property <int> selected-index: -1;
     in property <FileDetailData> file-details;
     in property <string> free-space-text: "";
@@ -406,6 +407,26 @@ export component FileBrowser inherits Rectangle {
                             }
                         }
                     }
+
+                    // Grid/List view toggle
+                    view-toggle-btn := TouchArea {
+                        width: 28px; height: 32px;
+                        clicked => { root.grid-view = !root.grid-view; root.selected-index = -1; }
+                        Rectangle {
+                            border-radius: 6px;
+                            background: view-toggle-btn.has-hover
+                                ? @radial-gradient(circle, #5ac8d418 0%, #12111a 100%) : transparent;
+                            animate background { duration: 120ms; }
+                            Text {
+                                text: root.grid-view ? "≡" : "⊞";
+                                color: view-toggle-btn.has-hover ? Theme.cyan : Theme.text-dim;
+                                font-size: 15px;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                                animate color { duration: 120ms; }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -641,8 +662,8 @@ export component FileBrowser inherits Rectangle {
                 horizontal-stretch: 1;
                 spacing: 0px;
 
-                // ── Column headers ──
-                Rectangle {
+                // ── Column headers (list view only) ──
+                if !root.grid-view : Rectangle {
                     height: 28px;
                     background: @linear-gradient(180deg, #16142808 0%, #12102808 100%);
 
@@ -731,8 +752,110 @@ export component FileBrowser inherits Rectangle {
                     }
                 }
 
-                // ── File list ──
-                ListView {
+                // ── Grid view ──
+                if root.grid-view : Flickable {
+                    vertical-stretch: 1;
+                    viewport-height: ((root.entries.length + 3) / 4) * 100px;
+
+                    for entry[idx] in root.entries : grid-card := Rectangle {
+                        property <int> col-idx: idx - (idx / 4) * 4;
+                        property <int> row-idx: idx / 4;
+                        x: self.col-idx * (parent.width / 4);
+                        y: self.row-idx * 100px;
+                        width: parent.width / 4;
+                        height: 100px;
+
+                        property <color> grid-badge-color:
+                            entry.is-dir ? #3a9ac8 :
+                            entry.icon-char == "◇" ? #3aad6a :
+                            entry.icon-char == "≡" ? #5a7abd :
+                            entry.icon-char == "▣" ? #9a4a9a :
+                            entry.icon-char == "♪" ? #c89a3a :
+                            entry.icon-char == "▶" ? #c84a5a :
+                            entry.icon-char == "▤" ? #7a8a6a :
+                            entry.icon-char == "▧" ? #bd5a4a :
+                            entry.icon-char == "⚙" ? #4a7abd :
+                            entry.icon-char == "·" ? #6a6a7a :
+                            #5a5a7a;
+
+                        grid-card-touch := TouchArea {
+                            clicked => {
+                                if entry.is-dir {
+                                    root.selected-index = -1;
+                                    root.navigate-dir(entry.name);
+                                } else {
+                                    if root.selected-index == idx {
+                                        root.selected-index = -1;
+                                        root.open-file(entry.name);
+                                    } else {
+                                        root.selected-index = idx;
+                                        root.file-selection-changed(entry.name);
+                                    }
+                                }
+                            }
+                        }
+
+                        // Card background
+                        Rectangle {
+                            border-radius: 10px;
+                            x: 4px;
+                            y: 4px;
+                            width: parent.width - 8px;
+                            height: parent.height - 8px;
+                            background: idx == root.selected-index
+                                ? @radial-gradient(circle, #5ac8d41c 0%, #5ac8d808 60%, transparent 100%)
+                                : (grid-card-touch.has-hover
+                                    ? @radial-gradient(circle, #ffffff0c 0%, #ffffff04 60%, transparent 100%)
+                                    : transparent);
+                            border-width: idx == root.selected-index ? 1px : (grid-card-touch.has-hover ? 1px : 0);
+                            border-color: idx == root.selected-index ? Theme.cyan-dim : #ffffff10;
+                            animate background, border-width, border-color { duration: 120ms; }
+
+                            VerticalLayout {
+                                alignment: center;
+                                spacing: 6px;
+                                padding: 8px;
+
+                                // Icon badge
+                                Rectangle {
+                                    property <color> badge-color: grid-card.grid-badge-color;
+                                    width: 36px;
+                                    height: 36px;
+                                    border-radius: 10px;
+                                    background: @radial-gradient(circle, badge-color, #10101040);
+                                    border-width: 1px;
+                                    border-color: badge-color;
+                                    drop-shadow-blur: grid-card-touch.has-hover ? 12px : 4px;
+                                    drop-shadow-color: badge-color;
+                                    animate drop-shadow-blur { duration: 120ms; }
+
+                                    Text {
+                                        text: entry.icon-char;
+                                        color: #ffffffe0;
+                                        font-size: 16px;
+                                        font-weight: 700;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+                                }
+
+                                // File name
+                                Text {
+                                    text: entry.name;
+                                    color: entry.is-dir ? Theme.cyan-light : Theme.text-primary;
+                                    font-size: 11px;
+                                    font-weight: entry.is-dir ? 600 : 400;
+                                    horizontal-alignment: center;
+                                    overflow: elide;
+                                    wrap: word-wrap;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // ── File list (list view) ──
+                if !root.grid-view : ListView {
                     vertical-stretch: 1;
 
                     for entry[idx] in entries : Rectangle {

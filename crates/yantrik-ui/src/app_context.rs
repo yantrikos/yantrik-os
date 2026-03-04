@@ -73,6 +73,7 @@ impl AppContext {
         ui.set_settings_dark_mode(user_settings.dark_mode);
         ui.set_settings_tool_permission(user_settings.tool_permission.clone().into());
         ui.set_settings_auto_lock_secs(user_settings.auto_lock_secs);
+        ui.set_dnd_mode(user_settings.dnd_mode);
 
         // Accent color (persisted)
         let accent_idx = crate::wire::settings::accent_name_to_index(&user_settings.accent_color);

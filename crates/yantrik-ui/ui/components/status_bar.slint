@@ -14,6 +14,7 @@ export component StatusBar inherits Rectangle {
     in property <int> pending-count: 0;
     in property <int> whisper-hint-count: 0;
     in property <bool> incognito-enabled: false;
+    in property <bool> dnd-enabled: false;
     in property <string> active-project: "";
 
     callback anchor-clicked();
@@ -276,6 +277,32 @@ export component StatusBar inherits Rectangle {
                     inc-text := Text {
                         text: "INC";
                         color: #ffffff;
+                        font-size: 8px;
+                        font-weight: 700;
+                        letter-spacing: 1px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+
+            // DND badge
+            if root.dnd-enabled : Rectangle {
+                width: dnd-badge.preferred-width + 4px;
+                height: Theme.status-bar-height;
+
+                dnd-badge := Rectangle {
+                    width: dnd-text.preferred-width + 10px;
+                    height: 16px;
+                    y: (parent.height - 16px) / 2;
+                    border-radius: 8px;
+                    background: Theme.amber;
+                    drop-shadow-blur: 6px;
+                    drop-shadow-color: Theme.amber-glow;
+
+                    dnd-text := Text {
+                        text: "DND";
+                        color: Theme.bg-deep;
                         font-size: 8px;
                         font-weight: 700;
                         letter-spacing: 1px;

@@ -13,6 +13,8 @@
 //! - Shift+Print → screenshot-region (select region, save to file)
 //! - Ctrl+Print  → screenshot-clipboard (full screen, copy to clipboard)
 //! - Ctrl+Shift+Print → screenshot-clipboard-region (select region, copy to clipboard)
+//! - Super+V     → clipboard-history (clipboard history panel)
+//! - Super+D     → toggle-dnd (Do Not Disturb)
 //! - Super+Space → open-lens (alternative)
 //! - Super+Left  → snap window to left half
 //! - Super+Right → snap window to right half
@@ -89,6 +91,16 @@ pub const DEFAULT_KEYBINDS: &[Keybind] = &[
         key: "W-S-q",
         action: "power-menu",
         description: "Power menu",
+    },
+    Keybind {
+        key: "W-v",
+        action: "clipboard-history",
+        description: "Open clipboard history",
+    },
+    Keybind {
+        key: "W-d",
+        action: "toggle-dnd",
+        description: "Toggle Do Not Disturb",
     },
     Keybind {
         key: "W-a",

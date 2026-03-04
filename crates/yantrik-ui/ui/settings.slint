@@ -1,6 +1,6 @@
 // Settings panel — holographic system configuration.
 // Screen 7. Glassmorphic cards with glowing borders.
-// Section headers with scan-line animation.
+// Categorized sidebar navigation with scrollable panels.
 
 import { Theme, AccentPreset } from "theme.slint";
 
@@ -20,7 +20,9 @@ export component SettingsScreen inherits Rectangle {
     // Security
     in property <int> auto-lock-secs: 300;
     in-out property <bool> incognito-mode: false;
+    in-out property <bool> dnd-mode: false;
     callback toggle-incognito-mode();
+    callback toggle-dnd-mode();
 
     // Network
     in property <bool> wifi-connected: false;
@@ -52,6 +54,9 @@ export component SettingsScreen inherits Rectangle {
 
     callback back-pressed();
     callback navigate-to(int);
+
+    // Active settings category (sidebar)
+    property <int> active-category: 0;
 
     // Ambient glow phase
     property <float> glow-phase: 0;
@@ -129,992 +134,1311 @@ export component SettingsScreen inherits Rectangle {
             }
         }
 
-        // Scrollable content
-        Flickable {
+        // Main content: sidebar + panel
+        HorizontalLayout {
             vertical-stretch: 1;
+            spacing: 0px;
 
-            VerticalLayout {
-                padding: 20px;
-                spacing: 16px;
-                alignment: start;
+            // ===== LEFT SIDEBAR =====
+            Rectangle {
+                width: 200px;
+                background: @linear-gradient(180deg, #0c0b1080 0%, #08070d60 100%);
 
-                // ===== APPEARANCE =====
-                HorizontalLayout {
-                    spacing: 8px;
-                    Rectangle {
-                        width: 3px;
-                        height: 14px;
-                        y: 0;
-                        border-radius: 1.5px;
-                        background: Theme.cyan;
-                        drop-shadow-blur: 4px;
-                        drop-shadow-color: Theme.cyan-glow;
-                    }
-                    Text {
-                        text: "APPEARANCE";
-                        color: Theme.cyan;
-                        font-size: 10px;
-                        font-weight: 600;
-                        letter-spacing: 3px;
-                        vertical-alignment: center;
-                    }
+                // Right edge separator
+                Rectangle {
+                    x: parent.width - 1px;
+                    width: 1px;
+                    height: 100%;
+                    background: Theme.separator;
+                    opacity: 0.3;
                 }
 
-                Rectangle {
-                    background: @linear-gradient(135deg, #12111a80 0%, #0c0b1060 100%);
-                    border-radius: Theme.radius-card;
-                    border-width: 1px;
-                    border-color: #ffffff08;
-                    height: 52px;
+                VerticalLayout {
+                    padding-top: 16px;
+                    padding-bottom: 16px;
+                    spacing: 2px;
+                    alignment: start;
 
-                    HorizontalLayout {
-                        padding-left: 16px;
-                        padding-right: 16px;
+                    // Category 0: Display & Appearance
+                    cat0-ta := TouchArea {
+                        height: 44px;
+                        clicked => { root.active-category = 0; }
 
-                        Text {
-                            text: "Theme";
-                            color: Theme.text-secondary;
-                            font-size: Theme.font-body;
-                            horizontal-stretch: 1;
-                            vertical-alignment: center;
-                        }
+                        Rectangle {
+                            background: root.active-category == 0 ? Theme.bg-elevated : (cat0-ta.has-hover ? Theme.hover-fill : transparent);
+                            border-radius: 0;
 
-                        // Pill toggle: Dark / Light — holographic
-                        TouchArea {
-                            width: 110px;
-                            height: 36px;
-                            clicked => { root.toggle-dark-mode(); }
-
-                            Rectangle {
-                                width: 110px;
-                                height: 32px;
-                                y: (parent.height - self.height) / 2;
-                                border-radius: 16px;
-                                background: #0808100a;
-                                border-width: 1px;
-                                border-color: root.dark-mode ? Theme.cyan-dim : Theme.amber-dim;
-
-                                // Sliding pill indicator
-                                Rectangle {
-                                    x: root.dark-mode ? 2px : 56px;
-                                    y: 2px;
-                                    width: 52px;
-                                    height: 28px;
-                                    border-radius: 14px;
-                                    background: root.dark-mode ? Theme.cyan-dim : Theme.amber-dim;
-                                    drop-shadow-blur: 6px;
-                                    drop-shadow-color: root.dark-mode ? Theme.cyan-glow : Theme.amber-glow;
-
-                                    animate x { duration: 150ms; easing: ease-out; }
-                                    animate background { duration: 150ms; }
-                                    animate drop-shadow-color { duration: 150ms; }
-                                }
-
-                                HorizontalLayout {
-                                    Rectangle {
-                                        width: 55px;
-                                        Text {
-                                            text: "Dark";
-                                            color: root.dark-mode ? Theme.cyan : Theme.text-dim;
-                                            font-size: 11px;
-                                            font-weight: root.dark-mode ? 600 : 400;
-                                            horizontal-alignment: center;
-                                            vertical-alignment: center;
-                                            animate color { duration: 150ms; }
-                                        }
-                                    }
-                                    Rectangle {
-                                        width: 55px;
-                                        Text {
-                                            text: "Light";
-                                            color: root.dark-mode ? Theme.text-dim : Theme.amber;
-                                            font-size: 11px;
-                                            font-weight: root.dark-mode ? 400 : 600;
-                                            horizontal-alignment: center;
-                                            vertical-alignment: center;
-                                            animate color { duration: 150ms; }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // Accent color picker row
-                Rectangle {
-                    background: @linear-gradient(135deg, #12111a80 0%, #0c0b1060 100%);
-                    border-radius: Theme.radius-card;
-                    border-width: 1px;
-                    border-color: #ffffff08;
-                    height: 52px;
-
-                    HorizontalLayout {
-                        padding-left: 16px;
-                        padding-right: 16px;
-
-                        Text {
-                            text: "Accent color";
-                            color: Theme.text-secondary;
-                            font-size: Theme.font-body;
-                            horizontal-stretch: 1;
-                            vertical-alignment: center;
-                        }
-
-                        accent-ta := TouchArea {
-                            width: accent-pill.preferred-width + 8px;
-                            height: 36px;
-                            clicked => { root.cycle-accent-color(); }
-
-                            accent-pill := Rectangle {
-                                width: accent-swatch.width + accent-label.preferred-width + 20px;
-                                height: 28px;
-                                y: (parent.height - self.height) / 2;
-                                border-radius: 14px;
-                                background: accent-ta.has-hover ? Theme.hover-fill-strong : Theme.hover-fill;
-                                border-width: 1px;
-                                border-color: AccentPreset.accent-dim;
+                            // Left accent bar
+                            if root.active-category == 0 : Rectangle {
+                                x: 0;
+                                width: 2px;
+                                height: parent.height;
+                                background: Theme.cyan;
                                 drop-shadow-blur: 4px;
-                                drop-shadow-color: AccentPreset.accent-glow;
-
-                                HorizontalLayout {
-                                    padding-left: 8px;
-                                    padding-right: 10px;
-                                    spacing: 6px;
-                                    alignment: center;
-
-                                    // Color swatch dot
-                                    accent-swatch := Rectangle {
-                                        width: 12px;
-                                        height: 12px;
-                                        y: (parent.height - 12px) / 2;
-                                        border-radius: 6px;
-                                        background: AccentPreset.accent;
-                                        drop-shadow-blur: 4px;
-                                        drop-shadow-color: AccentPreset.accent-glow;
-                                    }
-
-                                    accent-label := Text {
-                                        text: AccentPreset.label;
-                                        color: AccentPreset.accent;
-                                        font-size: 11px;
-                                        font-weight: 600;
-                                        vertical-alignment: center;
-                                    }
-                                }
-
-                                animate border-color { duration: 200ms; }
-                                animate drop-shadow-color { duration: 200ms; }
+                                drop-shadow-color: Theme.cyan-glow;
                             }
-                        }
-                    }
-                }
 
-                // ===== ACCOUNT =====
-                HorizontalLayout {
-                    spacing: 8px;
-                    Rectangle {
-                        width: 3px; height: 14px;
-                        border-radius: 1.5px;
-                        background: Theme.amber;
-                        drop-shadow-blur: 4px;
-                        drop-shadow-color: Theme.amber-glow;
-                    }
-                    Text {
-                        text: "ACCOUNT";
-                        color: Theme.amber;
-                        font-size: 10px;
-                        font-weight: 600;
-                        letter-spacing: 3px;
-                        vertical-alignment: center;
-                    }
-                }
+                            HorizontalLayout {
+                                padding-left: 16px;
+                                padding-right: 12px;
+                                spacing: 10px;
+                                alignment: start;
 
-                Rectangle {
-                    background: @linear-gradient(135deg, #12111a80 0%, #0c0b1060 100%);
-                    border-radius: Theme.radius-card;
-                    border-width: 1px;
-                    border-color: #ffffff08;
-                    height: acct-layout.preferred-height;
-
-                    acct-layout := VerticalLayout {
-                        padding: 16px;
-                        spacing: 12px;
-
-                        HorizontalLayout {
-                            Text {
-                                text: "User";
-                                color: Theme.text-secondary;
-                                font-size: Theme.font-body;
-                                horizontal-stretch: 1;
-                            }
-                            Text {
-                                text: root.user-name;
-                                color: Theme.text-primary;
-                                font-size: Theme.font-body;
-                            }
-                        }
-
-                        Rectangle { height: 1px; background: #ffffff08; }
-
-                        HorizontalLayout {
-                            Text {
-                                text: "Companion";
-                                color: Theme.text-secondary;
-                                font-size: Theme.font-body;
-                                horizontal-stretch: 1;
-                            }
-                            Text {
-                                text: root.companion-name;
-                                color: Theme.amber;
-                                font-size: Theme.font-body;
-                                font-weight: 500;
-                            }
-                        }
-                    }
-                }
-
-                // ===== AI MODEL =====
-                HorizontalLayout {
-                    spacing: 8px;
-                    Rectangle {
-                        width: 3px; height: 14px;
-                        border-radius: 1.5px;
-                        background: Theme.holo-blue;
-                        drop-shadow-blur: 4px;
-                        drop-shadow-color: Theme.holo-blue-glow;
-                    }
-                    Text {
-                        text: "AI MODEL";
-                        color: Theme.holo-blue;
-                        font-size: 10px;
-                        font-weight: 600;
-                        letter-spacing: 3px;
-                        vertical-alignment: center;
-                    }
-                }
-
-                Rectangle {
-                    background: @linear-gradient(135deg, #12111a80 0%, #0c0b1060 100%);
-                    border-radius: Theme.radius-card;
-                    border-width: 1px;
-                    border-color: #ffffff08;
-                    height: model-layout.preferred-height;
-
-                    model-layout := VerticalLayout {
-                        padding: 16px;
-                        spacing: 12px;
-
-                        HorizontalLayout {
-                            Text {
-                                text: "Backend";
-                                color: Theme.text-secondary;
-                                font-size: Theme.font-body;
-                                horizontal-stretch: 1;
-                            }
-                            Rectangle {
-                                width: backend-tag.preferred-width + 16px;
-                                height: 24px;
-                                border-radius: 12px;
-                                background: root.llm-backend == "api" ? Theme.tint-cyan : Theme.tint-amber;
-                                border-width: 1px;
-                                border-color: root.llm-backend == "api" ? Theme.cyan-dim : Theme.amber-dim;
-
-                                backend-tag := Text {
-                                    text: root.llm-backend == "api" ? "API" : "Candle";
-                                    color: root.llm-backend == "api" ? Theme.cyan : Theme.amber;
-                                    font-size: 11px;
-                                    font-weight: 600;
+                                Text {
+                                    text: "\u{25D0}";
+                                    color: root.active-category == 0 ? Theme.cyan : Theme.text-dim;
+                                    font-size: 16px;
+                                    vertical-alignment: center;
+                                    width: 24px;
                                     horizontal-alignment: center;
+                                }
+                                Text {
+                                    text: "Display";
+                                    color: root.active-category == 0 ? Theme.text-primary : Theme.text-secondary;
+                                    font-size: 13px;
+                                    font-weight: root.active-category == 0 ? 600 : 400;
                                     vertical-alignment: center;
                                 }
                             }
-                        }
 
-                        Rectangle { height: 1px; background: #ffffff08; }
-
-                        HorizontalLayout {
-                            Text {
-                                text: "Model";
-                                color: Theme.text-secondary;
-                                font-size: Theme.font-body;
-                                horizontal-stretch: 1;
-                            }
-                            Text {
-                                text: root.llm-backend == "api" && root.llm-api-model != ""
-                                    ? root.llm-api-model : root.model-name;
-                                color: Theme.cyan;
-                                font-size: Theme.font-small;
-                            }
-                        }
-
-                        if root.llm-backend == "api" && root.llm-api-url != "" : Rectangle { height: 1px; background: #ffffff08; }
-                        if root.llm-backend == "api" && root.llm-api-url != "" : HorizontalLayout {
-                            Text {
-                                text: "Endpoint";
-                                color: Theme.text-secondary;
-                                font-size: Theme.font-body;
-                                horizontal-stretch: 1;
-                            }
-                            Text {
-                                text: root.llm-api-url;
-                                color: Theme.text-dim;
-                                font-size: 11px;
-                            }
-                        }
-
-                        Rectangle { height: 1px; background: #ffffff08; }
-
-                        HorizontalLayout {
-                            Text {
-                                text: "Context window";
-                                color: Theme.text-secondary;
-                                font-size: Theme.font-body;
-                                horizontal-stretch: 1;
-                            }
-                            Text {
-                                text: root.max-context + " tokens";
-                                color: Theme.text-primary;
-                                font-size: Theme.font-body;
-                            }
-                        }
-
-                        Rectangle { height: 1px; background: #ffffff08; }
-
-                        HorizontalLayout {
-                            Text {
-                                text: "Max output";
-                                color: Theme.text-secondary;
-                                font-size: Theme.font-body;
-                                horizontal-stretch: 1;
-                            }
-                            Text {
-                                text: root.max-tokens + " tokens";
-                                color: Theme.text-primary;
-                                font-size: Theme.font-body;
-                            }
-                        }
-
-                        Rectangle { height: 1px; background: #ffffff08; }
-
-                        perm-ta := TouchArea {
-                            height: 24px;
-                            clicked => { root.cycle-tool-permission(); }
-
-                            HorizontalLayout {
-                                Text {
-                                    text: "Tool permission";
-                                    color: Theme.text-secondary;
-                                    font-size: Theme.font-body;
-                                    horizontal-stretch: 1;
-                                }
-                                Rectangle {
-                                    width: perm-tag.preferred-width + 16px;
-                                    height: 24px;
-                                    border-radius: 12px;
-                                    background: root.tool-permission == "safe" ? Theme.tint-cyan
-                                        : (root.tool-permission == "standard" ? Theme.tint-amber
-                                        : #e86b6b18);
-                                    border-width: 1px;
-                                    border-color: root.tool-permission == "safe" ? Theme.cyan-dim
-                                        : (root.tool-permission == "standard" ? Theme.amber-dim
-                                        : #e86b6b40);
-
-                                    perm-tag := Text {
-                                        text: root.tool-permission == "safe" ? "Safe"
-                                            : (root.tool-permission == "standard" ? "Standard"
-                                            : "Sensitive");
-                                        color: root.tool-permission == "safe" ? Theme.cyan
-                                            : (root.tool-permission == "standard" ? Theme.amber
-                                            : Theme.color-emotional);
-                                        font-size: 11px;
-                                        font-weight: 600;
-                                        horizontal-alignment: center;
-                                        vertical-alignment: center;
-                                    }
-                                }
-                            }
+                            animate background { duration: 120ms; }
                         }
                     }
-                }
 
-                // ===== NETWORK =====
-                HorizontalLayout {
-                    spacing: 8px;
-                    Rectangle {
-                        width: 3px; height: 14px;
-                        border-radius: 1.5px;
-                        background: Theme.cyan;
-                        drop-shadow-blur: 4px;
-                        drop-shadow-color: Theme.cyan-glow;
-                    }
-                    Text {
-                        text: "NETWORK";
-                        color: Theme.cyan;
-                        font-size: 10px;
-                        font-weight: 600;
-                        letter-spacing: 3px;
-                        vertical-alignment: center;
-                    }
-                }
+                    // Category 1: AI & Companion
+                    cat1-ta := TouchArea {
+                        height: 44px;
+                        clicked => { root.active-category = 1; }
 
-                Rectangle {
-                    background: @linear-gradient(135deg, #12111a80 0%, #0c0b1060 100%);
-                    border-radius: Theme.radius-card;
-                    border-width: 1px;
-                    border-color: #ffffff08;
-                    height: net-layout.preferred-height;
-
-                    net-layout := VerticalLayout {
-                        padding: 16px;
-                        spacing: 12px;
-
-                        HorizontalLayout {
-                            Text {
-                                text: "WiFi";
-                                color: Theme.text-secondary;
-                                font-size: Theme.font-body;
-                                horizontal-stretch: 1;
-                            }
-                            Text {
-                                text: root.wifi-connected
-                                    ? (root.wifi-ssid != "" ? root.wifi-ssid : "Connected")
-                                    : "Disconnected";
-                                color: root.wifi-connected ? Theme.cyan : Theme.text-dim;
-                                font-size: Theme.font-body;
-                            }
-                        }
-
-                        Rectangle { height: 1px; background: #ffffff08; }
-
-                        HorizontalLayout {
-                            Text {
-                                text: "IP address";
-                                color: Theme.text-secondary;
-                                font-size: Theme.font-body;
-                                horizontal-stretch: 1;
-                            }
-                            Text {
-                                text: root.ip-address != "" ? root.ip-address : "\u{2014}";
-                                color: Theme.text-primary;
-                                font-size: Theme.font-body;
-                            }
-                        }
-                    }
-                }
-
-                // ===== DISPLAY =====
-                HorizontalLayout {
-                    spacing: 8px;
-                    Rectangle {
-                        width: 3px; height: 14px;
-                        border-radius: 1.5px;
-                        background: Theme.color-pattern;
-                        drop-shadow-blur: 4px;
-                        drop-shadow-color: #c48bd440;
-                    }
-                    Text {
-                        text: "DISPLAY";
-                        color: Theme.color-pattern;
-                        font-size: 10px;
-                        font-weight: 600;
-                        letter-spacing: 3px;
-                        vertical-alignment: center;
-                    }
-                }
-
-                Rectangle {
-                    background: @linear-gradient(135deg, #12111a80 0%, #0c0b1060 100%);
-                    border-radius: Theme.radius-card;
-                    border-width: 1px;
-                    border-color: #ffffff08;
-                    height: disp-layout.preferred-height;
-
-                    disp-layout := VerticalLayout {
-                        padding: 16px;
-                        spacing: 12px;
-
-                        HorizontalLayout {
-                            Text {
-                                text: "Resolution";
-                                color: Theme.text-secondary;
-                                font-size: Theme.font-body;
-                                horizontal-stretch: 1;
-                            }
-                            Text {
-                                text: root.display-resolution != "" ? root.display-resolution : "auto";
-                                color: Theme.text-primary;
-                                font-size: Theme.font-body;
-                            }
-                        }
-                    }
-                }
-
-                // ===== SECURITY =====
-                HorizontalLayout {
-                    spacing: 8px;
-                    Rectangle {
-                        width: 3px; height: 14px;
-                        border-radius: 1.5px;
-                        background: Theme.color-emotional;
-                        drop-shadow-blur: 4px;
-                        drop-shadow-color: #e86b6b40;
-                    }
-                    Text {
-                        text: "SECURITY";
-                        color: Theme.color-emotional;
-                        font-size: 10px;
-                        font-weight: 600;
-                        letter-spacing: 3px;
-                        vertical-alignment: center;
-                    }
-                }
-
-                Rectangle {
-                    background: @linear-gradient(135deg, #12111a80 0%, #0c0b1060 100%);
-                    border-radius: Theme.radius-card;
-                    border-width: 1px;
-                    border-color: #ffffff08;
-                    height: sec-layout.preferred-height;
-
-                    sec-layout := VerticalLayout {
-                        padding: 16px;
-                        spacing: 12px;
-
-                        lock-ta := TouchArea {
-                            height: 24px;
-                            clicked => { root.cycle-auto-lock(); }
-
-                            HorizontalLayout {
-                                Text {
-                                    text: "Auto-lock";
-                                    color: Theme.text-secondary;
-                                    font-size: Theme.font-body;
-                                    horizontal-stretch: 1;
-                                }
-                                Rectangle {
-                                    width: lock-tag.preferred-width + 16px;
-                                    height: 24px;
-                                    border-radius: 12px;
-                                    background: lock-ta.has-hover ? Theme.hover-fill-strong : Theme.hover-fill;
-                                    border-width: 1px;
-                                    border-color: Theme.border-subtle;
-
-                                    lock-tag := Text {
-                                        text: root.auto-lock-secs == 0 ? "Never"
-                                            : (root.auto-lock-secs >= 60
-                                                ? Math.floor(root.auto-lock-secs / 60) + " min"
-                                                : root.auto-lock-secs + " sec");
-                                        color: Theme.text-primary;
-                                        font-size: 11px;
-                                        font-weight: 500;
-                                        horizontal-alignment: center;
-                                        vertical-alignment: center;
-                                    }
-                                }
-                            }
-                        }
-
-                        Rectangle { height: 1px; background: #ffffff08; }
-
-                        HorizontalLayout {
-                            Text {
-                                text: "PIN lock";
-                                color: Theme.text-secondary;
-                                font-size: Theme.font-body;
-                                horizontal-stretch: 1;
-                            }
-                            // Active indicator with glow
-                            Rectangle {
-                                width: 8px; height: 8px;
-                                y: (parent.height - 8px) / 2;
-                                border-radius: 4px;
-                                background: Theme.color-reminder;
-                                drop-shadow-blur: 4px;
-                                drop-shadow-color: #8be86b40;
-                            }
-                            Text {
-                                text: " Enabled";
-                                color: Theme.color-reminder;
-                                font-size: Theme.font-body;
-                            }
-                        }
-
-                        Rectangle { height: 1px; background: #ffffff08; }
-
-                        incognito-ta := TouchArea {
-                            height: 24px;
-                            clicked => { root.toggle-incognito-mode(); }
-
-                            HorizontalLayout {
-                                Text {
-                                    text: "Incognito";
-                                    color: Theme.text-secondary;
-                                    font-size: Theme.font-body;
-                                    horizontal-stretch: 1;
-                                }
-                                Rectangle {
-                                    width: incognito-tag.preferred-width + 16px;
-                                    height: 24px;
-                                    border-radius: 12px;
-                                    background: root.incognito-mode ? Theme.color-emotional : (incognito-ta.has-hover ? Theme.hover-fill-strong : Theme.hover-fill);
-                                    border-width: 1px;
-                                    border-color: root.incognito-mode ? Theme.color-emotional : Theme.border-subtle;
-                                    drop-shadow-blur: root.incognito-mode ? 6px : 0;
-                                    drop-shadow-color: root.incognito-mode ? #e86b6b40 : transparent;
-
-                                    incognito-tag := Text {
-                                        text: root.incognito-mode ? "ON" : "OFF";
-                                        color: root.incognito-mode ? #ffffff : Theme.text-primary;
-                                        font-size: 11px;
-                                        font-weight: 600;
-                                        horizontal-alignment: center;
-                                        vertical-alignment: center;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // ===== COMPANION =====
-                HorizontalLayout {
-                    spacing: 8px;
-                    Rectangle {
-                        width: 3px; height: 14px;
-                        border-radius: 1.5px;
-                        background: Theme.amber;
-                        drop-shadow-blur: 4px;
-                        drop-shadow-color: Theme.amber-glow;
-                    }
-                    Text {
-                        text: "COMPANION";
-                        color: Theme.amber;
-                        font-size: 10px;
-                        font-weight: 600;
-                        letter-spacing: 3px;
-                        vertical-alignment: center;
-                    }
-                }
-
-                // Bond link — glassmorphic nav card
-                Rectangle {
-                    background: @linear-gradient(135deg, #12111a80 0%, #0c0b1060 100%);
-                    border-radius: Theme.radius-card;
-                    border-width: 1px;
-                    border-color: #ffffff08;
-                    height: 52px;
-
-                    TouchArea {
-                        clicked => { root.navigate-to(4); }
-                    }
-
-                    HorizontalLayout {
-                        padding-left: 16px;
-                        padding-right: 16px;
-
-                        Text {
-                            text: "Bond";
-                            color: Theme.text-primary;
-                            font-size: Theme.font-body;
-                            horizontal-stretch: 1;
-                            vertical-alignment: center;
-                        }
-                        Text {
-                            text: "\u{2192}";
-                            color: Theme.cyan-dim;
-                            font-size: 18px;
-                            vertical-alignment: center;
-                        }
-                    }
-                }
-
-                // Personality link
-                Rectangle {
-                    background: @linear-gradient(135deg, #12111a80 0%, #0c0b1060 100%);
-                    border-radius: Theme.radius-card;
-                    border-width: 1px;
-                    border-color: #ffffff08;
-                    height: 52px;
-
-                    TouchArea {
-                        clicked => { root.navigate-to(5); }
-                    }
-
-                    HorizontalLayout {
-                        padding-left: 16px;
-                        padding-right: 16px;
-
-                        Text {
-                            text: "Personality";
-                            color: Theme.text-primary;
-                            font-size: Theme.font-body;
-                            horizontal-stretch: 1;
-                            vertical-alignment: center;
-                        }
-                        Text {
-                            text: "\u{2192}";
-                            color: Theme.cyan-dim;
-                            font-size: 18px;
-                            vertical-alignment: center;
-                        }
-                    }
-                }
-
-                // Memory browser link
-                Rectangle {
-                    background: @linear-gradient(135deg, #12111a80 0%, #0c0b1060 100%);
-                    border-radius: Theme.radius-card;
-                    border-width: 1px;
-                    border-color: #ffffff08;
-                    height: 52px;
-
-                    TouchArea {
-                        clicked => { root.navigate-to(6); }
-                    }
-
-                    HorizontalLayout {
-                        padding-left: 16px;
-                        padding-right: 16px;
-
-                        Text {
-                            text: "Memory Browser";
-                            color: Theme.text-primary;
-                            font-size: Theme.font-body;
-                            horizontal-stretch: 1;
-                            vertical-alignment: center;
-                        }
                         Rectangle {
-                            width: mem-count-txt.preferred-width + 14px;
-                            height: 20px;
-                            y: (parent.height - 20px) / 2;
-                            border-radius: 10px;
-                            background: Theme.tint-amber;
+                            background: root.active-category == 1 ? Theme.bg-elevated : (cat1-ta.has-hover ? Theme.hover-fill : transparent);
+                            border-radius: 0;
 
-                            mem-count-txt := Text {
-                                text: root.memory-count;
+                            if root.active-category == 1 : Rectangle {
+                                x: 0;
+                                width: 2px;
+                                height: parent.height;
+                                background: Theme.cyan;
+                                drop-shadow-blur: 4px;
+                                drop-shadow-color: Theme.cyan-glow;
+                            }
+
+                            HorizontalLayout {
+                                padding-left: 16px;
+                                padding-right: 12px;
+                                spacing: 10px;
+                                alignment: start;
+
+                                Text {
+                                    text: "\u{25C9}";
+                                    color: root.active-category == 1 ? Theme.cyan : Theme.text-dim;
+                                    font-size: 16px;
+                                    vertical-alignment: center;
+                                    width: 24px;
+                                    horizontal-alignment: center;
+                                }
+                                Text {
+                                    text: "AI & Companion";
+                                    color: root.active-category == 1 ? Theme.text-primary : Theme.text-secondary;
+                                    font-size: 13px;
+                                    font-weight: root.active-category == 1 ? 600 : 400;
+                                    vertical-alignment: center;
+                                }
+                            }
+
+                            animate background { duration: 120ms; }
+                        }
+                    }
+
+                    // Category 2: Network
+                    cat2-ta := TouchArea {
+                        height: 44px;
+                        clicked => { root.active-category = 2; }
+
+                        Rectangle {
+                            background: root.active-category == 2 ? Theme.bg-elevated : (cat2-ta.has-hover ? Theme.hover-fill : transparent);
+                            border-radius: 0;
+
+                            if root.active-category == 2 : Rectangle {
+                                x: 0;
+                                width: 2px;
+                                height: parent.height;
+                                background: Theme.cyan;
+                                drop-shadow-blur: 4px;
+                                drop-shadow-color: Theme.cyan-glow;
+                            }
+
+                            HorizontalLayout {
+                                padding-left: 16px;
+                                padding-right: 12px;
+                                spacing: 10px;
+                                alignment: start;
+
+                                Text {
+                                    text: "\u{25CE}";
+                                    color: root.active-category == 2 ? Theme.cyan : Theme.text-dim;
+                                    font-size: 16px;
+                                    vertical-alignment: center;
+                                    width: 24px;
+                                    horizontal-alignment: center;
+                                }
+                                Text {
+                                    text: "Network";
+                                    color: root.active-category == 2 ? Theme.text-primary : Theme.text-secondary;
+                                    font-size: 13px;
+                                    font-weight: root.active-category == 2 ? 600 : 400;
+                                    vertical-alignment: center;
+                                }
+                            }
+
+                            animate background { duration: 120ms; }
+                        }
+                    }
+
+                    // Category 3: Security & Privacy
+                    cat3-ta := TouchArea {
+                        height: 44px;
+                        clicked => { root.active-category = 3; }
+
+                        Rectangle {
+                            background: root.active-category == 3 ? Theme.bg-elevated : (cat3-ta.has-hover ? Theme.hover-fill : transparent);
+                            border-radius: 0;
+
+                            if root.active-category == 3 : Rectangle {
+                                x: 0;
+                                width: 2px;
+                                height: parent.height;
+                                background: Theme.cyan;
+                                drop-shadow-blur: 4px;
+                                drop-shadow-color: Theme.cyan-glow;
+                            }
+
+                            HorizontalLayout {
+                                padding-left: 16px;
+                                padding-right: 12px;
+                                spacing: 10px;
+                                alignment: start;
+
+                                Text {
+                                    text: "\u{2298}";
+                                    color: root.active-category == 3 ? Theme.cyan : Theme.text-dim;
+                                    font-size: 16px;
+                                    vertical-alignment: center;
+                                    width: 24px;
+                                    horizontal-alignment: center;
+                                }
+                                Text {
+                                    text: "Security";
+                                    color: root.active-category == 3 ? Theme.text-primary : Theme.text-secondary;
+                                    font-size: 13px;
+                                    font-weight: root.active-category == 3 ? 600 : 400;
+                                    vertical-alignment: center;
+                                }
+                            }
+
+                            animate background { duration: 120ms; }
+                        }
+                    }
+
+                    // Category 4: System
+                    cat4-ta := TouchArea {
+                        height: 44px;
+                        clicked => { root.active-category = 4; }
+
+                        Rectangle {
+                            background: root.active-category == 4 ? Theme.bg-elevated : (cat4-ta.has-hover ? Theme.hover-fill : transparent);
+                            border-radius: 0;
+
+                            if root.active-category == 4 : Rectangle {
+                                x: 0;
+                                width: 2px;
+                                height: parent.height;
+                                background: Theme.cyan;
+                                drop-shadow-blur: 4px;
+                                drop-shadow-color: Theme.cyan-glow;
+                            }
+
+                            HorizontalLayout {
+                                padding-left: 16px;
+                                padding-right: 12px;
+                                spacing: 10px;
+                                alignment: start;
+
+                                Text {
+                                    text: "\u{2299}";
+                                    color: root.active-category == 4 ? Theme.cyan : Theme.text-dim;
+                                    font-size: 16px;
+                                    vertical-alignment: center;
+                                    width: 24px;
+                                    horizontal-alignment: center;
+                                }
+                                Text {
+                                    text: "System";
+                                    color: root.active-category == 4 ? Theme.text-primary : Theme.text-secondary;
+                                    font-size: 13px;
+                                    font-weight: root.active-category == 4 ? 600 : 400;
+                                    vertical-alignment: center;
+                                }
+                            }
+
+                            animate background { duration: 120ms; }
+                        }
+                    }
+                }
+            }
+
+            // ===== RIGHT PANEL — category content =====
+            Rectangle {
+                horizontal-stretch: 1;
+                background: transparent;
+
+                // ===== CATEGORY 0: DISPLAY & APPEARANCE =====
+                if root.active-category == 0 : Flickable {
+                    width: 100%;
+                    height: 100%;
+
+                    VerticalLayout {
+                        padding: 20px;
+                        spacing: 16px;
+                        alignment: start;
+
+                        // Section header
+                        HorizontalLayout {
+                            spacing: 8px;
+                            Rectangle {
+                                width: 3px;
+                                height: 14px;
+                                y: 0;
+                                border-radius: 1.5px;
+                                background: Theme.cyan;
+                                drop-shadow-blur: 4px;
+                                drop-shadow-color: Theme.cyan-glow;
+                            }
+                            Text {
+                                text: "DISPLAY & APPEARANCE";
+                                color: Theme.cyan;
+                                font-size: 10px;
+                                font-weight: 600;
+                                letter-spacing: 3px;
+                                vertical-alignment: center;
+                            }
+                        }
+
+                        // Dark / Light mode toggle
+                        Rectangle {
+                            background: @linear-gradient(135deg, #12111a80 0%, #0c0b1060 100%);
+                            border-radius: Theme.radius-card;
+                            border-width: 1px;
+                            border-color: #ffffff08;
+                            height: 52px;
+
+                            HorizontalLayout {
+                                padding-left: 16px;
+                                padding-right: 16px;
+
+                                Text {
+                                    text: "Theme";
+                                    color: Theme.text-secondary;
+                                    font-size: Theme.font-body;
+                                    horizontal-stretch: 1;
+                                    vertical-alignment: center;
+                                }
+
+                                // Pill toggle: Dark / Light — holographic
+                                TouchArea {
+                                    width: 110px;
+                                    height: 36px;
+                                    clicked => { root.toggle-dark-mode(); }
+
+                                    Rectangle {
+                                        width: 110px;
+                                        height: 32px;
+                                        y: (parent.height - self.height) / 2;
+                                        border-radius: 16px;
+                                        background: #0808100a;
+                                        border-width: 1px;
+                                        border-color: root.dark-mode ? Theme.cyan-dim : Theme.amber-dim;
+
+                                        // Sliding pill indicator
+                                        Rectangle {
+                                            x: root.dark-mode ? 2px : 56px;
+                                            y: 2px;
+                                            width: 52px;
+                                            height: 28px;
+                                            border-radius: 14px;
+                                            background: root.dark-mode ? Theme.cyan-dim : Theme.amber-dim;
+                                            drop-shadow-blur: 6px;
+                                            drop-shadow-color: root.dark-mode ? Theme.cyan-glow : Theme.amber-glow;
+
+                                            animate x { duration: 150ms; easing: ease-out; }
+                                            animate background { duration: 150ms; }
+                                            animate drop-shadow-color { duration: 150ms; }
+                                        }
+
+                                        HorizontalLayout {
+                                            Rectangle {
+                                                width: 55px;
+                                                Text {
+                                                    text: "Dark";
+                                                    color: root.dark-mode ? Theme.cyan : Theme.text-dim;
+                                                    font-size: 11px;
+                                                    font-weight: root.dark-mode ? 600 : 400;
+                                                    horizontal-alignment: center;
+                                                    vertical-alignment: center;
+                                                    animate color { duration: 150ms; }
+                                                }
+                                            }
+                                            Rectangle {
+                                                width: 55px;
+                                                Text {
+                                                    text: "Light";
+                                                    color: root.dark-mode ? Theme.text-dim : Theme.amber;
+                                                    font-size: 11px;
+                                                    font-weight: root.dark-mode ? 400 : 600;
+                                                    horizontal-alignment: center;
+                                                    vertical-alignment: center;
+                                                    animate color { duration: 150ms; }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Accent color picker row
+                        Rectangle {
+                            background: @linear-gradient(135deg, #12111a80 0%, #0c0b1060 100%);
+                            border-radius: Theme.radius-card;
+                            border-width: 1px;
+                            border-color: #ffffff08;
+                            height: 52px;
+
+                            HorizontalLayout {
+                                padding-left: 16px;
+                                padding-right: 16px;
+
+                                Text {
+                                    text: "Accent color";
+                                    color: Theme.text-secondary;
+                                    font-size: Theme.font-body;
+                                    horizontal-stretch: 1;
+                                    vertical-alignment: center;
+                                }
+
+                                accent-ta := TouchArea {
+                                    width: accent-pill.preferred-width + 8px;
+                                    height: 36px;
+                                    clicked => { root.cycle-accent-color(); }
+
+                                    accent-pill := Rectangle {
+                                        width: accent-swatch.width + accent-label.preferred-width + 20px;
+                                        height: 28px;
+                                        y: (parent.height - self.height) / 2;
+                                        border-radius: 14px;
+                                        background: accent-ta.has-hover ? Theme.hover-fill-strong : Theme.hover-fill;
+                                        border-width: 1px;
+                                        border-color: AccentPreset.accent-dim;
+                                        drop-shadow-blur: 4px;
+                                        drop-shadow-color: AccentPreset.accent-glow;
+
+                                        HorizontalLayout {
+                                            padding-left: 8px;
+                                            padding-right: 10px;
+                                            spacing: 6px;
+                                            alignment: center;
+
+                                            // Color swatch dot
+                                            accent-swatch := Rectangle {
+                                                width: 12px;
+                                                height: 12px;
+                                                y: (parent.height - 12px) / 2;
+                                                border-radius: 6px;
+                                                background: AccentPreset.accent;
+                                                drop-shadow-blur: 4px;
+                                                drop-shadow-color: AccentPreset.accent-glow;
+                                            }
+
+                                            accent-label := Text {
+                                                text: AccentPreset.label;
+                                                color: AccentPreset.accent;
+                                                font-size: 11px;
+                                                font-weight: 600;
+                                                vertical-alignment: center;
+                                            }
+                                        }
+
+                                        animate border-color { duration: 200ms; }
+                                        animate drop-shadow-color { duration: 200ms; }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Display resolution
+                        Rectangle {
+                            background: @linear-gradient(135deg, #12111a80 0%, #0c0b1060 100%);
+                            border-radius: Theme.radius-card;
+                            border-width: 1px;
+                            border-color: #ffffff08;
+                            height: disp-layout.preferred-height;
+
+                            disp-layout := VerticalLayout {
+                                padding: 16px;
+                                spacing: 12px;
+
+                                HorizontalLayout {
+                                    Text {
+                                        text: "Resolution";
+                                        color: Theme.text-secondary;
+                                        font-size: Theme.font-body;
+                                        horizontal-stretch: 1;
+                                    }
+                                    Text {
+                                        text: root.display-resolution != "" ? root.display-resolution : "auto";
+                                        color: Theme.text-primary;
+                                        font-size: Theme.font-body;
+                                    }
+                                }
+                            }
+                        }
+
+                        // Bottom spacer
+                        Rectangle { height: 40px; }
+                    }
+                }
+
+                // ===== CATEGORY 1: AI & COMPANION =====
+                if root.active-category == 1 : Flickable {
+                    width: 100%;
+                    height: 100%;
+
+                    VerticalLayout {
+                        padding: 20px;
+                        spacing: 16px;
+                        alignment: start;
+
+                        // Section header — Account
+                        HorizontalLayout {
+                            spacing: 8px;
+                            Rectangle {
+                                width: 3px; height: 14px;
+                                border-radius: 1.5px;
+                                background: Theme.amber;
+                                drop-shadow-blur: 4px;
+                                drop-shadow-color: Theme.amber-glow;
+                            }
+                            Text {
+                                text: "ACCOUNT";
                                 color: Theme.amber;
                                 font-size: 10px;
                                 font-weight: 600;
-                                horizontal-alignment: center;
+                                letter-spacing: 3px;
                                 vertical-alignment: center;
                             }
                         }
-                        Text {
-                            text: "  \u{2192}";
-                            color: Theme.cyan-dim;
-                            font-size: 18px;
-                            vertical-alignment: center;
-                        }
-                    }
-                }
 
-                // ===== SYSTEM =====
-                HorizontalLayout {
-                    spacing: 8px;
-                    Rectangle {
-                        width: 3px; height: 14px;
-                        border-radius: 1.5px;
-                        background: Theme.color-follow-up;
-                        drop-shadow-blur: 4px;
-                        drop-shadow-color: #6bb8e840;
-                    }
-                    Text {
-                        text: "SYSTEM";
-                        color: Theme.color-follow-up;
-                        font-size: 10px;
-                        font-weight: 600;
-                        letter-spacing: 3px;
-                        vertical-alignment: center;
-                    }
-                }
+                        Rectangle {
+                            background: @linear-gradient(135deg, #12111a80 0%, #0c0b1060 100%);
+                            border-radius: Theme.radius-card;
+                            border-width: 1px;
+                            border-color: #ffffff08;
+                            height: acct-layout.preferred-height;
 
-                // Notifications link
-                Rectangle {
-                    background: @linear-gradient(135deg, #12111a80 0%, #0c0b1060 100%);
-                    border-radius: Theme.radius-card;
-                    border-width: 1px;
-                    border-color: #ffffff08;
-                    height: 52px;
+                            acct-layout := VerticalLayout {
+                                padding: 16px;
+                                spacing: 12px;
 
-                    TouchArea {
-                        clicked => { root.navigate-to(9); }
-                    }
+                                HorizontalLayout {
+                                    Text {
+                                        text: "User";
+                                        color: Theme.text-secondary;
+                                        font-size: Theme.font-body;
+                                        horizontal-stretch: 1;
+                                    }
+                                    Text {
+                                        text: root.user-name;
+                                        color: Theme.text-primary;
+                                        font-size: Theme.font-body;
+                                    }
+                                }
 
-                    HorizontalLayout {
-                        padding-left: 16px;
-                        padding-right: 16px;
+                                Rectangle { height: 1px; background: #ffffff08; }
 
-                        Text {
-                            text: "Notifications";
-                            color: Theme.text-primary;
-                            font-size: Theme.font-body;
-                            horizontal-stretch: 1;
-                            vertical-alignment: center;
-                        }
-                        if root.notification-count > 0 : Rectangle {
-                            width: max(22px, notif-count-text.preferred-width + 12px);
-                            height: 20px;
-                            y: (parent.height - 20px) / 2;
-                            border-radius: 10px;
-                            background: Theme.amber-dim;
-                            drop-shadow-blur: 4px;
-                            drop-shadow-color: Theme.amber-glow;
-
-                            notif-count-text := Text {
-                                text: root.notification-count;
-                                color: Theme.bg-deep;
-                                font-size: 10px;
-                                font-weight: 700;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
+                                HorizontalLayout {
+                                    Text {
+                                        text: "Companion";
+                                        color: Theme.text-secondary;
+                                        font-size: Theme.font-body;
+                                        horizontal-stretch: 1;
+                                    }
+                                    Text {
+                                        text: root.companion-name;
+                                        color: Theme.amber;
+                                        font-size: Theme.font-body;
+                                        font-weight: 500;
+                                    }
+                                }
                             }
                         }
-                        Text {
-                            text: "  \u{2192}";
-                            color: Theme.cyan-dim;
-                            font-size: 18px;
-                            vertical-alignment: center;
-                        }
-                    }
-                }
 
-                // System Dashboard link
-                Rectangle {
-                    background: @linear-gradient(135deg, #12111a80 0%, #0c0b1060 100%);
-                    border-radius: Theme.radius-card;
-                    border-width: 1px;
-                    border-color: #ffffff08;
-                    height: 52px;
-
-                    TouchArea {
-                        clicked => { root.navigate-to(10); }
-                    }
-
-                    HorizontalLayout {
-                        padding-left: 16px;
-                        padding-right: 16px;
-
-                        Text {
-                            text: "System Monitor";
-                            color: Theme.text-primary;
-                            font-size: Theme.font-body;
-                            horizontal-stretch: 1;
-                            vertical-alignment: center;
-                        }
-                        Text {
-                            text: "\u{2192}";
-                            color: Theme.cyan-dim;
-                            font-size: 18px;
-                            vertical-alignment: center;
-                        }
-                    }
-                }
-
-                // ===== ABOUT =====
-                HorizontalLayout {
-                    spacing: 8px;
-                    Rectangle {
-                        width: 3px; height: 14px;
-                        border-radius: 1.5px;
-                        background: Theme.text-dim;
-                    }
-                    Text {
-                        text: "ABOUT";
-                        color: Theme.text-dim;
-                        font-size: 10px;
-                        font-weight: 600;
-                        letter-spacing: 3px;
-                        vertical-alignment: center;
-                    }
-                }
-
-                Rectangle {
-                    background: @linear-gradient(135deg, #12111a80 0%, #0c0b1060 100%);
-                    border-radius: Theme.radius-card;
-                    border-width: 1px;
-                    border-color: #ffffff08;
-                    height: about-layout.preferred-height;
-
-                    about-layout := VerticalLayout {
-                        padding: 16px;
-                        spacing: 12px;
-
+                        // Section header — AI Model
                         HorizontalLayout {
-                            // Logo text with glow
-                            Text {
-                                text: "Yantrik OS";
-                                color: Theme.amber;
-                                font-size: Theme.font-body;
-                                font-weight: 700;
-                                letter-spacing: 1px;
-                                horizontal-stretch: 1;
-                            }
+                            spacing: 8px;
                             Rectangle {
-                                width: ver-text.preferred-width + 14px;
-                                height: 22px;
-                                border-radius: 11px;
-                                background: Theme.tint-cyan;
-                                border-width: 1px;
-                                border-color: Theme.cyan-dim;
+                                width: 3px; height: 14px;
+                                border-radius: 1.5px;
+                                background: Theme.holo-blue;
+                                drop-shadow-blur: 4px;
+                                drop-shadow-color: Theme.holo-blue-glow;
+                            }
+                            Text {
+                                text: "AI MODEL";
+                                color: Theme.holo-blue;
+                                font-size: 10px;
+                                font-weight: 600;
+                                letter-spacing: 3px;
+                                vertical-alignment: center;
+                            }
+                        }
 
-                                ver-text := Text {
-                                    text: "v" + root.version-text;
-                                    color: Theme.cyan;
-                                    font-size: 10px;
-                                    font-weight: 600;
-                                    horizontal-alignment: center;
+                        Rectangle {
+                            background: @linear-gradient(135deg, #12111a80 0%, #0c0b1060 100%);
+                            border-radius: Theme.radius-card;
+                            border-width: 1px;
+                            border-color: #ffffff08;
+                            height: model-layout.preferred-height;
+
+                            model-layout := VerticalLayout {
+                                padding: 16px;
+                                spacing: 12px;
+
+                                HorizontalLayout {
+                                    Text {
+                                        text: "Backend";
+                                        color: Theme.text-secondary;
+                                        font-size: Theme.font-body;
+                                        horizontal-stretch: 1;
+                                    }
+                                    Rectangle {
+                                        width: backend-tag.preferred-width + 16px;
+                                        height: 24px;
+                                        border-radius: 12px;
+                                        background: root.llm-backend == "api" ? Theme.tint-cyan : Theme.tint-amber;
+                                        border-width: 1px;
+                                        border-color: root.llm-backend == "api" ? Theme.cyan-dim : Theme.amber-dim;
+
+                                        backend-tag := Text {
+                                            text: root.llm-backend == "api" ? "API" : "Candle";
+                                            color: root.llm-backend == "api" ? Theme.cyan : Theme.amber;
+                                            font-size: 11px;
+                                            font-weight: 600;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                }
+
+                                Rectangle { height: 1px; background: #ffffff08; }
+
+                                HorizontalLayout {
+                                    Text {
+                                        text: "Model";
+                                        color: Theme.text-secondary;
+                                        font-size: Theme.font-body;
+                                        horizontal-stretch: 1;
+                                    }
+                                    Text {
+                                        text: root.llm-backend == "api" && root.llm-api-model != ""
+                                            ? root.llm-api-model : root.model-name;
+                                        color: Theme.cyan;
+                                        font-size: Theme.font-small;
+                                    }
+                                }
+
+                                if root.llm-backend == "api" && root.llm-api-url != "" : Rectangle { height: 1px; background: #ffffff08; }
+                                if root.llm-backend == "api" && root.llm-api-url != "" : HorizontalLayout {
+                                    Text {
+                                        text: "Endpoint";
+                                        color: Theme.text-secondary;
+                                        font-size: Theme.font-body;
+                                        horizontal-stretch: 1;
+                                    }
+                                    Text {
+                                        text: root.llm-api-url;
+                                        color: Theme.text-dim;
+                                        font-size: 11px;
+                                    }
+                                }
+
+                                Rectangle { height: 1px; background: #ffffff08; }
+
+                                HorizontalLayout {
+                                    Text {
+                                        text: "Context window";
+                                        color: Theme.text-secondary;
+                                        font-size: Theme.font-body;
+                                        horizontal-stretch: 1;
+                                    }
+                                    Text {
+                                        text: root.max-context + " tokens";
+                                        color: Theme.text-primary;
+                                        font-size: Theme.font-body;
+                                    }
+                                }
+
+                                Rectangle { height: 1px; background: #ffffff08; }
+
+                                HorizontalLayout {
+                                    Text {
+                                        text: "Max output";
+                                        color: Theme.text-secondary;
+                                        font-size: Theme.font-body;
+                                        horizontal-stretch: 1;
+                                    }
+                                    Text {
+                                        text: root.max-tokens + " tokens";
+                                        color: Theme.text-primary;
+                                        font-size: Theme.font-body;
+                                    }
+                                }
+
+                                Rectangle { height: 1px; background: #ffffff08; }
+
+                                perm-ta := TouchArea {
+                                    height: 24px;
+                                    clicked => { root.cycle-tool-permission(); }
+
+                                    HorizontalLayout {
+                                        Text {
+                                            text: "Tool permission";
+                                            color: Theme.text-secondary;
+                                            font-size: Theme.font-body;
+                                            horizontal-stretch: 1;
+                                        }
+                                        Rectangle {
+                                            width: perm-tag.preferred-width + 16px;
+                                            height: 24px;
+                                            border-radius: 12px;
+                                            background: root.tool-permission == "safe" ? Theme.tint-cyan
+                                                : (root.tool-permission == "standard" ? Theme.tint-amber
+                                                : #e86b6b18);
+                                            border-width: 1px;
+                                            border-color: root.tool-permission == "safe" ? Theme.cyan-dim
+                                                : (root.tool-permission == "standard" ? Theme.amber-dim
+                                                : #e86b6b40);
+
+                                            perm-tag := Text {
+                                                text: root.tool-permission == "safe" ? "Safe"
+                                                    : (root.tool-permission == "standard" ? "Standard"
+                                                    : "Sensitive");
+                                                color: root.tool-permission == "safe" ? Theme.cyan
+                                                    : (root.tool-permission == "standard" ? Theme.amber
+                                                    : Theme.color-emotional);
+                                                font-size: 11px;
+                                                font-weight: 600;
+                                                horizontal-alignment: center;
+                                                vertical-alignment: center;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Section header — Companion
+                        HorizontalLayout {
+                            spacing: 8px;
+                            Rectangle {
+                                width: 3px; height: 14px;
+                                border-radius: 1.5px;
+                                background: Theme.amber;
+                                drop-shadow-blur: 4px;
+                                drop-shadow-color: Theme.amber-glow;
+                            }
+                            Text {
+                                text: "COMPANION";
+                                color: Theme.amber;
+                                font-size: 10px;
+                                font-weight: 600;
+                                letter-spacing: 3px;
+                                vertical-alignment: center;
+                            }
+                        }
+
+                        // Bond link — glassmorphic nav card
+                        Rectangle {
+                            background: @linear-gradient(135deg, #12111a80 0%, #0c0b1060 100%);
+                            border-radius: Theme.radius-card;
+                            border-width: 1px;
+                            border-color: #ffffff08;
+                            height: 52px;
+
+                            TouchArea {
+                                clicked => { root.navigate-to(4); }
+                            }
+
+                            HorizontalLayout {
+                                padding-left: 16px;
+                                padding-right: 16px;
+
+                                Text {
+                                    text: "Bond";
+                                    color: Theme.text-primary;
+                                    font-size: Theme.font-body;
+                                    horizontal-stretch: 1;
+                                    vertical-alignment: center;
+                                }
+                                Text {
+                                    text: "\u{2192}";
+                                    color: Theme.cyan-dim;
+                                    font-size: 18px;
                                     vertical-alignment: center;
                                 }
                             }
                         }
 
-                        Rectangle { height: 1px; background: #ffffff08; }
+                        // Personality link
+                        Rectangle {
+                            background: @linear-gradient(135deg, #12111a80 0%, #0c0b1060 100%);
+                            border-radius: Theme.radius-card;
+                            border-width: 1px;
+                            border-color: #ffffff08;
+                            height: 52px;
 
-                        Text {
-                            text: "AI-native desktop shell. The AI IS the shell.";
-                            color: Theme.text-dim;
-                            font-size: Theme.font-small;
-                            wrap: word-wrap;
+                            TouchArea {
+                                clicked => { root.navigate-to(5); }
+                            }
+
+                            HorizontalLayout {
+                                padding-left: 16px;
+                                padding-right: 16px;
+
+                                Text {
+                                    text: "Personality";
+                                    color: Theme.text-primary;
+                                    font-size: Theme.font-body;
+                                    horizontal-stretch: 1;
+                                    vertical-alignment: center;
+                                }
+                                Text {
+                                    text: "\u{2192}";
+                                    color: Theme.cyan-dim;
+                                    font-size: 18px;
+                                    vertical-alignment: center;
+                                }
+                            }
                         }
+
+                        // Memory browser link
+                        Rectangle {
+                            background: @linear-gradient(135deg, #12111a80 0%, #0c0b1060 100%);
+                            border-radius: Theme.radius-card;
+                            border-width: 1px;
+                            border-color: #ffffff08;
+                            height: 52px;
+
+                            TouchArea {
+                                clicked => { root.navigate-to(6); }
+                            }
+
+                            HorizontalLayout {
+                                padding-left: 16px;
+                                padding-right: 16px;
+
+                                Text {
+                                    text: "Memory Browser";
+                                    color: Theme.text-primary;
+                                    font-size: Theme.font-body;
+                                    horizontal-stretch: 1;
+                                    vertical-alignment: center;
+                                }
+                                Rectangle {
+                                    width: mem-count-txt.preferred-width + 14px;
+                                    height: 20px;
+                                    y: (parent.height - 20px) / 2;
+                                    border-radius: 10px;
+                                    background: Theme.tint-amber;
+
+                                    mem-count-txt := Text {
+                                        text: root.memory-count;
+                                        color: Theme.amber;
+                                        font-size: 10px;
+                                        font-weight: 600;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                                Text {
+                                    text: "  \u{2192}";
+                                    color: Theme.cyan-dim;
+                                    font-size: 18px;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+
+                        // Bottom spacer
+                        Rectangle { height: 40px; }
                     }
                 }
 
-                // About Yantrik OS — detailed system info
-                Rectangle {
-                    background: @linear-gradient(135deg, #12111a80 0%, #0c0b1060 100%);
-                    border-radius: Theme.radius-card;
-                    border-width: 1px;
-                    border-color: #ffffff08;
-                    height: 52px;
+                // ===== CATEGORY 2: NETWORK =====
+                if root.active-category == 2 : Flickable {
+                    width: 100%;
+                    height: 100%;
 
-                    TouchArea {
-                        clicked => { root.navigate-to(16); }
-                    }
+                    VerticalLayout {
+                        padding: 20px;
+                        spacing: 16px;
+                        alignment: start;
 
-                    HorizontalLayout {
-                        padding-left: 16px;
-                        padding-right: 16px;
-
-                        Text {
-                            text: "About Yantrik OS";
-                            color: Theme.text-primary;
-                            font-size: Theme.font-body;
-                            horizontal-stretch: 1;
-                            vertical-alignment: center;
+                        // Section header
+                        HorizontalLayout {
+                            spacing: 8px;
+                            Rectangle {
+                                width: 3px; height: 14px;
+                                border-radius: 1.5px;
+                                background: Theme.cyan;
+                                drop-shadow-blur: 4px;
+                                drop-shadow-color: Theme.cyan-glow;
+                            }
+                            Text {
+                                text: "NETWORK";
+                                color: Theme.cyan;
+                                font-size: 10px;
+                                font-weight: 600;
+                                letter-spacing: 3px;
+                                vertical-alignment: center;
+                            }
                         }
-                        Text {
-                            text: "\u{2192}";
-                            color: Theme.cyan-dim;
-                            font-size: 18px;
-                            vertical-alignment: center;
+
+                        Rectangle {
+                            background: @linear-gradient(135deg, #12111a80 0%, #0c0b1060 100%);
+                            border-radius: Theme.radius-card;
+                            border-width: 1px;
+                            border-color: #ffffff08;
+                            height: net-layout.preferred-height;
+
+                            net-layout := VerticalLayout {
+                                padding: 16px;
+                                spacing: 12px;
+
+                                HorizontalLayout {
+                                    Text {
+                                        text: "WiFi";
+                                        color: Theme.text-secondary;
+                                        font-size: Theme.font-body;
+                                        horizontal-stretch: 1;
+                                    }
+                                    Text {
+                                        text: root.wifi-connected
+                                            ? (root.wifi-ssid != "" ? root.wifi-ssid : "Connected")
+                                            : "Disconnected";
+                                        color: root.wifi-connected ? Theme.cyan : Theme.text-dim;
+                                        font-size: Theme.font-body;
+                                    }
+                                }
+
+                                Rectangle { height: 1px; background: #ffffff08; }
+
+                                HorizontalLayout {
+                                    Text {
+                                        text: "IP address";
+                                        color: Theme.text-secondary;
+                                        font-size: Theme.font-body;
+                                        horizontal-stretch: 1;
+                                    }
+                                    Text {
+                                        text: root.ip-address != "" ? root.ip-address : "\u{2014}";
+                                        color: Theme.text-primary;
+                                        font-size: Theme.font-body;
+                                    }
+                                }
+                            }
                         }
+
+                        // Bottom spacer
+                        Rectangle { height: 40px; }
                     }
                 }
 
-                // Bottom spacer
-                Rectangle {
-                    height: 40px;
+                // ===== CATEGORY 3: SECURITY & PRIVACY =====
+                if root.active-category == 3 : Flickable {
+                    width: 100%;
+                    height: 100%;
+
+                    VerticalLayout {
+                        padding: 20px;
+                        spacing: 16px;
+                        alignment: start;
+
+                        // Section header
+                        HorizontalLayout {
+                            spacing: 8px;
+                            Rectangle {
+                                width: 3px; height: 14px;
+                                border-radius: 1.5px;
+                                background: Theme.color-emotional;
+                                drop-shadow-blur: 4px;
+                                drop-shadow-color: #e86b6b40;
+                            }
+                            Text {
+                                text: "SECURITY & PRIVACY";
+                                color: Theme.color-emotional;
+                                font-size: 10px;
+                                font-weight: 600;
+                                letter-spacing: 3px;
+                                vertical-alignment: center;
+                            }
+                        }
+
+                        Rectangle {
+                            background: @linear-gradient(135deg, #12111a80 0%, #0c0b1060 100%);
+                            border-radius: Theme.radius-card;
+                            border-width: 1px;
+                            border-color: #ffffff08;
+                            height: sec-layout.preferred-height;
+
+                            sec-layout := VerticalLayout {
+                                padding: 16px;
+                                spacing: 12px;
+
+                                lock-ta := TouchArea {
+                                    height: 24px;
+                                    clicked => { root.cycle-auto-lock(); }
+
+                                    HorizontalLayout {
+                                        Text {
+                                            text: "Auto-lock";
+                                            color: Theme.text-secondary;
+                                            font-size: Theme.font-body;
+                                            horizontal-stretch: 1;
+                                        }
+                                        Rectangle {
+                                            width: lock-tag.preferred-width + 16px;
+                                            height: 24px;
+                                            border-radius: 12px;
+                                            background: lock-ta.has-hover ? Theme.hover-fill-strong : Theme.hover-fill;
+                                            border-width: 1px;
+                                            border-color: Theme.border-subtle;
+
+                                            lock-tag := Text {
+                                                text: root.auto-lock-secs == 0 ? "Never"
+                                                    : (root.auto-lock-secs >= 60
+                                                        ? Math.floor(root.auto-lock-secs / 60) + " min"
+                                                        : root.auto-lock-secs + " sec");
+                                                color: Theme.text-primary;
+                                                font-size: 11px;
+                                                font-weight: 500;
+                                                horizontal-alignment: center;
+                                                vertical-alignment: center;
+                                            }
+                                        }
+                                    }
+                                }
+
+                                Rectangle { height: 1px; background: #ffffff08; }
+
+                                HorizontalLayout {
+                                    Text {
+                                        text: "PIN lock";
+                                        color: Theme.text-secondary;
+                                        font-size: Theme.font-body;
+                                        horizontal-stretch: 1;
+                                    }
+                                    // Active indicator with glow
+                                    Rectangle {
+                                        width: 8px; height: 8px;
+                                        y: (parent.height - 8px) / 2;
+                                        border-radius: 4px;
+                                        background: Theme.color-reminder;
+                                        drop-shadow-blur: 4px;
+                                        drop-shadow-color: #8be86b40;
+                                    }
+                                    Text {
+                                        text: " Enabled";
+                                        color: Theme.color-reminder;
+                                        font-size: Theme.font-body;
+                                    }
+                                }
+
+                                Rectangle { height: 1px; background: #ffffff08; }
+
+                                incognito-ta := TouchArea {
+                                    height: 24px;
+                                    clicked => { root.toggle-incognito-mode(); }
+
+                                    HorizontalLayout {
+                                        Text {
+                                            text: "Incognito";
+                                            color: Theme.text-secondary;
+                                            font-size: Theme.font-body;
+                                            horizontal-stretch: 1;
+                                        }
+                                        Rectangle {
+                                            width: incognito-tag.preferred-width + 16px;
+                                            height: 24px;
+                                            border-radius: 12px;
+                                            background: root.incognito-mode ? Theme.color-emotional : (incognito-ta.has-hover ? Theme.hover-fill-strong : Theme.hover-fill);
+                                            border-width: 1px;
+                                            border-color: root.incognito-mode ? Theme.color-emotional : Theme.border-subtle;
+                                            drop-shadow-blur: root.incognito-mode ? 6px : 0;
+                                            drop-shadow-color: root.incognito-mode ? #e86b6b40 : transparent;
+
+                                            incognito-tag := Text {
+                                                text: root.incognito-mode ? "ON" : "OFF";
+                                                color: root.incognito-mode ? #ffffff : Theme.text-primary;
+                                                font-size: 11px;
+                                                font-weight: 600;
+                                                horizontal-alignment: center;
+                                                vertical-alignment: center;
+                                            }
+                                        }
+                                    }
+                                }
+
+                                Rectangle { height: 1px; background: #ffffff08; }
+
+                                dnd-ta := TouchArea {
+                                    height: 24px;
+                                    clicked => { root.toggle-dnd-mode(); }
+
+                                    HorizontalLayout {
+                                        Text {
+                                            text: "Do Not Disturb";
+                                            color: Theme.text-secondary;
+                                            font-size: Theme.font-body;
+                                            horizontal-stretch: 1;
+                                        }
+                                        Rectangle {
+                                            width: dnd-tag.preferred-width + 16px;
+                                            height: 24px;
+                                            border-radius: 12px;
+                                            background: root.dnd-mode ? Theme.amber : (dnd-ta.has-hover ? Theme.hover-fill-strong : Theme.hover-fill);
+                                            border-width: 1px;
+                                            border-color: root.dnd-mode ? Theme.amber : Theme.border-subtle;
+                                            drop-shadow-blur: root.dnd-mode ? 6px : 0;
+                                            drop-shadow-color: root.dnd-mode ? Theme.amber-glow : transparent;
+
+                                            dnd-tag := Text {
+                                                text: root.dnd-mode ? "ON" : "OFF";
+                                                color: root.dnd-mode ? Theme.bg-deep : Theme.text-primary;
+                                                font-size: 11px;
+                                                font-weight: 600;
+                                                horizontal-alignment: center;
+                                                vertical-alignment: center;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Bottom spacer
+                        Rectangle { height: 40px; }
+                    }
+                }
+
+                // ===== CATEGORY 4: SYSTEM =====
+                if root.active-category == 4 : Flickable {
+                    width: 100%;
+                    height: 100%;
+
+                    VerticalLayout {
+                        padding: 20px;
+                        spacing: 16px;
+                        alignment: start;
+
+                        // Section header
+                        HorizontalLayout {
+                            spacing: 8px;
+                            Rectangle {
+                                width: 3px; height: 14px;
+                                border-radius: 1.5px;
+                                background: Theme.color-follow-up;
+                                drop-shadow-blur: 4px;
+                                drop-shadow-color: #6bb8e840;
+                            }
+                            Text {
+                                text: "SYSTEM";
+                                color: Theme.color-follow-up;
+                                font-size: 10px;
+                                font-weight: 600;
+                                letter-spacing: 3px;
+                                vertical-alignment: center;
+                            }
+                        }
+
+                        // Version info card
+                        Rectangle {
+                            background: @linear-gradient(135deg, #12111a80 0%, #0c0b1060 100%);
+                            border-radius: Theme.radius-card;
+                            border-width: 1px;
+                            border-color: #ffffff08;
+                            height: about-layout.preferred-height;
+
+                            about-layout := VerticalLayout {
+                                padding: 16px;
+                                spacing: 12px;
+
+                                HorizontalLayout {
+                                    // Logo text with glow
+                                    Text {
+                                        text: "Yantrik OS";
+                                        color: Theme.amber;
+                                        font-size: Theme.font-body;
+                                        font-weight: 700;
+                                        letter-spacing: 1px;
+                                        horizontal-stretch: 1;
+                                    }
+                                    Rectangle {
+                                        width: ver-text.preferred-width + 14px;
+                                        height: 22px;
+                                        border-radius: 11px;
+                                        background: Theme.tint-cyan;
+                                        border-width: 1px;
+                                        border-color: Theme.cyan-dim;
+
+                                        ver-text := Text {
+                                            text: "v" + root.version-text;
+                                            color: Theme.cyan;
+                                            font-size: 10px;
+                                            font-weight: 600;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                }
+
+                                Rectangle { height: 1px; background: #ffffff08; }
+
+                                Text {
+                                    text: "AI-native desktop shell. The AI IS the shell.";
+                                    color: Theme.text-dim;
+                                    font-size: Theme.font-small;
+                                    wrap: word-wrap;
+                                }
+                            }
+                        }
+
+                        // Notifications link
+                        Rectangle {
+                            background: @linear-gradient(135deg, #12111a80 0%, #0c0b1060 100%);
+                            border-radius: Theme.radius-card;
+                            border-width: 1px;
+                            border-color: #ffffff08;
+                            height: 52px;
+
+                            TouchArea {
+                                clicked => { root.navigate-to(9); }
+                            }
+
+                            HorizontalLayout {
+                                padding-left: 16px;
+                                padding-right: 16px;
+
+                                Text {
+                                    text: "Notifications";
+                                    color: Theme.text-primary;
+                                    font-size: Theme.font-body;
+                                    horizontal-stretch: 1;
+                                    vertical-alignment: center;
+                                }
+                                if root.notification-count > 0 : Rectangle {
+                                    width: max(22px, notif-count-text.preferred-width + 12px);
+                                    height: 20px;
+                                    y: (parent.height - 20px) / 2;
+                                    border-radius: 10px;
+                                    background: Theme.amber-dim;
+                                    drop-shadow-blur: 4px;
+                                    drop-shadow-color: Theme.amber-glow;
+
+                                    notif-count-text := Text {
+                                        text: root.notification-count;
+                                        color: Theme.bg-deep;
+                                        font-size: 10px;
+                                        font-weight: 700;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                                Text {
+                                    text: "  \u{2192}";
+                                    color: Theme.cyan-dim;
+                                    font-size: 18px;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+
+                        // System Dashboard link
+                        Rectangle {
+                            background: @linear-gradient(135deg, #12111a80 0%, #0c0b1060 100%);
+                            border-radius: Theme.radius-card;
+                            border-width: 1px;
+                            border-color: #ffffff08;
+                            height: 52px;
+
+                            TouchArea {
+                                clicked => { root.navigate-to(10); }
+                            }
+
+                            HorizontalLayout {
+                                padding-left: 16px;
+                                padding-right: 16px;
+
+                                Text {
+                                    text: "System Monitor";
+                                    color: Theme.text-primary;
+                                    font-size: Theme.font-body;
+                                    horizontal-stretch: 1;
+                                    vertical-alignment: center;
+                                }
+                                Text {
+                                    text: "\u{2192}";
+                                    color: Theme.cyan-dim;
+                                    font-size: 18px;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+
+                        // About Yantrik OS — detailed system info
+                        Rectangle {
+                            background: @linear-gradient(135deg, #12111a80 0%, #0c0b1060 100%);
+                            border-radius: Theme.radius-card;
+                            border-width: 1px;
+                            border-color: #ffffff08;
+                            height: 52px;
+
+                            TouchArea {
+                                clicked => { root.navigate-to(16); }
+                            }
+
+                            HorizontalLayout {
+                                padding-left: 16px;
+                                padding-right: 16px;
+
+                                Text {
+                                    text: "About Yantrik OS";
+                                    color: Theme.text-primary;
+                                    font-size: Theme.font-body;
+                                    horizontal-stretch: 1;
+                                    vertical-alignment: center;
+                                }
+                                Text {
+                                    text: "\u{2192}";
+                                    color: Theme.cyan-dim;
+                                    font-size: 18px;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+
+                        // Bottom spacer
+                        Rectangle { height: 40px; }
+                    }
                 }
             }
         }

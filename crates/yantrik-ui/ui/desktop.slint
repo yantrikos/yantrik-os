@@ -45,6 +45,7 @@ export component DesktopScreen inherits Rectangle {
     in property <bool> wifi-connected: false;
     in property <int> pending-count: 0;
     in property <bool> settings-incognito-mode: false;
+    in property <bool> dnd-mode: false;
 
     // Companion state
     in property <bool> is-thinking: false;
@@ -94,7 +95,9 @@ export component DesktopScreen inherits Rectangle {
     // Clipboard panel
     in-out property <bool> clip-panel-open: false;
     in property <[ClipboardEntryData]> clip-panel-entries: [];
+    in-out property <string> clip-search-query: "";
     callback clipboard-paste(int);
+    callback clipboard-search(string);
 
     // Power menu
     in-out property <bool> power-menu-open: false;
@@ -147,6 +150,7 @@ export component DesktopScreen inherits Rectangle {
         pending-count: root.pending-count;
         whisper-hint-count: root.whisper-hint-count;
         incognito-enabled: root.settings-incognito-mode;
+        dnd-enabled: root.dnd-mode;
         active-project: root.active-project;
         anchor-clicked => { root.lens-open = !root.lens-open; root.open-lens(); }
         queue-clicked => { root.lens-open = true; root.open-lens(); }
@@ -438,7 +442,9 @@ export component DesktopScreen inherits Rectangle {
         height: 100%;
         is-open <=> root.clip-panel-open;
         entries: root.clip-panel-entries;
+        search-query <=> root.clip-search-query;
         paste-entry(idx) => { root.clipboard-paste(idx); }
+        search-changed(query) => { root.clipboard-search(query); }
         close => { root.clip-panel-open = false; }
     }
 

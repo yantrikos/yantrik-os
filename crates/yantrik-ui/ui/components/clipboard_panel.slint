@@ -1,6 +1,7 @@
 // Clipboard History Panel — overlay showing recent clipboard entries.
 // Triggered by Super+V or dock button. Click entry to paste.
 // Follows QuickSettings overlay pattern (backdrop + floating panel).
+// Search input filters entries Rust-side via search-changed callback.
 
 import { Theme } from "../theme.slint";
 
@@ -13,9 +14,11 @@ export struct ClipboardEntryData {
 export component ClipboardPanel inherits Rectangle {
     in-out property <bool> is-open: false;
     in property <[ClipboardEntryData]> entries: [];
+    in-out property <string> search-query: "";
 
     callback paste-entry(int);
     callback close();
+    callback search-changed(string);
 
     width: 100%;
     height: 100%;
@@ -24,7 +27,11 @@ export component ClipboardPanel inherits Rectangle {
     if root.is-open : TouchArea {
         width: 100%;
         height: 100%;
-        clicked => { root.is-open = false; root.close(); }
+        clicked => {
+            root.search-query = "";
+            root.is-open = false;
+            root.close();
+        }
 
         Rectangle {
             width: 100%;
@@ -35,21 +42,21 @@ export component ClipboardPanel inherits Rectangle {
 
     // Panel — center screen
     if root.is-open : Rectangle {
-        x: (parent.width - 400px) / 2;
-        y: (parent.height - panel-layout.preferred-height - 16px) / 2;
-        width: 400px;
-        height: min(panel-layout.preferred-height + 16px, parent.height - 80px);
+        x: (parent.width - 420px) / 2;
+        y: (parent.height - panel-layout.preferred-height - 20px) / 2;
+        width: 420px;
+        height: min(panel-layout.preferred-height + 20px, parent.height - 80px);
         background: Theme.bg-elevated;
         border-radius: 16px;
         border-width: 1px;
         border-color: Theme.border-subtle;
-        drop-shadow-blur: 24px;
+        drop-shadow-blur: 32px;
         drop-shadow-color: Theme.overlay-shadow;
         clip: true;
 
         panel-layout := VerticalLayout {
             padding: 16px;
-            spacing: 4px;
+            spacing: 6px;
 
             // Header
             HorizontalLayout {
@@ -60,16 +67,63 @@ export component ClipboardPanel inherits Rectangle {
                     text: "Clipboard History";
                     color: Theme.text-primary;
                     font-size: Theme.font-title;
-                    font-weight: 500;
+                    font-weight: 600;
                     vertical-alignment: center;
                     horizontal-stretch: 1;
                 }
 
-                Text {
-                    text: root.entries.length + " items";
-                    color: Theme.text-dim;
-                    font-size: Theme.font-small;
-                    vertical-alignment: center;
+                Rectangle {
+                    width: pill-text.preferred-width + 16px;
+                    height: 22px;
+                    y: (parent.height - 22px) / 2;
+                    border-radius: 11px;
+                    background: Theme.tint-accent;
+
+                    pill-text := Text {
+                        text: root.entries.length + " items";
+                        color: Theme.accent;
+                        font-size: 11px;
+                        font-weight: 500;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+
+            // Search input
+            Rectangle {
+                height: 36px;
+                border-radius: 10px;
+                background: Theme.bg-input;
+                border-width: 1px;
+                border-color: search-input.has-focus ? Theme.accent-dim : Theme.border-subtle;
+
+                HorizontalLayout {
+                    padding-left: 10px;
+                    padding-right: 10px;
+                    spacing: 8px;
+
+                    // Search icon
+                    Text {
+                        text: "/";
+                        color: Theme.text-dim;
+                        font-size: 14px;
+                        font-weight: 600;
+                        vertical-alignment: center;
+                        width: 16px;
+                    }
+
+                    search-input := TextInput {
+                        horizontal-stretch: 1;
+                        vertical-alignment: center;
+                        font-size: 13px;
+                        color: Theme.text-primary;
+                        text <=> root.search-query;
+                        accepted => { /* enter does nothing special */ }
+                        edited => {
+                            root.search-changed(root.search-query);
+                        }
+                    }
                 }
             }
 
@@ -80,7 +134,7 @@ export component ClipboardPanel inherits Rectangle {
                 height: 80px;
 
                 Text {
-                    text: "Nothing copied yet";
+                    text: root.search-query != "" ? "No matches" : "Nothing copied yet";
                     color: Theme.text-dim;
                     font-size: Theme.font-body;
                     horizontal-alignment: center;
@@ -90,10 +144,11 @@ export component ClipboardPanel inherits Rectangle {
 
             // Entry list
             for entry[i] in root.entries : TouchArea {
-                height: 52px;
+                height: 56px;
 
                 clicked => {
                     root.paste-entry(entry.index);
+                    root.search-query = "";
                     root.is-open = false;
                     root.close();
                 }
@@ -101,28 +156,29 @@ export component ClipboardPanel inherits Rectangle {
                 Rectangle {
                     width: 100%;
                     height: 100%;
-                    border-radius: 8px;
+                    border-radius: 10px;
                     background: parent.has-hover ? Theme.hover-fill : transparent;
 
                     HorizontalLayout {
                         padding-left: 10px;
                         padding-right: 10px;
-                        spacing: 8px;
+                        spacing: 10px;
 
                         // Index badge
                         Rectangle {
-                            width: 22px;
-                            height: 22px;
-                            y: (parent.height - 22px) / 2;
-                            border-radius: 6px;
-                            background: Theme.bg-card;
-                            border-width: 1px;
+                            width: 24px;
+                            height: 24px;
+                            y: (parent.height - 24px) / 2;
+                            border-radius: 7px;
+                            background: i < 9 ? Theme.tint-accent : Theme.bg-card;
+                            border-width: i < 9 ? 0px : 1px;
                             border-color: Theme.text-dim;
 
                             Text {
-                                text: i < 9 ? (i + 1) + "" : "·";
-                                color: Theme.text-dim;
+                                text: i < 9 ? (i + 1) + "" : "\u{00B7}";
+                                color: i < 9 ? Theme.accent : Theme.text-dim;
                                 font-size: 11px;
+                                font-weight: 600;
                                 horizontal-alignment: center;
                                 vertical-alignment: center;
                             }
@@ -147,6 +203,31 @@ export component ClipboardPanel inherits Rectangle {
                                 font-size: 10px;
                             }
                         }
+                    }
+                }
+            }
+
+            // Keyboard shortcut hint (bottom of panel)
+            Rectangle {
+                height: 24px;
+
+                HorizontalLayout {
+                    alignment: center;
+                    spacing: 4px;
+
+                    Text {
+                        text: "Super+V";
+                        color: Theme.text-dim;
+                        font-size: 10px;
+                        vertical-alignment: center;
+                    }
+
+                    Text {
+                        text: "to toggle";
+                        color: Theme.text-dim;
+                        font-size: 10px;
+                        vertical-alignment: center;
+                        opacity: 0.6;
                     }
                 }
             }
