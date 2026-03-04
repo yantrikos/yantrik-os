@@ -74,7 +74,7 @@ pub struct CompanionService {
     system_context: String,
 
     // Tool registry — modular tool store
-    registry: ToolRegistry,
+    pub(crate) registry: ToolRegistry,
 
     // Security — self-evolving adaptive defense
     guard: SecurityGuard,
@@ -96,7 +96,10 @@ pub struct CompanionService {
     use_native_tools: bool,
 
     // Background task manager for long-running processes.
-    task_manager: std::sync::Mutex<crate::task_manager::TaskManager>,
+    pub(crate) task_manager: std::sync::Mutex<crate::task_manager::TaskManager>,
+
+    // Event buffer for automation matching (drained during think cycles).
+    pub recent_events: Vec<(String, serde_json::Value)>,
 }
 
 impl CompanionService {
@@ -116,6 +119,9 @@ impl CompanionService {
 
         // Scheduler table
         crate::scheduler::Scheduler::ensure_table(db.conn());
+
+        // Automation table
+        crate::automation::AutomationStore::ensure_table(db.conn());
 
         // Tool trace learning table
         ToolTraces::ensure_table(db.conn());
@@ -199,7 +205,22 @@ impl CompanionService {
             native_core_tools,
             use_native_tools,
             task_manager: std::sync::Mutex::new(task_mgr),
+            recent_events: Vec::new(),
         }
+    }
+
+    /// Buffer a system event for automation matching during think cycles.
+    pub fn push_event(&mut self, event_type: &str, event_data: serde_json::Value) {
+        // Keep buffer bounded (last 50 events)
+        if self.recent_events.len() >= 50 {
+            self.recent_events.drain(0..25);
+        }
+        self.recent_events.push((event_type.to_string(), event_data));
+    }
+
+    /// Drain buffered events (called during think cycle).
+    pub fn drain_events(&mut self) -> Vec<(String, serde_json::Value)> {
+        std::mem::take(&mut self.recent_events)
     }
 
     /// The 9-step message pipeline.

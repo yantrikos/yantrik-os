@@ -60,6 +60,10 @@ impl Tool for CreateScheduleTool {
                         "max_invocations": {
                             "type": "integer",
                             "description": "Stop after N fires (null = unlimited for interval/cron)."
+                        },
+                        "action": {
+                            "type": "string",
+                            "description": "Natural language instruction to auto-execute when this fires. The companion will execute this autonomously using tools. E.g. 'Check the weather and send a notification'. Leave empty for reminder-only schedules."
                         }
                     },
                     "required": ["label", "schedule_type"]
@@ -127,6 +131,8 @@ impl Tool for CreateScheduleTool {
             _ => unreachable!(),
         };
 
+        let action = args.get("action").and_then(|v| v.as_str());
+
         let task_id = Scheduler::create(
             ctx.db.conn(),
             label,
@@ -137,7 +143,7 @@ impl Tool for CreateScheduleTool {
             next_invoke,
             max_invocations,
             urgency,
-            None,
+            action,
             &serde_json::json!({}),
         );
 

@@ -278,6 +278,71 @@ pub fn build_results(
         }
     }
 
+    // Scheduling: "remind me...", "every Monday...", "schedule..."
+    if lower.starts_with("remind me") || lower.starts_with("remind ") {
+        if companion_online {
+            results.push(lr("ask", "Set reminder",
+                "AI creates a scheduled reminder", "\u{23f0}",
+                SharedString::from(format!("ask:{}", query))));
+        }
+    }
+    if lower.starts_with("every ") && (lower.contains("day") || lower.contains("week")
+        || lower.contains("monday") || lower.contains("tuesday") || lower.contains("wednesday")
+        || lower.contains("thursday") || lower.contains("friday") || lower.contains("saturday")
+        || lower.contains("sunday") || lower.contains("hour") || lower.contains("minute")
+        || lower.contains("month") || lower.contains("morning") || lower.contains("evening")
+        || lower.contains("night") || lower.contains("noon"))
+    {
+        if companion_online {
+            results.push(lr("ask", "Create schedule",
+                "AI sets up a recurring schedule", "\u{1f4c5}",
+                SharedString::from(format!("ask:Create a schedule: {}", query))));
+        }
+    }
+    if lower.starts_with("schedule ") {
+        if companion_online {
+            results.push(lr("ask", "Schedule task",
+                "AI creates a scheduled task", "\u{1f4c5}",
+                SharedString::from(format!("ask:{}", query))));
+        }
+    }
+
+    // Automation: "automate", "create automation", "run workflow", "automations"
+    if lower.starts_with("automate") || lower.starts_with("create automation")
+        || lower.starts_with("create workflow") || lower.starts_with("new automation")
+    {
+        if companion_online {
+            results.push(lr("ask", "Create automation",
+                "AI creates an automation rule", "\u{26a1}",
+                SharedString::from(format!("ask:{}", query))));
+        }
+    }
+    if (lower.starts_with("run ") && (lower.contains("workflow") || lower.contains("automation")))
+        || lower.starts_with("execute ")
+    {
+        if companion_online {
+            results.push(lr("ask", "Run automation",
+                "AI runs a saved automation", "\u{25b6}",
+                SharedString::from(format!("ask:{}", query))));
+        }
+    }
+    if lower == "automations" || lower == "workflows" || lower == "my automations"
+        || lower == "list automations"
+    {
+        if companion_online {
+            results.push(lr("ask", "List automations",
+                "Show all saved automations", "\u{26a1}",
+                "ask:List my automations"));
+        }
+    }
+    if lower.starts_with("when ") && (lower.contains("then") || lower.contains(",")) {
+        if companion_online {
+            results.push(lr("ask", "Event automation",
+                "AI creates an event-triggered automation", "\u{26a1}",
+                SharedString::from(format!("ask:Create an automation: {}", query))));
+        }
+    }
+
     // File operations: "show downloads", "list files", "what's in ~/X"
     if lower.starts_with("show ") || lower.starts_with("list ") || lower.contains("downloads")
         || lower.starts_with("what's in ")

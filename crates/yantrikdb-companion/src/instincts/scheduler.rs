@@ -41,15 +41,31 @@ impl Instinct for SchedulerInstinct {
                 let action = trigger
                     .get("action")
                     .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
                     .map(|s| s.to_string());
 
-                let message = if description.is_empty() {
+                // Build message — if action present, include execution instructions
+                let message = if let Some(ref act) = action {
+                    if act.starts_with("automation:") {
+                        // Linked automation — AutomationInstinct handles this
+                        if description.is_empty() {
+                            format!("Scheduled: {}", label)
+                        } else {
+                            format!("Scheduled: {} \u{2014} {}", label, description)
+                        }
+                    } else {
+                        format!("EXECUTE scheduled action '{}': {}", label, act)
+                    }
+                } else if description.is_empty() {
                     format!("Scheduled: {}", label)
                 } else {
                     format!("Scheduled: {} \u{2014} {}", label, description)
                 };
 
-                let mut spec = UrgeSpec::new("scheduler", &message, urgency)
+                // Boost urgency for action-bearing tasks to ensure execution
+                let final_urgency = if action.is_some() { urgency.max(0.8) } else { urgency };
+
+                let mut spec = UrgeSpec::new("scheduler", &message, final_urgency)
                     .with_cooldown(&format!("sched:{}", task_id))
                     .with_message(&message)
                     .with_context(trigger.clone());

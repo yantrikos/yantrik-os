@@ -15,6 +15,7 @@
 //! Zero HTTP servers. Everything runs in a single process.
 
 pub mod agent_loop;
+pub mod automation;
 pub mod background;
 pub mod bond;
 pub mod companion;

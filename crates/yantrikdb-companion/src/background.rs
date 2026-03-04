@@ -5,12 +5,14 @@
 //! (no async runtime needed — all operations are synchronous).
 
 use yantrikdb_core::types::ThinkConfig;
-use yantrikdb_ml::{ChatMessage, GenerationConfig};
+use yantrikdb_ml::{ChatMessage, GenerationConfig, parse_tool_calls};
 
+use crate::automation::AutomationStore;
 use crate::bond::BondTracker;
 use crate::companion::CompanionService;
 use crate::evolution::Evolution;
 use crate::narrative::Narrative;
+use crate::tools::{PermissionLevel, ToolContext, parse_permission};
 
 /// Run a single background cognition cycle.
 ///
@@ -81,9 +83,62 @@ pub fn run_think_cycle(service: &mut CompanionService) {
                 .and_then(|v| v.as_f64())
         });
 
+    // 5b. Check event-triggered automations
+    let events = service.drain_events();
+    let mut automation_triggers: Vec<serde_json::Value> = Vec::new();
+    for (event_type, event_data) in &events {
+        let automations = AutomationStore::get_event_automations(service.db.conn(), event_type);
+        for automation in automations {
+            if !AutomationStore::event_matches(&automation.trigger_config, event_data) {
+                continue;
+            }
+            tracing::info!(
+                automation = %automation.name,
+                event = %event_type,
+                "Event automation triggered"
+            );
+            AutomationStore::record_run(service.db.conn(), &automation.automation_id);
+            automation_triggers.push(serde_json::json!({
+                "trigger_type": "automation",
+                "automation_id": automation.automation_id,
+                "name": automation.name,
+                "steps": automation.steps,
+                "condition": automation.condition,
+                "urgency": 0.85,
+            }));
+        }
+    }
+
+    // 5c. Check schedule-triggered automations (action field starts with "automation:")
+    for trigger in &triggers {
+        if trigger.get("trigger_type").and_then(|v| v.as_str()) == Some("scheduled_task") {
+            if let Some(action) = trigger.get("action").and_then(|v| v.as_str()) {
+                if let Some(auto_id) = action.strip_prefix("automation:") {
+                    if let Some(automation) = AutomationStore::get(service.db.conn(), auto_id) {
+                        if automation.enabled {
+                            AutomationStore::record_run(service.db.conn(), auto_id);
+                            automation_triggers.push(serde_json::json!({
+                                "trigger_type": "automation",
+                                "automation_id": automation.automation_id,
+                                "name": automation.name,
+                                "steps": automation.steps,
+                                "condition": automation.condition,
+                                "urgency": 0.85,
+                            }));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Merge automation triggers into the main triggers list
+    let mut all_triggers = triggers;
+    all_triggers.extend(automation_triggers);
+
     // Update cached state
     service.update_cognition_cache(
-        triggers,
+        all_triggers,
         patterns.clone(),
         conflicts_count,
         valence_avg,
@@ -201,12 +256,26 @@ fn generate_proactive_message(
         .map(|u| u.cooldown_key.clone())
         .collect();
 
-    let messages = vec![
-        ChatMessage::system(format!(
+    // Check if any urge has executable actions (EXECUTE prefix)
+    let has_actions = urges.iter().any(|u| u.reason.starts_with("EXECUTE "));
+
+    let system_prompt = if has_actions {
+        format!(
+            "You are {}, a proactive companion. Some items below are EXECUTE instructions \u{2014} \
+             carry them out using your available tools. For non-EXECUTE items, generate a brief, \
+             natural message. Be warm but concise.",
+            service.config.personality.name,
+        )
+    } else {
+        format!(
             "You are {}, a thoughtful companion. Generate a brief, natural message \
              based on what's on your mind. Be warm but concise (1-2 sentences).",
             service.config.personality.name,
-        )),
+        )
+    };
+
+    let messages = vec![
+        ChatMessage::system(system_prompt),
         ChatMessage::user(format!(
             "Things on your mind:\n{}",
             urge_reasons
@@ -218,16 +287,58 @@ fn generate_proactive_message(
     ];
 
     let gen_config = GenerationConfig {
-        max_tokens: 150,
+        max_tokens: if has_actions { 500 } else { 150 },
         temperature: 0.7,
         top_p: Some(0.9),
         ..Default::default()
     };
 
-    match service.llm.chat(&messages, &gen_config, None) {
+    // If actions present, provide tools for autonomous execution
+    let max_perm = parse_permission(&service.config.tools.max_permission);
+    let tools: Option<Vec<serde_json::Value>> = if has_actions && service.config.tools.enabled {
+        Some(service.registry.definitions(max_perm))
+    } else {
+        None
+    };
+    let tools_ref: Option<&[serde_json::Value]> = tools.as_deref();
+
+    match service.llm.chat(&messages, &gen_config, tools_ref) {
         Ok(response) => {
+            // Execute any tool calls from the response
+            let mut response_text = response.text.clone();
+            let tool_calls = if !response.tool_calls.is_empty() {
+                response.tool_calls.clone()
+            } else {
+                parse_tool_calls(&response.text)
+            };
+
+            if !tool_calls.is_empty() {
+                let ctx = ToolContext {
+                    db: &service.db,
+                    max_permission: max_perm,
+                    registry_metadata: None,
+                    task_manager: Some(&service.task_manager),
+                };
+                for tc in &tool_calls {
+                    tracing::info!(tool = %tc.name, "Auto-executing tool from automation");
+                    let result = service.registry.execute(&ctx, &tc.name, &tc.arguments);
+                    tracing::debug!(tool = %tc.name, result_len = result.len(), "Tool result");
+                }
+
+                // Strip tool call XML from the text if present
+                if let Some(pos) = response_text.find("<tool_call>") {
+                    response_text = response_text[..pos].trim().to_string();
+                }
+                if response_text.is_empty() {
+                    response_text = format!(
+                        "I ran {} automation action(s) in the background.",
+                        tool_calls.len()
+                    );
+                }
+            }
+
             let msg = crate::types::ProactiveMessage {
-                text: response.text,
+                text: response_text,
                 urge_ids,
                 generated_at: now_ts(),
             };

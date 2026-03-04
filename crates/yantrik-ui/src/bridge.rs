@@ -447,6 +447,12 @@ fn worker_loop(
                 ) {
                     tracing::warn!(error = %e, "Failed to record system event");
                 }
+
+                // Buffer event for automation matching in think cycle
+                companion.push_event(&safe_domain, serde_json::json!({
+                    "text": safe_text,
+                    "importance": safe_importance,
+                }));
             }
             Ok(CompanionCommand::SetSystemContext { context }) => {
                 // Poll background tasks and append summary to system context
@@ -461,6 +467,11 @@ fn worker_loop(
                 if !sched_summary.is_empty() {
                     full_ctx.push('\n');
                     full_ctx.push_str(&sched_summary);
+                }
+                let auto_summary = yantrikdb_companion::automation::AutomationStore::format_summary(companion.db.conn());
+                if !auto_summary.is_empty() {
+                    full_ctx.push('\n');
+                    full_ctx.push_str(&auto_summary);
                 }
                 companion.set_system_context(full_ctx);
             }

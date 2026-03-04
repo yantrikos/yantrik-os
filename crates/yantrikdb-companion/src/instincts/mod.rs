@@ -4,6 +4,7 @@
 //! (things the companion should bring up with the user).
 
 mod activity_reflector;
+mod automation;
 mod bond_milestone;
 mod check_in;
 mod conflict_alerting;
@@ -23,6 +24,7 @@ use crate::config::InstinctSettings;
 use crate::types::{CompanionState, UrgeSpec};
 
 pub use activity_reflector::ActivityReflectorInstinct;
+pub use automation::AutomationInstinct;
 pub use bond_milestone::BondMilestoneInstinct;
 pub use check_in::CheckInInstinct;
 pub use conflict_alerting::ConflictAlertingInstinct;
@@ -85,6 +87,9 @@ pub fn load_instincts(settings: &InstinctSettings) -> Vec<Box<dyn Instinct>> {
 
     // Scheduler instinct — converts due scheduled tasks into urges
     instincts.push(Box::new(SchedulerInstinct));
+
+    // Automation instinct — converts fired automations into executable urges
+    instincts.push(Box::new(AutomationInstinct));
 
     // Soul instincts — bond-awareness, self-awareness, humor
     instincts.push(Box::new(BondMilestoneInstinct));
