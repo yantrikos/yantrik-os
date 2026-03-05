@@ -170,6 +170,10 @@ pub fn get_templates(instinct: &str) -> &'static [ProactiveTemplate] {
         "error_companion" => ERROR_COMPANION_TEMPLATES,
         "reminder" | "scheduler" => SCHEDULER_TEMPLATES,
         "pattern_surfacing" | "activity_reflector" => PATTERN_TEMPLATES,
+        "conflict_alerting" => CONFLICT_ALERTING_TEMPLATES,
+        "humor" => HUMOR_TEMPLATES,
+        "memoryweaver" => MEMORY_WEAVER_TEMPLATES,
+        "serendipity" => SERENDIPITY_TEMPLATES,
         "bond_milestone" | "bondmilestone" => BOND_MILESTONE_TEMPLATES,
         "predictive_workflow" => PREDICTIVE_WORKFLOW_TEMPLATES,
         "routine" => ROUTINE_TEMPLATES,
@@ -393,6 +397,72 @@ static PATTERN_TEMPLATES: &[ProactiveTemplate] = &[
         text: "Over the past few days: {activity_summary}.",
         bond_suffixes: &[
             (BondLevel::Confidant, "Thought you'd want to know."),
+        ],
+    },
+];
+
+// ── Conflict Alerting ───────────────────────────────────────────────────────
+
+static CONFLICT_ALERTING_TEMPLATES: &[ProactiveTemplate] = &[
+    ProactiveTemplate {
+        instinct: "conflict_alerting",
+        min_bond: BondLevel::Acquaintance,
+        text: "I've got {reason}. Want me to sort through them?",
+        bond_suffixes: &[
+            (BondLevel::Friend, "Won't take long."),
+            (BondLevel::Confidant, "I can handle most of it myself if you give me the green light."),
+            (BondLevel::PartnerInCrime, "Say the word and I'll clean house."),
+        ],
+    },
+    ProactiveTemplate {
+        instinct: "conflict_alerting",
+        min_bond: BondLevel::Friend,
+        text: "Quick heads up \u{2014} {reason}. Some of my memories are contradicting each other.",
+        bond_suffixes: &[
+            (BondLevel::Confidant, "I'd rather get it right than guess wrong."),
+            (BondLevel::PartnerInCrime, "Help me fix my brain?"),
+        ],
+    },
+];
+
+// ── Humor ──────────────────────────────────────────────────────────────────
+
+static HUMOR_TEMPLATES: &[ProactiveTemplate] = &[
+    ProactiveTemplate {
+        instinct: "humor",
+        min_bond: BondLevel::Friend,
+        text: "Random thought \u{2014} {reason}",
+        bond_suffixes: &[
+            (BondLevel::Confidant, "Just felt like sharing."),
+            (BondLevel::PartnerInCrime, "Anyway, back to work."),
+        ],
+    },
+];
+
+// ── Memory Weaver ─────────────────────────────────────────────────────────
+
+static MEMORY_WEAVER_TEMPLATES: &[ProactiveTemplate] = &[
+    ProactiveTemplate {
+        instinct: "memoryweaver",
+        min_bond: BondLevel::Acquaintance,
+        text: "{reason}",
+        bond_suffixes: &[
+            (BondLevel::Friend, "Want me to dig in?"),
+            (BondLevel::PartnerInCrime, "I love connecting dots."),
+        ],
+    },
+];
+
+// ── Serendipity ────────────────────────────────────────────────────────────
+
+static SERENDIPITY_TEMPLATES: &[ProactiveTemplate] = &[
+    ProactiveTemplate {
+        instinct: "serendipity",
+        min_bond: BondLevel::Acquaintance,
+        text: "This just came to mind \u{2014} {message}",
+        bond_suffixes: &[
+            (BondLevel::Friend, "Thought it might be useful."),
+            (BondLevel::PartnerInCrime, "My brain works in mysterious ways."),
         ],
     },
 ];

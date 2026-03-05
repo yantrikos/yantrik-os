@@ -297,13 +297,19 @@ impl ProactiveEngine {
             "pattern_surfacing" => {
                 format!("I've been noticing something: {}", reason)
             }
-            "conflict_alerting" | "memoryweaver" => {
-                // Internal housekeeping urges — only deliver if instinct provided
-                // a concrete suggested_message (e.g. milestone celebrations).
-                if msg.is_empty() {
-                    return String::new();
+            "conflict_alerting" => {
+                if !msg.is_empty() {
+                    msg.clone()
+                } else {
+                    format!("Hey {} \u{2014} {}. Want me to sort through them?", user, reason)
                 }
-                msg.clone()
+            }
+            "memoryweaver" => {
+                if !msg.is_empty() {
+                    msg.clone()
+                } else {
+                    format!("{}", reason)
+                }
             }
             "bond_milestone" | "bondmilestone" => {
                 if msg.is_empty() {
@@ -321,12 +327,13 @@ impl ProactiveEngine {
             }
             "self_awareness" | "selfawareness" => reason.clone(),
             "humor" => {
-                // Humor urges are tone hints for conversations, not standalone messages.
-                // Only deliver if the instinct provided a concrete suggested_message.
-                if msg.is_empty() {
-                    return String::new(); // Skip — raw hint, not user-facing
+                if !msg.is_empty() {
+                    msg.clone()
+                } else if !reason.is_empty() {
+                    format!("Random thought \u{2014} {}", reason)
+                } else {
+                    return String::new();
                 }
-                msg.clone()
             }
             _ => {
                 // Unknown instinct — use whatever text is available
