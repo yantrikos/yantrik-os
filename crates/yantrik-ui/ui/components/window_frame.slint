@@ -1,14 +1,74 @@
 // WindowFrame — reusable window chrome with glass title bar.
 // Holographic glow, glass gradient background, animated controls.
 // Semi-transparent body for depth. Use @children to place content inside.
+// Supports drag-to-move (title bar) and drag-to-resize (edges/corners).
 
 import { Theme } from "../theme.slint";
+
+// Invisible resize handle — placed on window edges/corners.
+// Updates win-x/y/w/h based on which edges are active.
+component ResizeHandle inherits TouchArea {
+    in property <bool> resize-top: false;
+    in property <bool> resize-bottom: false;
+    in property <bool> resize-left: false;
+    in property <bool> resize-right: false;
+    in-out property <length> win-x;
+    in-out property <length> win-y;
+    in-out property <length> win-w;
+    in-out property <length> win-h;
+    in property <length> min-w: 400px;
+    in property <length> min-h: 300px;
+
+    property <length> press-mx;
+    property <length> press-my;
+
+    pointer-event(event) => {
+        if event.button == PointerEventButton.left && event.kind == PointerEventKind.down {
+            press-mx = self.mouse-x;
+            press-my = self.mouse-y;
+        }
+    }
+
+    moved => {
+        if self.pressed {
+            if root.resize-right {
+                root.win-w = max(root.min-w, root.win-w + self.mouse-x - root.press-mx);
+            }
+            if root.resize-bottom {
+                root.win-h = max(root.min-h, root.win-h + self.mouse-y - root.press-my);
+            }
+            if root.resize-left {
+                if root.win-w - (self.mouse-x - root.press-mx) >= root.min-w {
+                    root.win-x = root.win-x + (self.mouse-x - root.press-mx);
+                    root.win-w = root.win-w - (self.mouse-x - root.press-mx);
+                }
+            }
+            if root.resize-top {
+                if root.win-h - (self.mouse-y - root.press-my) >= root.min-h {
+                    root.win-y = root.win-y + (self.mouse-y - root.press-my);
+                    root.win-h = root.win-h - (self.mouse-y - root.press-my);
+                }
+            }
+        }
+    }
+}
 
 export component WindowFrame inherits Rectangle {
     in property <string> title: "";
     in property <string> icon-char: "";
     in property <color> icon-color: Theme.cyan;
     in-out property <bool> is-maximized: true;
+
+    // Window geometry (when not maximized) — bind with <=> from parent
+    in-out property <length> win-x: 80px;
+    in-out property <length> win-y: 40px;
+    in-out property <length> win-w: 1000px;
+    in-out property <length> win-h: 650px;
+
+    property <length> min-w: 400px;
+    property <length> min-h: 300px;
+    property <length> hs: 6px;   // edge handle thickness
+    property <length> cs: 14px;  // corner handle size
 
     callback close();
     callback minimize();
@@ -58,6 +118,31 @@ export component WindowFrame inherits Rectangle {
                 );
             }
 
+            // Drag TouchArea — covers entire title bar, behind buttons
+            title-drag := TouchArea {
+                width: 100%;
+                height: 100%;
+                mouse-cursor: root.is-maximized ? default : move;
+
+                property <length> press-mx;
+                property <length> press-my;
+
+                pointer-event(event) => {
+                    if event.button == PointerEventButton.left && event.kind == PointerEventKind.down {
+                        press-mx = self.mouse-x;
+                        press-my = self.mouse-y;
+                    }
+                }
+
+                moved => {
+                    if self.pressed && !root.is-maximized {
+                        root.win-x += self.mouse-x - press-mx;
+                        root.win-y += self.mouse-y - press-my;
+                    }
+                }
+            }
+
+            // Visual layout on top of drag area
             HorizontalLayout {
                 padding-left: 12px;
                 padding-right: 0px;
@@ -112,7 +197,7 @@ export component WindowFrame inherits Rectangle {
                             animate background { duration: 120ms; }
 
                             Text {
-                                text: "─";
+                                text: "\u{2500}";
                                 color: min-btn.has-hover ? Theme.cyan : Theme.text-secondary;
                                 font-size: 14px;
                                 horizontal-alignment: center;
@@ -135,7 +220,7 @@ export component WindowFrame inherits Rectangle {
                             animate background { duration: 120ms; }
 
                             Text {
-                                text: root.is-maximized ? "❐" : "□";
+                                text: root.is-maximized ? "\u{2750}" : "\u{25a1}";
                                 color: max-btn.has-hover ? Theme.cyan : Theme.text-secondary;
                                 font-size: 14px;
                                 horizontal-alignment: center;
@@ -161,7 +246,7 @@ export component WindowFrame inherits Rectangle {
                             animate drop-shadow-blur { duration: 120ms; }
 
                             Text {
-                                text: "✕";
+                                text: "\u{2715}";
                                 color: close-btn.has-hover ? #ffffff : Theme.text-secondary;
                                 font-size: 14px;
                                 horizontal-alignment: center;
@@ -195,5 +280,95 @@ export component WindowFrame inherits Rectangle {
             background: #080814d8;
             @children
         }
+    }
+
+    // ── Resize handles (only when not maximized) ──
+
+    // N (top edge)
+    if !root.is-maximized : ResizeHandle {
+        x: root.cs; y: 0;
+        width: root.width - 2 * root.cs; height: root.hs;
+        mouse-cursor: n-resize;
+        resize-top: true;
+        win-x <=> root.win-x; win-y <=> root.win-y;
+        win-w <=> root.win-w; win-h <=> root.win-h;
+        min-w: root.min-w; min-h: root.min-h;
+    }
+
+    // S (bottom edge)
+    if !root.is-maximized : ResizeHandle {
+        x: root.cs; y: root.height - root.hs;
+        width: root.width - 2 * root.cs; height: root.hs;
+        mouse-cursor: s-resize;
+        resize-bottom: true;
+        win-x <=> root.win-x; win-y <=> root.win-y;
+        win-w <=> root.win-w; win-h <=> root.win-h;
+        min-w: root.min-w; min-h: root.min-h;
+    }
+
+    // E (right edge)
+    if !root.is-maximized : ResizeHandle {
+        x: root.width - root.hs; y: root.cs;
+        width: root.hs; height: root.height - 2 * root.cs;
+        mouse-cursor: e-resize;
+        resize-right: true;
+        win-x <=> root.win-x; win-y <=> root.win-y;
+        win-w <=> root.win-w; win-h <=> root.win-h;
+        min-w: root.min-w; min-h: root.min-h;
+    }
+
+    // W (left edge)
+    if !root.is-maximized : ResizeHandle {
+        x: 0; y: root.cs;
+        width: root.hs; height: root.height - 2 * root.cs;
+        mouse-cursor: w-resize;
+        resize-left: true;
+        win-x <=> root.win-x; win-y <=> root.win-y;
+        win-w <=> root.win-w; win-h <=> root.win-h;
+        min-w: root.min-w; min-h: root.min-h;
+    }
+
+    // NE corner
+    if !root.is-maximized : ResizeHandle {
+        x: root.width - root.cs; y: 0;
+        width: root.cs; height: root.cs;
+        mouse-cursor: ne-resize;
+        resize-top: true; resize-right: true;
+        win-x <=> root.win-x; win-y <=> root.win-y;
+        win-w <=> root.win-w; win-h <=> root.win-h;
+        min-w: root.min-w; min-h: root.min-h;
+    }
+
+    // SE corner
+    if !root.is-maximized : ResizeHandle {
+        x: root.width - root.cs; y: root.height - root.cs;
+        width: root.cs; height: root.cs;
+        mouse-cursor: se-resize;
+        resize-bottom: true; resize-right: true;
+        win-x <=> root.win-x; win-y <=> root.win-y;
+        win-w <=> root.win-w; win-h <=> root.win-h;
+        min-w: root.min-w; min-h: root.min-h;
+    }
+
+    // SW corner
+    if !root.is-maximized : ResizeHandle {
+        x: 0; y: root.height - root.cs;
+        width: root.cs; height: root.cs;
+        mouse-cursor: sw-resize;
+        resize-bottom: true; resize-left: true;
+        win-x <=> root.win-x; win-y <=> root.win-y;
+        win-w <=> root.win-w; win-h <=> root.win-h;
+        min-w: root.min-w; min-h: root.min-h;
+    }
+
+    // NW corner
+    if !root.is-maximized : ResizeHandle {
+        x: 0; y: 0;
+        width: root.cs; height: root.cs;
+        mouse-cursor: nw-resize;
+        resize-top: true; resize-left: true;
+        win-x <=> root.win-x; win-y <=> root.win-y;
+        win-w <=> root.win-w; win-h <=> root.win-h;
+        min-w: root.min-w; min-h: root.min-h;
     }
 }
