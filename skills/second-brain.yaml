@@ -1,0 +1,26 @@
+id: second-brain
+name: Second Brain
+description: External memory analysis — patterns, contradictions, forgotten commitments
+long_description: >
+  Acts as your externalized subconscious. Periodically reviews memories
+  to find recurring themes, contradictions between stated goals and actions,
+  forgotten commitments, and energy patterns you might not notice.
+version: "1.0.0"
+author: Yantrik
+icon: brain
+category: intelligence
+tags: [memory, patterns, analysis, self-knowledge, alive-mind]
+
+tools: []
+core_tools: []
+
+instincts:
+  - SecondBrain
+
+cortex_rules: []
+services: []
+requires: []
+requires_config: []
+
+permissions:
+  - background

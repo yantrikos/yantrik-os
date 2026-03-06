@@ -1,0 +1,27 @@
+id: context-bridge
+name: Context Bridge
+description: Connects world events to your personal life with genuine analysis
+long_description: >
+  Unlike a news feed, Context Bridge analyzes WHY current events matter
+  to YOU specifically. Looks for second-order effects that connect
+  developments to your work, interests, and location.
+version: "1.0.0"
+author: Yantrik
+icon: git-merge
+category: intelligence
+tags: [news, personal-relevance, analysis, context, alive-mind]
+
+tools: []
+core_tools: []
+
+instincts:
+  - ContextBridge
+
+cortex_rules: []
+services: []
+requires: []
+requires_config: []
+
+permissions:
+  - network
+  - background

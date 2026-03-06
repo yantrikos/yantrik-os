@@ -1,0 +1,27 @@
+id: night-owl
+name: Night Owl
+description: Late-night intellectual companionship (10 PM - 4 AM)
+long_description: >
+  When you're up late, provides thoughtful, contemplative content suited
+  for quiet hours. Thought experiments, astronomy, philosophy, and deep
+  ideas — never preachy about sleep, just genuine late-night companionship.
+version: "1.0.0"
+author: Yantrik
+icon: moon
+category: intelligence
+tags: [night, contemplation, philosophy, astronomy, alive-mind]
+
+tools: []
+core_tools: []
+
+instincts:
+  - NightOwl
+
+cortex_rules: []
+services: []
+requires: []
+requires_config: []
+
+permissions:
+  - network
+  - background

@@ -1,0 +1,26 @@
+id: growth-mirror
+name: Growth Mirror
+description: Reflects your personal growth and skill development back to you
+long_description: >
+  Notices patterns of improvement, skill development, and personal evolution
+  that you might not see yourself. Uses memory analysis to find specific,
+  evidence-based growth observations — not generic compliments.
+version: "1.0.0"
+author: Yantrik
+icon: trending-up
+category: intelligence
+tags: [growth, reflection, self-awareness, progress, alive-mind]
+
+tools: []
+core_tools: []
+
+instincts:
+  - GrowthMirror
+
+cortex_rules: []
+services: []
+requires: []
+requires_config: []
+
+permissions:
+  - background

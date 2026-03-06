@@ -1,0 +1,26 @@
+id: identity-thread
+name: Identity Thread
+description: Weaves your values and identity markers into a coherent narrative
+long_description: >
+  The deepest instinct. Notices when your actions align with or diverge from
+  your stated values. Finds cross-domain patterns in who you are. Requires
+  the deepest bond and most extensive history. Observes, doesn't define.
+version: "1.0.0"
+author: Yantrik
+icon: fingerprint
+category: intelligence
+tags: [identity, values, self-awareness, wisdom, alive-mind]
+
+tools: []
+core_tools: []
+
+instincts:
+  - IdentityThread
+
+cortex_rules: []
+services: []
+requires: []
+requires_config: []
+
+permissions:
+  - background

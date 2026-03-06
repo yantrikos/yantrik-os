@@ -87,6 +87,12 @@ pub struct CompanionState {
     pub recent_sent_messages: Vec<String>,
     /// Suppressed urges log: (urge_key, reason, timestamp)
     pub suppressed_urges: Vec<(String, String, f64)>,
+    /// User's known interests (from memory/preferences).
+    /// Examples: ["fishing", "cooking Italian", "Rust programming", "NFL Eagles"]
+    pub user_interests: Vec<String>,
+    /// User's location (city/region) for local relevance.
+    /// Examples: "Austin, TX", "London, UK"
+    pub user_location: String,
 }
 
 /// Response from handle_message().

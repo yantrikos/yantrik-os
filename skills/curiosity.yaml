@@ -15,7 +15,7 @@ tools: []
 core_tools: []
 
 instincts:
-  - curiosity
+  - Curiosity
 
 cortex_rules: []
 services: []

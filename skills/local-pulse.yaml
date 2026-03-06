@@ -1,0 +1,27 @@
+id: local-pulse
+name: Local Pulse
+description: Hyperlocal intelligence — events, openings, and community happenings
+long_description: >
+  Keeps a finger on the pulse of your local area. Discovers new restaurants,
+  community events, road closures, farmers markets, and neighborhood changes.
+  Cross-references with your interests for maximum relevance.
+version: "1.0.0"
+author: Yantrik
+icon: map-pin
+category: intelligence
+tags: [local, events, community, neighborhood, alive-mind]
+
+tools: []
+core_tools: []
+
+instincts:
+  - LocalPulse
+
+cortex_rules: []
+services: []
+requires: []
+requires_config: []
+
+permissions:
+  - network
+  - background

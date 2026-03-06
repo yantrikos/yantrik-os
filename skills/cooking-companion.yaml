@@ -1,0 +1,27 @@
+id: cooking-companion
+name: Cooking Companion
+description: Contextual food intelligence for cooking enthusiasts
+long_description: >
+  Goes beyond recipes. Provides seasonal ingredient alerts, food science tips,
+  technique insights, and cultural food connections. Weather-aware, location-aware,
+  and personalized to your cooking style and preferences.
+version: "1.0.0"
+author: Yantrik
+icon: utensils
+category: intelligence
+tags: [cooking, food, recipes, seasonal, alive-mind]
+
+tools: []
+core_tools: []
+
+instincts:
+  - CookingCompanion
+
+cortex_rules: []
+services: []
+requires: []
+requires_config: []
+
+permissions:
+  - network
+  - background

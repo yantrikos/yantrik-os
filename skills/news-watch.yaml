@@ -1,21 +1,21 @@
 id: news-watch
-name: News Watch
-description: Monitor breaking news and headlines from around the web
+name: World Sense
+description: Multi-dimensional world awareness with personalized analysis
 long_description: >
-  Periodically scans news sources for breaking stories and important developments.
-  AI filters noise and only surfaces genuinely significant news. Customizable
-  topics and sources based on your interests.
-version: "1.0.0"
+  Goes beyond news headlines. Understands the world through geopolitical,
+  scientific, cultural, economic, and environmental lenses. Connects
+  developments to your life with genuine second-order analysis.
+version: "2.0.0"
 author: Yantrik
 icon: newspaper
 category: news
-tags: [headlines, breaking, world, politics, technology, rss]
+tags: [headlines, breaking, world, analysis, intelligence, alive-mind]
 
 tools: []
 core_tools: []
 
 instincts:
-  - news_watch
+  - WorldSense
 
 cortex_rules: []
 services: []

@@ -1,0 +1,27 @@
+id: wonder-sense
+name: Wonder Sense
+description: Surfaces fascinating "did you know?" moments from current context
+long_description: >
+  Explores topics through wonder lenses — history, science, etymology, astronomy,
+  food science, psychology — and finds genuinely fascinating facts connected to
+  your location, interests, and the current day. Pure wonder, zero utility pressure.
+version: "1.0.0"
+author: Yantrik
+icon: sparkles
+category: intelligence
+tags: [wonder, facts, learning, discovery, alive-mind]
+
+tools: []
+core_tools: []
+
+instincts:
+  - WonderSense
+
+cortex_rules: []
+services: []
+requires: []
+requires_config: []
+
+permissions:
+  - network
+  - background
