@@ -86,7 +86,8 @@ impl Instinct for CuriosityInstinct {
             "EXECUTE Use recall_preferences with category \"{}\" to check what {} is interested in. \
              Then use web_search to find one recent interesting development related to those interests. \
              If you find something genuinely noteworthy, share it naturally in 1-2 sentences \
-             as a proactive message. If nothing interesting turns up, just say so briefly.",
+             as a proactive message. If nothing interesting turns up, just say so briefly. \
+             After you're done, call browser_cleanup to free resources.",
             category, user,
         );
 

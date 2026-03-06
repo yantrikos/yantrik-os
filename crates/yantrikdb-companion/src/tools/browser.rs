@@ -206,6 +206,58 @@ fn is_browser_running() -> bool {
     .is_ok()
 }
 
+/// Auto-launch Chromium in headless mode for data-extraction tools (web_search, browse).
+/// Returns Ok(()) if browser is available (already running or just launched),
+/// Err(msg) if launch failed.
+fn ensure_headless_browser() -> Result<(), String> {
+    if is_browser_running() {
+        return Ok(());
+    }
+
+    // Run watchdog cleanup first
+    if let Some(warning) = super::browser_lifecycle::watchdog_check() {
+        tracing::info!("ensure_headless pre-flight: {}", warning);
+    }
+
+    tracing::info!("Auto-launching headless Chromium for data extraction");
+    let result = std::process::Command::new("chromium")
+        .args([
+            "--headless=new",
+            "--ozone-platform=wayland",
+            "--remote-debugging-address=127.0.0.1",
+            "--remote-debugging-port=9222",
+            "--no-first-run",
+            "--no-default-browser-check",
+            "--disable-gpu",
+            "about:blank",
+        ])
+        .env("WAYLAND_DISPLAY", "wayland-0")
+        .env("XDG_RUNTIME_DIR", "/run/user/1000")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+
+    match result {
+        Ok(_) => {
+            for _ in 0..10 {
+                std::thread::sleep(Duration::from_millis(500));
+                if is_browser_running() {
+                    return Ok(());
+                }
+            }
+            Err("Headless browser started but CDP not reachable".to_string())
+        }
+        Err(e) => Err(format!("Failed to launch headless Chromium: {e}")),
+    }
+}
+
+/// Navigate current tab to about:blank to clear stale content.
+/// Prevents the AI from re-reading its own previously-opened pages as "user activity".
+fn cleanup_after_data_extraction(ws: &mut WebSocket<MaybeTlsStream<TcpStream>>) {
+    let _ = cdp_send(ws, "Page.navigate", json!({ "url": "about:blank" }));
+}
+
 // ── Launch Browser ──
 
 pub struct LaunchBrowserTool;
@@ -220,11 +272,12 @@ impl Tool for LaunchBrowserTool {
             "type": "function",
             "function": {
                 "name": "launch_browser",
-                "description": "Launch Chromium browser with remote debugging. Call this before using other browser tools.",
+                "description": "Launch Chromium browser with remote debugging. Use headless=true for data extraction tasks (web_search, browse auto-launch headless). Use headless=false (default) when the user wants to see a visible browser window.",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "url": {"type": "string", "description": "Optional URL to open (default: about:blank)"}
+                        "url": {"type": "string", "description": "Optional URL to open (default: about:blank)"},
+                        "headless": {"type": "boolean", "description": "Run in headless mode (no visible window). Default: false"}
                     }
                 }
             }
@@ -243,6 +296,7 @@ impl Tool for LaunchBrowserTool {
         }
 
         let url = args.get("url").and_then(|v| v.as_str()).unwrap_or("about:blank");
+        let headless = args.get("headless").and_then(|v| v.as_bool()).unwrap_or(false);
         if url != "about:blank" {
             if let Err(e) = validate_url(url) {
                 return format!("Error: {e}");
@@ -251,16 +305,21 @@ impl Tool for LaunchBrowserTool {
 
         // Launch Chromium with CDP + Wayland support
         // Ensure Wayland env vars are set (worker thread may not have them)
+        let mut chrome_args = vec![
+            "--ozone-platform=wayland",
+            "--remote-debugging-address=127.0.0.1",
+            "--remote-debugging-port=9222",
+            "--no-first-run",
+            "--no-default-browser-check",
+            "--disable-gpu",
+        ];
+        if headless {
+            chrome_args.push("--headless=new");
+        }
+        chrome_args.push(url);
+
         let result = std::process::Command::new("chromium")
-            .args([
-                "--ozone-platform=wayland",
-                "--remote-debugging-address=127.0.0.1",
-                "--remote-debugging-port=9222",
-                "--no-first-run",
-                "--no-default-browser-check",
-                "--disable-gpu",
-                url,
-            ])
+            .args(&chrome_args)
             .env("WAYLAND_DISPLAY", "wayland-0")
             .env("XDG_RUNTIME_DIR", "/run/user/1000")
             .stdin(std::process::Stdio::null())
@@ -274,7 +333,8 @@ impl Tool for LaunchBrowserTool {
                 for _ in 0..10 {
                     std::thread::sleep(Duration::from_millis(500));
                     if is_browser_running() {
-                        return format!("Browser launched (CDP on port 9222). Opening: {url}");
+                        let mode = if headless { "headless" } else { "visible" };
+                        return format!("Browser launched in {mode} mode (CDP on port 9222). Opening: {url}");
                     }
                 }
                 "Browser process started but CDP not yet reachable. Try again in a few seconds.".to_string()
@@ -316,6 +376,11 @@ impl Tool for BrowseTool {
             return "Error: url is required".to_string();
         }
         if let Err(e) = validate_url(url) {
+            return format!("Error: {e}");
+        }
+
+        // Auto-launch headless browser if not running
+        if let Err(e) = ensure_headless_browser() {
             return format!("Error: {e}");
         }
 
@@ -362,6 +427,9 @@ impl Tool for BrowseTool {
             }
         }
         out.push_str("\n\nUse browser_click_element(N) or browser_type_element(N, text) to interact.");
+
+        // Clear page so stale content isn't mistaken for user activity
+        cleanup_after_data_extraction(&mut ws);
 
         out
     }
@@ -840,6 +908,11 @@ impl Tool for WebSearchTool {
             return "Error: query too long (max 500 chars)".to_string();
         }
 
+        // Auto-launch headless browser if not running
+        if let Err(e) = ensure_headless_browser() {
+            return format!("Error: {e}");
+        }
+
         // URL-encode the query
         let encoded: String = query
             .chars()
@@ -906,6 +979,7 @@ impl Tool for WebSearchTool {
             // Fallback to plain text results
             let text = raw.strip_prefix("NO_STRUCTURED_RESULTS\n").unwrap_or(&raw);
             let truncated = if text.len() > 4000 { &text[..text.floor_char_boundary(4000)] } else { text };
+            cleanup_after_data_extraction(&mut ws);
             return format!("Search results for: {query}\n\n{truncated}");
         }
 
@@ -926,6 +1000,9 @@ impl Tool for WebSearchTool {
             output.truncate(boundary);
             output.push_str("\n... (truncated)");
         }
+
+        // Clear page so stale content isn't mistaken for user activity
+        cleanup_after_data_extraction(&mut ws);
 
         output
     }
