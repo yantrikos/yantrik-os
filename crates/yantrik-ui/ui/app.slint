@@ -64,6 +64,12 @@ export component App inherits Window {
     // Window chrome state (shared across all windowed screens)
     in-out property <bool> window-maximized: true;
 
+    // Window geometry (when not maximized) — drag/resize updates these
+    in-out property <length> window-x: 80px;
+    in-out property <length> window-y: 40px;
+    in-out property <length> window-w: self.width * 0.85;
+    in-out property <length> window-h: (self.height - 60px) * 0.90;
+
     // Boot state
     in property <string> boot-status: "remembering...";
 
@@ -863,11 +869,15 @@ export component App inherits Window {
 
         // Bond screen
         if current-screen == 4 : WindowFrame {
-            x: root.window-maximized ? 0px : parent.width * 0.05;
-            y: root.window-maximized ? 0px : parent.height * 0.04;
-            width: root.window-maximized ? parent.width : parent.width * 0.90;
-            height: root.window-maximized ? parent.height - 60px : parent.height * 0.92;
+            x: root.window-maximized ? 0px : root.window-x;
+            y: root.window-maximized ? 0px : root.window-y;
+            width: root.window-maximized ? parent.width : root.window-w;
+            height: root.window-maximized ? parent.height - 60px : root.window-h;
             is-maximized <=> root.window-maximized;
+            win-x <=> root.window-x;
+            win-y <=> root.window-y;
+            win-w <=> root.window-w;
+            win-h <=> root.window-h;
             icon-char: "♥";
             icon-color: Theme.color-emotional;
             title: Tr.title-bond;
@@ -887,11 +897,15 @@ export component App inherits Window {
 
         // Personality screen
         if current-screen == 5 : WindowFrame {
-            x: root.window-maximized ? 0px : parent.width * 0.05;
-            y: root.window-maximized ? 0px : parent.height * 0.04;
-            width: root.window-maximized ? parent.width : parent.width * 0.90;
-            height: root.window-maximized ? parent.height - 60px : parent.height * 0.92;
+            x: root.window-maximized ? 0px : root.window-x;
+            y: root.window-maximized ? 0px : root.window-y;
+            width: root.window-maximized ? parent.width : root.window-w;
+            height: root.window-maximized ? parent.height - 60px : root.window-h;
             is-maximized <=> root.window-maximized;
+            win-x <=> root.window-x;
+            win-y <=> root.window-y;
+            win-w <=> root.window-w;
+            win-h <=> root.window-h;
             icon-char: "✧";
             icon-color: Theme.color-pattern;
             title: Tr.title-personality;
@@ -916,11 +930,15 @@ export component App inherits Window {
 
         // Memory browser
         if current-screen == 6 : WindowFrame {
-            x: root.window-maximized ? 0px : parent.width * 0.05;
-            y: root.window-maximized ? 0px : parent.height * 0.04;
-            width: root.window-maximized ? parent.width : parent.width * 0.90;
-            height: root.window-maximized ? parent.height - 60px : parent.height * 0.92;
+            x: root.window-maximized ? 0px : root.window-x;
+            y: root.window-maximized ? 0px : root.window-y;
+            width: root.window-maximized ? parent.width : root.window-w;
+            height: root.window-maximized ? parent.height - 60px : root.window-h;
             is-maximized <=> root.window-maximized;
+            win-x <=> root.window-x;
+            win-y <=> root.window-y;
+            win-w <=> root.window-w;
+            win-h <=> root.window-h;
             icon-char: "◈";
             icon-color: Theme.amber;
             title: Tr.title-memory;
@@ -943,11 +961,15 @@ export component App inherits Window {
 
         // Settings screen
         if current-screen == 7 : WindowFrame {
-            x: root.window-maximized ? 0px : parent.width * 0.05;
-            y: root.window-maximized ? 0px : parent.height * 0.04;
-            width: root.window-maximized ? parent.width : parent.width * 0.90;
-            height: root.window-maximized ? parent.height - 60px : parent.height * 0.92;
+            x: root.window-maximized ? 0px : root.window-x;
+            y: root.window-maximized ? 0px : root.window-y;
+            width: root.window-maximized ? parent.width : root.window-w;
+            height: root.window-maximized ? parent.height - 60px : root.window-h;
             is-maximized <=> root.window-maximized;
+            win-x <=> root.window-x;
+            win-y <=> root.window-y;
+            win-w <=> root.window-w;
+            win-h <=> root.window-h;
             icon-char: "⚙";
             icon-color: Theme.text-secondary;
             title: Tr.title-settings;
@@ -1015,11 +1037,15 @@ export component App inherits Window {
 
         // File browser
         if current-screen == 8 : WindowFrame {
-            x: root.window-maximized ? 0px : parent.width * 0.05;
-            y: root.window-maximized ? 0px : parent.height * 0.04;
-            width: root.window-maximized ? parent.width : parent.width * 0.90;
-            height: root.window-maximized ? parent.height - 60px : parent.height * 0.92;
+            x: root.window-maximized ? 0px : root.window-x;
+            y: root.window-maximized ? 0px : root.window-y;
+            width: root.window-maximized ? parent.width : root.window-w;
+            height: root.window-maximized ? parent.height - 60px : root.window-h;
             is-maximized <=> root.window-maximized;
+            win-x <=> root.window-x;
+            win-y <=> root.window-y;
+            win-w <=> root.window-w;
+            win-h <=> root.window-h;
             icon-char: "F";
             icon-color: Theme.cyan;
             title: Tr.title-files;
@@ -1066,11 +1092,15 @@ export component App inherits Window {
 
         // Notification Center
         if current-screen == 9 : WindowFrame {
-            x: root.window-maximized ? 0px : parent.width * 0.05;
-            y: root.window-maximized ? 0px : parent.height * 0.04;
-            width: root.window-maximized ? parent.width : parent.width * 0.90;
-            height: root.window-maximized ? parent.height - 60px : parent.height * 0.92;
+            x: root.window-maximized ? 0px : root.window-x;
+            y: root.window-maximized ? 0px : root.window-y;
+            width: root.window-maximized ? parent.width : root.window-w;
+            height: root.window-maximized ? parent.height - 60px : root.window-h;
             is-maximized <=> root.window-maximized;
+            win-x <=> root.window-x;
+            win-y <=> root.window-y;
+            win-w <=> root.window-w;
+            win-h <=> root.window-h;
             icon-char: "N";
             icon-color: Theme.color-follow-up;
             title: Tr.title-notifications;
@@ -1095,11 +1125,15 @@ export component App inherits Window {
 
         // System Dashboard
         if current-screen == 10 : WindowFrame {
-            x: root.window-maximized ? 0px : parent.width * 0.05;
-            y: root.window-maximized ? 0px : parent.height * 0.04;
-            width: root.window-maximized ? parent.width : parent.width * 0.90;
-            height: root.window-maximized ? parent.height - 60px : parent.height * 0.92;
+            x: root.window-maximized ? 0px : root.window-x;
+            y: root.window-maximized ? 0px : root.window-y;
+            width: root.window-maximized ? parent.width : root.window-w;
+            height: root.window-maximized ? parent.height - 60px : root.window-h;
             is-maximized <=> root.window-maximized;
+            win-x <=> root.window-x;
+            win-y <=> root.window-y;
+            win-w <=> root.window-w;
+            win-h <=> root.window-h;
             icon-char: "◉";
             icon-color: Theme.color-reminder;
             title: Tr.title-system;
@@ -1137,11 +1171,15 @@ export component App inherits Window {
 
         // Image Viewer
         if current-screen == 11 : WindowFrame {
-            x: root.window-maximized ? 0px : parent.width * 0.05;
-            y: root.window-maximized ? 0px : parent.height * 0.04;
-            width: root.window-maximized ? parent.width : parent.width * 0.90;
-            height: root.window-maximized ? parent.height - 60px : parent.height * 0.92;
+            x: root.window-maximized ? 0px : root.window-x;
+            y: root.window-maximized ? 0px : root.window-y;
+            width: root.window-maximized ? parent.width : root.window-w;
+            height: root.window-maximized ? parent.height - 60px : root.window-h;
             is-maximized <=> root.window-maximized;
+            win-x <=> root.window-x;
+            win-y <=> root.window-y;
+            win-w <=> root.window-w;
+            win-h <=> root.window-h;
             icon-char: "▣";
             icon-color: #6a2d6a;
             title: Tr.title-image-viewer;
@@ -1163,11 +1201,15 @@ export component App inherits Window {
 
         // Text Editor
         if current-screen == 12 : WindowFrame {
-            x: root.window-maximized ? 0px : parent.width * 0.05;
-            y: root.window-maximized ? 0px : parent.height * 0.04;
-            width: root.window-maximized ? parent.width : parent.width * 0.90;
-            height: root.window-maximized ? parent.height - 60px : parent.height * 0.92;
+            x: root.window-maximized ? 0px : root.window-x;
+            y: root.window-maximized ? 0px : root.window-y;
+            width: root.window-maximized ? parent.width : root.window-w;
+            height: root.window-maximized ? parent.height - 60px : root.window-h;
             is-maximized <=> root.window-maximized;
+            win-x <=> root.window-x;
+            win-y <=> root.window-y;
+            win-w <=> root.window-w;
+            win-h <=> root.window-h;
             icon-char: "≡";
             icon-color: #3a4a6a;
             title: Tr.title-editor;
@@ -1211,11 +1253,15 @@ export component App inherits Window {
 
         // Media Player
         if current-screen == 13 : WindowFrame {
-            x: root.window-maximized ? 0px : parent.width * 0.05;
-            y: root.window-maximized ? 0px : parent.height * 0.04;
-            width: root.window-maximized ? parent.width : parent.width * 0.90;
-            height: root.window-maximized ? parent.height - 60px : parent.height * 0.92;
+            x: root.window-maximized ? 0px : root.window-x;
+            y: root.window-maximized ? 0px : root.window-y;
+            width: root.window-maximized ? parent.width : root.window-w;
+            height: root.window-maximized ? parent.height - 60px : root.window-h;
             is-maximized <=> root.window-maximized;
+            win-x <=> root.window-x;
+            win-y <=> root.window-y;
+            win-w <=> root.window-w;
+            win-h <=> root.window-h;
             icon-char: "♪";
             icon-color: #6a5a2d;
             title: Tr.title-now-playing;
@@ -1238,11 +1284,15 @@ export component App inherits Window {
 
         // Terminal
         if current-screen == 14 : WindowFrame {
-            x: root.window-maximized ? 0px : parent.width * 0.05;
-            y: root.window-maximized ? 0px : parent.height * 0.04;
-            width: root.window-maximized ? parent.width : parent.width * 0.90;
-            height: root.window-maximized ? parent.height - 60px : parent.height * 0.92;
+            x: root.window-maximized ? 0px : root.window-x;
+            y: root.window-maximized ? 0px : root.window-y;
+            width: root.window-maximized ? parent.width : root.window-w;
+            height: root.window-maximized ? parent.height - 60px : root.window-h;
             is-maximized <=> root.window-maximized;
+            win-x <=> root.window-x;
+            win-y <=> root.window-y;
+            win-w <=> root.window-w;
+            win-h <=> root.window-h;
             icon-char: ">_";
             icon-color: Theme.cyan;
             title: Tr.title-terminal;
@@ -1273,11 +1323,15 @@ export component App inherits Window {
 
         // Notes Editor screen
         if current-screen == 15 : WindowFrame {
-            x: root.window-maximized ? 0px : parent.width * 0.05;
-            y: root.window-maximized ? 0px : parent.height * 0.04;
-            width: root.window-maximized ? parent.width : parent.width * 0.90;
-            height: root.window-maximized ? parent.height - 60px : parent.height * 0.92;
+            x: root.window-maximized ? 0px : root.window-x;
+            y: root.window-maximized ? 0px : root.window-y;
+            width: root.window-maximized ? parent.width : root.window-w;
+            height: root.window-maximized ? parent.height - 60px : root.window-h;
             is-maximized <=> root.window-maximized;
+            win-x <=> root.window-x;
+            win-y <=> root.window-y;
+            win-w <=> root.window-w;
+            win-h <=> root.window-h;
             icon-char: "\u{270E}";
             icon-color: Theme.amber;
             title: Tr.title-notes;
@@ -1305,11 +1359,15 @@ export component App inherits Window {
 
         // About screen
         if current-screen == 16 : WindowFrame {
-            x: root.window-maximized ? 0px : parent.width * 0.05;
-            y: root.window-maximized ? 0px : parent.height * 0.04;
-            width: root.window-maximized ? parent.width : parent.width * 0.90;
-            height: root.window-maximized ? parent.height - 60px : parent.height * 0.92;
+            x: root.window-maximized ? 0px : root.window-x;
+            y: root.window-maximized ? 0px : root.window-y;
+            width: root.window-maximized ? parent.width : root.window-w;
+            height: root.window-maximized ? parent.height - 60px : root.window-h;
             is-maximized <=> root.window-maximized;
+            win-x <=> root.window-x;
+            win-y <=> root.window-y;
+            win-w <=> root.window-w;
+            win-h <=> root.window-h;
             icon-char: "\u{2139}";
             icon-color: Theme.cyan;
             title: Tr.title-about;
@@ -1336,11 +1394,15 @@ export component App inherits Window {
 
         // Email Client
         if current-screen == 17 : WindowFrame {
-            x: root.window-maximized ? 0px : parent.width * 0.05;
-            y: root.window-maximized ? 0px : parent.height * 0.04;
-            width: root.window-maximized ? parent.width : parent.width * 0.90;
-            height: root.window-maximized ? parent.height - 60px : parent.height * 0.92;
+            x: root.window-maximized ? 0px : root.window-x;
+            y: root.window-maximized ? 0px : root.window-y;
+            width: root.window-maximized ? parent.width : root.window-w;
+            height: root.window-maximized ? parent.height - 60px : root.window-h;
             is-maximized <=> root.window-maximized;
+            win-x <=> root.window-x;
+            win-y <=> root.window-y;
+            win-w <=> root.window-w;
+            win-h <=> root.window-h;
             icon-char: "@";
             icon-color: Theme.cyan;
             title: Tr.title-email;
@@ -1406,11 +1468,15 @@ export component App inherits Window {
 
         // Calendar
         if current-screen == 18 : WindowFrame {
-            x: root.window-maximized ? 0px : parent.width * 0.05;
-            y: root.window-maximized ? 0px : parent.height * 0.04;
-            width: root.window-maximized ? parent.width : parent.width * 0.90;
-            height: root.window-maximized ? parent.height - 60px : parent.height * 0.92;
+            x: root.window-maximized ? 0px : root.window-x;
+            y: root.window-maximized ? 0px : root.window-y;
+            width: root.window-maximized ? parent.width : root.window-w;
+            height: root.window-maximized ? parent.height - 60px : root.window-h;
             is-maximized <=> root.window-maximized;
+            win-x <=> root.window-x;
+            win-y <=> root.window-y;
+            win-w <=> root.window-w;
+            win-h <=> root.window-h;
             icon-char: "▦";
             icon-color: Theme.amber;
             title: Tr.title-calendar;
@@ -1443,11 +1509,15 @@ export component App inherits Window {
 
         // Package Manager
         if current-screen == 21 : WindowFrame {
-            x: root.window-maximized ? 0px : parent.width * 0.05;
-            y: root.window-maximized ? 0px : parent.height * 0.04;
-            width: root.window-maximized ? parent.width : parent.width * 0.90;
-            height: root.window-maximized ? parent.height - 60px : parent.height * 0.92;
+            x: root.window-maximized ? 0px : root.window-x;
+            y: root.window-maximized ? 0px : root.window-y;
+            width: root.window-maximized ? parent.width : root.window-w;
+            height: root.window-maximized ? parent.height - 60px : root.window-h;
             is-maximized <=> root.window-maximized;
+            win-x <=> root.window-x;
+            win-y <=> root.window-y;
+            win-w <=> root.window-w;
+            win-h <=> root.window-h;
             icon-char: "P";
             icon-color: Theme.cyan;
             title: Tr.title-packages;
@@ -1492,11 +1562,15 @@ export component App inherits Window {
 
         // Network Manager
         if current-screen == 22 : WindowFrame {
-            x: root.window-maximized ? 0px : parent.width * 0.05;
-            y: root.window-maximized ? 0px : parent.height * 0.04;
-            width: root.window-maximized ? parent.width : parent.width * 0.90;
-            height: root.window-maximized ? parent.height - 60px : parent.height * 0.92;
+            x: root.window-maximized ? 0px : root.window-x;
+            y: root.window-maximized ? 0px : root.window-y;
+            width: root.window-maximized ? parent.width : root.window-w;
+            height: root.window-maximized ? parent.height - 60px : root.window-h;
             is-maximized <=> root.window-maximized;
+            win-x <=> root.window-x;
+            win-y <=> root.window-y;
+            win-w <=> root.window-w;
+            win-h <=> root.window-h;
             icon-char: "\u{25CE}";
             icon-color: Theme.cyan;
             title: Tr.title-network;
@@ -1546,11 +1620,15 @@ export component App inherits Window {
 
         // Weather Dashboard
         if current-screen == 19 : WindowFrame {
-            x: root.window-maximized ? 0px : parent.width * 0.05;
-            y: root.window-maximized ? 0px : parent.height * 0.04;
-            width: root.window-maximized ? parent.width : parent.width * 0.90;
-            height: root.window-maximized ? parent.height - 60px : parent.height * 0.92;
+            x: root.window-maximized ? 0px : root.window-x;
+            y: root.window-maximized ? 0px : root.window-y;
+            width: root.window-maximized ? parent.width : root.window-w;
+            height: root.window-maximized ? parent.height - 60px : root.window-h;
             is-maximized <=> root.window-maximized;
+            win-x <=> root.window-x;
+            win-y <=> root.window-y;
+            win-w <=> root.window-w;
+            win-h <=> root.window-h;
             icon-char: "\u{26C5}";
             icon-color: Theme.amber;
             title: Tr.title-weather;
@@ -1570,11 +1648,15 @@ export component App inherits Window {
 
         // Music Player
         if current-screen == 20 : WindowFrame {
-            x: root.window-maximized ? 0px : parent.width * 0.05;
-            y: root.window-maximized ? 0px : parent.height * 0.04;
-            width: root.window-maximized ? parent.width : parent.width * 0.90;
-            height: root.window-maximized ? parent.height - 60px : parent.height * 0.92;
+            x: root.window-maximized ? 0px : root.window-x;
+            y: root.window-maximized ? 0px : root.window-y;
+            width: root.window-maximized ? parent.width : root.window-w;
+            height: root.window-maximized ? parent.height - 60px : root.window-h;
             is-maximized <=> root.window-maximized;
+            win-x <=> root.window-x;
+            win-y <=> root.window-y;
+            win-w <=> root.window-w;
+            win-h <=> root.window-h;
             icon-char: "\u{266B}";
             icon-color: Theme.accent;
             title: Tr.title-music;
@@ -1622,11 +1704,15 @@ export component App inherits Window {
 
         // System Monitor
         if current-screen == 23 : WindowFrame {
-            x: root.window-maximized ? 0px : parent.width * 0.05;
-            y: root.window-maximized ? 0px : parent.height * 0.04;
-            width: root.window-maximized ? parent.width : parent.width * 0.90;
-            height: root.window-maximized ? parent.height - 60px : parent.height * 0.92;
+            x: root.window-maximized ? 0px : root.window-x;
+            y: root.window-maximized ? 0px : root.window-y;
+            width: root.window-maximized ? parent.width : root.window-w;
+            height: root.window-maximized ? parent.height - 60px : root.window-h;
             is-maximized <=> root.window-maximized;
+            win-x <=> root.window-x;
+            win-y <=> root.window-y;
+            win-w <=> root.window-w;
+            win-h <=> root.window-h;
             icon-char: "\u{2699}";
             icon-color: Theme.cyan;
             title: Tr.title-sysmonitor;
@@ -1664,11 +1750,15 @@ export component App inherits Window {
 
         // Download Manager
         if current-screen == 24 : WindowFrame {
-            x: root.window-maximized ? 0px : parent.width * 0.05;
-            y: root.window-maximized ? 0px : parent.height * 0.04;
-            width: root.window-maximized ? parent.width : parent.width * 0.90;
-            height: root.window-maximized ? parent.height - 60px : parent.height * 0.92;
+            x: root.window-maximized ? 0px : root.window-x;
+            y: root.window-maximized ? 0px : root.window-y;
+            width: root.window-maximized ? parent.width : root.window-w;
+            height: root.window-maximized ? parent.height - 60px : root.window-h;
             is-maximized <=> root.window-maximized;
+            win-x <=> root.window-x;
+            win-y <=> root.window-y;
+            win-w <=> root.window-w;
+            win-h <=> root.window-h;
             icon-char: "\u{2B07}";
             icon-color: Theme.holo-blue;
             title: Tr.title-downloads;
@@ -1697,11 +1787,15 @@ export component App inherits Window {
 
         // Code Snippet Manager
         if current-screen == 25 : WindowFrame {
-            x: root.window-maximized ? 0px : parent.width * 0.05;
-            y: root.window-maximized ? 0px : parent.height * 0.04;
-            width: root.window-maximized ? parent.width : parent.width * 0.90;
-            height: root.window-maximized ? parent.height - 60px : parent.height * 0.92;
+            x: root.window-maximized ? 0px : root.window-x;
+            y: root.window-maximized ? 0px : root.window-y;
+            width: root.window-maximized ? parent.width : root.window-w;
+            height: root.window-maximized ? parent.height - 60px : root.window-h;
             is-maximized <=> root.window-maximized;
+            win-x <=> root.window-x;
+            win-y <=> root.window-y;
+            win-w <=> root.window-w;
+            win-h <=> root.window-h;
             icon-char: "<>";
             icon-color: Theme.accent;
             title: Tr.title-snippets;
@@ -1732,11 +1826,15 @@ export component App inherits Window {
 
         // Container Manager
         if current-screen == 26 : WindowFrame {
-            x: root.window-maximized ? 0px : parent.width * 0.05;
-            y: root.window-maximized ? 0px : parent.height * 0.04;
-            width: root.window-maximized ? parent.width : parent.width * 0.90;
-            height: root.window-maximized ? parent.height - 60px : parent.height * 0.92;
+            x: root.window-maximized ? 0px : root.window-x;
+            y: root.window-maximized ? 0px : root.window-y;
+            width: root.window-maximized ? parent.width : root.window-w;
+            height: root.window-maximized ? parent.height - 60px : root.window-h;
             is-maximized <=> root.window-maximized;
+            win-x <=> root.window-x;
+            win-y <=> root.window-y;
+            win-w <=> root.window-w;
+            win-h <=> root.window-h;
             icon-char: "\u{2338}";
             icon-color: Theme.holo-blue;
             title: Tr.title-containers;
@@ -1777,11 +1875,15 @@ export component App inherits Window {
 
         // Device Dashboard
         if current-screen == 27 : WindowFrame {
-            x: root.window-maximized ? 0px : parent.width * 0.05;
-            y: root.window-maximized ? 0px : parent.height * 0.04;
-            width: root.window-maximized ? parent.width : parent.width * 0.90;
-            height: root.window-maximized ? parent.height - 60px : parent.height * 0.92;
+            x: root.window-maximized ? 0px : root.window-x;
+            y: root.window-maximized ? 0px : root.window-y;
+            width: root.window-maximized ? parent.width : root.window-w;
+            height: root.window-maximized ? parent.height - 60px : root.window-h;
             is-maximized <=> root.window-maximized;
+            win-x <=> root.window-x;
+            win-y <=> root.window-y;
+            win-w <=> root.window-w;
+            win-h <=> root.window-h;
             icon-char: "\u{2699}";
             icon-color: Theme.cyan;
             title: Tr.title-devices;
@@ -1810,11 +1912,15 @@ export component App inherits Window {
 
         // Permission Dashboard
         if current-screen == 28 : WindowFrame {
-            x: root.window-maximized ? 0px : parent.width * 0.05;
-            y: root.window-maximized ? 0px : parent.height * 0.04;
-            width: root.window-maximized ? parent.width : parent.width * 0.90;
-            height: root.window-maximized ? parent.height - 60px : parent.height * 0.92;
+            x: root.window-maximized ? 0px : root.window-x;
+            y: root.window-maximized ? 0px : root.window-y;
+            width: root.window-maximized ? parent.width : root.window-w;
+            height: root.window-maximized ? parent.height - 60px : root.window-h;
             is-maximized <=> root.window-maximized;
+            win-x <=> root.window-x;
+            win-y <=> root.window-y;
+            win-w <=> root.window-w;
+            win-h <=> root.window-h;
             icon-char: "\u{1F512}";
             icon-color: Theme.color-emotional;
             title: Tr.title-permissions;
