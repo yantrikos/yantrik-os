@@ -49,24 +49,49 @@ impl Instinct for HumorInstinct {
 
         let mut urges = Vec::new();
 
-        // Surface shared references as callbacks — uses EXECUTE so the LLM
-        // actually recalls inside jokes and crafts a real joke/callback.
-        if state.shared_references_count > 0 {
-            let urgency = match state.bond_level {
-                BondLevel::Friend => 0.3,
-                BondLevel::Confidant => 0.4,
-                BondLevel::PartnerInCrime => 0.5,
-                _ => 0.2,
-            };
+        // Interest-aware humor — make jokes relevant to what the user loves.
+        // A fisher gets fishing jokes, a coder gets programming jokes, etc.
+        let urgency = match state.bond_level {
+            BondLevel::Friend => 0.3,
+            BondLevel::Confidant => 0.4,
+            BondLevel::PartnerInCrime => 0.5,
+            _ => 0.2,
+        };
+
+        if !state.user_interests.is_empty() {
+            // Pick a random interest to joke about (rotate via timestamp)
+            let interests = &state.user_interests;
+            let idx = (state.current_ts as usize / 60) % interests.len();
+            let interest = &interests[idx];
 
             urges.push(
                 UrgeSpec::new(
                     self.name(),
-                    "EXECUTE You MUST call memory_search with query 'shared references jokes' first. \
+                    &format!(
+                        "EXECUTE {}'s interests include {}. First try recall with query \
+                         'shared references jokes {}' to find inside jokes. \
+                         If you find shared references, make a callback about one in 1 sentence. \
+                         If not, come up with a SHORT, actually funny joke or witty observation \
+                         related to {}. It MUST be specific to the topic — not generic humor. \
+                         Examples of good jokes: fishing puns, coding one-liners, cooking disasters. \
+                         Keep it to 1 sentence. Be genuinely funny, not corny. \
+                         If you can't think of anything good, say 'nothing to share right now' exactly.",
+                        state.config_user_name, interest, interest, interest,
+                    ),
+                    urgency,
+                )
+                .with_cooldown("humor:interest"),
+            );
+        } else if state.shared_references_count > 0 {
+            // Fallback: shared references humor if no interests known
+            urges.push(
+                UrgeSpec::new(
+                    self.name(),
+                    "EXECUTE You MUST call recall with query 'shared references jokes' first. \
                      Then pick ONE specific result and make a brief callback about it in 1 sentence. \
                      RULES: Do NOT mention rain, weather, loops, or abstract metaphors. \
                      Do NOT be philosophical. Reference a CONCRETE detail from the search results. \
-                     If memory_search returns nothing useful, say 'nothing to share right now' exactly.",
+                     If recall returns nothing useful, say 'nothing to share right now' exactly.",
                     urgency,
                 )
                 .with_cooldown("humor:callback"),

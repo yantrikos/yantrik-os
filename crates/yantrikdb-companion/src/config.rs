@@ -368,6 +368,108 @@ pub struct InstinctSettings {
     /// Hours between curiosity research sessions.
     #[serde(default = "default_curiosity_interval")]
     pub curiosity_interval_hours: f64,
+    /// Enable interest intelligence (targeted research based on user's interests).
+    #[serde(default = "default_true_val")]
+    pub interest_intelligence_enabled: bool,
+    /// Hours between interest intelligence research sessions.
+    #[serde(default = "default_interest_interval")]
+    pub interest_intelligence_interval_hours: f64,
+    /// Enable deal watch (monitors deals/prices for items user wants).
+    #[serde(default = "default_true_val")]
+    pub deal_watch_enabled: bool,
+    /// Hours between deal checks.
+    #[serde(default = "default_deal_interval")]
+    pub deal_watch_interval_hours: f64,
+    /// Enable activity recommender (suggests activities based on weather + interests + time).
+    #[serde(default = "default_true_val")]
+    pub activity_recommender_enabled: bool,
+    /// Hours between activity recommendations.
+    #[serde(default = "default_activity_interval")]
+    pub activity_recommender_interval_hours: f64,
+    /// Enable connection weaver (finds surprising bridges between user's interests).
+    #[serde(default = "default_true_val")]
+    pub connection_weaver_enabled: bool,
+    /// Hours between connection weaving attempts.
+    #[serde(default = "default_connection_weaver_interval")]
+    pub connection_weaver_interval_hours: f64,
+    /// Enable context bridge (connects world events to the user's personal life/work).
+    #[serde(default = "default_true_val")]
+    pub context_bridge_enabled: bool,
+    /// Hours between context bridge analyses.
+    #[serde(default = "default_context_bridge_interval")]
+    pub context_bridge_interval_hours: f64,
+    /// Enable deep dive (researches the "why behind the why" of user-mentioned topics).
+    #[serde(default = "default_true_val")]
+    pub deep_dive_enabled: bool,
+    /// Hours between deep dive research attempts.
+    #[serde(default = "default_deep_dive_interval")]
+    pub deep_dive_interval_hours: f64,
+    /// Enable wonder sense (surfaces fascinating "did you know?" facts from context).
+    #[serde(default = "default_true_val")]
+    pub wonder_sense_enabled: bool,
+    /// Hours between wonder sense research sessions.
+    #[serde(default = "default_wonder_sense_interval")]
+    pub wonder_sense_interval_hours: f64,
+    /// Enable golden find (discovers hidden gems — obscure but genuinely useful resources).
+    #[serde(default = "default_true_val")]
+    pub golden_find_enabled: bool,
+    /// Hours between golden find research attempts.
+    #[serde(default = "default_golden_find_interval")]
+    pub golden_find_interval_hours: f64,
+    /// Enable growth mirror (reflects user's growth/progress back to them).
+    #[serde(default = "default_true_val")]
+    pub growth_mirror_enabled: bool,
+    /// Hours between growth mirror reflections.
+    #[serde(default = "default_growth_mirror_interval")]
+    pub growth_mirror_interval_hours: f64,
+    /// Enable local pulse (hyperlocal intelligence — events, openings, closures, community happenings).
+    #[serde(default = "default_true_val")]
+    pub local_pulse_enabled: bool,
+    /// Hours between local pulse checks.
+    #[serde(default = "default_local_pulse_interval")]
+    pub local_pulse_interval_hours: f64,
+    /// Enable tradition keeper (cultural moments, anniversaries, seasonal traditions with depth).
+    #[serde(default = "default_true_val")]
+    pub tradition_keeper_enabled: bool,
+    /// Hours between tradition keeper research sessions.
+    #[serde(default = "default_tradition_keeper_interval")]
+    pub tradition_keeper_interval_hours: f64,
+    /// Enable night owl (late-night intellectual companionship, 10 PM – 4 AM only).
+    #[serde(default = "default_true_val")]
+    pub night_owl_enabled: bool,
+    /// Hours between night owl thoughts.
+    #[serde(default = "default_night_owl_interval")]
+    pub night_owl_interval_hours: f64,
+    /// Enable legacy builder (rare zoom-out reflections on user's narrative arc).
+    #[serde(default = "default_true_val")]
+    pub legacy_builder_enabled: bool,
+    /// Hours between legacy builder reflections (should be high — weekly cadence).
+    #[serde(default = "default_legacy_builder_interval")]
+    pub legacy_builder_interval_hours: f64,
+    /// Enable identity thread (weaves user's values and identity markers into coherent narrative).
+    #[serde(default = "default_true_val")]
+    pub identity_thread_enabled: bool,
+    /// Hours between identity thread observations (should be very high — weekly cadence).
+    #[serde(default = "default_identity_thread_interval")]
+    pub identity_thread_interval_hours: f64,
+    /// Enable myth buster (catches and corrects common misconceptions related to user's interests).
+    #[serde(default = "default_true_val")]
+    pub myth_buster_enabled: bool,
+    /// Hours between myth buster research attempts.
+    #[serde(default = "default_myth_buster_interval")]
+    pub myth_buster_interval_hours: f64,
+    /// Enable cooking companion (contextual food intelligence for users who love cooking).
+    #[serde(default = "default_true_val")]
+    pub cooking_companion_enabled: bool,
+    /// Hours between cooking companion research sessions.
+    #[serde(default = "default_cooking_companion_interval")]
+    pub cooking_companion_interval_hours: f64,
+    /// Enable second brain (periodic memory analysis — patterns, contradictions, forgotten commitments).
+    #[serde(default = "default_true_val")]
+    pub second_brain_enabled: bool,
+    /// Hours between second brain analysis sessions.
+    #[serde(default = "default_second_brain_interval")]
+    pub second_brain_interval_hours: f64,
 }
 
 fn default_check_in_hours() -> f64 {
@@ -393,6 +495,23 @@ fn default_news_interval() -> f64 { 60.0 }
 fn default_trend_interval() -> f64 { 45.0 }
 fn default_curiosity_idle() -> f64 { 15.0 }
 fn default_curiosity_interval() -> f64 { 4.0 }
+fn default_interest_interval() -> f64 { 3.0 }
+fn default_deal_interval() -> f64 { 6.0 }
+fn default_activity_interval() -> f64 { 4.0 }
+fn default_connection_weaver_interval() -> f64 { 5.0 }
+fn default_context_bridge_interval() -> f64 { 8.0 }
+fn default_deep_dive_interval() -> f64 { 6.0 }
+fn default_wonder_sense_interval() -> f64 { 4.0 }
+fn default_golden_find_interval() -> f64 { 6.0 }
+fn default_growth_mirror_interval() -> f64 { 18.0 }
+fn default_local_pulse_interval() -> f64 { 6.0 }
+fn default_tradition_keeper_interval() -> f64 { 22.0 }
+fn default_night_owl_interval() -> f64 { 2.5 }
+fn default_legacy_builder_interval() -> f64 { 168.0 } // ~weekly
+fn default_identity_thread_interval() -> f64 { 168.0 } // ~weekly
+fn default_myth_buster_interval() -> f64 { 8.0 }
+fn default_cooking_companion_interval() -> f64 { 6.0 }
+fn default_second_brain_interval() -> f64 { 12.0 }
 
 impl Default for InstinctSettings {
     fn default() -> Self {
@@ -422,6 +541,40 @@ impl Default for InstinctSettings {
             curiosity_enabled: true,
             curiosity_idle_minutes: default_curiosity_idle(),
             curiosity_interval_hours: default_curiosity_interval(),
+            interest_intelligence_enabled: true,
+            interest_intelligence_interval_hours: default_interest_interval(),
+            deal_watch_enabled: true,
+            deal_watch_interval_hours: default_deal_interval(),
+            activity_recommender_enabled: true,
+            activity_recommender_interval_hours: default_activity_interval(),
+            connection_weaver_enabled: true,
+            connection_weaver_interval_hours: default_connection_weaver_interval(),
+            context_bridge_enabled: true,
+            context_bridge_interval_hours: default_context_bridge_interval(),
+            deep_dive_enabled: true,
+            deep_dive_interval_hours: default_deep_dive_interval(),
+            wonder_sense_enabled: true,
+            wonder_sense_interval_hours: default_wonder_sense_interval(),
+            golden_find_enabled: true,
+            golden_find_interval_hours: default_golden_find_interval(),
+            growth_mirror_enabled: true,
+            growth_mirror_interval_hours: default_growth_mirror_interval(),
+            local_pulse_enabled: true,
+            local_pulse_interval_hours: default_local_pulse_interval(),
+            tradition_keeper_enabled: true,
+            tradition_keeper_interval_hours: default_tradition_keeper_interval(),
+            night_owl_enabled: true,
+            night_owl_interval_hours: default_night_owl_interval(),
+            legacy_builder_enabled: true,
+            legacy_builder_interval_hours: default_legacy_builder_interval(),
+            identity_thread_enabled: true,
+            identity_thread_interval_hours: default_identity_thread_interval(),
+            myth_buster_enabled: true,
+            myth_buster_interval_hours: default_myth_buster_interval(),
+            cooking_companion_enabled: true,
+            cooking_companion_interval_hours: default_cooking_companion_interval(),
+            second_brain_enabled: true,
+            second_brain_interval_hours: default_second_brain_interval(),
         }
     }
 }

@@ -1,0 +1,27 @@
+id: connection-weaver
+name: Connection Weaver
+description: Finds surprising connections between your different interests and memories
+long_description: >
+  Discovers non-obvious bridges between your interests, hobbies, and work.
+  Researches how different parts of your life connect in unexpected ways,
+  delivering "aha moment" insights that feel genuinely surprising.
+version: "1.0.0"
+author: Yantrik
+icon: link
+category: intelligence
+tags: [connections, insights, interests, research, alive-mind]
+
+tools: []
+core_tools: []
+
+instincts:
+  - ConnectionWeaver
+
+cortex_rules: []
+services: []
+requires: []
+requires_config: []
+
+permissions:
+  - network
+  - background

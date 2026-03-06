@@ -1,0 +1,27 @@
+id: golden-find
+name: Golden Find
+description: Discovers hidden gems — obscure but genuinely useful resources
+long_description: >
+  Finds resources, tools, places, and content you'd love but would never
+  find on your own. Searches for niche channels, unknown tools, local spots,
+  cult-favorite products, and obscure techniques related to your interests.
+version: "1.0.0"
+author: Yantrik
+icon: gem
+category: intelligence
+tags: [discovery, hidden-gems, resources, interests, alive-mind]
+
+tools: []
+core_tools: []
+
+instincts:
+  - GoldenFind
+
+cortex_rules: []
+services: []
+requires: []
+requires_config: []
+
+permissions:
+  - network
+  - background

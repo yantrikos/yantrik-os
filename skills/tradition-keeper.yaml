@@ -1,0 +1,27 @@
+id: tradition-keeper
+name: Tradition Keeper
+description: Cultural moments, anniversaries, and traditions with depth and meaning
+long_description: >
+  Tracks cultural celebrations, historical events, and seasonal phenomena.
+  Goes beyond "today is X day" to explain the WHY, the ORIGIN, and the
+  fascinating details behind daily significance. Cross-cultural awareness.
+version: "1.0.0"
+author: Yantrik
+icon: calendar-heart
+category: intelligence
+tags: [culture, traditions, history, celebrations, alive-mind]
+
+tools: []
+core_tools: []
+
+instincts:
+  - TraditionKeeper
+
+cortex_rules: []
+services: []
+requires: []
+requires_config: []
+
+permissions:
+  - network
+  - background

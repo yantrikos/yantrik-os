@@ -1,0 +1,27 @@
+id: deep-dive
+name: Deep Dive
+description: Researches the "why behind the why" of topics you mention
+long_description: >
+  Takes something you mentioned casually and goes down a rabbit hole,
+  researching one layer deeper than you went. Delivers genuinely surprising
+  facts and illuminating insights with a discovery story feel.
+version: "1.0.0"
+author: Yantrik
+icon: microscope
+category: intelligence
+tags: [research, deep-dive, learning, insights, alive-mind]
+
+tools: []
+core_tools: []
+
+instincts:
+  - DeepDive
+
+cortex_rules: []
+services: []
+requires: []
+requires_config: []
+
+permissions:
+  - network
+  - background

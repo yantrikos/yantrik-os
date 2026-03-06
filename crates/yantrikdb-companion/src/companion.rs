@@ -155,6 +155,11 @@ pub struct CompanionService {
     /// Used for threading — if user replies within 5 minutes, inject context.
     pub last_proactive_context: Option<(String, Vec<String>, f64)>,
 
+    /// User's known interests — loaded from memory on startup, updated on interaction.
+    pub user_interests: Vec<String>,
+    /// User's location for local relevance.
+    pub user_location: String,
+
     /// Context Cortex — cross-system intelligence engine.
     pub cortex: Option<crate::cortex::ContextCortex>,
 
@@ -287,6 +292,10 @@ impl CompanionService {
         // Load current bond state
         let bond_state = BondTracker::get_state(db.conn());
 
+        // Load user interests and location from memory (before db moves)
+        let user_interests = load_user_interests(db.conn());
+        let user_location = load_user_location(db.conn());
+
         Self {
             db,
             llm,
@@ -323,6 +332,8 @@ impl CompanionService {
             last_proactive_context: None,
             cortex,
             connector_state,
+            user_interests,
+            user_location,
         }
     }
 
@@ -355,13 +366,15 @@ impl CompanionService {
                 // Core instincts that are always on (scheduler, automation, bond, etc.)
                 let is_core = matches!(
                     name,
-                    "Scheduler" | "Automation" | "BondMilestone" | "SelfAwareness"
-                    | "MorningBrief" | "ActivityReflector" | "Serendipity"
-                    | "Aftermath" | "QuestionAsking" | "EveningReflection"
+                    // Exact name() values from each instinct impl
+                    "scheduler" | "automation" | "BondMilestone" | "SelfAwareness"
+                    | "morning_brief" | "activity_reflector" | "serendipity"
+                    | "Aftermath" | "SocraticSpark" | "EveningReflection"
                     | "ConversationalCallback" | "SilenceReveal"
-                    | "CheckIn" | "EmotionalAwareness" | "FollowUp"
-                    | "Reminder" | "PatternSurfacing" | "ConflictAlerting"
+                    | "check_in" | "emotional_awareness" | "follow_up"
+                    | "reminder" | "pattern_surfacing" | "conflict_alerting"
                     | "MemoryWeaver"
+                    | "predictive_workflow" | "routine" | "cognitive_load" | "smart_updates"
                 );
                 is_core || snapshot.enabled_instincts.contains(name)
             });
@@ -1452,6 +1465,9 @@ impl CompanionService {
             daily_proactive_count: self.daily_proactive_count,
             recent_sent_messages: self.recent_sent_messages.clone(),
             suppressed_urges: self.suppressed_urges.clone(),
+            // Interest intelligence
+            user_interests: self.user_interests.clone(),
+            user_location: self.user_location.clone(),
         }
     }
 
@@ -2195,6 +2211,61 @@ fn format_tool_progress(tool_names: &[&str], step: usize) -> String {
     } else {
         format!("[{}...]", desc)
     }
+}
+
+/// Load user interests from memory (preferences table or memories with interest keywords).
+fn load_user_interests(conn: &rusqlite::Connection) -> Vec<String> {
+    // Try preferences table first (from recall_preferences / save_user_fact)
+    let mut interests: Vec<String> = Vec::new();
+
+    // Query the preferences/facts for interest-related entries
+    if let Ok(mut stmt) = conn.prepare(
+        "SELECT value FROM user_preferences WHERE category IN ('hobby', 'interest', 'sport', 'food', 'music', 'shopping', 'travel', 'general')
+         UNION
+         SELECT content FROM memories WHERE content LIKE '%likes %' OR content LIKE '%interested in%' OR content LIKE '%hobby%' OR content LIKE '%favorite%'
+         LIMIT 50"
+    ) {
+        if let Ok(rows) = stmt.query_map([], |row| row.get::<_, String>(0)) {
+            for row in rows.flatten() {
+                // Extract the interest from the memory text
+                let trimmed = row.trim().to_string();
+                if !trimmed.is_empty() && !interests.contains(&trimmed) {
+                    interests.push(trimmed);
+                }
+            }
+        }
+    }
+
+    // Cap at 20 interests to keep state manageable
+    interests.truncate(20);
+    interests
+}
+
+/// Load user location from memory or config.
+fn load_user_location(conn: &rusqlite::Connection) -> String {
+    // Try preferences table
+    if let Ok(location) = conn.query_row(
+        "SELECT value FROM user_preferences WHERE category = 'location' ORDER BY updated_at DESC LIMIT 1",
+        [],
+        |row| row.get::<_, String>(0),
+    ) {
+        if !location.is_empty() {
+            return location;
+        }
+    }
+
+    // Try memories
+    if let Ok(location) = conn.query_row(
+        "SELECT content FROM memories WHERE content LIKE '%lives in%' OR content LIKE '%located in%' OR content LIKE '%location%' ORDER BY created_at DESC LIMIT 1",
+        [],
+        |row| row.get::<_, String>(0),
+    ) {
+        if !location.is_empty() {
+            return location;
+        }
+    }
+
+    String::new()
 }
 
 /// Strip Qwen3.5 `<think>...</think>` reasoning blocks from LLM output.

@@ -1,0 +1,27 @@
+id: myth-buster
+name: Myth Buster
+description: Catches common misconceptions related to your interests
+long_description: >
+  Finds and corrects surprising myths about topics you care about. Delivers
+  with fascination, not pedantry — explaining what's actually true is always
+  more interesting than the myth. Research-backed with specific evidence.
+version: "1.0.0"
+author: Yantrik
+icon: shield-check
+category: intelligence
+tags: [myths, facts, learning, research, alive-mind]
+
+tools: []
+core_tools: []
+
+instincts:
+  - MythBuster
+
+cortex_rules: []
+services: []
+requires: []
+requires_config: []
+
+permissions:
+  - network
+  - background

@@ -15,7 +15,7 @@ tools: []
 core_tools: []
 
 instincts:
-  - humor
+  - Humor
 
 cortex_rules: []
 services: []

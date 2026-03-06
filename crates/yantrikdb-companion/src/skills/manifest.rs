@@ -97,6 +97,7 @@ pub enum SkillCategory {
     System,
     Search,
     Utility,
+    Intelligence,
 }
 
 impl Default for SkillCategory {
@@ -119,6 +120,7 @@ impl SkillCategory {
             Self::System => "System",
             Self::Search => "Search",
             Self::Utility => "Utility",
+            Self::Intelligence => "Intelligence",
         }
     }
 
@@ -135,12 +137,14 @@ impl SkillCategory {
             Self::System => "gear",
             Self::Search => "search",
             Self::Utility => "wrench",
+            Self::Intelligence => "brain",
         }
     }
 
     /// All categories in display order.
     pub fn all() -> &'static [SkillCategory] {
         &[
+            Self::Intelligence,
             Self::Productivity,
             Self::Communication,
             Self::Development,

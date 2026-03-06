@@ -28,7 +28,7 @@ core_tools:
   - email_search
 
 instincts:
-  - email_watch
+  - EmailWatch
 
 cortex_rules:
   - email_ticket_link

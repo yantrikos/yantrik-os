@@ -1,0 +1,26 @@
+id: legacy-builder
+name: Legacy Builder
+description: Rare zoom-out reflections on your narrative arc and bigger picture
+long_description: >
+  Occasionally surfaces reflections about the bigger picture — what you're
+  building, how your daily work connects to a larger purpose. Requires deep
+  bond and extensive history. Honest perspective, not flattery.
+version: "1.0.0"
+author: Yantrik
+icon: landmark
+category: intelligence
+tags: [reflection, purpose, narrative, growth, alive-mind]
+
+tools: []
+core_tools: []
+
+instincts:
+  - LegacyBuilder
+
+cortex_rules: []
+services: []
+requires: []
+requires_config: []
+
+permissions:
+  - background
