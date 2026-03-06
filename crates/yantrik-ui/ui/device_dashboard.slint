@@ -1,0 +1,920 @@
+// Device Dashboard — hardware device overview. Screen 27.
+
+import { Theme } from "theme.slint";
+
+// ── Data structs ──
+
+export struct UsbDeviceData {
+    bus: string,
+    device-id: string,
+    vendor-product: string,
+    description: string,
+    is-selected: bool,
+}
+
+export struct PciDeviceData {
+    slot: string,
+    class-name: string,
+    vendor: string,
+    device-name: string,
+    class-color: color,
+}
+
+export struct InputDeviceData {
+    name: string,
+    handler: string,
+    device-type: string,
+    phys: string,
+}
+
+export struct StorageDeviceData {
+    name: string,
+    size-text: string,
+    device-type: string,
+    mountpoint: string,
+    filesystem: string,
+    usage-percent: float,
+}
+
+export struct DisplayDeviceData {
+    name: string,
+    resolution: string,
+    connector: string,
+    status: string,
+}
+
+// ── Tab button component ──
+
+component DevTabButton inherits TouchArea {
+    in property <string> label;
+    in property <bool> active;
+    in property <string> icon;
+    height: 44px;
+
+    Rectangle {
+        background: active ? Theme.bg-elevated : (parent.has-hover ? Theme.hover-fill : transparent);
+
+        HorizontalLayout {
+            spacing: 8px;
+            padding-left: 16px;
+            padding-right: 16px;
+            alignment: center;
+
+            Text {
+                text: icon;
+                color: active ? Theme.accent : Theme.text-secondary;
+                font-size: 16px;
+                vertical-alignment: center;
+            }
+            Text {
+                text: label;
+                color: active ? Theme.accent : Theme.text-secondary;
+                font-size: Theme.font-body;
+                font-weight: active ? 600 : 400;
+                vertical-alignment: center;
+            }
+        }
+
+        // Bottom accent line
+        if active : Rectangle {
+            y: parent.height - 2px;
+            width: 100%;
+            height: 2px;
+            background: Theme.accent;
+        }
+    }
+}
+
+// ── Refresh button ──
+
+component RefreshButton inherits TouchArea {
+    height: 36px;
+    width: 100px;
+
+    Rectangle {
+        border-radius: Theme.radius-card;
+        background: parent.has-hover ? Theme.hover-fill-strong : Theme.bg-elevated;
+        border-width: 1px;
+        border-color: Theme.border-subtle;
+
+        HorizontalLayout {
+            padding-left: 12px;
+            padding-right: 12px;
+            alignment: center;
+            spacing: 6px;
+
+            Text {
+                text: "\u{21BB}";
+                color: Theme.accent;
+                font-size: 16px;
+                vertical-alignment: center;
+            }
+            Text {
+                text: "Refresh";
+                color: Theme.text-primary;
+                font-size: Theme.font-small;
+                font-weight: 600;
+                vertical-alignment: center;
+            }
+        }
+    }
+}
+
+// ── Device type badge ──
+
+component TypeBadge inherits Rectangle {
+    in property <string> label;
+    in property <color> badge-color: Theme.accent;
+    height: 22px;
+    width: badge-text.preferred-width + 16px;
+    border-radius: 4px;
+    background: badge-color.with-alpha(0.15);
+
+    badge-text := Text {
+        text: label;
+        color: badge-color;
+        font-size: 11px;
+        font-weight: 600;
+        vertical-alignment: center;
+        horizontal-alignment: center;
+    }
+}
+
+// ── Usage bar ──
+
+component UsageBar inherits Rectangle {
+    in property <float> percent;
+    in property <color> bar-color: Theme.accent;
+    height: 6px;
+    border-radius: 3px;
+    background: Theme.bg-deep;
+
+    Rectangle {
+        x: 0;
+        y: 0;
+        width: parent.width * clamp(percent / 100.0, 0.0, 1.0);
+        height: parent.height;
+        border-radius: 3px;
+        background: percent > 90 ? Theme.color-emotional : percent > 70 ? Theme.color-conflict : bar-color;
+    }
+}
+
+// ── USB device row ──
+
+component UsbDeviceRow inherits TouchArea {
+    in property <UsbDeviceData> data;
+    height: 52px;
+
+    Rectangle {
+        background: data.is-selected ? Theme.bg-selected
+                  : parent.has-hover ? Theme.hover-fill
+                  : transparent;
+        border-radius: 6px;
+
+        HorizontalLayout {
+            spacing: 12px;
+            padding-left: 16px;
+            padding-right: 16px;
+
+            // Bus badge
+            Rectangle {
+                width: 52px;
+                height: 24px;
+                border-radius: 4px;
+                background: Theme.holo-blue.with-alpha(0.12);
+
+                Text {
+                    text: data.bus;
+                    color: Theme.holo-blue;
+                    font-size: 11px;
+                    font-weight: 600;
+                    vertical-alignment: center;
+                    horizontal-alignment: center;
+                }
+            }
+
+            // Vendor:Product ID
+            Text {
+                text: data.vendor-product;
+                color: Theme.accent;
+                font-size: Theme.font-small;
+                font-family: "monospace";
+                vertical-alignment: center;
+                width: 100px;
+            }
+
+            // Description
+            Text {
+                text: data.description;
+                color: Theme.text-primary;
+                font-size: Theme.font-body;
+                vertical-alignment: center;
+                overflow: elide;
+                horizontal-stretch: 1;
+            }
+
+            // Device ID
+            Text {
+                text: data.device-id;
+                color: Theme.text-dim;
+                font-size: Theme.font-small;
+                vertical-alignment: center;
+                width: 60px;
+                horizontal-alignment: right;
+            }
+        }
+    }
+}
+
+// ── PCI device row ──
+
+component PciDeviceRow inherits TouchArea {
+    in property <PciDeviceData> data;
+    height: 52px;
+
+    Rectangle {
+        background: parent.has-hover ? Theme.hover-fill : transparent;
+        border-radius: 6px;
+
+        HorizontalLayout {
+            spacing: 12px;
+            padding-left: 16px;
+            padding-right: 16px;
+
+            // Slot
+            Text {
+                text: data.slot;
+                color: Theme.text-dim;
+                font-size: Theme.font-small;
+                font-family: "monospace";
+                vertical-alignment: center;
+                width: 80px;
+            }
+
+            // Class badge
+            TypeBadge {
+                label: data.class-name;
+                badge-color: data.class-color;
+            }
+
+            // Device name
+            Text {
+                text: data.device-name;
+                color: Theme.text-primary;
+                font-size: Theme.font-body;
+                vertical-alignment: center;
+                overflow: elide;
+                horizontal-stretch: 1;
+            }
+
+            // Vendor
+            Text {
+                text: data.vendor;
+                color: Theme.text-secondary;
+                font-size: Theme.font-small;
+                vertical-alignment: center;
+                width: 120px;
+                horizontal-alignment: right;
+                overflow: elide;
+            }
+        }
+    }
+}
+
+// ── Input device row ──
+
+component InputDeviceRow inherits Rectangle {
+    in property <InputDeviceData> data;
+    height: 56px;
+    background: transparent;
+    border-radius: 6px;
+
+    HorizontalLayout {
+        spacing: 12px;
+        padding-left: 16px;
+        padding-right: 16px;
+
+        // Device type icon
+        Rectangle {
+            width: 36px;
+            height: 36px;
+            border-radius: 8px;
+            background: data.device-type == "keyboard" ? Theme.holo-blue.with-alpha(0.12)
+                      : data.device-type == "mouse" ? Theme.accent.with-alpha(0.12)
+                      : data.device-type == "touchpad" ? Theme.color-pattern.with-alpha(0.12)
+                      : Theme.text-dim.with-alpha(0.12);
+
+            Text {
+                text: data.device-type == "keyboard" ? "\u{2328}"
+                    : data.device-type == "mouse" ? "\u{1F5B1}"
+                    : data.device-type == "touchpad" ? "\u{261F}"
+                    : "\u{2699}";
+                font-size: 18px;
+                color: data.device-type == "keyboard" ? Theme.holo-blue
+                     : data.device-type == "mouse" ? Theme.accent
+                     : data.device-type == "touchpad" ? Theme.color-pattern
+                     : Theme.text-dim;
+                vertical-alignment: center;
+                horizontal-alignment: center;
+            }
+        }
+
+        // Name + handler
+        VerticalLayout {
+            spacing: 2px;
+            horizontal-stretch: 1;
+
+            Text {
+                text: data.name;
+                color: Theme.text-primary;
+                font-size: Theme.font-body;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+            Text {
+                text: data.handler;
+                color: Theme.text-secondary;
+                font-size: Theme.font-small;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+        }
+
+        // Type badge
+        TypeBadge {
+            label: data.device-type;
+            badge-color: data.device-type == "keyboard" ? Theme.holo-blue
+                       : data.device-type == "mouse" ? Theme.accent
+                       : data.device-type == "touchpad" ? Theme.color-pattern
+                       : Theme.text-dim;
+        }
+
+        // Phys
+        Text {
+            text: data.phys;
+            color: Theme.text-dim;
+            font-size: Theme.font-small;
+            font-family: "monospace";
+            vertical-alignment: center;
+            width: 140px;
+            horizontal-alignment: right;
+            overflow: elide;
+        }
+    }
+}
+
+// ── Storage device row ──
+
+component StorageDeviceRow inherits Rectangle {
+    in property <StorageDeviceData> data;
+    height: 62px;
+    background: transparent;
+    border-radius: 6px;
+
+    HorizontalLayout {
+        spacing: 12px;
+        padding-left: 16px;
+        padding-right: 16px;
+
+        // Device icon
+        Rectangle {
+            width: 36px;
+            height: 36px;
+            border-radius: 8px;
+            background: data.device-type == "disk" ? Theme.accent.with-alpha(0.12)
+                      : data.device-type == "part" ? Theme.holo-blue.with-alpha(0.12)
+                      : data.device-type == "lvm" ? Theme.color-pattern.with-alpha(0.12)
+                      : Theme.text-dim.with-alpha(0.12);
+
+            Text {
+                text: data.device-type == "disk" ? "\u{1F4BD}"
+                    : data.device-type == "rom" ? "\u{1F4BF}"
+                    : "\u{1F4C1}";
+                font-size: 18px;
+                color: Theme.text-primary;
+                vertical-alignment: center;
+                horizontal-alignment: center;
+            }
+        }
+
+        // Name + mountpoint
+        VerticalLayout {
+            spacing: 2px;
+            horizontal-stretch: 1;
+
+            HorizontalLayout {
+                spacing: 8px;
+                Text {
+                    text: data.name;
+                    color: Theme.text-primary;
+                    font-size: Theme.font-body;
+                    font-weight: 600;
+                    vertical-alignment: center;
+                }
+                TypeBadge {
+                    label: data.device-type;
+                    badge-color: data.device-type == "disk" ? Theme.accent
+                               : data.device-type == "part" ? Theme.holo-blue
+                               : data.device-type == "lvm" ? Theme.color-pattern
+                               : Theme.text-dim;
+                }
+            }
+
+            HorizontalLayout {
+                spacing: 12px;
+                Text {
+                    text: data.mountpoint != "" ? data.mountpoint : "(not mounted)";
+                    color: data.mountpoint != "" ? Theme.text-secondary : Theme.text-dim;
+                    font-size: Theme.font-small;
+                    vertical-alignment: center;
+                }
+                Text {
+                    text: data.filesystem;
+                    color: Theme.text-dim;
+                    font-size: Theme.font-small;
+                    vertical-alignment: center;
+                }
+            }
+        }
+
+        // Size
+        Text {
+            text: data.size-text;
+            color: Theme.text-primary;
+            font-size: Theme.font-body;
+            font-weight: 600;
+            vertical-alignment: center;
+            width: 80px;
+            horizontal-alignment: right;
+        }
+
+        // Usage bar
+        VerticalLayout {
+            width: 100px;
+            spacing: 2px;
+
+            UsageBar {
+                percent: data.usage-percent;
+                bar-color: Theme.accent;
+            }
+            Text {
+                text: data.usage-percent > 0 ? "\{round(data.usage-percent)}%" : "";
+                color: data.usage-percent > 90 ? Theme.color-emotional
+                     : data.usage-percent > 70 ? Theme.color-conflict
+                     : Theme.text-secondary;
+                font-size: 10px;
+                horizontal-alignment: right;
+                vertical-alignment: center;
+            }
+        }
+    }
+}
+
+// ── Display device row ──
+
+component DisplayDeviceRow inherits Rectangle {
+    in property <DisplayDeviceData> data;
+    height: 56px;
+    background: transparent;
+    border-radius: 6px;
+
+    HorizontalLayout {
+        spacing: 12px;
+        padding-left: 16px;
+        padding-right: 16px;
+
+        // Status indicator
+        Rectangle {
+            width: 10px;
+            height: 10px;
+            border-radius: 5px;
+            background: data.status == "connected" ? #6cd480 : Theme.text-dim;
+        }
+
+        // Connector
+        Text {
+            text: data.connector;
+            color: Theme.accent;
+            font-size: Theme.font-body;
+            font-weight: 600;
+            vertical-alignment: center;
+            width: 100px;
+        }
+
+        // Name
+        Text {
+            text: data.name;
+            color: Theme.text-primary;
+            font-size: Theme.font-body;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+            overflow: elide;
+        }
+
+        // Resolution
+        Text {
+            text: data.resolution;
+            color: data.resolution != "" ? Theme.holo-blue : Theme.text-dim;
+            font-size: Theme.font-body;
+            font-family: "monospace";
+            vertical-alignment: center;
+            width: 140px;
+            horizontal-alignment: right;
+        }
+
+        // Status badge
+        TypeBadge {
+            label: data.status;
+            badge-color: data.status == "connected" ? #6cd480 : Theme.text-dim;
+        }
+    }
+}
+
+// ── Section header ──
+
+component SectionHeader inherits Rectangle {
+    in property <string> title;
+    in property <int> count: 0;
+    height: 36px;
+    background: transparent;
+
+    HorizontalLayout {
+        padding-left: 16px;
+        padding-right: 16px;
+        spacing: 8px;
+
+        Text {
+            text: title;
+            color: Theme.text-secondary;
+            font-size: Theme.font-small;
+            font-weight: 700;
+            vertical-alignment: center;
+            letter-spacing: 0.8px;
+        }
+        if count > 0 : Rectangle {
+            width: 28px;
+            height: 20px;
+            border-radius: 10px;
+            background: Theme.accent.with-alpha(0.15);
+
+            Text {
+                text: count;
+                color: Theme.accent;
+                font-size: 11px;
+                font-weight: 600;
+                vertical-alignment: center;
+                horizontal-alignment: center;
+            }
+        }
+        Rectangle { horizontal-stretch: 1; }
+    }
+}
+
+// ── Empty state ──
+
+component EmptyState inherits Rectangle {
+    in property <string> message: "No devices found";
+    height: 120px;
+    background: transparent;
+
+    Text {
+        text: message;
+        color: Theme.text-dim;
+        font-size: Theme.font-body;
+        vertical-alignment: center;
+        horizontal-alignment: center;
+    }
+}
+
+// ── Main component ──
+
+export component DeviceDashboardScreen inherits Rectangle {
+    background: Theme.bg-deep;
+
+    // Active tab: 0=USB, 1=PCI, 2=Input, 3=Storage, 4=Display
+    in-out property <int> active-tab: 0;
+
+    // USB
+    in property <[UsbDeviceData]> usb-devices: [];
+    in-out property <int> usb-selected-index: -1;
+    in property <string> usb-detail-text: "";
+
+    // PCI
+    in property <[PciDeviceData]> pci-devices: [];
+
+    // Input
+    in property <[InputDeviceData]> input-devices: [];
+
+    // Storage
+    in property <[StorageDeviceData]> storage-devices: [];
+
+    // Display
+    in property <[DisplayDeviceData]> display-devices: [];
+    in property <string> gpu-info: "";
+
+    // Scanning state
+    in property <bool> scanning: false;
+
+    // Callbacks
+    callback dev-tab(int);
+    callback dev-select-usb(int);
+    callback dev-select-pci(int);
+    callback dev-refresh();
+
+    VerticalLayout {
+        spacing: 0px;
+
+        // ── Tab bar ──
+        Rectangle {
+            height: 48px;
+            background: Theme.bg-card;
+            border-width: 0px;
+
+            HorizontalLayout {
+                spacing: 0px;
+
+                DevTabButton {
+                    label: "USB";
+                    icon: "\u{1F50C}";
+                    active: active-tab == 0;
+                    width: 120px;
+                    clicked => { root.active-tab = 0; root.dev-tab(0); }
+                }
+                DevTabButton {
+                    label: "PCI";
+                    icon: "\u{1F4E6}";
+                    active: active-tab == 1;
+                    width: 120px;
+                    clicked => { root.active-tab = 1; root.dev-tab(1); }
+                }
+                DevTabButton {
+                    label: "Input";
+                    icon: "\u{2328}";
+                    active: active-tab == 2;
+                    width: 120px;
+                    clicked => { root.active-tab = 2; root.dev-tab(2); }
+                }
+                DevTabButton {
+                    label: "Storage";
+                    icon: "\u{1F4BD}";
+                    active: active-tab == 3;
+                    width: 120px;
+                    clicked => { root.active-tab = 3; root.dev-tab(3); }
+                }
+                DevTabButton {
+                    label: "Display";
+                    icon: "\u{1F5B5}";
+                    active: active-tab == 4;
+                    width: 120px;
+                    clicked => { root.active-tab = 4; root.dev-tab(4); }
+                }
+
+                // Spacer
+                Rectangle { horizontal-stretch: 1; }
+
+                // Refresh button
+                RefreshButton {
+                    clicked => { root.dev-refresh(); }
+                }
+
+                // Scanning indicator
+                if scanning : Text {
+                    text: "Scanning...";
+                    color: Theme.accent;
+                    font-size: Theme.font-small;
+                    vertical-alignment: center;
+                }
+
+                Rectangle { width: 16px; }
+            }
+        }
+
+        // Separator
+        Rectangle {
+            height: 1px;
+            background: Theme.border-subtle;
+        }
+
+        // ── Content area ──
+        Rectangle {
+            vertical-stretch: 1;
+            background: Theme.bg-deep;
+
+            // ── USB tab ──
+            if active-tab == 0 : VerticalLayout {
+                spacing: 0px;
+
+                SectionHeader {
+                    title: "USB DEVICES";
+                    count: usb-devices.length;
+                }
+
+                if usb-devices.length == 0 : EmptyState {
+                    message: scanning ? "Scanning USB bus..." : "No USB devices found";
+                }
+
+                // USB device list
+                Flickable {
+                    vertical-stretch: 1;
+
+                    VerticalLayout {
+                        spacing: 2px;
+                        padding: 8px;
+
+                        for device[idx] in usb-devices : UsbDeviceRow {
+                            data: device;
+                            clicked => {
+                                root.usb-selected-index = idx;
+                                root.dev-select-usb(idx);
+                            }
+                        }
+                    }
+                }
+
+                // USB detail card
+                if usb-selected-index >= 0 && usb-detail-text != "" : Rectangle {
+                    height: 140px;
+                    background: Theme.bg-card;
+                    border-width: 1px;
+                    border-color: Theme.border-subtle;
+                    border-radius: Theme.radius-card;
+
+                    VerticalLayout {
+                        padding: 16px;
+                        spacing: 8px;
+
+                        Text {
+                            text: "Device Details";
+                            color: Theme.accent;
+                            font-size: Theme.font-small;
+                            font-weight: 700;
+                            vertical-alignment: center;
+                        }
+
+                        Flickable {
+                            vertical-stretch: 1;
+
+                            Text {
+                                text: usb-detail-text;
+                                color: Theme.text-secondary;
+                                font-size: Theme.font-small;
+                                font-family: "monospace";
+                                wrap: word-wrap;
+                                vertical-alignment: top;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ── PCI tab ──
+            if active-tab == 1 : VerticalLayout {
+                spacing: 0px;
+
+                SectionHeader {
+                    title: "PCI DEVICES";
+                    count: pci-devices.length;
+                }
+
+                if pci-devices.length == 0 : EmptyState {
+                    message: scanning ? "Scanning PCI bus..." : "No PCI devices found";
+                }
+
+                Flickable {
+                    vertical-stretch: 1;
+
+                    VerticalLayout {
+                        spacing: 2px;
+                        padding: 8px;
+
+                        for device[idx] in pci-devices : PciDeviceRow {
+                            data: device;
+                            clicked => { root.dev-select-pci(idx); }
+                        }
+                    }
+                }
+            }
+
+            // ── Input tab ──
+            if active-tab == 2 : VerticalLayout {
+                spacing: 0px;
+
+                SectionHeader {
+                    title: "INPUT DEVICES";
+                    count: input-devices.length;
+                }
+
+                if input-devices.length == 0 : EmptyState {
+                    message: scanning ? "Scanning input devices..." : "No input devices found";
+                }
+
+                Flickable {
+                    vertical-stretch: 1;
+
+                    VerticalLayout {
+                        spacing: 2px;
+                        padding: 8px;
+
+                        for device in input-devices : InputDeviceRow {
+                            data: device;
+                        }
+                    }
+                }
+            }
+
+            // ── Storage tab ──
+            if active-tab == 3 : VerticalLayout {
+                spacing: 0px;
+
+                SectionHeader {
+                    title: "BLOCK DEVICES";
+                    count: storage-devices.length;
+                }
+
+                if storage-devices.length == 0 : EmptyState {
+                    message: scanning ? "Scanning block devices..." : "No storage devices found";
+                }
+
+                Flickable {
+                    vertical-stretch: 1;
+
+                    VerticalLayout {
+                        spacing: 2px;
+                        padding: 8px;
+
+                        for device in storage-devices : StorageDeviceRow {
+                            data: device;
+                        }
+                    }
+                }
+            }
+
+            // ── Display tab ──
+            if active-tab == 4 : VerticalLayout {
+                spacing: 0px;
+
+                // GPU info card
+                if gpu-info != "" : Rectangle {
+                    height: 64px;
+                    background: Theme.bg-card;
+                    border-radius: Theme.radius-card;
+                    border-width: 1px;
+                    border-color: Theme.border-subtle;
+
+                    HorizontalLayout {
+                        padding-left: 16px;
+                        padding-right: 16px;
+                        spacing: 12px;
+
+                        Rectangle {
+                            width: 36px;
+                            height: 36px;
+                            border-radius: 8px;
+                            background: #6cd480.with-alpha(0.12);
+
+                            Text {
+                                text: "GPU";
+                                color: #6cd480;
+                                font-size: 11px;
+                                font-weight: 700;
+                                vertical-alignment: center;
+                                horizontal-alignment: center;
+                            }
+                        }
+
+                        Text {
+                            text: gpu-info;
+                            color: Theme.text-primary;
+                            font-size: Theme.font-body;
+                            vertical-alignment: center;
+                            overflow: elide;
+                            horizontal-stretch: 1;
+                        }
+                    }
+                }
+
+                SectionHeader {
+                    title: "DISPLAY OUTPUTS";
+                    count: display-devices.length;
+                }
+
+                if display-devices.length == 0 : EmptyState {
+                    message: scanning ? "Scanning display outputs..." : "No display outputs found";
+                }
+
+                Flickable {
+                    vertical-stretch: 1;
+
+                    VerticalLayout {
+                        spacing: 2px;
+                        padding: 8px;
+
+                        for device in display-devices : DisplayDeviceRow {
+                            data: device;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

@@ -57,6 +57,8 @@ pub use chat_template::Qwen2Tokens;
 pub use llm::{CandleLLM, LLMEngine};
 #[cfg(feature = "api-llm")]
 pub use llm::ApiLLM;
+#[cfg(feature = "claude-cli")]
+pub use llm::ClaudeCliLLM;
 #[cfg(feature = "llamacpp")]
 pub use llm::LlamaCppLLM;
 

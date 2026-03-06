@@ -1,0 +1,29 @@
+id: package-manager
+name: Package Manager
+description: Search, install, and manage system packages
+long_description: >
+  Manage Alpine Linux packages through natural language. Search for packages,
+  install or remove them, view package info, and list installed packages.
+  Uses apk under the hood.
+version: "1.0.0"
+author: Yantrik
+icon: package
+category: system
+tags: [apk, alpine, install, remove, packages, dependencies]
+
+tools:
+  - package_search
+  - package_install
+  - package_remove
+  - package_info
+  - package_list
+
+core_tools: []
+instincts: []
+cortex_rules: []
+services: []
+requires: []
+requires_config: []
+
+permissions:
+  - shell

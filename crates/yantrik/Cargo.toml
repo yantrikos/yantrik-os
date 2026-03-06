@@ -11,7 +11,7 @@ path = "src/main.rs"
 [dependencies]
 yantrikdb-companion = { path = "../yantrikdb-companion" }
 yantrikdb-server = { path = "../yantrikdb-server" }
-yantrikdb-ml = { git = "https://github.com/spranab/yantrikdb.git", features = ["api-llm"] }
+yantrikdb-ml = { git = "https://github.com/spranab/yantrikdb.git", features = ["api-llm", "claude-cli"] }
 serde_json = "1"
 yantrikdb-core = { git = "https://github.com/spranab/yantrikdb.git" }
 axum = "0.8"
@@ -25,7 +25,8 @@ rubato = "0.16"
 ctrlc = "3"
 
 [features]
-default = []
+default = ["claude-cli"]
+claude-cli = ["yantrikdb-ml/claude-cli"]
 cuda = ["yantrikdb-ml/cuda"]
 metal = ["yantrikdb-ml/metal"]
 accelerate = ["yantrikdb-ml/accelerate"]

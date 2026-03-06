@@ -11,7 +11,7 @@ use slint::{ComponentHandle, Timer, TimerMode};
 use slint::{ModelRc, VecModel};
 
 use crate::app_context::{self, AppContext};
-use crate::{cards, features, lock, system_context, windows, App, DockItem, ProcessData, WindowItem};
+use crate::{cards, features, lock, system_context, windows, App, DockItem, ProcessData, Tr, WindowItem};
 
 /// Maximum number of data points in the chart history ring buffer.
 const CHART_HISTORY_LEN: usize = 60;
@@ -262,19 +262,28 @@ pub fn wire(ui: &App, ctx: &AppContext) {
             if ui.get_current_screen() == 1 {
                 let wins = windows::list_windows();
 
-                // Update dock items with running state
-                let default_items: &[(&str, &str, &str)] = &[
-                    ("terminal", "Terminal", ">_"),
-                    ("browser", "Browser", "W"),
-                    ("files", "Files", "F"),
-                    ("editor", "Editor", "E"),
-                    ("settings", "Settings", "*"),
+                // Update dock items with running state (labels from Tr global for i18n)
+                let tr = ui.global::<Tr>();
+                let dock_defs: &[(&str, fn(&Tr) -> slint::SharedString, &str)] = &[
+                    ("terminal",      |t| t.get_dock_terminal(), ">_"),
+                    ("browser",       |t| t.get_dock_browser(),  "W"),
+                    ("files",         |t| t.get_dock_files(),    "F"),
+                    ("email",         |t| t.get_dock_email(),    "@"),
+                    ("notes",         |t| t.get_dock_notes(),    "\u{270E}"),
+                    ("editor",        |t| t.get_dock_editor(),   "\u{2261}"),
+                    ("memory",        |t| t.get_dock_memory(),   "\u{25C8}"),
+                    ("notifications", |t| t.get_dock_alerts(),   "N"),
+                    ("system",        |t| t.get_dock_system(),   "\u{25C9}"),
+                    ("media",         |t| t.get_dock_media(),    "\u{266A}"),
+                    ("calendar",      |t| t.get_dock_calendar(), "\u{25A6}"),
+                    ("launchpad",     |t| t.get_dock_apps(),     "\u{229E}"),
+                    ("settings",      |t| t.get_dock_settings(), "\u{2699}"),
                 ];
-                let dock: Vec<DockItem> = default_items
+                let dock: Vec<DockItem> = dock_defs
                     .iter()
-                    .map(|(id, label, icon)| DockItem {
+                    .map(|(id, label_fn, icon)| DockItem {
                         app_id: (*id).into(),
-                        label: (*label).into(),
+                        label: label_fn(&tr),
                         icon_char: (*icon).into(),
                         is_running: wins.iter().any(|w| w.app_id == *id),
                     })

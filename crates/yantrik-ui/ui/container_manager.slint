@@ -1,0 +1,961 @@
+// Container Manager — Docker/Podman container management. Screen 26.
+
+import { Theme } from "theme.slint";
+
+// ── Data structs ──
+
+export struct ContainerData {
+    id: string,
+    name: string,
+    image: string,
+    status: string,          // "running", "stopped", "paused", "restarting"
+    status-text: string,     // "Up 2 hours", "Exited (0) 3 days ago"
+    ports: string,           // "8080:80, 443:443"
+    created: string,
+    is-selected: bool,
+}
+
+export struct ImageData {
+    id: string,
+    repo-tag: string,
+    size-text: string,
+    created: string,
+}
+
+export struct VolumeData {
+    name: string,
+    driver: string,
+    mount-point: string,
+    size-text: string,
+}
+
+// ── Tab button component ──
+
+component TabButton inherits TouchArea {
+    in property <string> label;
+    in property <bool> active;
+    in property <string> icon;
+    height: 44px;
+
+    Rectangle {
+        background: active ? Theme.bg-elevated : (parent.has-hover ? Theme.hover-fill : transparent);
+
+        HorizontalLayout {
+            spacing: 8px;
+            padding-left: 16px;
+            padding-right: 16px;
+            alignment: center;
+
+            Text {
+                text: icon;
+                color: active ? Theme.accent : Theme.text-secondary;
+                font-size: 16px;
+                vertical-alignment: center;
+            }
+            Text {
+                text: label;
+                color: active ? Theme.accent : Theme.text-secondary;
+                font-size: Theme.font-body;
+                font-weight: active ? 600 : 400;
+                vertical-alignment: center;
+            }
+        }
+
+        // Bottom accent line
+        if active : Rectangle {
+            y: parent.height - 2px;
+            width: 100%;
+            height: 2px;
+            background: Theme.accent;
+        }
+    }
+}
+
+// ── Action button component ──
+
+component ActionButton inherits TouchArea {
+    in property <string> label;
+    in property <bool> danger: false;
+    in property <bool> primary: false;
+    height: 36px;
+
+    Rectangle {
+        border-radius: Theme.radius-card;
+        background: primary ? Theme.accent
+                  : danger ? #a04040
+                  : (parent.has-hover ? Theme.hover-fill-strong : Theme.bg-elevated);
+        border-width: 1px;
+        border-color: primary ? Theme.accent-dim
+                    : danger ? #c04040
+                    : Theme.border-subtle;
+
+        HorizontalLayout {
+            padding-left: 14px;
+            padding-right: 14px;
+            alignment: center;
+
+            Text {
+                text: label;
+                color: primary ? #ffffff
+                     : danger ? #ffcccc
+                     : Theme.text-primary;
+                font-size: Theme.font-small;
+                font-weight: 500;
+                vertical-alignment: center;
+            }
+        }
+    }
+}
+
+// ── Status badge component ──
+
+component StatusBadge inherits Rectangle {
+    in property <string> status;  // "running", "stopped", "paused", "restarting"
+    width: 80px;
+    height: 24px;
+    border-radius: 12px;
+    background: status == "running" ? #22c55e20
+              : status == "paused" ? #eab30820
+              : status == "restarting" ? #3b82f620
+              : #ef444420;
+    border-width: 1px;
+    border-color: status == "running" ? #22c55e40
+               : status == "paused" ? #eab30840
+               : status == "restarting" ? #3b82f640
+               : #ef444440;
+
+    Text {
+        text: status == "running" ? "Running"
+            : status == "paused" ? "Paused"
+            : status == "restarting" ? "Restarting"
+            : "Stopped";
+        color: status == "running" ? #22c55e
+             : status == "paused" ? #eab308
+             : status == "restarting" ? #3b82f6
+             : #ef4444;
+        font-size: 11px;
+        font-weight: 600;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}
+
+// ── Container row ──
+
+component ContainerRow inherits Rectangle {
+    in property <ContainerData> data;
+    height: 72px;
+    background: ta.has-hover ? Theme.hover-fill : transparent;
+    border-radius: 8px;
+
+    callback start-clicked();
+    callback stop-clicked();
+    callback restart-clicked();
+    callback remove-clicked();
+    callback logs-clicked();
+
+    ta := TouchArea {
+        HorizontalLayout {
+            padding-left: 16px;
+            padding-right: 16px;
+            spacing: 12px;
+            alignment: start;
+
+            // Container info
+            VerticalLayout {
+                spacing: 2px;
+                horizontal-stretch: 1;
+
+                HorizontalLayout {
+                    spacing: 8px;
+
+                    Text {
+                        text: data.name;
+                        color: Theme.text-primary;
+                        font-size: Theme.font-body;
+                        font-weight: 600;
+                        vertical-alignment: center;
+                    }
+
+                    StatusBadge {
+                        status: data.status;
+                    }
+                }
+
+                Text {
+                    text: data.image;
+                    color: Theme.text-secondary;
+                    font-size: Theme.font-small;
+                    overflow: elide;
+                }
+
+                HorizontalLayout {
+                    spacing: 16px;
+
+                    if data.ports != "" : Text {
+                        text: data.ports;
+                        color: Theme.accent;
+                        font-size: 11px;
+                    }
+
+                    Text {
+                        text: data.status-text;
+                        color: Theme.text-dim;
+                        font-size: 11px;
+                    }
+                }
+            }
+
+            // Action buttons
+            HorizontalLayout {
+                spacing: 6px;
+                alignment: center;
+
+                if data.status == "running" || data.status == "restarting" : ActionButton {
+                    label: "Stop";
+                    width: 56px;
+                    clicked => { stop-clicked(); }
+                }
+
+                if data.status == "stopped" || data.status == "paused" : ActionButton {
+                    label: "Start";
+                    primary: true;
+                    width: 56px;
+                    clicked => { start-clicked(); }
+                }
+
+                ActionButton {
+                    label: "Restart";
+                    width: 64px;
+                    clicked => { restart-clicked(); }
+                }
+
+                ActionButton {
+                    label: "Logs";
+                    width: 52px;
+                    clicked => { logs-clicked(); }
+                }
+
+                ActionButton {
+                    label: "Remove";
+                    danger: true;
+                    width: 68px;
+                    clicked => { remove-clicked(); }
+                }
+            }
+        }
+    }
+}
+
+// ── Image row ──
+
+component ImageRow inherits Rectangle {
+    in property <ImageData> data;
+    height: 56px;
+    background: ta.has-hover ? Theme.hover-fill : transparent;
+    border-radius: 8px;
+
+    callback remove-clicked();
+
+    ta := TouchArea {
+        HorizontalLayout {
+            padding-left: 16px;
+            padding-right: 16px;
+            spacing: 12px;
+
+            // Image info
+            VerticalLayout {
+                spacing: 2px;
+                horizontal-stretch: 1;
+
+                Text {
+                    text: data.repo-tag;
+                    color: Theme.text-primary;
+                    font-size: Theme.font-body;
+                    font-weight: 500;
+                    overflow: elide;
+                }
+
+                HorizontalLayout {
+                    spacing: 16px;
+
+                    Text {
+                        text: "ID: " + data.id;
+                        color: Theme.text-dim;
+                        font-size: 11px;
+                    }
+
+                    Text {
+                        text: data.size-text;
+                        color: Theme.text-secondary;
+                        font-size: 11px;
+                    }
+
+                    Text {
+                        text: data.created;
+                        color: Theme.text-dim;
+                        font-size: 11px;
+                    }
+                }
+            }
+
+            ActionButton {
+                label: "Remove";
+                danger: true;
+                width: 68px;
+                clicked => { remove-clicked(); }
+            }
+        }
+    }
+}
+
+// ── Volume row ──
+
+component VolumeRow inherits Rectangle {
+    in property <VolumeData> data;
+    height: 56px;
+    background: ta.has-hover ? Theme.hover-fill : transparent;
+    border-radius: 8px;
+
+    callback remove-clicked();
+
+    ta := TouchArea {
+        HorizontalLayout {
+            padding-left: 16px;
+            padding-right: 16px;
+            spacing: 12px;
+
+            VerticalLayout {
+                spacing: 2px;
+                horizontal-stretch: 1;
+
+                Text {
+                    text: data.name;
+                    color: Theme.text-primary;
+                    font-size: Theme.font-body;
+                    font-weight: 500;
+                    overflow: elide;
+                }
+
+                HorizontalLayout {
+                    spacing: 16px;
+
+                    Text {
+                        text: "Driver: " + data.driver;
+                        color: Theme.text-secondary;
+                        font-size: 11px;
+                    }
+
+                    if data.mount-point != "" : Text {
+                        text: data.mount-point;
+                        color: Theme.text-dim;
+                        font-size: 11px;
+                        overflow: elide;
+                    }
+
+                    if data.size-text != "" : Text {
+                        text: data.size-text;
+                        color: Theme.text-dim;
+                        font-size: 11px;
+                    }
+                }
+            }
+
+            ActionButton {
+                label: "Remove";
+                danger: true;
+                width: 68px;
+                clicked => { remove-clicked(); }
+            }
+        }
+    }
+}
+
+// ── Main component ──
+
+export component ContainerManagerScreen inherits Rectangle {
+    background: Theme.bg-deep;
+
+    // Tab state
+    in-out property <int> active-tab: 0;  // 0=Containers, 1=Images, 2=Volumes
+
+    // Container data
+    in property <[ContainerData]> containers: [];
+    in property <int> running-count: 0;
+    in property <int> stopped-count: 0;
+    in property <int> total-count: 0;
+
+    // Image data
+    in property <[ImageData]> images: [];
+
+    // Volume data
+    in property <[VolumeData]> volumes: [];
+
+    // Logs overlay
+    in property <string> log-text: "";
+    in property <string> log-container-name: "";
+    in-out property <bool> show-logs: false;
+
+    // Runtime info
+    in property <string> runtime-name: "docker";  // "docker" or "podman"
+
+    // Input fields
+    in-out property <string> run-image-input: "";
+    in-out property <string> pull-image-input: "";
+    in-out property <string> create-volume-input: "";
+
+    // Callbacks
+    callback ct-tab(int);
+    callback ct-start(string);
+    callback ct-stop(string);
+    callback ct-restart(string);
+    callback ct-remove(string);
+    callback ct-logs(string);
+    callback ct-run(string);
+    callback ct-pull(string);
+    callback ct-remove-image(string);
+    callback ct-create-volume(string);
+    callback ct-remove-volume(string);
+    callback ct-refresh();
+
+    VerticalLayout {
+        spacing: 0px;
+
+        // ── Tab bar ──
+        Rectangle {
+            height: 44px;
+            background: Theme.bg-surface;
+            border-width: 0px;
+
+            HorizontalLayout {
+                alignment: start;
+
+                TabButton {
+                    label: "Containers";
+                    icon: "\u{1F4E6}";
+                    active: active-tab == 0;
+                    width: 140px;
+                    clicked => {
+                        active-tab = 0;
+                        ct-tab(0);
+                    }
+                }
+
+                TabButton {
+                    label: "Images";
+                    icon: "\u{1F5BC}";
+                    active: active-tab == 1;
+                    width: 120px;
+                    clicked => {
+                        active-tab = 1;
+                        ct-tab(1);
+                    }
+                }
+
+                TabButton {
+                    label: "Volumes";
+                    icon: "\u{1F4BE}";
+                    active: active-tab == 2;
+                    width: 120px;
+                    clicked => {
+                        active-tab = 2;
+                        ct-tab(2);
+                    }
+                }
+
+                // Spacer
+                Rectangle { horizontal-stretch: 1; }
+
+                // Runtime label + refresh
+                HorizontalLayout {
+                    spacing: 8px;
+                    padding-right: 16px;
+                    alignment: center;
+
+                    Text {
+                        text: runtime-name;
+                        color: Theme.accent;
+                        font-size: Theme.font-small;
+                        font-weight: 600;
+                        vertical-alignment: center;
+                    }
+
+                    ActionButton {
+                        label: "Refresh";
+                        width: 68px;
+                        clicked => { ct-refresh(); }
+                    }
+                }
+            }
+
+            // Bottom border
+            Rectangle {
+                y: parent.height - 1px;
+                width: 100%;
+                height: 1px;
+                background: Theme.border-subtle;
+            }
+        }
+
+        // ── Containers tab ──
+        if active-tab == 0 : VerticalLayout {
+            vertical-stretch: 1;
+            spacing: 0px;
+
+            // Summary bar
+            Rectangle {
+                height: 48px;
+                background: Theme.bg-card;
+                border-width: 0px;
+
+                HorizontalLayout {
+                    padding-left: 16px;
+                    padding-right: 16px;
+                    spacing: 24px;
+                    alignment: start;
+
+                    // Running
+                    HorizontalLayout {
+                        spacing: 6px;
+
+                        Rectangle {
+                            width: 8px;
+                            height: 8px;
+                            border-radius: 4px;
+                            background: #22c55e;
+                            y: 20px;
+                        }
+
+                        Text {
+                            text: running-count + " running";
+                            color: #22c55e;
+                            font-size: Theme.font-small;
+                            font-weight: 500;
+                            vertical-alignment: center;
+                        }
+                    }
+
+                    // Stopped
+                    HorizontalLayout {
+                        spacing: 6px;
+
+                        Rectangle {
+                            width: 8px;
+                            height: 8px;
+                            border-radius: 4px;
+                            background: #ef4444;
+                            y: 20px;
+                        }
+
+                        Text {
+                            text: stopped-count + " stopped";
+                            color: #ef4444;
+                            font-size: Theme.font-small;
+                            font-weight: 500;
+                            vertical-alignment: center;
+                        }
+                    }
+
+                    // Total
+                    Text {
+                        text: total-count + " total";
+                        color: Theme.text-secondary;
+                        font-size: Theme.font-small;
+                        vertical-alignment: center;
+                    }
+
+                    // Spacer
+                    Rectangle { horizontal-stretch: 1; }
+
+                    // Run New container
+                    HorizontalLayout {
+                        spacing: 8px;
+                        alignment: center;
+
+                        Rectangle {
+                            width: 200px;
+                            height: 32px;
+                            border-radius: 8px;
+                            background: Theme.bg-input;
+                            border-width: 1px;
+                            border-color: Theme.border-subtle;
+
+                            run-input := TextInput {
+                                x: 10px;
+                                y: 4px;
+                                width: parent.width - 20px;
+                                height: parent.height - 8px;
+                                color: Theme.text-primary;
+                                font-size: Theme.font-small;
+                                text <=> run-image-input;
+
+                                accepted => {
+                                    if self.text != "" {
+                                        ct-run(self.text);
+                                        self.text = "";
+                                    }
+                                }
+                            }
+
+                            // Placeholder
+                            if run-input.text == "" : Text {
+                                x: 10px;
+                                text: "Image to run...";
+                                color: Theme.text-dim;
+                                font-size: Theme.font-small;
+                                vertical-alignment: center;
+                            }
+                        }
+
+                        ActionButton {
+                            label: "Run New";
+                            primary: true;
+                            width: 72px;
+                            clicked => {
+                                if run-image-input != "" {
+                                    ct-run(run-image-input);
+                                    run-image-input = "";
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Bottom border
+                Rectangle {
+                    y: parent.height - 1px;
+                    width: 100%;
+                    height: 1px;
+                    background: Theme.border-subtle;
+                }
+            }
+
+            // Container list
+            Flickable {
+                vertical-stretch: 1;
+
+                VerticalLayout {
+                    padding: 8px;
+                    spacing: 2px;
+                    alignment: start;
+
+                    for ct[idx] in containers : ContainerRow {
+                        data: ct;
+                        start-clicked => { ct-start(ct.id); }
+                        stop-clicked => { ct-stop(ct.id); }
+                        restart-clicked => { ct-restart(ct.id); }
+                        remove-clicked => { ct-remove(ct.id); }
+                        logs-clicked => { ct-logs(ct.id); }
+                    }
+
+                    // Empty state
+                    if total-count == 0 : Rectangle {
+                        height: 120px;
+                        Text {
+                            text: "No containers found";
+                            color: Theme.text-dim;
+                            font-size: Theme.font-body;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── Images tab ──
+        if active-tab == 1 : VerticalLayout {
+            vertical-stretch: 1;
+            spacing: 0px;
+
+            // Pull image bar
+            Rectangle {
+                height: 48px;
+                background: Theme.bg-card;
+                border-width: 0px;
+
+                HorizontalLayout {
+                    padding-left: 16px;
+                    padding-right: 16px;
+                    spacing: 8px;
+                    alignment: start;
+
+                    Text {
+                        text: images.length + " images";
+                        color: Theme.text-secondary;
+                        font-size: Theme.font-small;
+                        vertical-alignment: center;
+                    }
+
+                    // Spacer
+                    Rectangle { horizontal-stretch: 1; }
+
+                    Rectangle {
+                        width: 280px;
+                        height: 32px;
+                        border-radius: 8px;
+                        background: Theme.bg-input;
+                        border-width: 1px;
+                        border-color: Theme.border-subtle;
+
+                        pull-input := TextInput {
+                            x: 10px;
+                            y: 4px;
+                            width: parent.width - 20px;
+                            height: parent.height - 8px;
+                            color: Theme.text-primary;
+                            font-size: Theme.font-small;
+                            text <=> pull-image-input;
+
+                            accepted => {
+                                if self.text != "" {
+                                    ct-pull(self.text);
+                                    self.text = "";
+                                }
+                            }
+                        }
+
+                        if pull-input.text == "" : Text {
+                            x: 10px;
+                            text: "Image to pull (e.g. nginx:latest)...";
+                            color: Theme.text-dim;
+                            font-size: Theme.font-small;
+                            vertical-alignment: center;
+                        }
+                    }
+
+                    ActionButton {
+                        label: "Pull";
+                        primary: true;
+                        width: 56px;
+                        clicked => {
+                            if pull-image-input != "" {
+                                ct-pull(pull-image-input);
+                                pull-image-input = "";
+                            }
+                        }
+                    }
+                }
+
+                Rectangle {
+                    y: parent.height - 1px;
+                    width: 100%;
+                    height: 1px;
+                    background: Theme.border-subtle;
+                }
+            }
+
+            // Image list
+            Flickable {
+                vertical-stretch: 1;
+
+                VerticalLayout {
+                    padding: 8px;
+                    spacing: 2px;
+                    alignment: start;
+
+                    for img[idx] in images : ImageRow {
+                        data: img;
+                        remove-clicked => { ct-remove-image(img.id); }
+                    }
+
+                    if images.length == 0 : Rectangle {
+                        height: 120px;
+                        Text {
+                            text: "No images found";
+                            color: Theme.text-dim;
+                            font-size: Theme.font-body;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── Volumes tab ──
+        if active-tab == 2 : VerticalLayout {
+            vertical-stretch: 1;
+            spacing: 0px;
+
+            // Create volume bar
+            Rectangle {
+                height: 48px;
+                background: Theme.bg-card;
+                border-width: 0px;
+
+                HorizontalLayout {
+                    padding-left: 16px;
+                    padding-right: 16px;
+                    spacing: 8px;
+                    alignment: start;
+
+                    Text {
+                        text: volumes.length + " volumes";
+                        color: Theme.text-secondary;
+                        font-size: Theme.font-small;
+                        vertical-alignment: center;
+                    }
+
+                    Rectangle { horizontal-stretch: 1; }
+
+                    Rectangle {
+                        width: 220px;
+                        height: 32px;
+                        border-radius: 8px;
+                        background: Theme.bg-input;
+                        border-width: 1px;
+                        border-color: Theme.border-subtle;
+
+                        vol-input := TextInput {
+                            x: 10px;
+                            y: 4px;
+                            width: parent.width - 20px;
+                            height: parent.height - 8px;
+                            color: Theme.text-primary;
+                            font-size: Theme.font-small;
+                            text <=> create-volume-input;
+
+                            accepted => {
+                                if self.text != "" {
+                                    ct-create-volume(self.text);
+                                    self.text = "";
+                                }
+                            }
+                        }
+
+                        if vol-input.text == "" : Text {
+                            x: 10px;
+                            text: "Volume name...";
+                            color: Theme.text-dim;
+                            font-size: Theme.font-small;
+                            vertical-alignment: center;
+                        }
+                    }
+
+                    ActionButton {
+                        label: "Create";
+                        primary: true;
+                        width: 64px;
+                        clicked => {
+                            if create-volume-input != "" {
+                                ct-create-volume(create-volume-input);
+                                create-volume-input = "";
+                            }
+                        }
+                    }
+                }
+
+                Rectangle {
+                    y: parent.height - 1px;
+                    width: 100%;
+                    height: 1px;
+                    background: Theme.border-subtle;
+                }
+            }
+
+            // Volume list
+            Flickable {
+                vertical-stretch: 1;
+
+                VerticalLayout {
+                    padding: 8px;
+                    spacing: 2px;
+                    alignment: start;
+
+                    for vol[idx] in volumes : VolumeRow {
+                        data: vol;
+                        remove-clicked => { ct-remove-volume(vol.name); }
+                    }
+
+                    if volumes.length == 0 : Rectangle {
+                        height: 120px;
+                        Text {
+                            text: "No volumes found";
+                            color: Theme.text-dim;
+                            font-size: Theme.font-body;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // ── Logs overlay ──
+    if show-logs : Rectangle {
+        background: #000000a0;
+
+        TouchArea {
+            clicked => { show-logs = false; }
+        }
+
+        Rectangle {
+            x: parent.width * 0.05;
+            y: parent.height * 0.05;
+            width: parent.width * 0.9;
+            height: parent.height * 0.9;
+            background: Theme.bg-card;
+            border-radius: Theme.radius-card;
+            border-width: 1px;
+            border-color: Theme.border-subtle;
+
+            VerticalLayout {
+                spacing: 0px;
+
+                // Header
+                Rectangle {
+                    height: 44px;
+                    background: Theme.bg-elevated;
+                    border-radius: Theme.radius-card;
+
+                    HorizontalLayout {
+                        padding-left: 16px;
+                        padding-right: 16px;
+                        spacing: 12px;
+
+                        Text {
+                            text: "Logs: " + log-container-name;
+                            color: Theme.text-primary;
+                            font-size: Theme.font-body;
+                            font-weight: 600;
+                            vertical-alignment: center;
+                            horizontal-stretch: 1;
+                        }
+
+                        ActionButton {
+                            label: "Close";
+                            width: 56px;
+                            clicked => { show-logs = false; }
+                        }
+                    }
+                }
+
+                // Separator
+                Rectangle {
+                    height: 1px;
+                    background: Theme.border-subtle;
+                }
+
+                // Log content
+                Flickable {
+                    vertical-stretch: 1;
+
+                    VerticalLayout {
+                        padding: 12px;
+                        alignment: start;
+
+                        Text {
+                            text: log-text;
+                            color: #a0e8a0;
+                            font-size: 12px;
+                            font-family: "monospace";
+                            wrap: word-wrap;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

@@ -1,7 +1,9 @@
 // Yantrik OS — AI-native desktop shell.
 // Screen states: 0=boot, 1=desktop, 2=onboarding, 3=lock, 4=bond, 5=personality,
 //   6=memory, 7=settings, 8=files, 9=notifications, 10=system,
-//   11=image_viewer, 12=text_editor, 13=media_player, 14=terminal, 15=notes, 16=about.
+//   11=image_viewer, 12=text_editor, 13=media_player, 14=terminal, 15=notes, 16=about,
+//   17=email, 18=calendar, 19=weather, 20=music_player, 21=package_manager, 22=network_manager, 23=system_monitor,
+//   24=download_manager, 25=snippet_manager, 26=container_manager, 27=device_dashboard, 28=permission_dashboard.
 // The AI IS the shell — Intent Lens is the primary interaction.
 
 import { Theme, ThemeMode, ThemeOverrides, AccentPreset } from "theme.slint";
@@ -12,6 +14,7 @@ import { BondScreen, BondData } from "bond.slint";
 import { PersonalityScreen, OpinionData, SharedRefData } from "personality.slint";
 import { LockScreen } from "lock.slint";
 import { SettingsScreen } from "settings.slint";
+import { SkillData } from "skill_store.slint";
 import { MemoryBrowser, MemoryItem } from "memory_browser.slint";
 import { FileBrowser, FileEntry, BreadcrumbSegment, FileDetailData } from "file_browser.slint";
 import { NotificationCenter, NotificationData } from "notification_center.slint";
@@ -23,6 +26,18 @@ import { MediaPlayer } from "media_player.slint";
 import { TerminalScreen, TerminalTabData } from "terminal.slint";
 import { NotesEditor, NoteEntry } from "notes_editor.slint";
 import { AboutScreen } from "about.slint";
+import { EmailClient, EmailFolderData, EmailListItem, EmailDetailData } from "email.slint";
+import { CalendarScreen, CalendarDay, CalendarEvent } from "calendar.slint";
+import { PackageManager, PackageData, PendingAction } from "package_manager.slint";
+import { NetworkManager, WifiNetwork, EthernetInterface, BluetoothDevice, VpnConnection, FirewallRule } from "network_manager.slint";
+import { SystemMonitor, CpuCoreData, DiskData, NetworkInterfaceData, MonitorProcessData } from "system_monitor.slint";
+import { WeatherDashboard, WeatherCurrent, WeatherHourly, WeatherDaily } from "weather.slint";
+import { MusicPlayerScreen, MusicTrackData } from "music_player.slint";
+import { DownloadManagerScreen, DownloadItem } from "download_manager.slint";
+import { SnippetManagerScreen, SnippetData, TagChip } from "snippet_manager.slint";
+import { ContainerManagerScreen, ContainerData, ImageData, VolumeData } from "container_manager.slint";
+import { DeviceDashboardScreen, UsbDeviceData, PciDeviceData, InputDeviceData, StorageDeviceData, DisplayDeviceData } from "device_dashboard.slint";
+import { PermissionDashboardScreen, UserData, GroupData, PermFileData } from "permission_dashboard.slint";
 import { ToastBanner, ToastData } from "components/toast_banner.slint";
 import { ContentBlock, MessageData } from "components/message_bubble.slint";
 import { UrgeCardData } from "components/glance_card.slint";
@@ -33,8 +48,9 @@ import { AppGridItem } from "components/app_grid.slint";
 import { WindowItem } from "components/window_switcher.slint";
 import { DockItem, AppDock } from "components/app_dock.slint";
 import { WindowFrame } from "components/window_frame.slint";
+import { Tr } from "translations.slint";
 
-export { ThemeMode, ThemeOverrides, AccentPreset, ContentBlock, MessageData, UrgeCardData, BondData, OpinionData, SharedRefData, MemoryItem, LensResult, WhisperCardItem, FileEntry, BreadcrumbSegment, FileDetailData, NotificationData, ProcessData, ClipboardEntryData, AppGridItem, WindowItem, DockItem, NoteEntry, ToastData, TerminalTabData }
+export { Tr, ThemeMode, ThemeOverrides, AccentPreset, ContentBlock, MessageData, UrgeCardData, BondData, OpinionData, SharedRefData, MemoryItem, LensResult, WhisperCardItem, FileEntry, BreadcrumbSegment, FileDetailData, NotificationData, ProcessData, ClipboardEntryData, AppGridItem, WindowItem, DockItem, NoteEntry, ToastData, TerminalTabData, EmailFolderData, EmailListItem, EmailDetailData, CalendarDay, CalendarEvent, PackageData, PendingAction, WifiNetwork, EthernetInterface, BluetoothDevice, VpnConnection, FirewallRule, CpuCoreData, DiskData, NetworkInterfaceData, MonitorProcessData, WeatherCurrent, WeatherHourly, WeatherDaily, MusicTrackData, DownloadItem, SnippetData, TagChip, ContainerData, ImageData, VolumeData, UsbDeviceData, PciDeviceData, InputDeviceData, StorageDeviceData, DisplayDeviceData, UserData, GroupData, PermFileData }
 
 export component App inherits Window {
     title: "Yantrik OS";
@@ -42,7 +58,7 @@ export component App inherits Window {
     background: Theme.bg-deep;
 
     // Screen state: 0=boot, 1=desktop, 2=onboarding, 3=lock, 4=bond, 5=personality,
-    //   6=memory, 7=settings, 8=files, 9=notifications, 10=system
+    //   6=memory, 7=settings, 8=files, 9=notifications, 10=system, 21=package_manager
     in-out property <int> current-screen: 0;
 
     // Window chrome state (shared across all windowed screens)
@@ -196,6 +212,27 @@ export component App inherits Window {
     in-out property <bool> settings-dark-mode: true;
     in-out property <bool> settings-incognito-mode: false;
     in-out property <string> settings-accent-color: "cyan";
+
+    // Connected Services
+    in property <string> conn-google-status: "disconnected";
+    in property <string> conn-google-detail: "";
+    in property <string> conn-spotify-status: "disconnected";
+    in property <string> conn-spotify-detail: "";
+    in property <string> conn-facebook-status: "disconnected";
+    in property <string> conn-facebook-detail: "";
+    in property <string> conn-instagram-status: "disconnected";
+    in property <string> conn-instagram-detail: "";
+    callback connect-service(string);
+    callback disconnect-service(string);
+    callback sync-service(string);
+
+    // Skills (data-driven via Skill Store)
+    in property <[SkillData]> skills;
+    in property <[string]> skill-categories: ["All"];
+    callback toggle-skill(string);
+    callback search-skills(string);
+    callback filter-skill-category(string);
+
     callback toggle-dark-mode();
     callback toggle-incognito-mode();
     callback cycle-accent-color();
@@ -362,6 +399,307 @@ export component App inherits Window {
     in property <string> about-uptime: "";
     in property <string> about-version: "0.3.0";
     in property <string> about-build-date: "";
+
+    // Email Client state (screen 17)
+    in property <[EmailFolderData]> email-folders: [];
+    in property <[EmailListItem]> email-list: [];
+    in property <EmailDetailData> email-detail: { id: 0 };
+    in property <bool> email-is-loading: false;
+    in-out property <bool> email-is-composing: false;
+    in property <string> email-ai-summary: "";
+    in property <bool> email-ai-working: false;
+    in property <int> email-selected-folder: 0;
+    in property <string> email-account-name: "";
+    in-out property <string> email-compose-to: "";
+    in-out property <string> email-compose-cc: "";
+    in-out property <string> email-compose-bcc: "";
+    in-out property <string> email-compose-subject: "";
+    in-out property <string> email-compose-body: "";
+    // Account setup state
+    in property <bool> email-has-account: false;
+    in property <string> email-setup-status: "";
+    in property <bool> email-setup-testing: false;
+    in-out property <string> email-setup-email: "";
+    in-out property <string> email-setup-password: "";
+    in-out property <string> email-setup-display-name: "";
+    in-out property <string> email-setup-provider: "";
+    in-out property <bool> email-setup-advanced-mode: false;
+    in-out property <string> email-setup-imap-server: "";
+    in-out property <string> email-setup-imap-port: "993";
+    in-out property <string> email-setup-smtp-server: "";
+    in-out property <string> email-setup-smtp-port: "587";
+    callback email-folder-clicked(int);
+    callback email-selected(int);
+    callback email-compose-new();
+    callback email-send(string, string, string, string, string);  // to, cc, bcc, subject, body
+    callback email-reply();
+    callback email-forward();
+    callback email-delete(int);
+    callback email-mark-read(int);
+    callback email-mark-flagged(int);
+    callback email-summarize();
+    callback email-enhance(string);
+    callback email-ai-draft(string);
+    callback email-ai-reply-suggest();
+    callback email-add-account();
+    callback email-search(string);
+    callback email-sync();
+    callback email-cancel-compose();
+    // Account setup: save-account(email, password, display_name, provider, imap_server, imap_port, smtp_server, smtp_port)
+    callback email-save-account(string, string, string, string, string, string, string, string);
+    // test-connection(email, password, provider, imap_server, imap_port)
+    callback email-test-connection(string, string, string, string, string);
+    callback email-oauth-google();  // Sign in with Google (OAuth2)
+
+    // Calendar state (screen 18)
+    in property <string> cal-month-title: "March 2026";
+    in property <[CalendarDay]> cal-days: [];
+    in property <[CalendarEvent]> cal-events-today: [];
+    in property <int> cal-selected-day: 0;
+    in property <bool> cal-is-loading: false;
+    in-out property <bool> cal-show-event-form: false;
+    in-out property <string> cal-event-title: "";
+    in-out property <string> cal-event-date: "";
+    in-out property <string> cal-event-time: "";
+    in-out property <string> cal-event-notes: "";
+    callback cal-prev-month();
+    callback cal-next-month();
+    callback cal-day-clicked(int);
+    callback cal-add-event();
+    callback cal-save-event(string, string, string, string);
+    callback cal-delete-event(int);
+    callback cal-cancel-event-form();
+    callback cal-today-pressed();
+
+    // Package Manager state (screen 21)
+    in property <[PackageData]> pkg-packages: [];
+    in property <bool> pkg-is-loading: false;
+    in property <string> pkg-status-text: "Ready";
+    in property <int> pkg-upgradable-count: 0;
+    in property <[PendingAction]> pkg-pending-actions: [];
+    in property <bool> pkg-is-applying: false;
+    in property <float> pkg-apply-progress: 0.0;
+    in property <string> pkg-error-text: "";
+    in property <string> pkg-detail-name: "";
+    in property <string> pkg-detail-version: "";
+    in property <string> pkg-detail-description: "";
+    in property <string> pkg-detail-maintainer: "";
+    in property <string> pkg-detail-dependencies: "";
+    in property <string> pkg-detail-size: "";
+    in property <string> pkg-detail-repo: "";
+    in property <bool> pkg-detail-installed: false;
+    in property <bool> pkg-detail-upgradable: false;
+    in-out property <string> pkg-search-query: "";
+    in-out property <int> pkg-selected-index: -1;
+    in-out property <int> pkg-active-filter: 0;
+    callback pkg-search(string);
+    callback pkg-refresh();
+    callback pkg-select-package(int);
+    callback pkg-install-package(string);
+    callback pkg-remove-package(string);
+    callback pkg-upgrade-package(string);
+    callback pkg-upgrade-all();
+    callback pkg-apply-changes();
+    callback pkg-cancel-changes();
+    callback pkg-filter-changed(int);
+
+    // Network Manager state (screen 22)
+    in property <bool> net-wifi-enabled: false;
+    in property <string> net-wifi-current-ssid: "";
+    in property <int> net-wifi-signal-strength: 0;
+    in property <string> net-wifi-ip-address: "";
+    in property <string> net-wifi-speed: "";
+    in property <[WifiNetwork]> net-wifi-networks: [];
+    in property <[WifiNetwork]> net-wifi-saved-networks: [];
+    in property <bool> net-wifi-scanning: false;
+    in property <[EthernetInterface]> net-ethernet-interfaces: [];
+    in property <bool> net-bt-enabled: false;
+    in property <[BluetoothDevice]> net-bt-paired-devices: [];
+    in property <[BluetoothDevice]> net-bt-available-devices: [];
+    in property <bool> net-bt-scanning: false;
+    in property <[VpnConnection]> net-vpn-connections: [];
+    in property <bool> net-firewall-enabled: false;
+    in property <string> net-firewall-backend-name: "";
+    in property <int> net-firewall-rule-count: 0;
+    in property <[FirewallRule]> net-firewall-rules: [];
+    in property <string> net-firewall-profile: "Custom";
+    callback net-toggle-wifi();
+    callback net-wifi-scan();
+    callback net-wifi-connect(string, string);
+    callback net-wifi-disconnect();
+    callback net-wifi-forget(string);
+    callback net-toggle-bluetooth();
+    callback net-bt-scan();
+    callback net-bt-pair(string);
+    callback net-bt-connect(string);
+    callback net-bt-disconnect(string);
+    callback net-vpn-connect(string);
+    callback net-vpn-disconnect(string);
+    callback net-toggle-firewall();
+    callback net-firewall-allow-port(string);
+    callback net-firewall-block-port(string);
+    callback net-firewall-apply-profile(string);
+
+    // System Monitor state (screen 23)
+    in property <float> mon-cpu-usage: 0.0;
+    in property <string> mon-cpu-model: "";
+    in property <string> mon-cpu-frequency: "";
+    in property <string> mon-load-avg-1: "0.00";
+    in property <string> mon-load-avg-5: "0.00";
+    in property <string> mon-load-avg-15: "0.00";
+    in property <[CpuCoreData]> mon-cpu-cores: [];
+    in property <float> mon-memory-usage: 0.0;
+    in property <string> mon-memory-used-text: "";
+    in property <string> mon-memory-total-text: "";
+    in property <string> mon-memory-cached-text: "";
+    in property <string> mon-memory-buffers-text: "";
+    in property <string> mon-memory-available-text: "";
+    in property <float> mon-swap-usage: 0.0;
+    in property <string> mon-swap-used-text: "";
+    in property <string> mon-swap-total-text: "";
+    in property <[DiskData]> mon-disks: [];
+    in property <[NetworkInterfaceData]> mon-network-interfaces: [];
+    in property <[MonitorProcessData]> mon-processes: [];
+    in-out property <int> mon-sort-column: 0;
+    in property <string> mon-uptime-text: "";
+    callback sort-by-column(int);
+
+    // Weather Dashboard state (screen 19)
+    in property <WeatherCurrent> weather-current: {
+        temperature: "--", feels-like: "--", condition: "Loading...", icon: "...",
+        location: "...", humidity: "--", wind-speed: "--", wind-direction: "--",
+        uv-index: "--", visibility: "--", pressure: "--", cloud-cover: "--",
+        dew-point: "--", sunrise: "--", sunset: "--", is-loading: true, error-text: "",
+    };
+    in property <[WeatherHourly]> weather-hourly: [];
+    in property <[WeatherDaily]> weather-daily: [];
+    callback weather-refresh();
+
+    // Music Player state (screen 20)
+    in property <[MusicTrackData]> music-library-tracks: [];
+    in property <[string]> music-library-artists: [];
+    in property <[string]> music-library-albums: [];
+    in property <int> music-library-track-count: 0;
+    in-out property <int> music-browse-category: 0;
+    in-out property <string> music-browse-filter: "";
+    in property <string> music-browse-sub-header: "";
+    in property <string> music-now-title: "";
+    in property <string> music-now-artist: "";
+    in property <string> music-now-album: "";
+    in property <bool> music-is-playing: false;
+    in property <float> music-progress: 0.0;
+    in property <string> music-time-current: "0:00";
+    in property <string> music-time-total: "0:00";
+    in property <float> music-volume: 0.8;
+    in property <[MusicTrackData]> music-queue-tracks: [];
+    in property <int> music-queue-current-index: -1;
+    in property <bool> music-shuffle-on: false;
+    in property <bool> music-repeat-on: false;
+    callback music-play-pause();
+    callback music-stop();
+    callback music-next-track();
+    callback music-prev-track();
+    callback music-seek(float);
+    callback music-volume-changed(float);
+    callback music-toggle-shuffle();
+    callback music-toggle-repeat();
+    callback music-play-track-index(int);
+    callback music-queue-play-index(int);
+    callback music-browse-category-changed(int);
+    callback music-browse-filter-changed(string);
+    callback music-browse-item-selected(string);
+    callback music-add-to-queue(int);
+
+    // Download Manager state (screen 24)
+    in property <[DownloadItem]> dl-downloads: [];
+    in property <int> dl-active-count: 0;
+    in property <string> dl-total-speed: "0 B/s";
+    in property <int> dl-completed-today: 0;
+    in property <string> dl-error-text: "";
+    in-out property <int> dl-active-filter: 0;
+    callback dl-add(string);
+    callback dl-pause(int);
+    callback dl-resume(int);
+    callback dl-cancel(int);
+    callback dl-retry(int);
+    callback dl-open-folder(int);
+    callback dl-clear-completed();
+    callback dl-filter(int);
+
+    // Code Snippet Manager state (screen 25)
+    in property <[SnippetData]> snip-snippets: [];
+    in property <[TagChip]> snip-tag-chips: [];
+    in property <int> snip-snippet-count: 0;
+    in property <int> snip-detail-id: -1;
+    in-out property <string> snip-detail-title: "";
+    in-out property <string> snip-detail-language: "";
+    in-out property <string> snip-detail-code: "";
+    in-out property <string> snip-detail-tags: "";
+    in-out property <string> snip-search-query: "";
+    callback snip-search(string);
+    callback snip-select(int);
+    callback snip-new();
+    callback snip-save(int, string, string, string, string);
+    callback snip-delete(int);
+    callback snip-copy(int);
+    callback snip-tag-filter(string);
+
+    // Container Manager state (screen 26)
+    in-out property <int> ct-active-tab: 0;
+    in property <[ContainerData]> ct-containers: [];
+    in property <int> ct-running-count: 0;
+    in property <int> ct-stopped-count: 0;
+    in property <int> ct-total-count: 0;
+    in property <[ImageData]> ct-images: [];
+    in property <[VolumeData]> ct-volumes: [];
+    in property <string> ct-log-text: "";
+    in property <string> ct-log-container-name: "";
+    in-out property <bool> ct-show-logs: false;
+    in property <string> ct-runtime-name: "docker";
+    in-out property <string> ct-run-image-input: "";
+    in-out property <string> ct-pull-image-input: "";
+    in-out property <string> ct-create-volume-input: "";
+    callback ct-tab(int);
+    callback ct-start(string);
+    callback ct-stop(string);
+    callback ct-restart(string);
+    callback ct-remove(string);
+    callback ct-logs(string);
+    callback ct-run(string);
+    callback ct-pull(string);
+    callback ct-remove-image(string);
+    callback ct-create-volume(string);
+    callback ct-remove-volume(string);
+    callback ct-refresh();
+
+    // Device Dashboard state (screen 27)
+    in-out property <int> dev-active-tab: 0;
+    in property <[UsbDeviceData]> dev-usb-devices: [];
+    in-out property <int> dev-usb-selected-index: -1;
+    in property <string> dev-usb-detail-text: "";
+    in property <[PciDeviceData]> dev-pci-devices: [];
+    in property <[InputDeviceData]> dev-input-devices: [];
+    in property <[StorageDeviceData]> dev-storage-devices: [];
+    in property <[DisplayDeviceData]> dev-display-devices: [];
+    in property <string> dev-gpu-info: "";
+    in property <bool> dev-scanning: false;
+    callback dev-tab(int);
+    callback dev-select-usb(int);
+    callback dev-select-pci(int);
+    callback dev-refresh();
+
+    // Permission Dashboard state (screen 28)
+    in-out property <int> perm-active-tab: 0;
+    in property <[UserData]> perm-users: [];
+    in property <[GroupData]> perm-groups: [];
+    in property <int> perm-selected-user: -1;
+    in property <[PermFileData]> perm-suid-files: [];
+    in property <[PermFileData]> perm-world-writable: [];
+    in property <bool> perm-scanning: false;
+    callback perm-tab(int);
+    callback perm-refresh();
+    callback perm-fix(string);
+    callback perm-select-user(int);
 
     // Onboarding state (0=not onboarding, 1=step:terminal, 2=step:focus, 3=done)
     in-out property <int> onboarding-step: 0;
@@ -532,7 +870,7 @@ export component App inherits Window {
             is-maximized <=> root.window-maximized;
             icon-char: "♥";
             icon-color: Theme.color-emotional;
-            title: "Bond";
+            title: Tr.title-bond;
             close => { root.current-screen = 1; root.navigate(1); }
             minimize => { root.current-screen = 1; root.navigate(1); }
             animate x, y, width, height { duration: 200ms; easing: ease-out; }
@@ -556,7 +894,7 @@ export component App inherits Window {
             is-maximized <=> root.window-maximized;
             icon-char: "✧";
             icon-color: Theme.color-pattern;
-            title: "Personality";
+            title: Tr.title-personality;
             close => { root.current-screen = 1; root.navigate(1); }
             minimize => { root.current-screen = 1; root.navigate(1); }
             animate x, y, width, height { duration: 200ms; easing: ease-out; }
@@ -585,7 +923,7 @@ export component App inherits Window {
             is-maximized <=> root.window-maximized;
             icon-char: "◈";
             icon-color: Theme.amber;
-            title: "Memory";
+            title: Tr.title-memory;
             close => { root.current-screen = 1; root.navigate(1); }
             minimize => { root.current-screen = 1; root.navigate(1); }
             animate x, y, width, height { duration: 200ms; easing: ease-out; }
@@ -612,7 +950,7 @@ export component App inherits Window {
             is-maximized <=> root.window-maximized;
             icon-char: "⚙";
             icon-color: Theme.text-secondary;
-            title: "Settings";
+            title: Tr.title-settings;
             close => { root.current-screen = 1; root.navigate(1); }
             minimize => { root.current-screen = 1; root.navigate(1); }
             animate x, y, width, height { duration: 200ms; easing: ease-out; }
@@ -648,6 +986,22 @@ export component App inherits Window {
                 cycle-auto-lock => { root.cycle-auto-lock(); }
                 wallpaper-path <=> root.wallpaper-path;
                 wallpaper-changed(wp) => { root.wallpaper-changed(wp); }
+                conn-google-status: root.conn-google-status;
+                conn-google-detail: root.conn-google-detail;
+                conn-spotify-status: root.conn-spotify-status;
+                conn-spotify-detail: root.conn-spotify-detail;
+                conn-facebook-status: root.conn-facebook-status;
+                conn-facebook-detail: root.conn-facebook-detail;
+                conn-instagram-status: root.conn-instagram-status;
+                conn-instagram-detail: root.conn-instagram-detail;
+                connect-service(svc) => { root.connect-service(svc); }
+                disconnect-service(svc) => { root.disconnect-service(svc); }
+                sync-service(svc) => { root.sync-service(svc); }
+                skills: root.skills;
+                skill-categories: root.skill-categories;
+                toggle-skill(skill) => { root.toggle-skill(skill); }
+                search-skills(query) => { root.search-skills(query); }
+                filter-skill-category(cat) => { root.filter-skill-category(cat); }
                 back-pressed => {
                     root.current-screen = 1;
                     root.navigate(1);
@@ -668,7 +1022,7 @@ export component App inherits Window {
             is-maximized <=> root.window-maximized;
             icon-char: "F";
             icon-color: Theme.cyan;
-            title: "Files";
+            title: Tr.title-files;
             close => { root.current-screen = 1; root.navigate(1); }
             minimize => { root.current-screen = 1; root.navigate(1); }
             animate x, y, width, height { duration: 200ms; easing: ease-out; }
@@ -719,7 +1073,7 @@ export component App inherits Window {
             is-maximized <=> root.window-maximized;
             icon-char: "N";
             icon-color: Theme.color-follow-up;
-            title: "Notifications";
+            title: Tr.title-notifications;
             close => { root.current-screen = 1; root.navigate(1); }
             minimize => { root.current-screen = 1; root.navigate(1); }
             animate x, y, width, height { duration: 200ms; easing: ease-out; }
@@ -748,7 +1102,7 @@ export component App inherits Window {
             is-maximized <=> root.window-maximized;
             icon-char: "◉";
             icon-color: Theme.color-reminder;
-            title: "System";
+            title: Tr.title-system;
             close => { root.current-screen = 1; root.navigate(1); }
             minimize => { root.current-screen = 1; root.navigate(1); }
             animate x, y, width, height { duration: 200ms; easing: ease-out; }
@@ -790,7 +1144,7 @@ export component App inherits Window {
             is-maximized <=> root.window-maximized;
             icon-char: "▣";
             icon-color: #6a2d6a;
-            title: "Image Viewer";
+            title: Tr.title-image-viewer;
             close => { root.current-screen = 8; root.navigate(8); }
             minimize => { root.current-screen = 1; root.navigate(1); }
             animate x, y, width, height { duration: 200ms; easing: ease-out; }
@@ -816,7 +1170,7 @@ export component App inherits Window {
             is-maximized <=> root.window-maximized;
             icon-char: "≡";
             icon-color: #3a4a6a;
-            title: "Editor";
+            title: Tr.title-editor;
             close => { root.current-screen = 8; root.navigate(8); }
             minimize => { root.current-screen = 1; root.navigate(1); }
             animate x, y, width, height { duration: 200ms; easing: ease-out; }
@@ -864,7 +1218,7 @@ export component App inherits Window {
             is-maximized <=> root.window-maximized;
             icon-char: "♪";
             icon-color: #6a5a2d;
-            title: "Now Playing";
+            title: Tr.title-now-playing;
             close => { root.current-screen = 8; root.navigate(8); }
             minimize => { root.current-screen = 1; root.navigate(1); }
             animate x, y, width, height { duration: 200ms; easing: ease-out; }
@@ -891,7 +1245,7 @@ export component App inherits Window {
             is-maximized <=> root.window-maximized;
             icon-char: ">_";
             icon-color: Theme.cyan;
-            title: "Terminal";
+            title: Tr.title-terminal;
             close => { root.current-screen = 1; root.navigate(1); }
             minimize => { root.current-screen = 1; root.navigate(1); }
             animate x, y, width, height { duration: 200ms; easing: ease-out; }
@@ -926,7 +1280,7 @@ export component App inherits Window {
             is-maximized <=> root.window-maximized;
             icon-char: "\u{270E}";
             icon-color: Theme.amber;
-            title: "Notes";
+            title: Tr.title-notes;
             close => { root.current-screen = 1; root.navigate(1); }
             minimize => { root.current-screen = 1; root.navigate(1); }
             animate x, y, width, height { duration: 200ms; easing: ease-out; }
@@ -958,7 +1312,7 @@ export component App inherits Window {
             is-maximized <=> root.window-maximized;
             icon-char: "\u{2139}";
             icon-color: Theme.cyan;
-            title: "About";
+            title: Tr.title-about;
             close => { root.current-screen = 7; root.navigate(7); }
             minimize => { root.current-screen = 1; root.navigate(1); }
             animate x, y, width, height { duration: 200ms; easing: ease-out; }
@@ -980,8 +1334,512 @@ export component App inherits Window {
             }
         }
 
+        // Email Client
+        if current-screen == 17 : WindowFrame {
+            x: root.window-maximized ? 0px : parent.width * 0.05;
+            y: root.window-maximized ? 0px : parent.height * 0.04;
+            width: root.window-maximized ? parent.width : parent.width * 0.90;
+            height: root.window-maximized ? parent.height - 60px : parent.height * 0.92;
+            is-maximized <=> root.window-maximized;
+            icon-char: "@";
+            icon-color: Theme.cyan;
+            title: Tr.title-email;
+            close => { root.current-screen = 1; root.navigate(1); }
+            minimize => { root.current-screen = 1; root.navigate(1); }
+            animate x, y, width, height { duration: 200ms; easing: ease-out; }
+
+            EmailClient {
+                width: 100%; height: 100%;
+                folders: root.email-folders;
+                email-list: root.email-list;
+                email-detail: root.email-detail;
+                is-loading: root.email-is-loading;
+                is-composing <=> root.email-is-composing;
+                ai-summary-text: root.email-ai-summary;
+                ai-is-working: root.email-ai-working;
+                selected-folder-index: root.email-selected-folder;
+                account-name: root.email-account-name;
+                compose-to <=> root.email-compose-to;
+                compose-cc <=> root.email-compose-cc;
+                compose-bcc <=> root.email-compose-bcc;
+                compose-subject <=> root.email-compose-subject;
+                compose-body <=> root.email-compose-body;
+                // Account setup bindings
+                has-account: root.email-has-account;
+                setup-status: root.email-setup-status;
+                setup-testing: root.email-setup-testing;
+                setup-email <=> root.email-setup-email;
+                setup-password <=> root.email-setup-password;
+                setup-display-name <=> root.email-setup-display-name;
+                setup-provider <=> root.email-setup-provider;
+                setup-advanced-mode <=> root.email-setup-advanced-mode;
+                setup-imap-server <=> root.email-setup-imap-server;
+                setup-imap-port <=> root.email-setup-imap-port;
+                setup-smtp-server <=> root.email-setup-smtp-server;
+                setup-smtp-port <=> root.email-setup-smtp-port;
+                folder-clicked(idx) => { root.email-folder-clicked(idx); }
+                email-selected(id) => { root.email-selected(id); }
+                compose-new => { root.email-compose-new(); }
+                send-email(to, cc, bcc, subject, body) => { root.email-send(to, cc, bcc, subject, body); }
+                reply-email => { root.email-reply(); }
+                forward-email => { root.email-forward(); }
+                delete-email(id) => { root.email-delete(id); }
+                mark-read(id) => { root.email-mark-read(id); }
+                mark-flagged(id) => { root.email-mark-flagged(id); }
+                summarize-email => { root.email-summarize(); }
+                enhance-text(text) => { root.email-enhance(text); }
+                ai-draft(prompt) => { root.email-ai-draft(prompt); }
+                ai-reply-suggest => { root.email-ai-reply-suggest(); }
+                add-account => { root.email-add-account(); }
+                search-emails(query) => { root.email-search(query); }
+                sync-emails => { root.email-sync(); }
+                cancel-compose => { root.email-cancel-compose(); }
+                save-account(email, password, name, provider, imap-srv, imap-port, smtp-srv, smtp-port) => {
+                    root.email-save-account(email, password, name, provider, imap-srv, imap-port, smtp-srv, smtp-port);
+                }
+                test-connection(email, password, provider, imap-srv, imap-port) => {
+                    root.email-test-connection(email, password, provider, imap-srv, imap-port);
+                }
+                oauth-google => { root.email-oauth-google(); }
+            }
+        }
+
+        // Calendar
+        if current-screen == 18 : WindowFrame {
+            x: root.window-maximized ? 0px : parent.width * 0.05;
+            y: root.window-maximized ? 0px : parent.height * 0.04;
+            width: root.window-maximized ? parent.width : parent.width * 0.90;
+            height: root.window-maximized ? parent.height - 60px : parent.height * 0.92;
+            is-maximized <=> root.window-maximized;
+            icon-char: "▦";
+            icon-color: Theme.amber;
+            title: Tr.title-calendar;
+            close => { root.current-screen = 1; root.navigate(1); }
+            minimize => { root.current-screen = 1; root.navigate(1); }
+            animate x, y, width, height { duration: 200ms; easing: ease-out; }
+
+            CalendarScreen {
+                width: 100%; height: 100%;
+                month-title: root.cal-month-title;
+                days: root.cal-days;
+                events-today: root.cal-events-today;
+                selected-day: root.cal-selected-day;
+                is-loading: root.cal-is-loading;
+                show-event-form <=> root.cal-show-event-form;
+                event-title <=> root.cal-event-title;
+                event-date <=> root.cal-event-date;
+                event-time <=> root.cal-event-time;
+                event-notes <=> root.cal-event-notes;
+                prev-month => { root.cal-prev-month(); }
+                next-month => { root.cal-next-month(); }
+                day-clicked(day) => { root.cal-day-clicked(day); }
+                add-event => { root.cal-add-event(); }
+                save-event(title, date, time, notes) => { root.cal-save-event(title, date, time, notes); }
+                delete-event(id) => { root.cal-delete-event(id); }
+                cancel-event-form => { root.cal-cancel-event-form(); }
+                today-pressed => { root.cal-today-pressed(); }
+            }
+        }
+
+        // Package Manager
+        if current-screen == 21 : WindowFrame {
+            x: root.window-maximized ? 0px : parent.width * 0.05;
+            y: root.window-maximized ? 0px : parent.height * 0.04;
+            width: root.window-maximized ? parent.width : parent.width * 0.90;
+            height: root.window-maximized ? parent.height - 60px : parent.height * 0.92;
+            is-maximized <=> root.window-maximized;
+            icon-char: "P";
+            icon-color: Theme.cyan;
+            title: Tr.title-packages;
+            close => { root.current-screen = 1; root.navigate(1); }
+            minimize => { root.current-screen = 1; root.navigate(1); }
+            animate x, y, width, height { duration: 200ms; easing: ease-out; }
+
+            PackageManager {
+                width: 100%; height: 100%;
+                packages: root.pkg-packages;
+                is-loading: root.pkg-is-loading;
+                status-text: root.pkg-status-text;
+                upgradable-count: root.pkg-upgradable-count;
+                pending-actions: root.pkg-pending-actions;
+                is-applying: root.pkg-is-applying;
+                apply-progress: root.pkg-apply-progress;
+                error-text: root.pkg-error-text;
+                detail-name: root.pkg-detail-name;
+                detail-version: root.pkg-detail-version;
+                detail-description: root.pkg-detail-description;
+                detail-maintainer: root.pkg-detail-maintainer;
+                detail-dependencies: root.pkg-detail-dependencies;
+                detail-size: root.pkg-detail-size;
+                detail-repo: root.pkg-detail-repo;
+                detail-installed: root.pkg-detail-installed;
+                detail-upgradable: root.pkg-detail-upgradable;
+                search-query <=> root.pkg-search-query;
+                selected-index <=> root.pkg-selected-index;
+                active-filter <=> root.pkg-active-filter;
+                search(query) => { root.pkg-search(query); }
+                refresh => { root.pkg-refresh(); }
+                select-package(idx) => { root.pkg-select-package(idx); }
+                install-package(name) => { root.pkg-install-package(name); }
+                remove-package(name) => { root.pkg-remove-package(name); }
+                upgrade-package(name) => { root.pkg-upgrade-package(name); }
+                upgrade-all => { root.pkg-upgrade-all(); }
+                apply-changes => { root.pkg-apply-changes(); }
+                cancel-changes => { root.pkg-cancel-changes(); }
+                filter-changed(idx) => { root.pkg-filter-changed(idx); }
+            }
+        }
+
+        // Network Manager
+        if current-screen == 22 : WindowFrame {
+            x: root.window-maximized ? 0px : parent.width * 0.05;
+            y: root.window-maximized ? 0px : parent.height * 0.04;
+            width: root.window-maximized ? parent.width : parent.width * 0.90;
+            height: root.window-maximized ? parent.height - 60px : parent.height * 0.92;
+            is-maximized <=> root.window-maximized;
+            icon-char: "\u{25CE}";
+            icon-color: Theme.cyan;
+            title: Tr.title-network;
+            close => { root.current-screen = 1; root.navigate(1); }
+            minimize => { root.current-screen = 1; root.navigate(1); }
+            animate x, y, width, height { duration: 200ms; easing: ease-out; }
+
+            NetworkManager {
+                width: 100%; height: 100%;
+                wifi-enabled: root.net-wifi-enabled;
+                wifi-current-ssid: root.net-wifi-current-ssid;
+                wifi-signal-strength: root.net-wifi-signal-strength;
+                wifi-ip-address: root.net-wifi-ip-address;
+                wifi-speed: root.net-wifi-speed;
+                wifi-networks: root.net-wifi-networks;
+                wifi-saved-networks: root.net-wifi-saved-networks;
+                wifi-scanning: root.net-wifi-scanning;
+                ethernet-interfaces: root.net-ethernet-interfaces;
+                bt-enabled: root.net-bt-enabled;
+                bt-paired-devices: root.net-bt-paired-devices;
+                bt-available-devices: root.net-bt-available-devices;
+                bt-scanning: root.net-bt-scanning;
+                vpn-connections: root.net-vpn-connections;
+                firewall-enabled: root.net-firewall-enabled;
+                firewall-backend-name: root.net-firewall-backend-name;
+                firewall-rule-count: root.net-firewall-rule-count;
+                firewall-rules: root.net-firewall-rules;
+                firewall-profile: root.net-firewall-profile;
+                toggle-wifi => { root.net-toggle-wifi(); }
+                wifi-scan => { root.net-wifi-scan(); }
+                wifi-connect(ssid, pw) => { root.net-wifi-connect(ssid, pw); }
+                wifi-disconnect => { root.net-wifi-disconnect(); }
+                wifi-forget(ssid) => { root.net-wifi-forget(ssid); }
+                toggle-bluetooth => { root.net-toggle-bluetooth(); }
+                bt-scan => { root.net-bt-scan(); }
+                bt-pair(addr) => { root.net-bt-pair(addr); }
+                bt-connect(addr) => { root.net-bt-connect(addr); }
+                bt-disconnect(addr) => { root.net-bt-disconnect(addr); }
+                vpn-connect(name) => { root.net-vpn-connect(name); }
+                vpn-disconnect(name) => { root.net-vpn-disconnect(name); }
+                toggle-firewall => { root.net-toggle-firewall(); }
+                firewall-allow-port(port) => { root.net-firewall-allow-port(port); }
+                firewall-block-port(port) => { root.net-firewall-block-port(port); }
+                firewall-apply-profile(p) => { root.net-firewall-apply-profile(p); }
+            }
+        }
+
+        // Weather Dashboard
+        if current-screen == 19 : WindowFrame {
+            x: root.window-maximized ? 0px : parent.width * 0.05;
+            y: root.window-maximized ? 0px : parent.height * 0.04;
+            width: root.window-maximized ? parent.width : parent.width * 0.90;
+            height: root.window-maximized ? parent.height - 60px : parent.height * 0.92;
+            is-maximized <=> root.window-maximized;
+            icon-char: "\u{26C5}";
+            icon-color: Theme.amber;
+            title: Tr.title-weather;
+            close => { root.current-screen = 1; root.navigate(1); }
+            minimize => { root.current-screen = 1; root.navigate(1); }
+            animate x, y, width, height { duration: 200ms; easing: ease-out; }
+
+            WeatherDashboard {
+                width: 100%; height: 100%;
+                current: root.weather-current;
+                hourly: root.weather-hourly;
+                daily: root.weather-daily;
+                back-pressed => { root.current-screen = 1; root.navigate(1); }
+                refresh-pressed => { root.weather-refresh(); }
+            }
+        }
+
+        // Music Player
+        if current-screen == 20 : WindowFrame {
+            x: root.window-maximized ? 0px : parent.width * 0.05;
+            y: root.window-maximized ? 0px : parent.height * 0.04;
+            width: root.window-maximized ? parent.width : parent.width * 0.90;
+            height: root.window-maximized ? parent.height - 60px : parent.height * 0.92;
+            is-maximized <=> root.window-maximized;
+            icon-char: "\u{266B}";
+            icon-color: Theme.accent;
+            title: Tr.title-music;
+            close => { root.current-screen = 1; root.navigate(1); }
+            minimize => { root.current-screen = 1; root.navigate(1); }
+            animate x, y, width, height { duration: 200ms; easing: ease-out; }
+
+            MusicPlayerScreen {
+                width: 100%; height: 100%;
+                library-tracks: root.music-library-tracks;
+                library-artists: root.music-library-artists;
+                library-albums: root.music-library-albums;
+                library-track-count: root.music-library-track-count;
+                browse-category <=> root.music-browse-category;
+                browse-filter <=> root.music-browse-filter;
+                browse-sub-header: root.music-browse-sub-header;
+                now-title: root.music-now-title;
+                now-artist: root.music-now-artist;
+                now-album: root.music-now-album;
+                is-playing: root.music-is-playing;
+                progress: root.music-progress;
+                time-current: root.music-time-current;
+                time-total: root.music-time-total;
+                volume: root.music-volume;
+                queue-tracks: root.music-queue-tracks;
+                queue-current-index: root.music-queue-current-index;
+                shuffle-on: root.music-shuffle-on;
+                repeat-on: root.music-repeat-on;
+                play-pause => { root.music-play-pause(); }
+                stop => { root.music-stop(); }
+                next-track => { root.music-next-track(); }
+                prev-track => { root.music-prev-track(); }
+                seek(pos) => { root.music-seek(pos); }
+                volume-changed(vol) => { root.music-volume-changed(vol); }
+                toggle-shuffle => { root.music-toggle-shuffle(); }
+                toggle-repeat => { root.music-toggle-repeat(); }
+                play-track-index(idx) => { root.music-play-track-index(idx); }
+                queue-play-index(idx) => { root.music-queue-play-index(idx); }
+                browse-category-changed(cat) => { root.music-browse-category-changed(cat); }
+                browse-filter-changed(f) => { root.music-browse-filter-changed(f); }
+                browse-item-selected(name) => { root.music-browse-item-selected(name); }
+                add-to-queue(idx) => { root.music-add-to-queue(idx); }
+            }
+        }
+
+        // System Monitor
+        if current-screen == 23 : WindowFrame {
+            x: root.window-maximized ? 0px : parent.width * 0.05;
+            y: root.window-maximized ? 0px : parent.height * 0.04;
+            width: root.window-maximized ? parent.width : parent.width * 0.90;
+            height: root.window-maximized ? parent.height - 60px : parent.height * 0.92;
+            is-maximized <=> root.window-maximized;
+            icon-char: "\u{2699}";
+            icon-color: Theme.cyan;
+            title: Tr.title-sysmonitor;
+            close => { root.current-screen = 1; root.navigate(1); }
+            minimize => { root.current-screen = 1; root.navigate(1); }
+            animate x, y, width, height { duration: 200ms; easing: ease-out; }
+
+            SystemMonitor {
+                width: 100%; height: 100%;
+                cpu-usage: root.mon-cpu-usage;
+                cpu-model: root.mon-cpu-model;
+                cpu-frequency: root.mon-cpu-frequency;
+                load-avg-1: root.mon-load-avg-1;
+                load-avg-5: root.mon-load-avg-5;
+                load-avg-15: root.mon-load-avg-15;
+                cpu-cores: root.mon-cpu-cores;
+                memory-usage: root.mon-memory-usage;
+                memory-used-text: root.mon-memory-used-text;
+                memory-total-text: root.mon-memory-total-text;
+                memory-cached-text: root.mon-memory-cached-text;
+                memory-buffers-text: root.mon-memory-buffers-text;
+                memory-available-text: root.mon-memory-available-text;
+                swap-usage: root.mon-swap-usage;
+                swap-used-text: root.mon-swap-used-text;
+                swap-total-text: root.mon-swap-total-text;
+                disks: root.mon-disks;
+                network-interfaces: root.mon-network-interfaces;
+                processes: root.mon-processes;
+                sort-column <=> root.mon-sort-column;
+                uptime-text: root.mon-uptime-text;
+                sort-by-column(col) => { root.sort-by-column(col); }
+                back-pressed => { root.current-screen = 1; root.navigate(1); }
+            }
+        }
+
+        // Download Manager
+        if current-screen == 24 : WindowFrame {
+            x: root.window-maximized ? 0px : parent.width * 0.05;
+            y: root.window-maximized ? 0px : parent.height * 0.04;
+            width: root.window-maximized ? parent.width : parent.width * 0.90;
+            height: root.window-maximized ? parent.height - 60px : parent.height * 0.92;
+            is-maximized <=> root.window-maximized;
+            icon-char: "\u{2B07}";
+            icon-color: Theme.holo-blue;
+            title: Tr.title-downloads;
+            close => { root.current-screen = 1; root.navigate(1); }
+            minimize => { root.current-screen = 1; root.navigate(1); }
+            animate x, y, width, height { duration: 200ms; easing: ease-out; }
+
+            DownloadManagerScreen {
+                width: 100%; height: 100%;
+                downloads: root.dl-downloads;
+                active-count: root.dl-active-count;
+                total-speed: root.dl-total-speed;
+                completed-today: root.dl-completed-today;
+                error-text: root.dl-error-text;
+                active-filter <=> root.dl-active-filter;
+                dl-add(url) => { root.dl-add(url); }
+                dl-pause(id) => { root.dl-pause(id); }
+                dl-resume(id) => { root.dl-resume(id); }
+                dl-cancel(id) => { root.dl-cancel(id); }
+                dl-retry(id) => { root.dl-retry(id); }
+                dl-open-folder(id) => { root.dl-open-folder(id); }
+                dl-clear-completed() => { root.dl-clear-completed(); }
+                dl-filter(idx) => { root.dl-filter(idx); }
+            }
+        }
+
+        // Code Snippet Manager
+        if current-screen == 25 : WindowFrame {
+            x: root.window-maximized ? 0px : parent.width * 0.05;
+            y: root.window-maximized ? 0px : parent.height * 0.04;
+            width: root.window-maximized ? parent.width : parent.width * 0.90;
+            height: root.window-maximized ? parent.height - 60px : parent.height * 0.92;
+            is-maximized <=> root.window-maximized;
+            icon-char: "<>";
+            icon-color: Theme.accent;
+            title: Tr.title-snippets;
+            close => { root.current-screen = 1; root.navigate(1); }
+            minimize => { root.current-screen = 1; root.navigate(1); }
+            animate x, y, width, height { duration: 200ms; easing: ease-out; }
+
+            SnippetManagerScreen {
+                width: 100%; height: 100%;
+                snippets: root.snip-snippets;
+                tag-chips: root.snip-tag-chips;
+                snippet-count: root.snip-snippet-count;
+                detail-id: root.snip-detail-id;
+                detail-title <=> root.snip-detail-title;
+                detail-language <=> root.snip-detail-language;
+                detail-code <=> root.snip-detail-code;
+                detail-tags <=> root.snip-detail-tags;
+                search-query <=> root.snip-search-query;
+                snip-search(q) => { root.snip-search(q); }
+                snip-select(id) => { root.snip-select(id); }
+                snip-new() => { root.snip-new(); }
+                snip-save(id, title, lang, code, tags) => { root.snip-save(id, title, lang, code, tags); }
+                snip-delete(id) => { root.snip-delete(id); }
+                snip-copy(id) => { root.snip-copy(id); }
+                snip-tag-filter(tag) => { root.snip-tag-filter(tag); }
+            }
+        }
+
+        // Container Manager
+        if current-screen == 26 : WindowFrame {
+            x: root.window-maximized ? 0px : parent.width * 0.05;
+            y: root.window-maximized ? 0px : parent.height * 0.04;
+            width: root.window-maximized ? parent.width : parent.width * 0.90;
+            height: root.window-maximized ? parent.height - 60px : parent.height * 0.92;
+            is-maximized <=> root.window-maximized;
+            icon-char: "\u{2338}";
+            icon-color: Theme.holo-blue;
+            title: Tr.title-containers;
+            close => { root.current-screen = 1; root.navigate(1); }
+            minimize => { root.current-screen = 1; root.navigate(1); }
+            animate x, y, width, height { duration: 200ms; easing: ease-out; }
+
+            ContainerManagerScreen {
+                width: 100%; height: 100%;
+                active-tab <=> root.ct-active-tab;
+                containers: root.ct-containers;
+                running-count: root.ct-running-count;
+                stopped-count: root.ct-stopped-count;
+                total-count: root.ct-total-count;
+                images: root.ct-images;
+                volumes: root.ct-volumes;
+                log-text: root.ct-log-text;
+                log-container-name: root.ct-log-container-name;
+                show-logs <=> root.ct-show-logs;
+                runtime-name: root.ct-runtime-name;
+                run-image-input <=> root.ct-run-image-input;
+                pull-image-input <=> root.ct-pull-image-input;
+                create-volume-input <=> root.ct-create-volume-input;
+                ct-tab(idx) => { root.ct-tab(idx); }
+                ct-start(id) => { root.ct-start(id); }
+                ct-stop(id) => { root.ct-stop(id); }
+                ct-restart(id) => { root.ct-restart(id); }
+                ct-remove(id) => { root.ct-remove(id); }
+                ct-logs(id) => { root.ct-logs(id); }
+                ct-run(img) => { root.ct-run(img); }
+                ct-pull(img) => { root.ct-pull(img); }
+                ct-remove-image(id) => { root.ct-remove-image(id); }
+                ct-create-volume(name) => { root.ct-create-volume(name); }
+                ct-remove-volume(name) => { root.ct-remove-volume(name); }
+                ct-refresh() => { root.ct-refresh(); }
+            }
+        }
+
+        // Device Dashboard
+        if current-screen == 27 : WindowFrame {
+            x: root.window-maximized ? 0px : parent.width * 0.05;
+            y: root.window-maximized ? 0px : parent.height * 0.04;
+            width: root.window-maximized ? parent.width : parent.width * 0.90;
+            height: root.window-maximized ? parent.height - 60px : parent.height * 0.92;
+            is-maximized <=> root.window-maximized;
+            icon-char: "\u{2699}";
+            icon-color: Theme.cyan;
+            title: Tr.title-devices;
+            close => { root.current-screen = 1; root.navigate(1); }
+            minimize => { root.current-screen = 1; root.navigate(1); }
+            animate x, y, width, height { duration: 200ms; easing: ease-out; }
+
+            DeviceDashboardScreen {
+                width: 100%; height: 100%;
+                active-tab <=> root.dev-active-tab;
+                usb-devices: root.dev-usb-devices;
+                usb-selected-index <=> root.dev-usb-selected-index;
+                usb-detail-text: root.dev-usb-detail-text;
+                pci-devices: root.dev-pci-devices;
+                input-devices: root.dev-input-devices;
+                storage-devices: root.dev-storage-devices;
+                display-devices: root.dev-display-devices;
+                gpu-info: root.dev-gpu-info;
+                scanning: root.dev-scanning;
+                dev-tab(idx) => { root.dev-tab(idx); }
+                dev-select-usb(idx) => { root.dev-select-usb(idx); }
+                dev-select-pci(idx) => { root.dev-select-pci(idx); }
+                dev-refresh() => { root.dev-refresh(); }
+            }
+        }
+
+        // Permission Dashboard
+        if current-screen == 28 : WindowFrame {
+            x: root.window-maximized ? 0px : parent.width * 0.05;
+            y: root.window-maximized ? 0px : parent.height * 0.04;
+            width: root.window-maximized ? parent.width : parent.width * 0.90;
+            height: root.window-maximized ? parent.height - 60px : parent.height * 0.92;
+            is-maximized <=> root.window-maximized;
+            icon-char: "\u{1F512}";
+            icon-color: Theme.color-emotional;
+            title: Tr.title-permissions;
+            close => { root.current-screen = 1; root.navigate(1); }
+            minimize => { root.current-screen = 1; root.navigate(1); }
+            animate x, y, width, height { duration: 200ms; easing: ease-out; }
+
+            PermissionDashboardScreen {
+                width: 100%; height: 100%;
+                active-tab <=> root.perm-active-tab;
+                perm-users: root.perm-users;
+                perm-groups: root.perm-groups;
+                perm-selected-user: root.perm-selected-user;
+                perm-suid-files: root.perm-suid-files;
+                perm-world-writable: root.perm-world-writable;
+                perm-scanning: root.perm-scanning;
+                perm-tab(idx) => { root.perm-tab(idx); }
+                perm-refresh() => { root.perm-refresh(); }
+                perm-fix(path) => { root.perm-fix(path); }
+                perm-select-user(idx) => { root.perm-select-user(idx); }
+            }
+        }
+
         // ── Persistent dock for windowed app screens ──
-        if current-screen >= 4 && current-screen <= 16 : AppDock {
+        if current-screen >= 4 && current-screen <= 28 : AppDock {
             y: parent.height - self.height;
             width: 100%;
             items: root.dock-items.length > 0 ? root.dock-items : [
@@ -995,7 +1853,11 @@ export component App inherits Window {
                 { app-id: "notifications", label: "Alerts",   icon-char: "N",  is-running: false },
                 { app-id: "system",        label: "System",   icon-char: "◉",  is-running: false },
                 { app-id: "media",         label: "Media",    icon-char: "♪",  is-running: false },
-                { app-id: "settings",      label: "Settings", icon-char: "⚙",  is-running: false },
+                { app-id: "email",         label: "Email",    icon-char: "@",  is-running: false },
+                { app-id: "calendar",      label: "Calendar", icon-char: "▦",  is-running: false },
+                { app-id: "network",       label: "Network",  icon-char: "\u{25CE}",  is-running: false },
+                { app-id: "launchpad",     label: "Apps",     icon-char: "\u{229E}",  is-running: false },
+                { app-id: "settings",      label: "Settings", icon-char: "\u{2699}",  is-running: false },
             ];
             launch-app(app-id) => { root.launch-app(app-id); }
             anchor-pressed => {

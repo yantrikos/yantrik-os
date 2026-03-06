@@ -34,6 +34,7 @@ import { ClipboardPanel, ClipboardEntryData } from "components/clipboard_panel.s
 import { PowerMenu } from "components/power_menu.slint";
 import { AppGrid, AppGridItem } from "components/app_grid.slint";
 import { WindowSwitcher, WindowItem } from "components/window_switcher.slint";
+import { Tr } from "translations.slint";
 
 export component DesktopScreen inherits Rectangle {
     // Status bar state
@@ -516,21 +517,23 @@ export component DesktopScreen inherits Rectangle {
             y: parent.height - self.height;
             width: 100%;
             items: root.dock-items.length > 0 ? root.dock-items : [
-                { app-id: "terminal",      label: "Terminal",      icon-char: ">_", is-running: false },
-                { app-id: "browser",       label: "Browser",       icon-char: "W",  is-running: false },
-                { app-id: "files",         label: "Files",         icon-char: "F",  is-running: false },
-                { app-id: "editor",        label: "Editor",        icon-char: "≡",  is-running: false },
-                { app-id: "bond",          label: "Bond",          icon-char: "♥",  is-running: false },
-                { app-id: "memory",        label: "Memory",        icon-char: "◈",  is-running: false },
-                { app-id: "notifications", label: "Alerts",        icon-char: "N",  is-running: false },
-                { app-id: "system",        label: "System",        icon-char: "◉",  is-running: false },
-                { app-id: "media",         label: "Media",         icon-char: "♪",  is-running: false },
-                { app-id: "settings",      label: "Settings",      icon-char: "⚙",  is-running: false },
+                { app-id: "terminal",      label: Tr.dock-terminal, icon-char: ">_", is-running: false },
+                { app-id: "browser",       label: Tr.dock-browser,  icon-char: "W",  is-running: false },
+                { app-id: "files",         label: Tr.dock-files,    icon-char: "F",  is-running: false },
+                { app-id: "email",         label: Tr.dock-email,    icon-char: "@",  is-running: false },
+                { app-id: "notes",         label: Tr.dock-notes,    icon-char: "✎",  is-running: false },
+                { app-id: "editor",        label: Tr.dock-editor,   icon-char: "≡",  is-running: false },
+                { app-id: "memory",        label: Tr.dock-memory,   icon-char: "◈",  is-running: false },
+                { app-id: "notifications", label: Tr.dock-alerts,   icon-char: "N",  is-running: false },
+                { app-id: "system",        label: Tr.dock-system,   icon-char: "◉",  is-running: false },
+                { app-id: "media",         label: Tr.dock-media,    icon-char: "♪",  is-running: false },
+                { app-id: "calendar",      label: Tr.dock-calendar, icon-char: "▦",  is-running: false },
+                { app-id: "launchpad",     label: Tr.dock-apps,     icon-char: "⊞",  is-running: false },
+                { app-id: "settings",      label: Tr.dock-settings, icon-char: "⚙",  is-running: false },
             ];
             launch-app(app-id) => { root.launch-app(app-id); }
             anchor-pressed => {
-                root.lens-open = !root.lens-open;
-                root.open-lens();
+                root.app-grid-open = !root.app-grid-open;
             }
         }
     }

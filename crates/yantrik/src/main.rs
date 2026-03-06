@@ -20,6 +20,8 @@ use clap::{Parser, Subcommand};
 use yantrikdb_companion::{CompanionConfig, CompanionService};
 use yantrikdb_ml::{CandleEmbedder, CandleLLM, GGUFFiles, LLMBackend};
 use yantrikdb_ml::ApiLLM;
+#[cfg(feature = "claude-cli")]
+use yantrikdb_ml::ClaudeCliLLM;
 
 #[derive(Parser)]
 #[command(name = "yantrik", about = "Personal AI companion — single binary")]
@@ -120,7 +122,15 @@ fn build_companion(config: CompanionConfig) -> CompanionService {
     };
 
     // Load LLM — select backend based on config
-    let llm: Box<dyn LLMBackend> = if config.llm.is_api_backend() {
+    let llm: Box<dyn LLMBackend> = if config.llm.is_claude_cli_backend() {
+        let model = config.llm.api_model.clone();
+        let max_tokens = config.llm.max_tokens;
+        tracing::info!(model = ?model, "Using Claude Code CLI backend");
+        #[cfg(feature = "claude-cli")]
+        { Box::new(ClaudeCliLLM::new(model, max_tokens)) }
+        #[cfg(not(feature = "claude-cli"))]
+        { panic!("claude-cli feature not enabled at compile time") }
+    } else if config.llm.is_api_backend() {
         let base_url = config.llm.resolve_api_base_url()
             .expect("api_base_url required for API backend");
         let model = config.llm.api_model.as_deref()
@@ -170,7 +180,20 @@ fn build_companion(config: CompanionConfig) -> CompanionService {
         "Companion initialized"
     );
 
-    CompanionService::new(db, llm, config)
+    let config_services = config.enabled_services.clone();
+    let mut companion = CompanionService::new(db, llm, config);
+
+    // Apply Skill Store snapshot — overrides services, filters instincts,
+    // extends core tools based on enabled skills.
+    let skills_dir = if std::path::Path::new("/opt/yantrik/skills").exists() {
+        std::path::PathBuf::from("/opt/yantrik/skills")
+    } else {
+        std::env::current_dir().unwrap_or_default().join("skills")
+    };
+    let snapshot = yantrikdb_companion::skills::load_skill_snapshot_with_services(&skills_dir, &config_services);
+    companion.apply_skill_snapshot(&snapshot);
+
+    companion
 }
 
 fn cmd_serve(config_path: Option<PathBuf>) {

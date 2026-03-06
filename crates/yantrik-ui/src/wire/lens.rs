@@ -237,6 +237,12 @@ fn wire_result_selected(ui: &App, ctx: &AppContext) {
                     ui.set_lens_open(false);
                 }
             }
+            lens::LensAction::LaunchBuiltin(app_id) => {
+                if let Some(ui) = ui_weak.upgrade() {
+                    ui.set_lens_open(false);
+                    ui.invoke_launch_app(SharedString::from(&app_id));
+                }
+            }
             lens::LensAction::OpenUrl(url) => {
                 tracing::info!(%url, "Opening URL from Lens");
                 match std::process::Command::new("xdg-open").arg(&url).spawn() {

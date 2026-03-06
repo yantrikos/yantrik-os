@@ -218,6 +218,115 @@ pub fn wire(ui: &App, ctx: &AppContext) {
         tracing::info!(from = current, to = next, "Auto-lock timeout changed");
     });
 
+    // ── Connected Services ──
+
+    // Connect service callback
+    let ui_weak = ui.as_weak();
+    ui.on_connect_service(move |service| {
+        let svc = service.to_string();
+        tracing::info!(service = %svc, "Connect service requested");
+
+        let Some(ui) = ui_weak.upgrade() else { return };
+
+        // Set "connecting" state immediately
+        match svc.as_str() {
+            "google" => ui.set_conn_google_status("connecting".into()),
+            "spotify" => ui.set_conn_spotify_status("connecting".into()),
+            "facebook" => ui.set_conn_facebook_status("connecting".into()),
+            "instagram" => ui.set_conn_instagram_status("connecting".into()),
+            _ => {}
+        }
+
+        // Simulate connection completing after 2 seconds (dummy for UI testing)
+        let ui_weak2 = ui.as_weak();
+        let svc2 = svc.clone();
+        slint::Timer::single_shot(std::time::Duration::from_secs(2), move || {
+            let Some(ui) = ui_weak2.upgrade() else { return };
+            match svc2.as_str() {
+                "google" => {
+                    ui.set_conn_google_status("connected".into());
+                    ui.set_conn_google_detail("Last sync: just now — 42 contacts, 8 events".into());
+                }
+                "spotify" => {
+                    ui.set_conn_spotify_status("connected".into());
+                    ui.set_conn_spotify_detail("Last sync: just now — 15 artists, 6 genres".into());
+                }
+                "facebook" => {
+                    ui.set_conn_facebook_status("connected".into());
+                    ui.set_conn_facebook_detail("Last sync: just now — 128 friends, 3 events".into());
+                }
+                "instagram" => {
+                    ui.set_conn_instagram_status("connected".into());
+                    ui.set_conn_instagram_detail("Last sync: just now — 5 interests, 12 hashtags".into());
+                }
+                _ => {}
+            }
+            tracing::info!(service = %svc2, "Service connected (dummy)");
+        });
+    });
+
+    // Disconnect service callback
+    let ui_weak = ui.as_weak();
+    ui.on_disconnect_service(move |service| {
+        let svc = service.to_string();
+        tracing::info!(service = %svc, "Disconnect service requested");
+
+        let Some(ui) = ui_weak.upgrade() else { return };
+        match svc.as_str() {
+            "google" => {
+                ui.set_conn_google_status("disconnected".into());
+                ui.set_conn_google_detail("".into());
+            }
+            "spotify" => {
+                ui.set_conn_spotify_status("disconnected".into());
+                ui.set_conn_spotify_detail("".into());
+            }
+            "facebook" => {
+                ui.set_conn_facebook_status("disconnected".into());
+                ui.set_conn_facebook_detail("".into());
+            }
+            "instagram" => {
+                ui.set_conn_instagram_status("disconnected".into());
+                ui.set_conn_instagram_detail("".into());
+            }
+            _ => {}
+        }
+    });
+
+    // Sync service callback
+    let ui_weak = ui.as_weak();
+    ui.on_sync_service(move |service| {
+        let svc = service.to_string();
+        tracing::info!(service = %svc, "Sync service requested");
+
+        let Some(ui) = ui_weak.upgrade() else { return };
+
+        // Update detail text to show syncing
+        let syncing_text = "Syncing...";
+        match svc.as_str() {
+            "google" => ui.set_conn_google_detail(syncing_text.into()),
+            "spotify" => ui.set_conn_spotify_detail(syncing_text.into()),
+            "facebook" => ui.set_conn_facebook_detail(syncing_text.into()),
+            "instagram" => ui.set_conn_instagram_detail(syncing_text.into()),
+            _ => {}
+        }
+
+        // Simulate sync completing
+        let ui_weak2 = ui.as_weak();
+        let svc2 = svc.clone();
+        slint::Timer::single_shot(std::time::Duration::from_secs(1), move || {
+            let Some(ui) = ui_weak2.upgrade() else { return };
+            let detail = format!("Last sync: just now — synced successfully");
+            match svc2.as_str() {
+                "google" => ui.set_conn_google_detail(detail.into()),
+                "spotify" => ui.set_conn_spotify_detail(detail.into()),
+                "facebook" => ui.set_conn_facebook_detail(detail.into()),
+                "instagram" => ui.set_conn_instagram_detail(detail.into()),
+                _ => {}
+            }
+        });
+    });
+
     // Wallpaper changed: preset name or file path
     let ui_weak = ui.as_weak();
     let s = settings.clone();
@@ -257,6 +366,8 @@ pub fn wire(ui: &App, ctx: &AppContext) {
             tracing::warn!(path = %wp, "Wallpaper file not found");
         }
     });
+
+    // Skill toggles are now handled by wire/skill_store.rs
 }
 
 /// Back-compat: load theme preference (delegates to full settings).

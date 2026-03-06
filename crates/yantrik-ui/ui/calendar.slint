@@ -1,0 +1,546 @@
+// Calendar — month view with event list sidebar.
+// AI-integrated: natural language event creation, smart scheduling suggestions.
+
+import { Theme } from "theme.slint";
+import { ScrollView, VerticalBox, HorizontalBox } from "std-widgets.slint";
+
+// ── Data Structures ──
+
+export struct CalendarEvent {
+    id: int,
+    title: string,
+    date-text: string,       // "Mar 5, 2026"
+    time-text: string,       // "2:00 PM - 3:00 PM" or "All day"
+    color: color,            // category color
+    is-all-day: bool,
+}
+
+export struct CalendarDay {
+    day-number: int,         // 1-31, 0 = empty cell
+    is-today: bool,
+    is-selected: bool,
+    is-current-month: bool,
+    has-events: bool,
+    event-count: int,
+}
+
+// ── Calendar Component ──
+
+export component CalendarScreen inherits Rectangle {
+    background: Theme.bg-deep;
+
+    // State
+    in property <string> month-title: "March 2026";
+    in property <[CalendarDay]> days: [];
+    in property <[CalendarEvent]> events-today: [];
+    in property <int> selected-day: 0;
+    in property <bool> is-loading: false;
+
+    // Event form state
+    in-out property <bool> show-event-form: false;
+    in-out property <string> event-title: "";
+    in-out property <string> event-date: "";
+    in-out property <string> event-time: "";
+    in-out property <string> event-notes: "";
+
+    // Callbacks
+    callback prev-month();
+    callback next-month();
+    callback day-clicked(int);
+    callback add-event();
+    callback save-event(string, string, string, string);
+    callback delete-event(int);
+    callback cancel-event-form();
+    callback today-pressed();
+
+    HorizontalLayout {
+        spacing: 0px;
+
+        // ── Left: Calendar grid ──
+        Rectangle {
+            background: Theme.bg-surface;
+            min-width: 480px;
+
+            VerticalLayout {
+                padding: 20px;
+                spacing: 16px;
+
+                // Month navigation header
+                HorizontalLayout {
+                    alignment: space-between;
+                    height: 40px;
+
+                    HorizontalLayout {
+                        spacing: 8px;
+
+                        Rectangle {
+                            width: 36px;
+                            height: 36px;
+                            border-radius: 8px;
+                            background: Theme.bg-card;
+
+                            TouchArea {
+                                clicked => { root.prev-month(); }
+                                mouse-cursor: pointer;
+                            }
+
+                            Text {
+                                text: "<";
+                                color: Theme.text-secondary;
+                                font-size: 16px;
+                                font-weight: 600;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+
+                        Rectangle {
+                            width: 36px;
+                            height: 36px;
+                            border-radius: 8px;
+                            background: Theme.bg-card;
+
+                            TouchArea {
+                                clicked => { root.next-month(); }
+                                mouse-cursor: pointer;
+                            }
+
+                            Text {
+                                text: ">";
+                                color: Theme.text-secondary;
+                                font-size: 16px;
+                                font-weight: 600;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+
+                        Text {
+                            text: root.month-title;
+                            color: Theme.text-primary;
+                            font-size: 20px;
+                            font-weight: 600;
+                            vertical-alignment: center;
+                        }
+                    }
+
+                    HorizontalLayout {
+                        spacing: 8px;
+
+                        Rectangle {
+                            width: 70px;
+                            height: 36px;
+                            border-radius: 8px;
+                            background: Theme.bg-card;
+
+                            TouchArea {
+                                clicked => { root.today-pressed(); }
+                                mouse-cursor: pointer;
+                            }
+
+                            Text {
+                                text: "Today";
+                                color: Theme.cyan;
+                                font-size: 13px;
+                                font-weight: 500;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+
+                        Rectangle {
+                            width: 36px;
+                            height: 36px;
+                            border-radius: 8px;
+                            background: Theme.cyan;
+
+                            TouchArea {
+                                clicked => { root.add-event(); }
+                                mouse-cursor: pointer;
+                            }
+
+                            Text {
+                                text: "+";
+                                color: Theme.bg-deep;
+                                font-size: 18px;
+                                font-weight: 700;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                }
+
+                // Day-of-week headers
+                HorizontalLayout {
+                    spacing: 2px;
+
+                    for header in ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"] : Rectangle {
+                        height: 32px;
+
+                        Text {
+                            text: header;
+                            color: Theme.text-dim;
+                            font-size: 11px;
+                            font-weight: 600;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+
+                // Calendar grid (6 rows x 7 cols = 42 cells)
+                VerticalLayout {
+                    spacing: 2px;
+
+                    for row in 6 : HorizontalLayout {
+                        spacing: 2px;
+
+                        for col in 7 : Rectangle {
+                            property <int> cell-idx: row * 7 + col;
+                            property <CalendarDay> cell-day: root.days.length > cell-idx
+                                ? root.days[cell-idx]
+                                : { day-number: 0, is-today: false, is-selected: false, is-current-month: false, has-events: false, event-count: 0 };
+
+                            height: 64px;
+                            border-radius: 8px;
+                            background: cell-day.is-selected ? Theme.cyan.with-alpha(0.15)
+                                : cell-day.is-today ? Theme.bg-card
+                                : transparent;
+                            border-width: cell-day.is-today ? 1px : 0;
+                            border-color: cell-day.is-today ? Theme.cyan.with-alpha(0.4) : transparent;
+
+                            if cell-day.day-number > 0 : TouchArea {
+                                clicked => { root.day-clicked(cell-day.day-number); }
+                                mouse-cursor: pointer;
+                            }
+
+                            VerticalLayout {
+                                padding: 6px;
+                                spacing: 4px;
+
+                                if cell-day.day-number > 0 : Text {
+                                    text: cell-day.day-number;
+                                    color: cell-day.is-selected ? Theme.cyan
+                                        : cell-day.is-today ? Theme.text-primary
+                                        : cell-day.is-current-month ? Theme.text-secondary
+                                        : Theme.text-dim;
+                                    font-size: 13px;
+                                    font-weight: cell-day.is-today || cell-day.is-selected ? 700 : 400;
+                                    horizontal-alignment: center;
+                                }
+
+                                // Event indicator dots
+                                if cell-day.has-events : HorizontalLayout {
+                                    alignment: center;
+                                    spacing: 3px;
+
+                                    Rectangle {
+                                        width: 5px;
+                                        height: 5px;
+                                        border-radius: 2.5px;
+                                        background: Theme.cyan;
+                                    }
+                                    if cell-day.event-count > 1 : Rectangle {
+                                        width: 5px;
+                                        height: 5px;
+                                        border-radius: 2.5px;
+                                        background: Theme.amber;
+                                    }
+                                    if cell-day.event-count > 2 : Rectangle {
+                                        width: 5px;
+                                        height: 5px;
+                                        border-radius: 2.5px;
+                                        background: Theme.text-dim;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── Right: Events sidebar ──
+        Rectangle {
+            width: 280px;
+            background: Theme.bg-deep;
+
+            // Event form overlay
+            if root.show-event-form : VerticalLayout {
+                padding: 20px;
+                spacing: 12px;
+
+                HorizontalLayout {
+                    alignment: space-between;
+
+                    Text {
+                        text: "New Event";
+                        color: Theme.text-primary;
+                        font-size: 16px;
+                        font-weight: 600;
+                        vertical-alignment: center;
+                    }
+
+                    Rectangle {
+                        width: 30px;
+                        height: 30px;
+                        border-radius: 6px;
+                        background: Theme.bg-card;
+
+                        TouchArea {
+                            clicked => { root.cancel-event-form(); }
+                            mouse-cursor: pointer;
+                        }
+
+                        Text {
+                            text: "X";
+                            color: Theme.text-secondary;
+                            font-size: 12px;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+
+                // Title
+                VerticalLayout {
+                    spacing: 4px;
+
+                    Text {
+                        text: "Title";
+                        color: Theme.text-dim;
+                        font-size: 11px;
+                    }
+                    Rectangle {
+                        height: 38px;
+                        border-radius: 8px;
+                        background: Theme.bg-card;
+
+                        HorizontalLayout {
+                            padding-left: 12px;
+                            padding-right: 12px;
+
+                            TextInput {
+                                text <=> root.event-title;
+                                color: Theme.text-primary;
+                                font-size: 13px;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                }
+
+                // Date
+                VerticalLayout {
+                    spacing: 4px;
+
+                    Text {
+                        text: "Date";
+                        color: Theme.text-dim;
+                        font-size: 11px;
+                    }
+                    Rectangle {
+                        height: 38px;
+                        border-radius: 8px;
+                        background: Theme.bg-card;
+
+                        HorizontalLayout {
+                            padding-left: 12px;
+                            padding-right: 12px;
+
+                            TextInput {
+                                text <=> root.event-date;
+                                color: Theme.text-primary;
+                                font-size: 13px;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                }
+
+                // Time
+                VerticalLayout {
+                    spacing: 4px;
+
+                    Text {
+                        text: "Time (e.g. 2:00 PM - 3:00 PM)";
+                        color: Theme.text-dim;
+                        font-size: 11px;
+                    }
+                    Rectangle {
+                        height: 38px;
+                        border-radius: 8px;
+                        background: Theme.bg-card;
+
+                        HorizontalLayout {
+                            padding-left: 12px;
+                            padding-right: 12px;
+
+                            TextInput {
+                                text <=> root.event-time;
+                                color: Theme.text-primary;
+                                font-size: 13px;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                }
+
+                // Notes
+                VerticalLayout {
+                    spacing: 4px;
+
+                    Text {
+                        text: "Notes";
+                        color: Theme.text-dim;
+                        font-size: 11px;
+                    }
+                    Rectangle {
+                        height: 80px;
+                        border-radius: 8px;
+                        background: Theme.bg-card;
+
+                        ScrollView {
+                            VerticalLayout {
+                                padding: 10px;
+
+                                TextInput {
+                                    text <=> root.event-notes;
+                                    color: Theme.text-primary;
+                                    font-size: 13px;
+                                    wrap: word-wrap;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Save button
+                Rectangle {
+                    height: 40px;
+                    border-radius: 8px;
+                    background: Theme.cyan;
+
+                    TouchArea {
+                        clicked => {
+                            root.save-event(root.event-title, root.event-date, root.event-time, root.event-notes);
+                        }
+                        mouse-cursor: pointer;
+                    }
+
+                    Text {
+                        text: "Save Event";
+                        color: Theme.bg-deep;
+                        font-size: 13px;
+                        font-weight: 600;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+
+            // Events list (when form is hidden)
+            if !root.show-event-form : VerticalLayout {
+                padding: 20px;
+                spacing: 12px;
+
+                Text {
+                    text: root.selected-day > 0
+                        ? "Events for " + root.selected-day
+                        : "Today's Events";
+                    color: Theme.text-primary;
+                    font-size: 16px;
+                    font-weight: 600;
+                }
+
+                if root.events-today.length == 0 : Rectangle {
+                    height: 100px;
+
+                    VerticalLayout {
+                        alignment: center;
+
+                        Text {
+                            text: "No events";
+                            color: Theme.text-dim;
+                            font-size: 13px;
+                            horizontal-alignment: center;
+                        }
+                        Text {
+                            text: "Click + to add one";
+                            color: Theme.text-dim;
+                            font-size: 11px;
+                            horizontal-alignment: center;
+                        }
+                    }
+                }
+
+                ScrollView {
+                    VerticalLayout {
+                        spacing: 8px;
+
+                        for event in root.events-today : Rectangle {
+                            height: event-content.preferred-height + 20px;
+                            border-radius: 10px;
+                            background: Theme.bg-card;
+                            border-width: 1px;
+                            border-color: #ffffff08;
+
+                            // Color accent bar
+                            Rectangle {
+                                x: 0;
+                                y: 8px;
+                                width: 3px;
+                                height: parent.height - 16px;
+                                border-radius: 1.5px;
+                                background: event.color;
+                            }
+
+                            event-content := VerticalLayout {
+                                padding: 10px;
+                                padding-left: 14px;
+                                spacing: 4px;
+
+                                Text {
+                                    text: event.title;
+                                    color: Theme.text-primary;
+                                    font-size: 13px;
+                                    font-weight: 600;
+                                    overflow: elide;
+                                }
+
+                                Text {
+                                    text: event.time-text;
+                                    color: Theme.text-secondary;
+                                    font-size: 11px;
+                                }
+                            }
+
+                            // Delete button
+                            Rectangle {
+                                x: parent.width - 32px;
+                                y: 4px;
+                                width: 28px;
+                                height: 28px;
+                                border-radius: 6px;
+
+                                TouchArea {
+                                    clicked => { root.delete-event(event.id); }
+                                    mouse-cursor: pointer;
+                                }
+
+                                Text {
+                                    text: "x";
+                                    color: Theme.text-dim;
+                                    font-size: 11px;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

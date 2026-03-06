@@ -41,6 +41,9 @@ accelerate = ["candle-core/accelerate", "candle-nn/accelerate", "candle-transfor
 # API backend
 api-llm = ["dep:ureq"]
 
+# Claude Code CLI backend (no extra deps — uses std::process::Command)
+claude-cli = []
+
 # llama.cpp backend
 llamacpp = ["dep:llama-cpp-2"]
 vulkan = ["llama-cpp-2/vulkan"]

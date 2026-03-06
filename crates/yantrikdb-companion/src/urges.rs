@@ -73,29 +73,11 @@ impl UrgeQueue {
                     .ok();
                     tracing::debug!(urge_id, old_urgency, new_urgency, "Boosted pending urge");
                 } else {
-                    // Delivered — recycle to pending with fresh data so it can
-                    // be re-delivered once ProactiveEngine cooldown expires.
-                    let new_urgency = spec.urgency.max(old_urgency).min(1.0);
-                    let context_json =
-                        serde_json::to_string(&spec.context).unwrap_or_default();
-                    conn.execute(
-                        "UPDATE urges SET status = 'pending', urgency = ?1,
-                         reason = ?2, suggested_message = ?3, context = ?4,
-                         boost_count = boost_count + 1, delivered_at = NULL
-                         WHERE urge_id = ?5",
-                        params![
-                            new_urgency,
-                            spec.reason,
-                            spec.suggested_message,
-                            context_json,
-                            urge_id,
-                        ],
-                    )
-                    .ok();
+                    // Already delivered — do NOT recycle back to pending.
+                    // This prevents the same message being re-sent repeatedly.
                     tracing::debug!(
                         urge_id,
-                        new_urgency,
-                        "Recycled delivered urge back to pending"
+                        "Skipping push — already delivered with same cooldown_key"
                     );
                 }
                 return None;
@@ -255,15 +237,28 @@ impl UrgeQueue {
         changes > 0
     }
 
-    /// Expire old urges past their expires_at time. Returns count expired.
+    /// Expire old urges past their expires_at time. Also expire delivered
+    /// urges older than 2 hours so their cooldown keys become available again.
+    /// Returns count expired.
     pub fn expire_old(&self, conn: &Connection) -> usize {
         let now = now_ts();
-        conn.execute(
+        let pending_expired = conn.execute(
             "UPDATE urges SET status = 'expired'
              WHERE status = 'pending' AND expires_at < ?1",
             params![now],
         )
-        .unwrap_or(0)
+        .unwrap_or(0);
+
+        // Expire delivered urges after 2 hours — frees cooldown keys for
+        // future urges while preventing rapid re-delivery
+        let delivered_expired = conn.execute(
+            "UPDATE urges SET status = 'expired'
+             WHERE status = 'delivered' AND delivered_at < ?1",
+            params![now - 7200.0], // 2 hours
+        )
+        .unwrap_or(0);
+
+        pending_expired + delivered_expired
     }
 
     /// Count of pending urges.

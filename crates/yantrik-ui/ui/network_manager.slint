@@ -1,0 +1,1376 @@
+// Network Manager — comprehensive network settings app.
+// Screen 22. Five tabs: WiFi, Ethernet, Bluetooth, VPN, Firewall.
+
+import { Theme } from "theme.slint";
+
+// ── Data structs ──
+
+export struct WifiNetwork {
+    ssid: string,
+    signal: int,          // 0-100
+    security: string,     // "WPA2", "WPA3", "Open", etc.
+    is-connected: bool,
+    is-saved: bool,
+}
+
+export struct EthernetInterface {
+    name: string,         // "eth0", "enp0s3"
+    status: string,       // "UP", "DOWN"
+    ip-address: string,
+    mac-address: string,
+    speed: string,        // "1000Mbps"
+    is-dhcp: bool,
+    subnet: string,
+    gateway: string,
+    dns: string,
+}
+
+export struct BluetoothDevice {
+    name: string,
+    address: string,      // MAC
+    device-type: string,  // "headphones", "keyboard", "mouse", "phone", "speaker", "unknown"
+    is-paired: bool,
+    is-connected: bool,
+}
+
+export struct VpnConnection {
+    name: string,
+    vpn-type: string,     // "WireGuard", "OpenVPN"
+    status: string,       // "connected", "disconnected"
+    ip-address: string,
+    traffic: string,      // "1.2 GB / 340 MB"
+}
+
+export struct FirewallRule {
+    id: int,
+    description: string,  // "tcp/22 ACCEPT", "DROP 10.0.0.5"
+    chain: string,        // "INPUT", "OUTPUT", "FORWARD"
+    action: string,       // "ACCEPT", "DROP", "REJECT"
+}
+
+// ── Signal bar component ──
+
+component SignalBars inherits HorizontalLayout {
+    in property <int> strength;  // 0-100
+    spacing: 2px;
+
+    // Bar 1 (always lit if signal > 0)
+    Rectangle {
+        width: 4px;
+        height: 8px;
+        border-radius: 1px;
+        background: strength > 0 ? Theme.accent : Theme.text-dim;
+        vertical-stretch: 0;
+    }
+    Rectangle {
+        width: 4px;
+        height: 12px;
+        border-radius: 1px;
+        background: strength > 25 ? Theme.accent : Theme.text-dim;
+        vertical-stretch: 0;
+    }
+    Rectangle {
+        width: 4px;
+        height: 16px;
+        border-radius: 1px;
+        background: strength > 50 ? Theme.accent : Theme.text-dim;
+        vertical-stretch: 0;
+    }
+    Rectangle {
+        width: 4px;
+        height: 20px;
+        border-radius: 1px;
+        background: strength > 75 ? Theme.accent : Theme.text-dim;
+        vertical-stretch: 0;
+    }
+}
+
+// ── Toggle Switch component ──
+
+component ToggleSwitch inherits TouchArea {
+    in-out property <bool> checked;
+    in property <string> label;
+    width: 100%;
+    height: 40px;
+
+    callback toggled();
+
+    clicked => {
+        checked = !checked;
+        root.toggled();
+    }
+
+    HorizontalLayout {
+        spacing: 12px;
+        alignment: space-between;
+        padding-left: 16px;
+        padding-right: 16px;
+
+        Text {
+            text: label;
+            color: Theme.text-primary;
+            font-size: Theme.font-body;
+            vertical-alignment: center;
+        }
+
+        // Track
+        Rectangle {
+            width: 44px;
+            height: 24px;
+            border-radius: 12px;
+            background: checked ? Theme.accent : Theme.bg-elevated;
+            border-width: 1px;
+            border-color: checked ? Theme.accent-dim : Theme.text-dim;
+
+            // Knob
+            Rectangle {
+                x: checked ? parent.width - self.width - 3px : 3px;
+                y: 3px;
+                width: 18px;
+                height: 18px;
+                border-radius: 9px;
+                background: Theme.text-primary;
+                animate x { duration: 150ms; easing: ease-out; }
+            }
+        }
+    }
+}
+
+// ── Tab button component ──
+
+component TabButton inherits TouchArea {
+    in property <string> label;
+    in property <bool> active;
+    in property <string> icon;
+    height: 44px;
+
+    Rectangle {
+        background: active ? Theme.bg-elevated : (parent.has-hover ? Theme.hover-fill : transparent);
+
+        HorizontalLayout {
+            spacing: 8px;
+            padding-left: 16px;
+            padding-right: 16px;
+            alignment: center;
+
+            Text {
+                text: icon;
+                color: active ? Theme.accent : Theme.text-secondary;
+                font-size: 16px;
+                vertical-alignment: center;
+            }
+            Text {
+                text: label;
+                color: active ? Theme.accent : Theme.text-secondary;
+                font-size: Theme.font-body;
+                font-weight: active ? 600 : 400;
+                vertical-alignment: center;
+            }
+        }
+
+        // Bottom accent line
+        if active : Rectangle {
+            y: parent.height - 2px;
+            width: 100%;
+            height: 2px;
+            background: Theme.accent;
+        }
+    }
+}
+
+// ── Action button component ──
+
+component ActionButton inherits TouchArea {
+    in property <string> label;
+    in property <bool> danger: false;
+    in property <bool> primary: false;
+    height: 36px;
+
+    Rectangle {
+        border-radius: Theme.radius-card;
+        background: primary ? Theme.accent
+                  : danger ? #a04040
+                  : (parent.has-hover ? Theme.hover-fill-strong : Theme.bg-elevated);
+        border-width: 1px;
+        border-color: primary ? Theme.accent-dim
+                    : danger ? #c04040
+                    : Theme.border-subtle;
+
+        HorizontalLayout {
+            padding-left: 16px;
+            padding-right: 16px;
+            alignment: center;
+
+            Text {
+                text: label;
+                color: primary ? Theme.bg-deep
+                     : danger ? #ffc0c0
+                     : Theme.text-primary;
+                font-size: Theme.font-small;
+                font-weight: 600;
+                vertical-alignment: center;
+            }
+        }
+    }
+}
+
+// ── Main component ──
+
+export component NetworkManager inherits Rectangle {
+    background: Theme.bg-deep;
+
+    // Active tab: 0=WiFi, 1=Ethernet, 2=Bluetooth, 3=VPN, 4=Firewall
+    in-out property <int> active-tab: 0;
+
+    // WiFi state
+    in property <bool> wifi-enabled: false;
+    in property <string> wifi-current-ssid: "";
+    in property <int> wifi-signal-strength: 0;
+    in property <string> wifi-ip-address: "";
+    in property <string> wifi-speed: "";
+    in property <[WifiNetwork]> wifi-networks: [];
+    in property <[WifiNetwork]> wifi-saved-networks: [];
+    in property <bool> wifi-scanning: false;
+
+    // WiFi password dialog
+    in-out property <bool> wifi-password-visible: false;
+    in-out property <string> wifi-password-ssid: "";
+    in-out property <string> wifi-password-input: "";
+    in property <string> wifi-connect-status: "";
+
+    // Ethernet state
+    in property <[EthernetInterface]> ethernet-interfaces: [];
+
+    // Bluetooth state
+    in property <bool> bt-enabled: false;
+    in property <[BluetoothDevice]> bt-paired-devices: [];
+    in property <[BluetoothDevice]> bt-available-devices: [];
+    in property <bool> bt-scanning: false;
+
+    // VPN state
+    in property <[VpnConnection]> vpn-connections: [];
+
+    // Firewall state
+    in property <bool> firewall-enabled: false;
+    in property <string> firewall-backend-name: "";
+    in property <int> firewall-rule-count: 0;
+    in property <[FirewallRule]> firewall-rules: [];
+    in property <string> firewall-profile: "Custom";
+
+    // Callbacks
+    callback toggle-wifi();
+    callback wifi-scan();
+    callback wifi-connect(string, string);  // ssid, password
+    callback wifi-disconnect();
+    callback wifi-forget(string);           // ssid
+
+    callback toggle-bluetooth();
+    callback bt-scan();
+    callback bt-pair(string);               // address
+    callback bt-connect(string);            // address
+    callback bt-disconnect(string);         // address
+
+    callback vpn-connect(string);           // name
+    callback vpn-disconnect(string);        // name
+
+    callback toggle-firewall();
+    callback firewall-allow-port(string);   // port string
+    callback firewall-block-port(string);
+    callback firewall-apply-profile(string);
+
+    // Background nebula
+    Rectangle {
+        x: parent.width * 0.6;
+        y: -parent.height * 0.1;
+        width: 500px;
+        height: 400px;
+        background: @radial-gradient(circle,
+            #5ac8d406 0%,
+            transparent 60%
+        );
+    }
+
+    VerticalLayout {
+        spacing: 0px;
+
+        // ── Tab bar ──
+        Rectangle {
+            height: 46px;
+            background: @linear-gradient(180deg,
+                #12111aa0 0%,
+                #0c0b1080 100%
+            );
+
+            // Bottom glow
+            Rectangle {
+                y: parent.height - 1px;
+                width: 100%;
+                height: 1px;
+                background: @linear-gradient(90deg,
+                    transparent 10%,
+                    Theme.accent-glow 50%,
+                    transparent 90%
+                );
+                opacity: 0.3;
+            }
+
+            HorizontalLayout {
+                spacing: 0px;
+
+                TabButton {
+                    icon: "\u{25CE}";  // WiFi icon
+                    label: "WiFi";
+                    active: root.active-tab == 0;
+                    clicked => { root.active-tab = 0; }
+                }
+                TabButton {
+                    icon: "\u{2550}";  // Ethernet
+                    label: "Ethernet";
+                    active: root.active-tab == 1;
+                    clicked => { root.active-tab = 1; }
+                }
+                TabButton {
+                    icon: "\u{2630}";  // Bluetooth
+                    label: "Bluetooth";
+                    active: root.active-tab == 2;
+                    clicked => { root.active-tab = 2; }
+                }
+                TabButton {
+                    icon: "\u{229B}";  // VPN
+                    label: "VPN";
+                    active: root.active-tab == 3;
+                    clicked => { root.active-tab = 3; }
+                }
+                TabButton {
+                    icon: "\u{2AF5}";  // Firewall
+                    label: "Firewall";
+                    active: root.active-tab == 4;
+                    clicked => { root.active-tab = 4; }
+                }
+            }
+        }
+
+        // ── Tab content ──
+        Rectangle {
+            vertical-stretch: 1;
+            clip: true;
+
+            // ═════════════════════════════════════
+            // TAB 0: WiFi
+            // ═════════════════════════════════════
+            if root.active-tab == 0 : Flickable {
+                width: 100%;
+                height: 100%;
+                viewport-height: wifi-content.preferred-height + 40px;
+
+                wifi-content := VerticalLayout {
+                    padding: 20px;
+                    spacing: 16px;
+
+                    // WiFi toggle
+                    Rectangle {
+                        height: 56px;
+                        background: Theme.bg-card;
+                        border-radius: Theme.radius-card;
+                        border-width: 1px;
+                        border-color: Theme.border-subtle;
+
+                        ToggleSwitch {
+                            checked: root.wifi-enabled;
+                            label: "WiFi";
+                            toggled => { root.toggle-wifi(); }
+                        }
+                    }
+
+                    // Current connection card
+                    if root.wifi-current-ssid != "" : Rectangle {
+                        background: Theme.bg-card;
+                        border-radius: Theme.radius-card;
+                        border-width: 1px;
+                        border-color: Theme.accent-glow;
+                        height: conn-layout.preferred-height + 24px;
+
+                        conn-layout := VerticalLayout {
+                            padding: 16px;
+                            spacing: 8px;
+
+                            HorizontalLayout {
+                                spacing: 12px;
+                                alignment: space-between;
+
+                                VerticalLayout {
+                                    spacing: 4px;
+                                    Text {
+                                        text: "Connected";
+                                        color: Theme.accent;
+                                        font-size: Theme.font-small;
+                                        font-weight: 600;
+                                        letter-spacing: 1px;
+                                    }
+                                    HorizontalLayout {
+                                        spacing: 8px;
+                                        Text {
+                                            text: root.wifi-current-ssid;
+                                            color: Theme.text-primary;
+                                            font-size: Theme.font-title;
+                                            font-weight: 600;
+                                        }
+                                        SignalBars {
+                                            strength: root.wifi-signal-strength;
+                                        }
+                                    }
+                                }
+
+                                ActionButton {
+                                    label: "Disconnect";
+                                    width: 110px;
+                                    danger: true;
+                                    clicked => { root.wifi-disconnect(); }
+                                }
+                            }
+
+                            // Details row
+                            HorizontalLayout {
+                                spacing: 24px;
+                                VerticalLayout {
+                                    spacing: 2px;
+                                    Text { text: "IP Address"; color: Theme.text-dim; font-size: Theme.font-small; }
+                                    Text { text: root.wifi-ip-address != "" ? root.wifi-ip-address : "—"; color: Theme.text-secondary; font-size: Theme.font-body; }
+                                }
+                                VerticalLayout {
+                                    spacing: 2px;
+                                    Text { text: "Signal"; color: Theme.text-dim; font-size: Theme.font-small; }
+                                    Text { text: root.wifi-signal-strength + "%"; color: Theme.text-secondary; font-size: Theme.font-body; }
+                                }
+                                VerticalLayout {
+                                    spacing: 2px;
+                                    Text { text: "Speed"; color: Theme.text-dim; font-size: Theme.font-small; }
+                                    Text { text: root.wifi-speed != "" ? root.wifi-speed : "—"; color: Theme.text-secondary; font-size: Theme.font-body; }
+                                }
+                            }
+                        }
+                    }
+
+                    // Available networks section
+                    if root.wifi-enabled : VerticalLayout {
+                        spacing: 8px;
+
+                        HorizontalLayout {
+                            spacing: 12px;
+                            alignment: space-between;
+
+                            Text {
+                                text: "Available Networks";
+                                color: Theme.text-primary;
+                                font-size: Theme.font-title;
+                                font-weight: 600;
+                                vertical-alignment: center;
+                            }
+
+                            HorizontalLayout {
+                                spacing: 8px;
+
+                                if root.wifi-scanning : Text {
+                                    text: "Scanning...";
+                                    color: Theme.text-dim;
+                                    font-size: Theme.font-small;
+                                    vertical-alignment: center;
+                                }
+
+                                ActionButton {
+                                    label: "Scan";
+                                    width: 80px;
+                                    primary: true;
+                                    clicked => { root.wifi-scan(); }
+                                }
+                            }
+                        }
+
+                        // Network list
+                        for network[idx] in root.wifi-networks : net-ta := TouchArea {
+                            height: 52px;
+
+                            clicked => {
+                                if network.is-connected {
+                                    // Already connected — do nothing
+                                } else if network.is-saved {
+                                    // Saved network — connect without password
+                                    root.wifi-connect(network.ssid, "");
+                                } else {
+                                    // Need password
+                                    root.wifi-password-ssid = network.ssid;
+                                    root.wifi-password-input = "";
+                                    root.wifi-password-visible = true;
+                                }
+                            }
+
+                            Rectangle {
+                                background: network.is-connected ? Theme.tint-accent
+                                          : net-ta.has-hover ? Theme.hover-fill
+                                          : Theme.bg-card;
+                                border-radius: Theme.radius-card;
+                                border-width: 1px;
+                                border-color: network.is-connected ? Theme.accent-dim : Theme.border-subtle;
+
+                                HorizontalLayout {
+                                    padding-left: 16px;
+                                    padding-right: 16px;
+                                    spacing: 12px;
+                                    alignment: space-between;
+
+                                    HorizontalLayout {
+                                        spacing: 12px;
+
+                                        SignalBars {
+                                            strength: network.signal;
+                                        }
+
+                                        VerticalLayout {
+                                            spacing: 2px;
+                                            alignment: center;
+                                            Text {
+                                                text: network.ssid;
+                                                color: Theme.text-primary;
+                                                font-size: Theme.font-body;
+                                                font-weight: network.is-connected ? 600 : 400;
+                                            }
+                                            Text {
+                                                text: network.is-connected ? "Connected" : network.security;
+                                                color: network.is-connected ? Theme.accent : Theme.text-dim;
+                                                font-size: Theme.font-small;
+                                            }
+                                        }
+                                    }
+
+                                    if network.is-saved && !network.is-connected : Text {
+                                        text: "Saved";
+                                        color: Theme.text-dim;
+                                        font-size: Theme.font-small;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Saved networks section
+                    if root.wifi-enabled && root.wifi-saved-networks.length > 0 : VerticalLayout {
+                        spacing: 8px;
+
+                        Text {
+                            text: "Known Networks";
+                            color: Theme.text-primary;
+                            font-size: Theme.font-title;
+                            font-weight: 600;
+                        }
+
+                        for saved[idx] in root.wifi-saved-networks : Rectangle {
+                            height: 44px;
+                            background: Theme.bg-card;
+                            border-radius: Theme.radius-card;
+                            border-width: 1px;
+                            border-color: Theme.border-subtle;
+
+                            HorizontalLayout {
+                                padding-left: 16px;
+                                padding-right: 16px;
+                                alignment: space-between;
+
+                                Text {
+                                    text: saved.ssid;
+                                    color: Theme.text-primary;
+                                    font-size: Theme.font-body;
+                                    vertical-alignment: center;
+                                }
+
+                                forget-ta := TouchArea {
+                                    width: 70px;
+                                    height: 100%;
+                                    clicked => { root.wifi-forget(saved.ssid); }
+                                    Text {
+                                        text: "Forget";
+                                        color: forget-ta.has-hover ? #ff6060 : Theme.text-dim;
+                                        font-size: Theme.font-small;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ═════════════════════════════════════
+            // TAB 1: Ethernet
+            // ═════════════════════════════════════
+            if root.active-tab == 1 : Flickable {
+                width: 100%;
+                height: 100%;
+                viewport-height: eth-content.preferred-height + 40px;
+
+                eth-content := VerticalLayout {
+                    padding: 20px;
+                    spacing: 16px;
+
+                    Text {
+                        text: "Ethernet Interfaces";
+                        color: Theme.text-primary;
+                        font-size: Theme.font-title;
+                        font-weight: 600;
+                    }
+
+                    if root.ethernet-interfaces.length == 0 : Rectangle {
+                        height: 80px;
+                        background: Theme.bg-card;
+                        border-radius: Theme.radius-card;
+                        border-width: 1px;
+                        border-color: Theme.border-subtle;
+                        Text {
+                            text: "No Ethernet interfaces detected";
+                            color: Theme.text-dim;
+                            font-size: Theme.font-body;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
+
+                    for iface[idx] in root.ethernet-interfaces : Rectangle {
+                        background: Theme.bg-card;
+                        border-radius: Theme.radius-card;
+                        border-width: 1px;
+                        border-color: iface.status == "UP" ? Theme.accent-dim : Theme.border-subtle;
+                        height: eth-iface-layout.preferred-height + 24px;
+
+                        eth-iface-layout := VerticalLayout {
+                            padding: 16px;
+                            spacing: 10px;
+
+                            // Header row
+                            HorizontalLayout {
+                                spacing: 12px;
+                                alignment: space-between;
+
+                                HorizontalLayout {
+                                    spacing: 8px;
+                                    Text {
+                                        text: iface.name;
+                                        color: Theme.text-primary;
+                                        font-size: Theme.font-title;
+                                        font-weight: 600;
+                                        vertical-alignment: center;
+                                    }
+                                    Rectangle {
+                                        width: eth-status-text.preferred-width + 16px;
+                                        height: 22px;
+                                        border-radius: 11px;
+                                        background: iface.status == "UP" ? Theme.accent-glow : Theme.bg-elevated;
+                                        eth-status-text := Text {
+                                            text: iface.status;
+                                            color: iface.status == "UP" ? Theme.accent : Theme.text-dim;
+                                            font-size: Theme.font-small;
+                                            font-weight: 600;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                }
+
+                                if iface.is-dhcp : Rectangle {
+                                    width: 60px;
+                                    height: 22px;
+                                    border-radius: 11px;
+                                    background: Theme.tint-accent;
+                                    Text {
+                                        text: "DHCP";
+                                        color: Theme.accent;
+                                        font-size: Theme.font-small;
+                                        font-weight: 600;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                            }
+
+                            // Details grid
+                            HorizontalLayout {
+                                spacing: 32px;
+                                VerticalLayout {
+                                    spacing: 2px;
+                                    Text { text: "IP Address"; color: Theme.text-dim; font-size: Theme.font-small; }
+                                    Text { text: iface.ip-address != "" ? iface.ip-address : "—"; color: Theme.text-secondary; font-size: Theme.font-body; }
+                                }
+                                VerticalLayout {
+                                    spacing: 2px;
+                                    Text { text: "MAC"; color: Theme.text-dim; font-size: Theme.font-small; }
+                                    Text { text: iface.mac-address != "" ? iface.mac-address : "—"; color: Theme.text-secondary; font-size: Theme.font-body; }
+                                }
+                                VerticalLayout {
+                                    spacing: 2px;
+                                    Text { text: "Speed"; color: Theme.text-dim; font-size: Theme.font-small; }
+                                    Text { text: iface.speed != "" ? iface.speed : "—"; color: Theme.text-secondary; font-size: Theme.font-body; }
+                                }
+                            }
+
+                            if iface.status == "UP" : HorizontalLayout {
+                                spacing: 32px;
+                                VerticalLayout {
+                                    spacing: 2px;
+                                    Text { text: "Subnet"; color: Theme.text-dim; font-size: Theme.font-small; }
+                                    Text { text: iface.subnet != "" ? iface.subnet : "—"; color: Theme.text-secondary; font-size: Theme.font-body; }
+                                }
+                                VerticalLayout {
+                                    spacing: 2px;
+                                    Text { text: "Gateway"; color: Theme.text-dim; font-size: Theme.font-small; }
+                                    Text { text: iface.gateway != "" ? iface.gateway : "—"; color: Theme.text-secondary; font-size: Theme.font-body; }
+                                }
+                                VerticalLayout {
+                                    spacing: 2px;
+                                    Text { text: "DNS"; color: Theme.text-dim; font-size: Theme.font-small; }
+                                    Text { text: iface.dns != "" ? iface.dns : "—"; color: Theme.text-secondary; font-size: Theme.font-body; }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ═════════════════════════════════════
+            // TAB 2: Bluetooth
+            // ═════════════════════════════════════
+            if root.active-tab == 2 : Flickable {
+                width: 100%;
+                height: 100%;
+                viewport-height: bt-content.preferred-height + 40px;
+
+                bt-content := VerticalLayout {
+                    padding: 20px;
+                    spacing: 16px;
+
+                    // Bluetooth toggle
+                    Rectangle {
+                        height: 56px;
+                        background: Theme.bg-card;
+                        border-radius: Theme.radius-card;
+                        border-width: 1px;
+                        border-color: Theme.border-subtle;
+
+                        ToggleSwitch {
+                            checked: root.bt-enabled;
+                            label: "Bluetooth";
+                            toggled => { root.toggle-bluetooth(); }
+                        }
+                    }
+
+                    // Paired devices
+                    if root.bt-enabled : VerticalLayout {
+                        spacing: 8px;
+
+                        Text {
+                            text: "Paired Devices";
+                            color: Theme.text-primary;
+                            font-size: Theme.font-title;
+                            font-weight: 600;
+                        }
+
+                        if root.bt-paired-devices.length == 0 : Rectangle {
+                            height: 52px;
+                            background: Theme.bg-card;
+                            border-radius: Theme.radius-card;
+                            border-width: 1px;
+                            border-color: Theme.border-subtle;
+                            Text {
+                                text: "No paired devices";
+                                color: Theme.text-dim;
+                                font-size: Theme.font-body;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+
+                        for device[idx] in root.bt-paired-devices : Rectangle {
+                            height: 56px;
+                            background: Theme.bg-card;
+                            border-radius: Theme.radius-card;
+                            border-width: 1px;
+                            border-color: device.is-connected ? Theme.accent-dim : Theme.border-subtle;
+
+                            HorizontalLayout {
+                                padding-left: 16px;
+                                padding-right: 12px;
+                                spacing: 12px;
+                                alignment: space-between;
+
+                                HorizontalLayout {
+                                    spacing: 10px;
+
+                                    // Device type icon
+                                    Text {
+                                        text: device.device-type == "headphones" ? "\u{1F3A7}"
+                                            : device.device-type == "keyboard" ? "\u{2328}"
+                                            : device.device-type == "mouse" ? "\u{1F5B1}"
+                                            : device.device-type == "phone" ? "\u{1F4F1}"
+                                            : device.device-type == "speaker" ? "\u{1F50A}"
+                                            : "\u{2630}";
+                                        color: device.is-connected ? Theme.accent : Theme.text-secondary;
+                                        font-size: 18px;
+                                        vertical-alignment: center;
+                                    }
+
+                                    VerticalLayout {
+                                        spacing: 2px;
+                                        alignment: center;
+                                        Text {
+                                            text: device.name;
+                                            color: Theme.text-primary;
+                                            font-size: Theme.font-body;
+                                        }
+                                        Text {
+                                            text: device.is-connected ? "Connected" : "Not connected";
+                                            color: device.is-connected ? Theme.accent : Theme.text-dim;
+                                            font-size: Theme.font-small;
+                                        }
+                                    }
+                                }
+
+                                if device.is-connected : ActionButton {
+                                    label: "Disconnect";
+                                    width: 100px;
+                                    clicked => { root.bt-disconnect(device.address); }
+                                }
+                                if !device.is-connected : ActionButton {
+                                    label: "Connect";
+                                    width: 90px;
+                                    primary: true;
+                                    clicked => { root.bt-connect(device.address); }
+                                }
+                            }
+                        }
+                    }
+
+                    // Available devices
+                    if root.bt-enabled : VerticalLayout {
+                        spacing: 8px;
+
+                        HorizontalLayout {
+                            spacing: 12px;
+                            alignment: space-between;
+
+                            Text {
+                                text: "Available Devices";
+                                color: Theme.text-primary;
+                                font-size: Theme.font-title;
+                                font-weight: 600;
+                                vertical-alignment: center;
+                            }
+
+                            HorizontalLayout {
+                                spacing: 8px;
+
+                                if root.bt-scanning : Text {
+                                    text: "Scanning...";
+                                    color: Theme.text-dim;
+                                    font-size: Theme.font-small;
+                                    vertical-alignment: center;
+                                }
+
+                                ActionButton {
+                                    label: "Scan";
+                                    width: 80px;
+                                    primary: true;
+                                    clicked => { root.bt-scan(); }
+                                }
+                            }
+                        }
+
+                        for device[idx] in root.bt-available-devices : bt-avail-ta := TouchArea {
+                            height: 52px;
+
+                            Rectangle {
+                                background: bt-avail-ta.has-hover ? Theme.hover-fill : Theme.bg-card;
+                                border-radius: Theme.radius-card;
+                                border-width: 1px;
+                                border-color: Theme.border-subtle;
+
+                                HorizontalLayout {
+                                    padding-left: 16px;
+                                    padding-right: 12px;
+                                    spacing: 12px;
+                                    alignment: space-between;
+
+                                    VerticalLayout {
+                                        spacing: 2px;
+                                        alignment: center;
+                                        Text {
+                                            text: device.name;
+                                            color: Theme.text-primary;
+                                            font-size: Theme.font-body;
+                                        }
+                                        Text {
+                                            text: device.address;
+                                            color: Theme.text-dim;
+                                            font-size: Theme.font-small;
+                                        }
+                                    }
+
+                                    ActionButton {
+                                        label: "Pair";
+                                        width: 70px;
+                                        primary: true;
+                                        clicked => { root.bt-pair(device.address); }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ═════════════════════════════════════
+            // TAB 3: VPN
+            // ═════════════════════════════════════
+            if root.active-tab == 3 : Flickable {
+                width: 100%;
+                height: 100%;
+                viewport-height: vpn-content.preferred-height + 40px;
+
+                vpn-content := VerticalLayout {
+                    padding: 20px;
+                    spacing: 16px;
+
+                    Text {
+                        text: "VPN Connections";
+                        color: Theme.text-primary;
+                        font-size: Theme.font-title;
+                        font-weight: 600;
+                    }
+
+                    if root.vpn-connections.length == 0 : Rectangle {
+                        height: 100px;
+                        background: Theme.bg-card;
+                        border-radius: Theme.radius-card;
+                        border-width: 1px;
+                        border-color: Theme.border-subtle;
+
+                        VerticalLayout {
+                            spacing: 8px;
+                            alignment: center;
+                            Text {
+                                text: "No VPN connections detected";
+                                color: Theme.text-dim;
+                                font-size: Theme.font-body;
+                                horizontal-alignment: center;
+                            }
+                            Text {
+                                text: "Configure WireGuard or OpenVPN on the system";
+                                color: Theme.text-dim;
+                                font-size: Theme.font-small;
+                                horizontal-alignment: center;
+                            }
+                        }
+                    }
+
+                    for vpn[idx] in root.vpn-connections : Rectangle {
+                        background: Theme.bg-card;
+                        border-radius: Theme.radius-card;
+                        border-width: 1px;
+                        border-color: vpn.status == "connected" ? Theme.accent-dim : Theme.border-subtle;
+                        height: vpn-layout.preferred-height + 24px;
+
+                        vpn-layout := VerticalLayout {
+                            padding: 16px;
+                            spacing: 8px;
+
+                            HorizontalLayout {
+                                spacing: 12px;
+                                alignment: space-between;
+
+                                HorizontalLayout {
+                                    spacing: 10px;
+                                    // Type badge
+                                    Rectangle {
+                                        width: vpn-type-text.preferred-width + 14px;
+                                        height: 22px;
+                                        border-radius: 11px;
+                                        background: Theme.tint-accent;
+                                        vpn-type-text := Text {
+                                            text: vpn.vpn-type;
+                                            color: Theme.accent;
+                                            font-size: Theme.font-small;
+                                            font-weight: 600;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                    Text {
+                                        text: vpn.name;
+                                        color: Theme.text-primary;
+                                        font-size: Theme.font-body;
+                                        font-weight: 600;
+                                        vertical-alignment: center;
+                                    }
+                                }
+
+                                if vpn.status == "connected" : ActionButton {
+                                    label: "Disconnect";
+                                    width: 110px;
+                                    danger: true;
+                                    clicked => { root.vpn-disconnect(vpn.name); }
+                                }
+                                if vpn.status != "connected" : ActionButton {
+                                    label: "Connect";
+                                    width: 100px;
+                                    primary: true;
+                                    clicked => { root.vpn-connect(vpn.name); }
+                                }
+                            }
+
+                            if vpn.status == "connected" : HorizontalLayout {
+                                spacing: 24px;
+                                VerticalLayout {
+                                    spacing: 2px;
+                                    Text { text: "Status"; color: Theme.text-dim; font-size: Theme.font-small; }
+                                    Text { text: "Connected"; color: Theme.accent; font-size: Theme.font-body; }
+                                }
+                                VerticalLayout {
+                                    spacing: 2px;
+                                    Text { text: "Tunnel IP"; color: Theme.text-dim; font-size: Theme.font-small; }
+                                    Text { text: vpn.ip-address != "" ? vpn.ip-address : "—"; color: Theme.text-secondary; font-size: Theme.font-body; }
+                                }
+                                VerticalLayout {
+                                    spacing: 2px;
+                                    Text { text: "Traffic"; color: Theme.text-dim; font-size: Theme.font-small; }
+                                    Text { text: vpn.traffic != "" ? vpn.traffic : "—"; color: Theme.text-secondary; font-size: Theme.font-body; }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ═════════════════════════════════════
+            // TAB 4: Firewall
+            // ═════════════════════════════════════
+            if root.active-tab == 4 : Flickable {
+                width: 100%;
+                height: 100%;
+                viewport-height: fw-content.preferred-height + 40px;
+
+                fw-content := VerticalLayout {
+                    padding: 20px;
+                    spacing: 16px;
+
+                    // Firewall toggle + status
+                    Rectangle {
+                        background: Theme.bg-card;
+                        border-radius: Theme.radius-card;
+                        border-width: 1px;
+                        border-color: root.firewall-enabled ? Theme.accent-dim : Theme.border-subtle;
+                        height: fw-header.preferred-height + 24px;
+
+                        fw-header := VerticalLayout {
+                            padding: 16px;
+                            spacing: 8px;
+
+                            ToggleSwitch {
+                                checked: root.firewall-enabled;
+                                label: "Firewall";
+                                toggled => { root.toggle-firewall(); }
+                            }
+
+                            HorizontalLayout {
+                                padding-left: 16px;
+                                spacing: 24px;
+
+                                VerticalLayout {
+                                    spacing: 2px;
+                                    Text { text: "Backend"; color: Theme.text-dim; font-size: Theme.font-small; }
+                                    Text {
+                                        text: root.firewall-backend-name != "" ? root.firewall-backend-name : "—";
+                                        color: Theme.text-secondary;
+                                        font-size: Theme.font-body;
+                                    }
+                                }
+                                VerticalLayout {
+                                    spacing: 2px;
+                                    Text { text: "Rules"; color: Theme.text-dim; font-size: Theme.font-small; }
+                                    Text {
+                                        text: root.firewall-rule-count;
+                                        color: Theme.text-secondary;
+                                        font-size: Theme.font-body;
+                                    }
+                                }
+                                VerticalLayout {
+                                    spacing: 2px;
+                                    Text { text: "Profile"; color: Theme.text-dim; font-size: Theme.font-small; }
+                                    Text {
+                                        text: root.firewall-profile;
+                                        color: Theme.text-secondary;
+                                        font-size: Theme.font-body;
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Quick profiles
+                    if root.firewall-enabled : VerticalLayout {
+                        spacing: 8px;
+
+                        Text {
+                            text: "Quick Profiles";
+                            color: Theme.text-primary;
+                            font-size: Theme.font-title;
+                            font-weight: 600;
+                        }
+
+                        HorizontalLayout {
+                            spacing: 10px;
+
+                            ActionButton {
+                                label: "Home";
+                                width: 100px;
+                                primary: root.firewall-profile == "Home";
+                                clicked => { root.firewall-apply-profile("home"); }
+                            }
+                            ActionButton {
+                                label: "Public";
+                                width: 100px;
+                                primary: root.firewall-profile == "Public";
+                                clicked => { root.firewall-apply-profile("public"); }
+                            }
+                            ActionButton {
+                                label: "Restrictive";
+                                width: 110px;
+                                primary: root.firewall-profile == "Restrictive";
+                                clicked => { root.firewall-apply-profile("restrictive"); }
+                            }
+                        }
+                    }
+
+                    // Quick actions — Allow/Block port
+                    if root.firewall-enabled : VerticalLayout {
+                        spacing: 8px;
+
+                        Text {
+                            text: "Quick Actions";
+                            color: Theme.text-primary;
+                            font-size: Theme.font-title;
+                            font-weight: 600;
+                        }
+
+                        HorizontalLayout {
+                            spacing: 10px;
+
+                            Rectangle {
+                                horizontal-stretch: 1;
+                                height: 36px;
+                                background: Theme.bg-input;
+                                border-radius: Theme.radius-card;
+                                border-width: 1px;
+                                border-color: Theme.border-subtle;
+
+                                fw-port-input := TextInput {
+                                    x: 12px;
+                                    width: parent.width - 24px;
+                                    height: 100%;
+                                    text: "";
+                                    color: Theme.text-primary;
+                                    font-size: Theme.font-body;
+                                }
+                                if fw-port-input.text == "" : Text {
+                                    x: 12px;
+                                    text: "Port number...";
+                                    color: Theme.text-dim;
+                                    font-size: Theme.font-body;
+                                    vertical-alignment: center;
+                                }
+                            }
+
+                            ActionButton {
+                                label: "Allow";
+                                width: 80px;
+                                primary: true;
+                                clicked => {
+                                    if fw-port-input.text != "" {
+                                        root.firewall-allow-port(fw-port-input.text);
+                                        fw-port-input.text = "";
+                                    }
+                                }
+                            }
+                            ActionButton {
+                                label: "Block";
+                                width: 80px;
+                                danger: true;
+                                clicked => {
+                                    if fw-port-input.text != "" {
+                                        root.firewall-block-port(fw-port-input.text);
+                                        fw-port-input.text = "";
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Active rules
+                    if root.firewall-enabled && root.firewall-rules.length > 0 : VerticalLayout {
+                        spacing: 8px;
+
+                        Text {
+                            text: "Active Rules";
+                            color: Theme.text-primary;
+                            font-size: Theme.font-title;
+                            font-weight: 600;
+                        }
+
+                        for rule[idx] in root.firewall-rules : Rectangle {
+                            height: 44px;
+                            background: Theme.bg-card;
+                            border-radius: Theme.radius-card;
+                            border-width: 1px;
+                            border-color: Theme.border-subtle;
+
+                            HorizontalLayout {
+                                padding-left: 16px;
+                                padding-right: 16px;
+                                spacing: 12px;
+
+                                // Action badge
+                                Rectangle {
+                                    width: rule-action-text.preferred-width + 12px;
+                                    height: 20px;
+                                    border-radius: 10px;
+                                    background: rule.action == "ACCEPT" ? #2a8a3a40
+                                              : rule.action == "DROP" ? #a0404040
+                                              : Theme.bg-elevated;
+                                    rule-action-text := Text {
+                                        text: rule.action;
+                                        color: rule.action == "ACCEPT" ? #6cd480
+                                             : rule.action == "DROP" ? #ff6060
+                                             : Theme.text-secondary;
+                                        font-size: 11px;
+                                        font-weight: 600;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+                                }
+
+                                Text {
+                                    text: rule.chain;
+                                    color: Theme.text-dim;
+                                    font-size: Theme.font-small;
+                                    vertical-alignment: center;
+                                }
+
+                                Text {
+                                    text: rule.description;
+                                    color: Theme.text-secondary;
+                                    font-size: Theme.font-body;
+                                    vertical-alignment: center;
+                                    overflow: elide;
+                                    horizontal-stretch: 1;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── WiFi Password Dialog (overlay) ──
+        if root.wifi-password-visible : Rectangle {
+            width: 100%;
+            height: 100%;
+            background: Theme.overlay-backdrop;
+
+            TouchArea {
+                width: 100%;
+                height: 100%;
+                clicked => { root.wifi-password-visible = false; }
+            }
+
+            Rectangle {
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                width: 400px;
+                height: pw-dialog-layout.preferred-height + 32px;
+                background: Theme.bg-card;
+                border-radius: Theme.radius-card;
+                border-width: 1px;
+                border-color: Theme.accent-dim;
+                drop-shadow-blur: 20px;
+                drop-shadow-color: Theme.overlay-shadow;
+
+                // Block clicks from closing
+                TouchArea { width: 100%; height: 100%; }
+
+                pw-dialog-layout := VerticalLayout {
+                    padding: 20px;
+                    spacing: 16px;
+
+                    Text {
+                        text: "Connect to " + root.wifi-password-ssid;
+                        color: Theme.text-primary;
+                        font-size: Theme.font-title;
+                        font-weight: 600;
+                    }
+
+                    VerticalLayout {
+                        spacing: 6px;
+                        Text {
+                            text: "Password";
+                            color: Theme.text-secondary;
+                            font-size: Theme.font-small;
+                        }
+                        Rectangle {
+                            height: 40px;
+                            background: Theme.bg-input;
+                            border-radius: Theme.radius-card;
+                            border-width: 1px;
+                            border-color: Theme.border-subtle;
+
+                            pw-input := TextInput {
+                                x: 12px;
+                                width: parent.width - 24px;
+                                height: 100%;
+                                text <=> root.wifi-password-input;
+                                color: Theme.text-primary;
+                                font-size: Theme.font-body;
+                                accepted => {
+                                    root.wifi-connect(root.wifi-password-ssid, root.wifi-password-input);
+                                    root.wifi-password-visible = false;
+                                }
+                            }
+                        }
+                    }
+
+                    if root.wifi-connect-status != "" : Text {
+                        text: root.wifi-connect-status;
+                        color: Theme.color-emotional;
+                        font-size: Theme.font-small;
+                    }
+
+                    HorizontalLayout {
+                        spacing: 10px;
+                        alignment: end;
+
+                        ActionButton {
+                            label: "Cancel";
+                            width: 80px;
+                            clicked => { root.wifi-password-visible = false; }
+                        }
+                        ActionButton {
+                            label: "Connect";
+                            width: 100px;
+                            primary: true;
+                            clicked => {
+                                root.wifi-connect(root.wifi-password-ssid, root.wifi-password-input);
+                                root.wifi-password-visible = false;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

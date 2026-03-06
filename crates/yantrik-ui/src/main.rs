@@ -47,6 +47,7 @@ mod features;
 mod filebrowser;
 mod focus;
 mod frecency;
+mod i18n;
 #[allow(dead_code)]
 mod mime_dispatch;
 mod lens;
@@ -76,13 +77,14 @@ fn main() {
         .init();
 
     // Load config
-    let config = load_config(std::env::args().nth(1).map(PathBuf::from));
+    let config_path = std::env::args().nth(1).map(PathBuf::from);
+    let config = load_config(config_path.clone());
 
     // Create Slint UI
     let ui = App::new().unwrap();
 
     // Initialize all shared state
-    let ctx = app_context::AppContext::init(config, &ui);
+    let ctx = app_context::AppContext::init(config, &ui, config_path);
 
     // Wire all callbacks
     wire::wire_all(&ui, &ctx);

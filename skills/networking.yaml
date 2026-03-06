@@ -1,0 +1,32 @@
+id: networking
+name: Network Tools
+description: Network diagnostics — ping, traceroute, DNS, ports, VPN status
+long_description: >
+  Comprehensive network diagnostic tools. Check interfaces, ping hosts, run
+  traceroutes, scan open ports, manage DNS settings, and check VPN status.
+  Essential for troubleshooting connectivity issues.
+version: "1.0.0"
+author: Yantrik
+icon: globe
+category: system
+tags: [ping, traceroute, dns, ports, vpn, interfaces, diagnostics]
+
+tools:
+  - network_interfaces
+  - network_ping
+  - network_traceroute
+  - network_ports
+  - network_dns
+  - network_dns_set
+  - network_vpn_status
+
+core_tools: []
+instincts: []
+cortex_rules: []
+services: []
+requires: []
+requires_config: []
+
+permissions:
+  - network
+  - shell

@@ -90,6 +90,12 @@ pub mod clipboard;
 pub mod automation;
 pub mod vision;
 pub mod canvas;
+pub mod connector;
+pub mod email;
+pub mod calendar;
+pub mod task_queue;
+pub mod recipe;
+pub mod claude;
 pub mod plugin;
 
 use crate::config::CompanionConfig;
@@ -391,6 +397,9 @@ pub fn build_registry(config: &CompanionConfig) -> ToolRegistry {
     memory_hygiene::register(&mut reg);
     clipboard::register(&mut reg);
     automation::register(&mut reg);
+    task_queue::register(&mut reg);
+    recipe::register(&mut reg);
+    claude::register(&mut reg);
     // Life assistant tools — need Ollama for LLM extraction
     if config.llm.is_api_backend() {
         let api_url = config.llm.resolve_api_base_url().unwrap_or_default();
@@ -424,6 +433,18 @@ pub fn build_registry(config: &CompanionConfig) -> ToolRegistry {
         }
     }
 
+    // Conditionally register email tools
+    if config.email.enabled && !config.email.accounts.is_empty() {
+        email::register(&mut reg, config.email.accounts.clone());
+        tracing::info!("Email tools registered ({} accounts)", config.email.accounts.len());
+    }
+
+    // Conditionally register calendar tools (reuses email OAuth2)
+    if config.calendar.enabled && !config.email.accounts.is_empty() {
+        calendar::register(&mut reg, config.email.accounts.clone(), config.calendar.account.clone());
+        tracing::info!("Calendar tools registered");
+    }
+
     // Register vision tools (if using API backend like Ollama with vision support)
     if config.llm.is_api_backend() {
         // Convert OpenAI-compat URL to Ollama native URL for vision
@@ -433,11 +454,8 @@ pub fn build_registry(config: &CompanionConfig) -> ToolRegistry {
         let model = config.llm.api_model.as_deref().unwrap_or("qwen3.5:9b");
         vision::register(&mut reg, &ollama_base, model);
         canvas::register(&mut reg, &ollama_base, model);
-        // Use lighter model for browser_see — vision on 27B is too slow (timeouts).
-        // 9B is fast enough for coordinate extraction from screenshots.
-        let vision_model = config.llm.vision_model.as_deref().unwrap_or("qwen3.5:9b");
-        browser::register_vision(&mut reg, &ollama_base, vision_model);
-        tracing::info!(base = %ollama_base, model, vision_model, "Vision & Canvas tools registered");
+        browser::register_vision(&mut reg, &ollama_base, model);
+        tracing::info!(base = %ollama_base, model, "Vision & Canvas tools registered");
     }
 
     // Load YAML plugins from ~/.config/yantrik/plugins/

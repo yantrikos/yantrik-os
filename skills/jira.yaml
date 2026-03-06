@@ -1,0 +1,32 @@
+id: jira
+name: Jira
+description: Jira ticket management, sprint tracking, and project monitoring
+long_description: >
+  Full Jira integration for managing tickets, tracking sprints, and monitoring
+  project progress. AI-powered insights about stale tickets, blockers, and sprint
+  health. Best for development teams using Jira for project management.
+version: "1.0.0"
+author: Yantrik
+icon: ticket
+category: development
+tags: [atlassian, tickets, sprint, agile, scrum, project, kanban]
+
+tools: []
+core_tools: []
+
+instincts: []
+
+cortex_rules:
+  - stale_ticket
+  - blocker_alert
+  - review_reminder
+  - sprint_pulse
+
+services:
+  - jira
+
+requires: []
+requires_config: []
+
+permissions:
+  - network

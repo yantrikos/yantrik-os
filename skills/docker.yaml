@@ -1,0 +1,30 @@
+id: docker
+name: Docker
+description: Manage containers, images, and logs with natural language
+long_description: >
+  View running containers, manage images, read logs, start/stop containers,
+  and execute commands inside them. Perfect for developers running containerized
+  services locally or on remote hosts.
+version: "1.0.0"
+author: Yantrik
+icon: container
+category: development
+tags: [containers, kubernetes, devops, images, logs, microservices]
+
+tools:
+  - docker_ps
+  - docker_images
+  - docker_logs
+  - docker_start
+  - docker_stop
+  - docker_exec
+
+core_tools: []
+instincts: []
+cortex_rules: []
+services: []
+requires: []
+requires_config: []
+
+permissions:
+  - shell

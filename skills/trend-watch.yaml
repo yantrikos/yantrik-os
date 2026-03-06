@@ -1,0 +1,27 @@
+id: trend-watch
+name: Trend Watch
+description: Track trending topics on Reddit, Hacker News, and social media
+long_description: >
+  Monitors trending discussions across Reddit, Hacker News, and other tech communities.
+  AI identifies topics relevant to your interests and surfaces the most interesting
+  conversations. Configurable subreddits and communities.
+version: "1.0.0"
+author: Yantrik
+icon: trending
+category: news
+tags: [reddit, hackernews, trending, social, discussions, tech]
+
+tools: []
+core_tools: []
+
+instincts:
+  - trend_watch
+
+cortex_rules: []
+services: []
+requires: []
+requires_config: []
+
+permissions:
+  - network
+  - background

@@ -62,6 +62,22 @@ pub const CORE_TOOLS: &[&str] = &[
     "http_fetch", "network_diagnose",
     // Utility
     "calculate", "screenshot",
+    // Email (check, list, read, send, reply, search)
+    "email_check", "email_list", "email_read", "email_send", "email_reply", "email_search",
+    // Calendar (today, list, create, update, delete)
+    "calendar_today", "calendar_list_events", "calendar_create_event", "calendar_update_event", "calendar_delete_event",
+    // Memory hygiene (review, conflicts, stats)
+    "memory_stats", "resolve_conflicts", "review_memories",
+    // Task queue (persistent work across think cycles)
+    "queue_task", "list_tasks", "update_task", "complete_task",
+    // Recipe engine (structured automation)
+    "create_recipe", "list_recipes", "run_recipe",
+    // Claude Code delegation (complex reasoning)
+    "claude_think", "claude_code",
+    // Weather & bond
+    "get_weather", "check_bond",
+    // Connectors (OAuth — Google, Spotify, etc.)
+    "list_connections", "connect_service", "sync_service", "disconnect_service",
 ];
 
 /// The companion agent — memory + inference + instincts + bond + evolution in one struct.
@@ -122,6 +138,28 @@ pub struct CompanionService {
 
     // Incognito mode — when true, no data is persisted from interactions.
     pub incognito: bool,
+
+    // Natural Communication state
+    /// Significant events for aftermath instinct: (description, timestamp, reflected)
+    pub natural_events: Vec<(String, f64, bool)>,
+    /// Running average of user message lengths (for conversational metabolism)
+    user_msg_lengths: Vec<usize>,
+    /// Proactive messages sent today (reset daily)
+    pub daily_proactive_count: u32,
+    daily_proactive_reset_ts: f64,
+    /// Last N messages sent by companion (for anti-repetition / negative examples)
+    pub recent_sent_messages: Vec<String>,
+    /// Suppressed urges: (key, reason, timestamp) — for strategic silence reveal
+    pub suppressed_urges: Vec<(String, String, f64)>,
+    /// Last proactive message context: (text, urge_ids, timestamp)
+    /// Used for threading — if user replies within 5 minutes, inject context.
+    pub last_proactive_context: Option<(String, Vec<String>, f64)>,
+
+    /// Context Cortex — cross-system intelligence engine.
+    pub cortex: Option<crate::cortex::ContextCortex>,
+
+    /// Connector state — OAuth connector manager for external services.
+    pub connector_state: Option<std::sync::Arc<std::sync::Mutex<tools::connector::ConnectorState>>>,
 }
 
 impl CompanionService {
@@ -134,7 +172,7 @@ impl CompanionService {
 
         let urge_queue = UrgeQueue::new(db.conn(), config.urges.clone());
         let instincts = instincts::load_instincts(&config.instincts);
-        let registry = tools::build_registry(&config);
+        let mut registry = tools::build_registry(&config);
         let guard = SecurityGuard::new(&db);
         let proactive_engine =
             ProactiveEngine::new(config.proactive.clone(), &config.user_name);
@@ -152,10 +190,38 @@ impl CompanionService {
         // Tool trace learning table
         ToolTraces::ensure_table(db.conn());
 
+        // Persistent task queue for multi-cycle autonomous work
+        crate::task_queue::TaskQueue::ensure_table(db.conn());
+        // Recipe engine tables
+        crate::recipe::RecipeStore::ensure_tables(db.conn());
+
         // Memory evolution tables + backfill existing memories
         memory_evolution::ensure_tables(db.conn());
         memory_evolution::ensure_weaving_tables(db.conn());
         memory_evolution::backfill_tiers(db.conn(), &config.memory_evolution);
+
+        // Connector manager — OAuth flows for external services
+        // Must be registered before native_core_tools computation.
+        let connector_state = {
+            let mut mgr = crate::connectors::ConnectorManager::new();
+            mgr.register(Box::new(crate::connectors::google::GoogleConnector::new()));
+            mgr.register(Box::new(crate::connectors::spotify::SpotifyConnector::new()));
+            mgr.register(Box::new(crate::connectors::facebook::FacebookConnector::new()));
+            mgr.register(Box::new(crate::connectors::instagram::InstagramConnector::new()));
+
+            let state = tools::connector::ConnectorState {
+                manager: mgr,
+                config: config.connectors.clone(),
+                db_path: config.yantrikdb.db_path.clone(),
+                pending_auth: None,
+            };
+            let arc = std::sync::Arc::new(std::sync::Mutex::new(state));
+
+            tools::connector::register(&mut registry, arc.clone());
+            tracing::info!("Connector tools registered (Google, Spotify, Facebook, Instagram)");
+
+            Some(arc)
+        };
 
         // Build stable tools prefix — core tools only for KV caching.
         // Full tool set is discoverable via discover_tools meta-tool.
@@ -203,6 +269,21 @@ impl CompanionService {
         crate::task_manager::TaskManager::ensure_table(db.conn());
         task_mgr.recover_stale(db.conn());
 
+        // Context Cortex — cross-system intelligence
+        let cortex = match crate::cortex::ContextCortex::init_with_services(db.conn(), &config.enabled_services) {
+            Ok(c) => {
+                tracing::info!(
+                    services = ?config.enabled_services,
+                    "Context Cortex initialized with enabled services"
+                );
+                Some(c)
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to initialize Context Cortex, continuing without it");
+                None
+            }
+        };
+
         // Load current bond state
         let bond_state = BondTracker::get_state(db.conn());
 
@@ -233,6 +314,77 @@ impl CompanionService {
             task_manager: std::sync::Mutex::new(task_mgr),
             recent_events: Vec::new(),
             incognito: false,
+            natural_events: Vec::new(),
+            user_msg_lengths: Vec::new(),
+            daily_proactive_count: 0,
+            daily_proactive_reset_ts: now_ts(),
+            recent_sent_messages: Vec::new(),
+            suppressed_urges: Vec::new(),
+            last_proactive_context: None,
+            cortex,
+            connector_state,
+        }
+    }
+
+    /// Apply a Skill Store snapshot — merges skill-derived services with config,
+    /// filters instincts, extends core tools based on enabled skills.
+    pub fn apply_skill_snapshot(&mut self, snapshot: &crate::skills::SkillSnapshot) {
+        // 1. Merge cortex services: config services + skill-derived services
+        if let Some(ref mut cortex) = self.cortex {
+            let mut merged: Vec<String> = self.config.enabled_services.clone();
+            for svc in &snapshot.enabled_services {
+                if !merged.iter().any(|s| s.eq_ignore_ascii_case(svc)) {
+                    merged.push(svc.clone());
+                }
+            }
+            cortex.set_services(&merged);
+            tracing::info!(
+                config_services = ?self.config.enabled_services,
+                skill_services = ?snapshot.enabled_services,
+                merged = ?merged,
+                "Cortex services merged from config + Skill Store"
+            );
+        }
+
+        // 2. Filter instincts — keep only those whose name matches an enabled instinct ID
+        //    (or that are not gated by skills at all, i.e., core instincts)
+        if !snapshot.enabled_instincts.is_empty() {
+            let before = self.instincts.len();
+            self.instincts.retain(|inst| {
+                let name = inst.name();
+                // Core instincts that are always on (scheduler, automation, bond, etc.)
+                let is_core = matches!(
+                    name,
+                    "Scheduler" | "Automation" | "BondMilestone" | "SelfAwareness"
+                    | "MorningBrief" | "ActivityReflector" | "Serendipity"
+                    | "Aftermath" | "QuestionAsking" | "EveningReflection"
+                    | "ConversationalCallback" | "SilenceReveal"
+                    | "CheckIn" | "EmotionalAwareness" | "FollowUp"
+                    | "Reminder" | "PatternSurfacing" | "ConflictAlerting"
+                    | "MemoryWeaver"
+                );
+                is_core || snapshot.enabled_instincts.contains(name)
+            });
+            tracing::info!(
+                before,
+                after = self.instincts.len(),
+                enabled = ?snapshot.enabled_instincts,
+                "Instincts filtered by Skill Store"
+            );
+        }
+
+        // 3. Extend native core tools with extra tools from enabled skills
+        if !snapshot.extra_core_tools.is_empty() {
+            let max_perm = tools::parse_permission(&self.config.tools.max_permission);
+            let extra_names: Vec<&str> = snapshot.extra_core_tools.iter().map(|s| s.as_str()).collect();
+            let extra_defs = self.registry.definitions_for(&extra_names, max_perm);
+            let added = extra_defs.len();
+            self.native_core_tools.extend(extra_defs);
+            tracing::info!(
+                added,
+                extra = ?snapshot.extra_core_tools,
+                "Extended core tools from Skill Store"
+            );
         }
     }
 
@@ -259,6 +411,18 @@ impl CompanionService {
     /// Drain buffered events (called during think cycle).
     pub fn drain_events(&mut self) -> Vec<(String, serde_json::Value)> {
         std::mem::take(&mut self.recent_events)
+    }
+
+    /// Execute a tool directly (bypassing LLM). Used by the recipe engine for Tool steps.
+    pub fn execute_tool_direct(&self, tool_name: &str, args: &serde_json::Value) -> String {
+        let ctx = ToolContext {
+            db: &self.db,
+            max_permission: PermissionLevel::Standard,
+            registry_metadata: None,
+            task_manager: Some(&self.task_manager),
+            incognito: self.incognito,
+        };
+        self.registry.execute(&ctx, tool_name, args)
     }
 
     /// The 9-step message pipeline.
@@ -549,6 +713,7 @@ impl CompanionService {
                 &mut agent_loop,
                 self.config.agent.error_recovery,
                 self.incognito,
+                self.cortex.as_mut(),
             );
 
             if !text_part.is_empty() {
@@ -922,14 +1087,11 @@ impl CompanionService {
 
                     on_token("__REPLACE__");
                     let tool_names: Vec<&str> = tool_calls.iter().map(|c| c.name.as_str()).collect();
+                    let progress_msg = format_tool_progress(&tool_names, 1);
                     if display_text.is_empty() {
-                        on_token(&format!("[Using {}...]\n", tool_names.join(", ")));
+                        on_token(&format!("{}\n", progress_msg));
                     } else {
-                        on_token(&format!(
-                            "{}\n[Using {}...]\n",
-                            display_text,
-                            tool_names.join(", "),
-                        ));
+                        on_token(&format!("{}\n{}\n", display_text, progress_msg));
                     }
 
                     // Add assistant message with proper format
@@ -956,6 +1118,7 @@ impl CompanionService {
                         &mut agent_loop,
                         self.config.agent.error_recovery,
                         self.incognito,
+                        self.cortex.as_mut(),
                     );
 
                     // Remaining rounds: discovery rounds are budget-limited,
@@ -1012,15 +1175,13 @@ impl CompanionService {
                                 } else {
                                     round_text.trim().to_string()
                                 };
+                                let step_num = tool_calls_made.len() + 1;
+                                let progress_msg2 = format_tool_progress(&names2, step_num);
                                 on_token("__REPLACE__");
                                 if round_display.is_empty() {
-                                    on_token(&format!("[Using {}...]\n", names2.join(", ")));
+                                    on_token(&format!("{}\n", progress_msg2));
                                 } else {
-                                    on_token(&format!(
-                                        "{}\n[Using {}...]\n",
-                                        round_display,
-                                        names2.join(", "),
-                                    ));
+                                    on_token(&format!("{}\n{}\n", round_display, progress_msg2));
                                 }
 
                                 if self.use_native_tools && !r2.api_tool_calls.is_empty() {
@@ -1036,13 +1197,10 @@ impl CompanionService {
                                     .map(|c| (c.name.clone(), c.arguments.clone()))
                                     .collect();
 
-                                // Show "running" progress before tool execution
-                                // so the user sees feedback during potentially long ops
+                                // Show progress before tool execution
                                 on_token("__REPLACE__");
-                                on_token(&format!(
-                                    "[Running {}...]\n",
-                                    names2.join(", "),
-                                ));
+                                let run_progress = format_tool_progress(&names2, tool_calls_made.len());
+                                on_token(&format!("{}\n", run_progress));
 
                                 execute_tool_round_tracked(
                                     &self.registry, &mut self.guard, &self.db,
@@ -1054,6 +1212,7 @@ impl CompanionService {
                                     &mut agent_loop,
                                     self.config.agent.error_recovery,
                                     self.incognito,
+                                    self.cortex.as_mut(),
                                 );
 
                                 if !round_text.is_empty() {
@@ -1282,6 +1441,17 @@ impl CompanionService {
             interactions_last_hour,
             workflow_hints,
             maintenance_report,
+            // Natural Communication
+            recent_events: self.natural_events.clone(),
+            avg_user_msg_length: if self.user_msg_lengths.is_empty() {
+                0.0
+            } else {
+                self.user_msg_lengths.iter().sum::<usize>() as f64
+                    / self.user_msg_lengths.len() as f64
+            },
+            daily_proactive_count: self.daily_proactive_count,
+            recent_sent_messages: self.recent_sent_messages.clone(),
+            suppressed_urges: self.suppressed_urges.clone(),
         }
     }
 
@@ -1313,6 +1483,118 @@ impl CompanionService {
         self.proactive_message = Some(msg);
     }
 
+    // ---- Natural Communication helpers ----
+
+    /// Record a significant event for the aftermath instinct.
+    pub fn record_event(&mut self, description: &str) {
+        let ts = now_ts();
+        self.natural_events.push((description.to_string(), ts, false));
+        // Keep last 20 events
+        if self.natural_events.len() > 20 {
+            self.natural_events.drain(0..self.natural_events.len() - 20);
+        }
+    }
+
+    /// Mark an event as reflected (aftermath instinct used it).
+    pub fn mark_event_reflected(&mut self, idx: usize) {
+        if let Some(ev) = self.natural_events.get_mut(idx) {
+            ev.2 = true;
+        }
+    }
+
+    /// Track user message length for conversational metabolism.
+    pub fn track_user_msg_length(&mut self, len: usize) {
+        self.user_msg_lengths.push(len);
+        if self.user_msg_lengths.len() > 5 {
+            self.user_msg_lengths.drain(0..self.user_msg_lengths.len() - 5);
+        }
+    }
+
+    /// Record a sent proactive message for anti-repetition AND conversation history.
+    pub fn record_sent_message(&mut self, text: &str) {
+        self.recent_sent_messages.push(text.to_string());
+        if self.recent_sent_messages.len() > 10 {
+            self.recent_sent_messages.drain(0..self.recent_sent_messages.len() - 10);
+        }
+
+        // Add to conversation history so the LLM remembers what it said
+        self.conversation_history.push(ChatMessage::assistant(text));
+        // Keep conversation history bounded
+        let max = 30;
+        if self.conversation_history.len() > max {
+            let drain = self.conversation_history.len() - max;
+            self.conversation_history.drain(..drain);
+        }
+
+        // Track daily count
+        let now = now_ts();
+        if now - self.daily_proactive_reset_ts > 86400.0 {
+            self.daily_proactive_count = 0;
+            self.daily_proactive_reset_ts = now;
+        }
+        self.daily_proactive_count += 1;
+    }
+
+    /// Record a suppressed urge for strategic silence.
+    pub fn record_suppressed_urge(&mut self, key: &str, reason: &str) {
+        let ts = now_ts();
+        self.suppressed_urges.push((key.to_string(), reason.to_string(), ts));
+        // Keep last 20
+        if self.suppressed_urges.len() > 20 {
+            self.suppressed_urges.drain(0..self.suppressed_urges.len() - 20);
+        }
+    }
+
+    /// Record proactive message context for threading.
+    pub fn record_proactive_context(&mut self, text: &str, urge_ids: Vec<String>) {
+        self.last_proactive_context = Some((text.to_string(), urge_ids, now_ts()));
+    }
+
+    /// Get threading context if a user replies shortly after a proactive message.
+    /// Returns Some(context_text) if the last proactive was within 15 minutes.
+    pub fn get_threading_context(&mut self) -> Option<String> {
+        if let Some((ref text, ref _urge_ids, ts)) = self.last_proactive_context {
+            let elapsed = now_ts() - ts;
+            if elapsed < 900.0 { // 15 minutes
+                let short = if text.len() > 500 {
+                    format!("{}...", &text[..text.floor_char_boundary(497)])
+                } else {
+                    text.clone()
+                };
+                let ctx = format!(
+                    "[Context: You recently sent this proactive message ({:.0}s ago):\n\"{}\"\nThe user's reply may be about this.]\n",
+                    elapsed, short
+                );
+                // Don't clear — the message is also in conversation_history now,
+                // but keep this as reinforcement for multiple follow-ups
+                return Some(ctx);
+            }
+        }
+        None
+    }
+
+    /// Get the last N sent messages for anti-repetition prompting.
+    pub fn last_sent_messages(&self, n: usize) -> &[String] {
+        let start = self.recent_sent_messages.len().saturating_sub(n);
+        &self.recent_sent_messages[start..]
+    }
+
+    /// Get daily message budget based on bond level.
+    pub fn daily_message_budget(&self) -> u32 {
+        match self.bond_level {
+            BondLevel::Stranger => 3,
+            BondLevel::Acquaintance => 5,
+            BondLevel::Friend => 8,
+            BondLevel::Confidant => 10,
+            BondLevel::PartnerInCrime => 14,
+        }
+    }
+
+    /// Check if daily proactive budget is exceeded.
+    pub fn is_over_daily_budget(&self) -> bool {
+        self.daily_proactive_count >= self.daily_message_budget()
+    }
+
     /// Update cached cognition state (called after think()).
     pub fn update_cognition_cache(
         &mut self,
@@ -1336,21 +1618,21 @@ impl CompanionService {
     }
 
     /// Poll background tasks; record completed ones to memory.
-    pub fn poll_background_tasks(&self) {
+    /// Poll background tasks. Returns descriptions of newly completed tasks (for notifications).
+    pub fn poll_background_tasks(&self) -> Vec<String> {
         let mut tm = match self.task_manager.lock() {
             Ok(t) => t,
-            Err(_) => return,
+            Err(_) => return Vec::new(),
         };
         let completed = tm.poll(self.db.conn());
+        let mut notifications = Vec::new();
         for task_id in &completed {
             if let Some(status) = tm.get_status(self.db.conn(), task_id) {
                 let output = crate::task_manager::TaskManager::read_output(task_id, 20);
+                let exit_str = status.exit_code.map(|c| c.to_string()).unwrap_or_else(|| "?".into());
                 let text = format!(
                     "Background task completed: {} ({})\nExit: {}\nOutput:\n{}",
-                    status.label,
-                    status.command,
-                    status.exit_code.map(|c| c.to_string()).unwrap_or_else(|| "?".into()),
-                    output
+                    status.label, status.command, exit_str, output
                 );
                 let _ = self.db.record_text(
                     &text, "episodic", 0.5, 0.0, 604800.0,
@@ -1358,8 +1640,21 @@ impl CompanionService {
                     "default", 0.9, "system/tasks", "system", None,
                 );
                 crate::task_manager::TaskManager::mark_recorded(self.db.conn(), task_id);
+
+                // Build notification text
+                let outcome = if status.exit_code == Some(0) { "completed" } else { "failed" };
+                let short_output = if output.len() > 200 {
+                    format!("{}...", &output[..output.floor_char_boundary(197)])
+                } else {
+                    output
+                };
+                notifications.push(format!(
+                    "Background task {} ({}): exit {}\n{}",
+                    outcome, status.label, exit_str, short_output
+                ));
             }
         }
+        notifications
     }
 
     /// Active task summary for system context injection.
@@ -1593,6 +1888,7 @@ fn execute_tool_round_tracked(
     agent_loop: &mut AgentLoop,
     error_recovery: bool,
     incognito: bool,
+    mut cortex: Option<&mut crate::cortex::ContextCortex>,
 ) {
     let ctx = ToolContext {
         db,
@@ -1646,6 +1942,11 @@ fn execute_tool_round_tracked(
 
         // Record step in agent loop
         agent_loop.record_step(name, args, &result, !is_error);
+
+        // Ingest into Context Cortex pulse stream
+        if let Some(ctx) = cortex.as_mut() {
+            ctx.ingest_tool_result(db.conn(), name, args, &result);
+        }
 
         // Dynamic schema injection for discover_tools
         if name == "discover_tools" {
@@ -1851,6 +2152,49 @@ fn query_maintenance_log(conn: &rusqlite::Connection) -> Vec<serde_json::Value> 
     .ok()
     .map(|rows| rows.filter_map(|r| r.ok()).collect())
     .unwrap_or_default()
+}
+
+/// Format tool names into a human-readable progress message.
+/// e.g. "browse" → "Browsing web...", "memory_stats" → "Checking memory..."
+fn format_tool_progress(tool_names: &[&str], step: usize) -> String {
+    let friendly: Vec<&str> = tool_names.iter().map(|name| match *name {
+        "browse" | "browser_snapshot" | "browser_see" => "Browsing web",
+        "browser_click_element" | "browser_click_xy" | "browser_type_element" | "browser_type_xy" => "Interacting with page",
+        "web_search" | "browser_search" => "Searching the web",
+        "remember" | "recall" | "save_user_fact" => "Checking memory",
+        "memory_stats" | "review_memories" | "resolve_conflicts" => "Reviewing memories",
+        "run_command" => "Running command",
+        "read_file" => "Reading file",
+        "write_file" => "Writing file",
+        "list_files" | "search_files" => "Scanning files",
+        "email_check" | "email_list" => "Checking email",
+        "email_read" => "Reading email",
+        "email_send" | "email_reply" => "Sending email",
+        "calendar_today" | "calendar_list_events" => "Checking calendar",
+        "calendar_create_event" => "Creating event",
+        "system_info" => "Checking system",
+        "telegram_send" => "Sending message",
+        "http_fetch" => "Fetching data",
+        "life_search" | "search_sources" => "Searching for options",
+        "rank_results" => "Ranking results",
+        "queue_task" => "Queuing task",
+        "update_task" | "complete_task" => "Updating task",
+        "discover_tools" => "Finding tools",
+        _ => "Working",
+    }).collect();
+
+    // Deduplicate
+    let mut unique: Vec<&str> = Vec::new();
+    for f in &friendly {
+        if !unique.contains(f) { unique.push(f); }
+    }
+
+    let desc = unique.join(", ");
+    if step > 1 {
+        format!("[Step {} — {}...]", step, desc.to_lowercase())
+    } else {
+        format!("[{}...]", desc)
+    }
 }
 
 /// Strip Qwen3.5 `<think>...</think>` reasoning blocks from LLM output.

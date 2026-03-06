@@ -1,0 +1,29 @@
+id: clipboard-ai
+name: Clipboard AI
+description: Smart clipboard with history, URL fetching, and text transformations
+long_description: >
+  Enhanced clipboard with AI powers. Track clipboard history, auto-fetch URLs
+  you copy, transform text (summarize, translate, rewrite), and apply quick
+  actions to selected text.
+version: "1.0.0"
+author: Yantrik
+icon: clipboard
+category: productivity
+tags: [clipboard, copy, paste, transform, summarize, translate]
+
+tools:
+  - clipboard_history
+  - clipboard_analyze
+  - clipboard_fetch_url
+  - clipboard_transform
+  - text_action
+
+core_tools: []
+instincts: []
+cortex_rules: []
+services: []
+requires: []
+requires_config: []
+
+permissions:
+  - network

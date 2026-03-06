@@ -38,14 +38,30 @@ fn wire_clock(ui: &App, user_name: &str) {
 
 /// Background cognition — think cycle every 60 seconds.
 /// Passes current interruptibility from FocusFlow so the worker can gate
-/// proactive messages during deep work.
+/// proactive messages during deep work. Also sends focus data (foreground
+/// window, idle seconds) for the Context Cortex.
 fn wire_think(ctx: &AppContext) {
     let bridge = ctx.bridge.clone();
     let scorer = ctx.scorer.clone();
+    let snapshot = ctx.system_snapshot.clone();
     let timer = Timer::default();
     timer.start(TimerMode::Repeated, Duration::from_secs(60), move || {
         let interruptibility = scorer.borrow().interruptibility();
-        bridge.think(interruptibility);
+
+        // Gather focus data from system snapshot + foreground window
+        let snap = snapshot.borrow();
+        let idle_secs = snap.idle_seconds;
+        drop(snap);
+
+        // Get foreground window title from window list (first entry = most recent)
+        let windows = crate::windows::list_windows();
+        let (win_title, proc_name) = if let Some(w) = windows.first() {
+            (w.title.clone(), w.app_id.clone())
+        } else {
+            (String::new(), String::new())
+        };
+
+        bridge.think(interruptibility, win_title, proc_name, idle_secs);
     });
     std::mem::forget(timer);
 }

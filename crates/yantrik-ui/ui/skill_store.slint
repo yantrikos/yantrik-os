@@ -1,0 +1,283 @@
+// Skill Store — data-driven skill management UI.
+// Skills are loaded from SkillRegistry manifests via Rust backend.
+
+import { Theme } from "theme.slint";
+
+export struct SkillData {
+    id: string,
+    name: string,
+    description: string,
+    icon: string,
+    category: string,
+    enabled: bool,
+    tags: string,
+}
+
+export component SkillStore inherits Rectangle {
+    // Model data populated from Rust
+    in property <[SkillData]> skills;
+    in property <[string]> categories: ["All"];
+    in-out property <string> active-category: "All";
+    in-out property <string> search-query: "";
+
+    // Callbacks
+    callback toggle-skill(string);
+    callback search-skills(string);
+    callback filter-category(string);
+
+    // Internals
+    property <int> total-count: skills.length;
+
+    background: transparent;
+
+    VerticalLayout {
+        padding: 20px;
+        spacing: 16px;
+        alignment: start;
+
+        // ── Header ──
+        HorizontalLayout {
+            spacing: 8px;
+            Rectangle {
+                width: 3px; height: 14px;
+                border-radius: 1.5px;
+                background: Theme.cyan;
+                drop-shadow-blur: 4px;
+                drop-shadow-color: Theme.cyan-glow;
+            }
+            Text {
+                text: "SKILL STORE";
+                color: Theme.cyan;
+                font-size: 10px;
+                font-weight: 600;
+                letter-spacing: 3px;
+                vertical-alignment: center;
+            }
+            Rectangle { horizontal-stretch: 1; }
+            Text {
+                text: skills.length > 0 ? skills.length + " skills" : "";
+                color: Theme.text-dim;
+                font-size: Theme.font-small;
+                vertical-alignment: center;
+            }
+        }
+
+        Text {
+            text: "Enable or disable capabilities. Toggle skills based on what you use.";
+            color: Theme.text-dim;
+            font-size: Theme.font-small;
+            wrap: word-wrap;
+        }
+
+        // ── Search Bar ──
+        Rectangle {
+            height: 36px;
+            border-radius: 8px;
+            background: #ffffff08;
+            border-width: 1px;
+            border-color: search-input.has-focus ? Theme.cyan-dim : #ffffff10;
+
+            HorizontalLayout {
+                padding-left: 12px;
+                padding-right: 12px;
+                spacing: 8px;
+
+                Text {
+                    text: "Q";
+                    color: Theme.text-dim;
+                    font-size: 13px;
+                    vertical-alignment: center;
+                }
+
+                search-input := TextInput {
+                    text <=> root.search-query;
+                    font-size: 13px;
+                    color: Theme.text-primary;
+                    vertical-alignment: center;
+
+                    accepted => {
+                        root.search-skills(self.text);
+                    }
+                    edited => {
+                        root.search-skills(self.text);
+                    }
+                }
+            }
+        }
+
+        // ── Category Tabs ──
+        HorizontalLayout {
+            spacing: 6px;
+            height: 30px;
+
+            for cat[idx] in root.categories : cat-ta := TouchArea {
+                width: cat-label.preferred-width + 16px;
+                height: 28px;
+
+                clicked => {
+                    root.active-category = cat;
+                    root.filter-category(cat);
+                }
+
+                Rectangle {
+                    border-radius: 6px;
+                    background: root.active-category == cat ? Theme.cyan-dim : (cat-ta.has-hover ? #ffffff08 : transparent);
+                    border-width: root.active-category == cat ? 1px : 0px;
+                    border-color: Theme.cyan;
+
+                    HorizontalLayout {
+                        padding-left: 8px;
+                        padding-right: 8px;
+
+                        cat-label := Text {
+                            text: cat;
+                            color: root.active-category == cat ? Theme.cyan : Theme.text-dim;
+                            font-size: 11px;
+                            font-weight: root.active-category == cat ? 600 : 400;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+            }
+
+            // Flexible spacer
+            Rectangle { horizontal-stretch: 1; }
+        }
+
+        // ── Skill Cards ──
+        Flickable {
+            horizontal-stretch: 1;
+            vertical-stretch: 1;
+
+            VerticalLayout {
+                spacing: 8px;
+                alignment: start;
+
+                for skill[idx] in root.skills : skill-ta := TouchArea {
+                    height: 64px;
+
+                    clicked => {
+                        root.toggle-skill(skill.id);
+                    }
+
+                    Rectangle {
+                        border-radius: 10px;
+                        background: skill-ta.has-hover ? #ffffff06 : #12111a60;
+                        border-width: 1px;
+                        border-color: skill.enabled ? #34a85330 : #ffffff08;
+
+                        HorizontalLayout {
+                            padding: 12px;
+                            spacing: 12px;
+
+                            // Icon circle
+                            Rectangle {
+                                width: 40px;
+                                height: 40px;
+                                border-radius: 10px;
+                                background: skill.enabled ? #34a85315 : #ffffff08;
+
+                                Text {
+                                    text: skill.icon;
+                                    font-size: 18px;
+                                    color: skill.enabled ? #34a853 : Theme.text-dim;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                            }
+
+                            // Name + description
+                            VerticalLayout {
+                                horizontal-stretch: 1;
+                                spacing: 2px;
+
+                                HorizontalLayout {
+                                    spacing: 6px;
+
+                                    Text {
+                                        text: skill.name;
+                                        color: Theme.text-primary;
+                                        font-size: 13px;
+                                        font-weight: 500;
+                                        vertical-alignment: center;
+                                    }
+
+                                    // Category badge
+                                    Rectangle {
+                                        width: cat-badge-text.preferred-width + 10px;
+                                        height: 16px;
+                                        border-radius: 4px;
+                                        background: #ffffff08;
+
+                                        cat-badge-text := Text {
+                                            text: skill.category;
+                                            color: Theme.text-dim;
+                                            font-size: 9px;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+
+                                    Rectangle { horizontal-stretch: 1; }
+                                }
+
+                                Text {
+                                    text: skill.description;
+                                    color: Theme.text-dim;
+                                    font-size: 11px;
+                                    overflow: elide;
+                                }
+                            }
+
+                            // Toggle switch
+                            Rectangle {
+                                width: 44px;
+                                height: 24px;
+                                border-radius: 12px;
+                                background: skill.enabled ? #34a853 : #333;
+
+                                animate background { duration: 150ms; }
+
+                                Rectangle {
+                                    width: 18px;
+                                    height: 18px;
+                                    border-radius: 9px;
+                                    y: 3px;
+                                    x: skill.enabled ? parent.width - self.width - 3px : 3px;
+                                    background: white;
+
+                                    animate x { duration: 150ms; }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Empty state
+                if root.skills.length == 0 : Rectangle {
+                    height: 120px;
+
+                    VerticalLayout {
+                        spacing: 8px;
+
+                        Text {
+                            text: "No skills found";
+                            color: Theme.text-dim;
+                            font-size: 14px;
+                            horizontal-alignment: center;
+                        }
+                        Text {
+                            text: root.search-query != "" ? "Try a different search term" : "Skills will appear here once loaded";
+                            color: #ffffff30;
+                            font-size: 11px;
+                            horizontal-alignment: center;
+                        }
+                    }
+                }
+
+                // Bottom spacer
+                Rectangle { height: 40px; }
+            }
+        }
+    }
+}

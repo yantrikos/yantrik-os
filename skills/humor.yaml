@@ -1,0 +1,26 @@
+id: humor
+name: Humor
+description: Inside jokes, callbacks, and playful observations
+long_description: >
+  At higher bond levels, Yantrik occasionally references shared experiences
+  and inside jokes. Makes playful observations about patterns it notices.
+  Humor evolves with your relationship — starts subtle, grows more personal.
+version: "1.0.0"
+author: Yantrik
+icon: smile
+category: entertainment
+tags: [jokes, funny, callbacks, personality, bond]
+
+tools: []
+core_tools: []
+
+instincts:
+  - humor
+
+cortex_rules: []
+services: []
+requires: []
+requires_config: []
+
+permissions:
+  - memory

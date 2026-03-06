@@ -1,0 +1,940 @@
+// Package Manager — Alpine Linux package management GUI.
+// Screen 21. Search, browse, install, remove, upgrade APK packages.
+// Wrapped in WindowFrame by app.slint — no internal header needed.
+// Firelight treatment: glassmorphism, holographic glows, gradient accents.
+
+import { Theme } from "theme.slint";
+import { ListView, LineEdit } from "std-widgets.slint";
+
+export struct PackageData {
+    name: string,
+    version: string,
+    description: string,
+    installed: bool,
+    upgradable: bool,
+    size-text: string,
+    repo: string,
+}
+
+export struct PendingAction {
+    package-name: string,
+    action-type: string,   // "install", "remove", "upgrade"
+}
+
+export component PackageManager inherits Rectangle {
+    background: transparent;
+
+    in property <[PackageData]> packages: [];
+    in property <bool> is-loading: false;
+    in property <string> status-text: "Ready";
+    in property <int> upgradable-count: 0;
+    in property <[PendingAction]> pending-actions: [];
+    in property <bool> is-applying: false;
+    in property <float> apply-progress: 0.0;
+    in property <string> error-text: "";
+
+    // Detail panel
+    in property <string> detail-name: "";
+    in property <string> detail-version: "";
+    in property <string> detail-description: "";
+    in property <string> detail-maintainer: "";
+    in property <string> detail-dependencies: "";
+    in property <string> detail-size: "";
+    in property <string> detail-repo: "";
+    in property <bool> detail-installed: false;
+    in property <bool> detail-upgradable: false;
+
+    in-out property <string> search-query: "";
+    in-out property <int> selected-index: -1;
+    in-out property <int> active-filter: 0;  // 0=All, 1=Installed, 2=Upgradable, 3=Available
+
+    callback search(string);
+    callback refresh();
+    callback select-package(int);
+    callback install-package(string);
+    callback remove-package(string);
+    callback upgrade-package(string);
+    callback upgrade-all();
+    callback apply-changes();
+    callback cancel-changes();
+    callback filter-changed(int);
+
+    // ── Layout: header + list/detail + pending queue + status ──
+    VerticalLayout {
+        // ── Header Bar ──
+        Rectangle {
+            height: 52px;
+            background: Theme.bg-card;
+            border-radius: 0;
+
+            HorizontalLayout {
+                padding-left: 16px;
+                padding-right: 16px;
+                spacing: 10px;
+                alignment: center;
+
+                // Search bar
+                Rectangle {
+                    horizontal-stretch: 1;
+                    height: 36px;
+                    background: Theme.bg-input;
+                    border-radius: Theme.radius-pill;
+                    border-width: 1px;
+                    border-color: search-focus.has-focus ? Theme.accent : Theme.border-subtle;
+
+                    HorizontalLayout {
+                        padding-left: 12px;
+                        padding-right: 8px;
+                        spacing: 8px;
+                        alignment: center;
+
+                        Text {
+                            text: "\u{1F50D}";
+                            font-size: 13px;
+                            vertical-alignment: center;
+                        }
+
+                        search-focus := LineEdit {
+                            horizontal-stretch: 1;
+                            text <=> root.search-query;
+                            placeholder-text: "Search packages...";
+                            font-size: Theme.font-body;
+                            edited(text) => {
+                                root.search(text);
+                            }
+                        }
+                    }
+                }
+
+                // Filter: All
+                Rectangle {
+                    width: 56px;
+                    height: 32px;
+                    background: root.active-filter == 0 ? Theme.accent-glow : Theme.hover-fill;
+                    border-radius: Theme.radius-pill;
+                    border-width: 1px;
+                    border-color: root.active-filter == 0 ? Theme.accent-dim : transparent;
+
+                    Text {
+                        text: "All";
+                        font-size: Theme.font-small;
+                        color: root.active-filter == 0 ? Theme.accent : Theme.text-secondary;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+
+                    TouchArea {
+                        clicked => {
+                            root.active-filter = 0;
+                            root.filter-changed(0);
+                        }
+                    }
+                }
+
+                // Filter: Installed
+                Rectangle {
+                    width: 80px;
+                    height: 32px;
+                    background: root.active-filter == 1 ? Theme.accent-glow : Theme.hover-fill;
+                    border-radius: Theme.radius-pill;
+                    border-width: 1px;
+                    border-color: root.active-filter == 1 ? Theme.accent-dim : transparent;
+
+                    Text {
+                        text: "Installed";
+                        font-size: Theme.font-small;
+                        color: root.active-filter == 1 ? Theme.accent : Theme.text-secondary;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+
+                    TouchArea {
+                        clicked => {
+                            root.active-filter = 1;
+                            root.filter-changed(1);
+                        }
+                    }
+                }
+
+                // Filter: Upgradable
+                Rectangle {
+                    width: root.upgradable-count > 0 ? 108px : 90px;
+                    height: 32px;
+                    background: root.active-filter == 2 ? Theme.accent-glow : Theme.hover-fill;
+                    border-radius: Theme.radius-pill;
+                    border-width: 1px;
+                    border-color: root.active-filter == 2 ? Theme.accent-dim : transparent;
+
+                    HorizontalLayout {
+                        alignment: center;
+                        spacing: 4px;
+
+                        Text {
+                            text: "Upgradable";
+                            font-size: Theme.font-small;
+                            color: root.active-filter == 2 ? Theme.accent : Theme.text-secondary;
+                            vertical-alignment: center;
+                        }
+
+                        if root.upgradable-count > 0 : Rectangle {
+                            width: 22px;
+                            height: 18px;
+                            background: Theme.holo-blue;
+                            border-radius: 9px;
+
+                            Text {
+                                text: root.upgradable-count;
+                                font-size: 10px;
+                                color: #ffffff;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+
+                    TouchArea {
+                        clicked => {
+                            root.active-filter = 2;
+                            root.filter-changed(2);
+                        }
+                    }
+                }
+
+                // Filter: Available (not installed)
+                Rectangle {
+                    width: 76px;
+                    height: 32px;
+                    background: root.active-filter == 3 ? Theme.accent-glow : Theme.hover-fill;
+                    border-radius: Theme.radius-pill;
+                    border-width: 1px;
+                    border-color: root.active-filter == 3 ? Theme.accent-dim : transparent;
+
+                    Text {
+                        text: "Available";
+                        font-size: Theme.font-small;
+                        color: root.active-filter == 3 ? Theme.accent : Theme.text-secondary;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+
+                    TouchArea {
+                        clicked => {
+                            root.active-filter = 3;
+                            root.filter-changed(3);
+                        }
+                    }
+                }
+
+                // Refresh button
+                Rectangle {
+                    width: 36px;
+                    height: 36px;
+                    background: refresh-ta.has-hover ? Theme.hover-fill-strong : Theme.hover-fill;
+                    border-radius: Theme.radius-card;
+
+                    Text {
+                        text: "\u{21BB}";
+                        font-size: 18px;
+                        color: root.is-loading ? Theme.accent : Theme.text-secondary;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+
+                    refresh-ta := TouchArea {
+                        clicked => { root.refresh(); }
+                    }
+                }
+
+                // Upgrade All button (shown when upgradable > 0)
+                if root.upgradable-count > 0 : Rectangle {
+                    width: 108px;
+                    height: 36px;
+                    background: upgrade-all-ta.has-hover ? #2a8a3a : #1e7a30;
+                    border-radius: Theme.radius-pill;
+
+                    Text {
+                        text: "Upgrade All";
+                        font-size: Theme.font-small;
+                        color: #ffffff;
+                        font-weight: 600;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+
+                    upgrade-all-ta := TouchArea {
+                        clicked => { root.upgrade-all(); }
+                    }
+                }
+            }
+        }
+
+        // ── Separator ──
+        Rectangle { height: 1px; background: Theme.separator; }
+
+        // ── Main Content: Package List + Detail Panel ──
+        HorizontalLayout {
+            vertical-stretch: 1;
+
+            // ── Package List ──
+            Rectangle {
+                horizontal-stretch: 3;
+                background: Theme.bg-surface;
+
+                VerticalLayout {
+                    // Loading indicator
+                    if root.is-loading : Rectangle {
+                        height: 3px;
+                        background: Theme.accent-glow;
+
+                        // Animated loading bar
+                        Rectangle {
+                            height: 3px;
+                            width: parent.width * 0.4;
+                            background: Theme.accent;
+                            border-radius: 1px;
+                            x: mod(animation-tick() / 8ms, parent.width / 1px + self.width / 1px) * 1px - self.width;
+                        }
+                    }
+
+                    // Empty state
+                    if packages.length == 0 && !root.is-loading : Rectangle {
+                        vertical-stretch: 1;
+
+                        VerticalLayout {
+                            alignment: center;
+                            spacing: 12px;
+
+                            Text {
+                                text: root.search-query != "" ? "No packages found" : "Click Refresh to load packages";
+                                font-size: Theme.font-title;
+                                color: Theme.text-dim;
+                                horizontal-alignment: center;
+                            }
+
+                            Text {
+                                text: root.search-query != "" ? "Try a different search term" : "Or search for a package by name";
+                                font-size: Theme.font-small;
+                                color: Theme.text-dim;
+                                horizontal-alignment: center;
+                            }
+                        }
+                    }
+
+                    // Package list
+                    if packages.length > 0 : ListView {
+                        vertical-stretch: 1;
+
+                        for pkg[idx] in root.packages : Rectangle {
+                            height: 56px;
+                            background: idx == root.selected-index ? Theme.bg-selected
+                                : row-ta.has-hover ? Theme.hover-fill : transparent;
+
+                            HorizontalLayout {
+                                padding-left: 16px;
+                                padding-right: 16px;
+                                spacing: 12px;
+                                alignment: center;
+
+                                // Status indicator dot
+                                Rectangle {
+                                    width: 8px;
+                                    height: 8px;
+                                    border-radius: 4px;
+                                    background: pkg.upgradable ? Theme.holo-blue
+                                        : pkg.installed ? #4caf50
+                                        : Theme.text-dim;
+                                }
+
+                                // Name + description
+                                VerticalLayout {
+                                    horizontal-stretch: 1;
+                                    alignment: center;
+                                    spacing: 2px;
+
+                                    HorizontalLayout {
+                                        spacing: 8px;
+
+                                        Text {
+                                            text: pkg.name;
+                                            font-size: Theme.font-body;
+                                            font-weight: 600;
+                                            color: Theme.text-primary;
+                                            overflow: elide;
+                                        }
+
+                                        Text {
+                                            text: pkg.version;
+                                            font-size: Theme.font-small;
+                                            color: Theme.text-dim;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+
+                                    Text {
+                                        text: pkg.description;
+                                        font-size: Theme.font-small;
+                                        color: Theme.text-secondary;
+                                        overflow: elide;
+                                    }
+                                }
+
+                                // Repo badge
+                                if pkg.repo != "" : Rectangle {
+                                    width: repo-text.width + 12px;
+                                    height: 20px;
+                                    background: Theme.hover-fill;
+                                    border-radius: 10px;
+
+                                    repo-text := Text {
+                                        text: pkg.repo;
+                                        font-size: 10px;
+                                        color: Theme.text-dim;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+                                }
+
+                                // Size
+                                if pkg.size-text != "" : Text {
+                                    text: pkg.size-text;
+                                    font-size: Theme.font-small;
+                                    color: Theme.text-dim;
+                                    width: 60px;
+                                    horizontal-alignment: right;
+                                    vertical-alignment: center;
+                                }
+
+                                // Status badge
+                                Rectangle {
+                                    width: 76px;
+                                    height: 24px;
+                                    background: pkg.upgradable ? #1565c040
+                                        : pkg.installed ? #4caf5020
+                                        : transparent;
+                                    border-radius: 12px;
+                                    border-width: pkg.installed || pkg.upgradable ? 1px : 0;
+                                    border-color: pkg.upgradable ? #1565c060
+                                        : pkg.installed ? #4caf5040
+                                        : transparent;
+
+                                    Text {
+                                        text: pkg.upgradable ? "Upgradable"
+                                            : pkg.installed ? "Installed"
+                                            : "";
+                                        font-size: 10px;
+                                        color: pkg.upgradable ? Theme.holo-blue
+                                            : pkg.installed ? #4caf50
+                                            : transparent;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                            }
+
+                            // Subtle separator
+                            Rectangle {
+                                y: parent.height - 1px;
+                                height: 1px;
+                                background: Theme.separator;
+                            }
+
+                            row-ta := TouchArea {
+                                clicked => {
+                                    root.selected-index = idx;
+                                    root.select-package(idx);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ── Vertical separator ──
+            Rectangle { width: 1px; background: Theme.separator; }
+
+            // ── Detail Panel ──
+            Rectangle {
+                horizontal-stretch: 2;
+                background: Theme.bg-card;
+
+                if root.detail-name == "" : VerticalLayout {
+                    alignment: center;
+                    spacing: 8px;
+
+                    Text {
+                        text: "Select a package";
+                        font-size: Theme.font-title;
+                        color: Theme.text-dim;
+                        horizontal-alignment: center;
+                    }
+
+                    Text {
+                        text: "to view details";
+                        font-size: Theme.font-small;
+                        color: Theme.text-dim;
+                        horizontal-alignment: center;
+                    }
+                }
+
+                if root.detail-name != "" : Flickable {
+                    viewport-height: detail-content.preferred-height;
+
+                    detail-content := VerticalLayout {
+                        padding: 24px;
+                        spacing: 16px;
+
+                        // Package header
+                        HorizontalLayout {
+                            spacing: 12px;
+
+                            // Icon placeholder
+                            Rectangle {
+                                width: 48px;
+                                height: 48px;
+                                background: Theme.accent-glow;
+                                border-radius: Theme.radius-card;
+
+                                Text {
+                                    text: "\u{1F4E6}";
+                                    font-size: 24px;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                            }
+
+                            VerticalLayout {
+                                horizontal-stretch: 1;
+                                spacing: 4px;
+
+                                Text {
+                                    text: root.detail-name;
+                                    font-size: 20px;
+                                    font-weight: 700;
+                                    color: Theme.text-primary;
+                                }
+
+                                Text {
+                                    text: root.detail-version;
+                                    font-size: Theme.font-body;
+                                    color: Theme.text-secondary;
+                                }
+                            }
+                        }
+
+                        // Action buttons
+                        HorizontalLayout {
+                            spacing: 8px;
+
+                            // Install button — only when not installed
+                            if !root.detail-installed : Rectangle {
+                                width: 100px;
+                                height: 36px;
+                                background: install-ta.has-hover ? #2e9b47 : #27863e;
+                                border-radius: Theme.radius-pill;
+
+                                Text {
+                                    text: "Install";
+                                    font-size: Theme.font-body;
+                                    color: #ffffff;
+                                    font-weight: 600;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+
+                                install-ta := TouchArea {
+                                    clicked => { root.install-package(root.detail-name); }
+                                }
+                            }
+
+                            // Upgrade button — only when upgradable
+                            if root.detail-upgradable : Rectangle {
+                                width: 100px;
+                                height: 36px;
+                                background: upg-ta.has-hover ? #1976d2 : #1565c0;
+                                border-radius: Theme.radius-pill;
+
+                                Text {
+                                    text: "Upgrade";
+                                    font-size: Theme.font-body;
+                                    color: #ffffff;
+                                    font-weight: 600;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+
+                                upg-ta := TouchArea {
+                                    clicked => { root.upgrade-package(root.detail-name); }
+                                }
+                            }
+
+                            // Remove button — when installed (regardless of upgradable)
+                            if root.detail-installed : Rectangle {
+                                width: 100px;
+                                height: 36px;
+                                background: remove-ta.has-hover ? #d44040 : #c03030;
+                                border-radius: Theme.radius-pill;
+
+                                Text {
+                                    text: "Remove";
+                                    font-size: Theme.font-body;
+                                    color: #ffffff;
+                                    font-weight: 600;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+
+                                remove-ta := TouchArea {
+                                    clicked => { root.remove-package(root.detail-name); }
+                                }
+                            }
+                        }
+
+                        // Separator
+                        Rectangle { height: 1px; background: Theme.separator; }
+
+                        // Description
+                        if root.detail-description != "" : VerticalLayout {
+                            spacing: 8px;
+
+                            Text {
+                                text: "Description";
+                                font-size: Theme.font-small;
+                                font-weight: 600;
+                                color: Theme.text-dim;
+                            }
+
+                            Text {
+                                text: root.detail-description;
+                                font-size: Theme.font-body;
+                                color: Theme.text-primary;
+                                wrap: word-wrap;
+                            }
+                        }
+
+                        // Info grid
+                        VerticalLayout {
+                            spacing: 12px;
+
+                            if root.detail-repo != "" : HorizontalLayout {
+                                spacing: 8px;
+                                Text {
+                                    text: "Repository:";
+                                    font-size: Theme.font-small;
+                                    color: Theme.text-dim;
+                                    width: 100px;
+                                }
+                                Text {
+                                    text: root.detail-repo;
+                                    font-size: Theme.font-small;
+                                    color: Theme.text-secondary;
+                                }
+                            }
+
+                            if root.detail-size != "" : HorizontalLayout {
+                                spacing: 8px;
+                                Text {
+                                    text: "Size:";
+                                    font-size: Theme.font-small;
+                                    color: Theme.text-dim;
+                                    width: 100px;
+                                }
+                                Text {
+                                    text: root.detail-size;
+                                    font-size: Theme.font-small;
+                                    color: Theme.text-secondary;
+                                }
+                            }
+
+                            if root.detail-maintainer != "" : HorizontalLayout {
+                                spacing: 8px;
+                                Text {
+                                    text: "Maintainer:";
+                                    font-size: Theme.font-small;
+                                    color: Theme.text-dim;
+                                    width: 100px;
+                                }
+                                Text {
+                                    text: root.detail-maintainer;
+                                    font-size: Theme.font-small;
+                                    color: Theme.text-secondary;
+                                    wrap: word-wrap;
+                                    horizontal-stretch: 1;
+                                }
+                            }
+                        }
+
+                        // Dependencies
+                        if root.detail-dependencies != "" : VerticalLayout {
+                            spacing: 8px;
+
+                            Text {
+                                text: "Dependencies";
+                                font-size: Theme.font-small;
+                                font-weight: 600;
+                                color: Theme.text-dim;
+                            }
+
+                            Text {
+                                text: root.detail-dependencies;
+                                font-size: Theme.font-small;
+                                color: Theme.text-secondary;
+                                wrap: word-wrap;
+                            }
+                        }
+
+                        // Spacer
+                        Rectangle { vertical-stretch: 1; }
+                    }
+                }
+            }
+        }
+
+        // ── Pending Actions Queue ──
+        if root.pending-actions.length > 0 : Rectangle {
+            max-height: 140px;
+            background: Theme.bg-elevated;
+            border-width: 1px;
+            border-color: Theme.border-subtle;
+
+            pending-layout := VerticalLayout {
+                padding: 10px;
+                padding-left: 16px;
+                padding-right: 16px;
+                spacing: 6px;
+
+                // Header row
+                HorizontalLayout {
+                    spacing: 8px;
+                    alignment: space-between;
+
+                    HorizontalLayout {
+                        spacing: 6px;
+
+                        Text {
+                            text: "Pending Changes";
+                            font-size: Theme.font-small;
+                            font-weight: 600;
+                            color: Theme.amber;
+                            vertical-alignment: center;
+                        }
+
+                        Rectangle {
+                            width: 22px;
+                            height: 18px;
+                            background: Theme.amber-dim;
+                            border-radius: 9px;
+
+                            Text {
+                                text: root.pending-actions.length;
+                                font-size: 10px;
+                                color: #ffffff;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+
+                    HorizontalLayout {
+                        spacing: 6px;
+
+                        // Apply button
+                        Rectangle {
+                            width: 72px;
+                            height: 28px;
+                            background: apply-ta.has-hover ? #2e9b47 : #27863e;
+                            border-radius: Theme.radius-pill;
+
+                            Text {
+                                text: "Apply";
+                                font-size: Theme.font-small;
+                                color: #ffffff;
+                                font-weight: 600;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+
+                            apply-ta := TouchArea {
+                                clicked => { root.apply-changes(); }
+                            }
+                        }
+
+                        // Cancel button
+                        Rectangle {
+                            width: 72px;
+                            height: 28px;
+                            background: cancel-ta.has-hover ? Theme.hover-fill-strong : Theme.hover-fill;
+                            border-radius: Theme.radius-pill;
+                            border-width: 1px;
+                            border-color: Theme.border-subtle;
+
+                            Text {
+                                text: "Cancel";
+                                font-size: Theme.font-small;
+                                color: Theme.text-secondary;
+                                font-weight: 500;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+
+                            cancel-ta := TouchArea {
+                                clicked => { root.cancel-changes(); }
+                            }
+                        }
+                    }
+                }
+
+                // Pending action items (scrollable if many)
+                Flickable {
+                    viewport-height: pending-items.preferred-height;
+                    max-height: 80px;
+
+                    pending-items := VerticalLayout {
+                        spacing: 4px;
+
+                        for action[idx] in root.pending-actions : HorizontalLayout {
+                            height: 24px;
+                            spacing: 8px;
+                            padding-left: 4px;
+
+                            // Action type indicator
+                            Rectangle {
+                                width: 6px;
+                                height: 6px;
+                                border-radius: 3px;
+                                background: action.action-type == "install" ? #4caf50
+                                    : action.action-type == "remove" ? #e05050
+                                    : Theme.holo-blue;
+                            }
+
+                            Text {
+                                text: action.action-type;
+                                font-size: 11px;
+                                color: action.action-type == "install" ? #4caf50
+                                    : action.action-type == "remove" ? #e05050
+                                    : Theme.holo-blue;
+                                font-weight: 500;
+                                width: 60px;
+                                vertical-alignment: center;
+                            }
+
+                            Text {
+                                text: action.package-name;
+                                font-size: 11px;
+                                color: Theme.text-primary;
+                                horizontal-stretch: 1;
+                                overflow: elide;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── Error bar ──
+        if root.error-text != "" : Rectangle {
+            height: 36px;
+            background: #c0303018;
+            border-width: 1px;
+            border-color: #c0303040;
+
+            HorizontalLayout {
+                padding-left: 16px;
+                padding-right: 16px;
+                alignment: center;
+
+                Text {
+                    text: root.error-text;
+                    font-size: Theme.font-small;
+                    color: #e06060;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                    overflow: elide;
+                }
+
+                Rectangle {
+                    width: 24px;
+                    height: 24px;
+                    background: err-close-ta.has-hover ? Theme.hover-fill : transparent;
+                    border-radius: 12px;
+
+                    Text {
+                        text: "\u{2715}";
+                        font-size: 12px;
+                        color: #e06060;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+
+                    err-close-ta := TouchArea {}
+                }
+            }
+        }
+
+        // ── Status Bar ──
+        Rectangle {
+            height: 32px;
+            background: Theme.bg-elevated;
+
+            HorizontalLayout {
+                padding-left: 16px;
+                padding-right: 16px;
+                alignment: center;
+
+                Text {
+                    text: root.status-text;
+                    font-size: Theme.font-small;
+                    color: Theme.text-dim;
+                    horizontal-stretch: 1;
+                    vertical-alignment: center;
+                }
+
+                if root.is-applying : HorizontalLayout {
+                    spacing: 8px;
+                    alignment: center;
+
+                    // Progress bar
+                    Rectangle {
+                        width: 120px;
+                        height: 4px;
+                        background: Theme.bg-input;
+                        border-radius: 2px;
+
+                        Rectangle {
+                            width: parent.width * root.apply-progress;
+                            height: 100%;
+                            background: Theme.accent;
+                            border-radius: 2px;
+                        }
+                    }
+
+                    Text {
+                        text: "Applying changes...";
+                        font-size: Theme.font-small;
+                        color: Theme.accent;
+                        vertical-alignment: center;
+                    }
+                }
+
+                if root.packages.length > 0 : HorizontalLayout {
+                    spacing: 4px;
+                    alignment: center;
+
+                    Text {
+                        text: root.packages.length;
+                        font-size: Theme.font-small;
+                        color: Theme.text-dim;
+                        vertical-alignment: center;
+                    }
+
+                    Text {
+                        text: "packages";
+                        font-size: Theme.font-small;
+                        color: Theme.text-dim;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+        }
+    }
+}

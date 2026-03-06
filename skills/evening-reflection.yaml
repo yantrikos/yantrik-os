@@ -1,0 +1,26 @@
+id: evening-reflection
+name: Evening Reflection
+description: Daily summary of your activities and accomplishments
+long_description: >
+  At the end of your day, Yantrik reflects on what you accomplished — commits made,
+  emails sent, tasks completed, and patterns noticed. Helps you wind down and
+  prepares context for the next morning brief.
+version: "1.0.0"
+author: Yantrik
+icon: moon
+category: productivity
+tags: [daily, summary, reflection, review, accomplishments]
+
+tools: []
+core_tools: []
+
+instincts:
+  - evening_reflection
+
+cortex_rules: []
+services: []
+requires: []
+requires_config: []
+
+permissions:
+  - memory

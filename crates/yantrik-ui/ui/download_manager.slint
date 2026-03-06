@@ -1,0 +1,704 @@
+// Download Manager — screen 24
+// Firelight treatment: glassmorphism, holographic glows, gradient accents.
+// Wrapped in WindowFrame by app.slint — no internal window header needed.
+
+import { Theme } from "theme.slint";
+import { ListView } from "std-widgets.slint";
+
+export struct DownloadItem {
+    id: int,
+    filename: string,
+    url: string,
+    progress: float,       // 0.0 to 1.0
+    speed-text: string,    // "2.4 MB/s"
+    size-text: string,     // "45.2 / 128.0 MB"
+    status: string,        // "downloading", "paused", "completed", "failed", "queued"
+    eta-text: string,      // "2m 30s"
+    is-selected: bool,
+}
+
+export component DownloadManagerScreen inherits Rectangle {
+    background: transparent;
+
+    in property <[DownloadItem]> downloads: [];
+    in property <int> active-count: 0;
+    in property <string> total-speed: "0 B/s";
+    in property <int> completed-today: 0;
+    in property <string> error-text: "";
+
+    in-out property <int> active-filter: 0;  // 0=All, 1=Active, 2=Completed, 3=Failed
+
+    callback dl-add(string);
+    callback dl-pause(int);
+    callback dl-resume(int);
+    callback dl-cancel(int);
+    callback dl-retry(int);
+    callback dl-open-folder(int);
+    callback dl-clear-completed();
+    callback dl-filter(int);
+
+    // State for the add-URL input
+    in-out property <bool> add-url-open: false;
+    in-out property <string> add-url-text: "";
+
+    VerticalLayout {
+        // ── Top Stats Bar ──
+        Rectangle {
+            height: 56px;
+            background: Theme.bg-card;
+
+            HorizontalLayout {
+                padding-left: 20px;
+                padding-right: 20px;
+                spacing: 24px;
+                alignment: center;
+
+                // Active downloads stat
+                HorizontalLayout {
+                    spacing: 8px;
+                    alignment: center;
+
+                    Rectangle {
+                        width: 8px;
+                        height: 8px;
+                        border-radius: 4px;
+                        background: root.active-count > 0 ? Theme.cyan : Theme.text-dim;
+                        y: (parent.height - self.height) / 2;
+                    }
+
+                    Text {
+                        text: root.active-count;
+                        font-size: 18px;
+                        font-weight: 700;
+                        color: Theme.text-primary;
+                        vertical-alignment: center;
+                    }
+
+                    Text {
+                        text: "active";
+                        font-size: Theme.font-small;
+                        color: Theme.text-secondary;
+                        vertical-alignment: center;
+                    }
+                }
+
+                // Speed stat
+                HorizontalLayout {
+                    spacing: 6px;
+                    alignment: center;
+
+                    Text {
+                        text: "\u{2193}";
+                        font-size: 16px;
+                        color: Theme.accent;
+                        vertical-alignment: center;
+                    }
+
+                    Text {
+                        text: root.total-speed;
+                        font-size: 15px;
+                        font-weight: 600;
+                        color: Theme.accent;
+                        vertical-alignment: center;
+                    }
+                }
+
+                // Completed today stat
+                HorizontalLayout {
+                    spacing: 6px;
+                    alignment: center;
+
+                    Text {
+                        text: "\u{2713}";
+                        font-size: 16px;
+                        color: #4caf50;
+                        vertical-alignment: center;
+                    }
+
+                    Text {
+                        text: root.completed-today;
+                        font-size: 15px;
+                        font-weight: 600;
+                        color: Theme.text-primary;
+                        vertical-alignment: center;
+                    }
+
+                    Text {
+                        text: "today";
+                        font-size: Theme.font-small;
+                        color: Theme.text-secondary;
+                        vertical-alignment: center;
+                    }
+                }
+
+                // Spacer
+                Rectangle { horizontal-stretch: 1; }
+
+                // Clear Completed button
+                Rectangle {
+                    width: 140px;
+                    height: 34px;
+                    background: clear-ta.has-hover ? Theme.hover-fill-strong : Theme.hover-fill;
+                    border-radius: Theme.radius-pill;
+                    border-width: 1px;
+                    border-color: Theme.border-subtle;
+
+                    Text {
+                        text: "Clear Completed";
+                        font-size: Theme.font-small;
+                        color: Theme.text-secondary;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+
+                    clear-ta := TouchArea {
+                        clicked => { root.dl-clear-completed(); }
+                    }
+                }
+
+                // + Add URL button
+                Rectangle {
+                    width: 110px;
+                    height: 34px;
+                    background: add-ta.has-hover ? Theme.accent : Theme.accent-dim;
+                    border-radius: Theme.radius-pill;
+
+                    Text {
+                        text: "+ Add URL";
+                        font-size: Theme.font-body;
+                        font-weight: 600;
+                        color: #ffffff;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+
+                    add-ta := TouchArea {
+                        clicked => {
+                            root.add-url-open = !root.add-url-open;
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── Add URL Input Row (collapsible) ──
+        if root.add-url-open : Rectangle {
+            height: 48px;
+            background: Theme.bg-elevated;
+            border-width: 0;
+
+            HorizontalLayout {
+                padding-left: 20px;
+                padding-right: 20px;
+                spacing: 10px;
+                alignment: center;
+
+                Rectangle {
+                    horizontal-stretch: 1;
+                    height: 36px;
+                    background: Theme.bg-input;
+                    border-radius: Theme.radius-pill;
+                    border-width: 1px;
+                    border-color: url-input-ta.has-focus ? Theme.accent : Theme.border-subtle;
+
+                    HorizontalLayout {
+                        padding-left: 14px;
+                        padding-right: 14px;
+                        alignment: center;
+
+                        url-input-ta := TextInput {
+                            horizontal-stretch: 1;
+                            text <=> root.add-url-text;
+                            font-size: Theme.font-body;
+                            color: Theme.text-primary;
+                            accepted => {
+                                if root.add-url-text != "" {
+                                    root.dl-add(root.add-url-text);
+                                    root.add-url-text = "";
+                                    root.add-url-open = false;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Submit button
+                Rectangle {
+                    width: 90px;
+                    height: 36px;
+                    background: submit-ta.has-hover ? #2e9b47 : #27863e;
+                    border-radius: Theme.radius-pill;
+
+                    Text {
+                        text: "Download";
+                        font-size: Theme.font-small;
+                        font-weight: 600;
+                        color: #ffffff;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+
+                    submit-ta := TouchArea {
+                        clicked => {
+                            if root.add-url-text != "" {
+                                root.dl-add(root.add-url-text);
+                                root.add-url-text = "";
+                                root.add-url-open = false;
+                            }
+                        }
+                    }
+                }
+
+                // Cancel
+                Rectangle {
+                    width: 32px;
+                    height: 32px;
+                    background: cancel-input-ta.has-hover ? Theme.hover-fill-strong : transparent;
+                    border-radius: 16px;
+
+                    Text {
+                        text: "\u{2715}";
+                        font-size: 14px;
+                        color: Theme.text-dim;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+
+                    cancel-input-ta := TouchArea {
+                        clicked => {
+                            root.add-url-open = false;
+                            root.add-url-text = "";
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── Separator ──
+        Rectangle { height: 1px; background: Theme.separator; }
+
+        // ── Main Download List ──
+        Rectangle {
+            vertical-stretch: 1;
+            background: Theme.bg-surface;
+
+            VerticalLayout {
+                // Empty state
+                if root.downloads.length == 0 : Rectangle {
+                    vertical-stretch: 1;
+
+                    VerticalLayout {
+                        alignment: center;
+                        spacing: 12px;
+
+                        Text {
+                            text: "\u{2193}";
+                            font-size: 48px;
+                            color: Theme.text-dim;
+                            horizontal-alignment: center;
+                        }
+
+                        Text {
+                            text: "No downloads";
+                            font-size: Theme.font-title;
+                            color: Theme.text-dim;
+                            horizontal-alignment: center;
+                        }
+
+                        Text {
+                            text: "Add a URL to start downloading";
+                            font-size: Theme.font-small;
+                            color: Theme.text-dim;
+                            horizontal-alignment: center;
+                        }
+                    }
+                }
+
+                // Download list
+                if root.downloads.length > 0 : ListView {
+                    vertical-stretch: 1;
+
+                    for dl[idx] in root.downloads : Rectangle {
+                        height: 80px;
+                        background: dl-row-ta.has-hover ? Theme.hover-fill : transparent;
+
+                        VerticalLayout {
+                            padding: 12px;
+                            padding-left: 20px;
+                            padding-right: 20px;
+                            spacing: 6px;
+
+                            // Row 1: filename + status + actions
+                            HorizontalLayout {
+                                spacing: 12px;
+
+                                // Status icon
+                                Rectangle {
+                                    width: 10px;
+                                    height: 10px;
+                                    border-radius: 5px;
+                                    y: (parent.height - self.height) / 2;
+                                    background:
+                                        dl.status == "downloading" ? Theme.cyan
+                                      : dl.status == "paused" ? Theme.amber
+                                      : dl.status == "completed" ? #4caf50
+                                      : dl.status == "failed" ? Theme.color-emotional
+                                      : Theme.text-dim;  // queued
+                                }
+
+                                // Filename
+                                Text {
+                                    text: dl.filename;
+                                    font-size: Theme.font-body;
+                                    font-weight: 600;
+                                    color: Theme.text-primary;
+                                    overflow: elide;
+                                    horizontal-stretch: 1;
+                                    vertical-alignment: center;
+                                }
+
+                                // Speed (only when downloading)
+                                if dl.status == "downloading" : Text {
+                                    text: dl.speed-text;
+                                    font-size: Theme.font-small;
+                                    font-weight: 500;
+                                    color: Theme.accent;
+                                    vertical-alignment: center;
+                                }
+
+                                // ETA (only when downloading)
+                                if dl.status == "downloading" && dl.eta-text != "" : Text {
+                                    text: dl.eta-text;
+                                    font-size: Theme.font-small;
+                                    color: Theme.text-dim;
+                                    vertical-alignment: center;
+                                }
+
+                                // Size text
+                                Text {
+                                    text: dl.size-text;
+                                    font-size: Theme.font-small;
+                                    color: Theme.text-secondary;
+                                    vertical-alignment: center;
+                                }
+
+                                // Status badge
+                                Rectangle {
+                                    width: 80px;
+                                    height: 22px;
+                                    border-radius: 11px;
+                                    background:
+                                        dl.status == "downloading" ? Theme.cyan-glow
+                                      : dl.status == "paused" ? Theme.amber-glow
+                                      : dl.status == "completed" ? #4caf5020
+                                      : dl.status == "failed" ? #e0505020
+                                      : Theme.hover-fill;
+
+                                    Text {
+                                        text: dl.status == "downloading" ? "Downloading"
+                                            : dl.status == "paused" ? "Paused"
+                                            : dl.status == "completed" ? "Completed"
+                                            : dl.status == "failed" ? "Failed"
+                                            : "Queued";
+                                        font-size: 10px;
+                                        font-weight: 500;
+                                        color:
+                                            dl.status == "downloading" ? Theme.cyan
+                                          : dl.status == "paused" ? Theme.amber
+                                          : dl.status == "completed" ? #4caf50
+                                          : dl.status == "failed" ? Theme.color-emotional
+                                          : Theme.text-dim;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+                                }
+
+                                // Action: Pause/Resume
+                                if dl.status == "downloading" || dl.status == "paused" : Rectangle {
+                                    width: 28px;
+                                    height: 28px;
+                                    background: pause-ta.has-hover ? Theme.hover-fill-strong : Theme.hover-fill;
+                                    border-radius: 14px;
+
+                                    Text {
+                                        text: dl.status == "paused" ? "\u{25B6}" : "\u{23F8}";
+                                        font-size: 12px;
+                                        color: Theme.text-secondary;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+
+                                    pause-ta := TouchArea {
+                                        clicked => {
+                                            if dl.status == "paused" {
+                                                root.dl-resume(dl.id);
+                                            } else {
+                                                root.dl-pause(dl.id);
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // Action: Cancel (for active/paused/queued)
+                                if dl.status == "downloading" || dl.status == "paused" || dl.status == "queued" : Rectangle {
+                                    width: 28px;
+                                    height: 28px;
+                                    background: cancel-dl-ta.has-hover ? #c0303030 : Theme.hover-fill;
+                                    border-radius: 14px;
+
+                                    Text {
+                                        text: "\u{2715}";
+                                        font-size: 12px;
+                                        color: cancel-dl-ta.has-hover ? Theme.color-emotional : Theme.text-dim;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+
+                                    cancel-dl-ta := TouchArea {
+                                        clicked => { root.dl-cancel(dl.id); }
+                                    }
+                                }
+
+                                // Action: Retry (for failed)
+                                if dl.status == "failed" : Rectangle {
+                                    width: 28px;
+                                    height: 28px;
+                                    background: retry-ta.has-hover ? Theme.hover-fill-strong : Theme.hover-fill;
+                                    border-radius: 14px;
+
+                                    Text {
+                                        text: "\u{21BB}";
+                                        font-size: 14px;
+                                        color: Theme.text-secondary;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+
+                                    retry-ta := TouchArea {
+                                        clicked => { root.dl-retry(dl.id); }
+                                    }
+                                }
+
+                                // Action: Open folder (for completed)
+                                if dl.status == "completed" : Rectangle {
+                                    width: 28px;
+                                    height: 28px;
+                                    background: folder-ta.has-hover ? Theme.hover-fill-strong : Theme.hover-fill;
+                                    border-radius: 14px;
+
+                                    Text {
+                                        text: "\u{1F4C2}";
+                                        font-size: 14px;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+
+                                    folder-ta := TouchArea {
+                                        clicked => { root.dl-open-folder(dl.id); }
+                                    }
+                                }
+                            }
+
+                            // Row 2: URL preview + progress bar
+                            HorizontalLayout {
+                                spacing: 12px;
+
+                                // URL preview (truncated)
+                                Text {
+                                    text: dl.url;
+                                    font-size: 11px;
+                                    color: Theme.text-dim;
+                                    overflow: elide;
+                                    horizontal-stretch: 1;
+                                    vertical-alignment: center;
+                                }
+                            }
+
+                            // Row 3: Progress bar (only for non-completed states)
+                            if dl.status != "completed" && dl.status != "failed" : Rectangle {
+                                height: 4px;
+                                border-radius: 2px;
+                                background: Theme.bg-deep;
+
+                                Rectangle {
+                                    width: max(0px, parent.width * dl.progress);
+                                    height: 100%;
+                                    border-radius: 2px;
+                                    background:
+                                        dl.status == "downloading" ? Theme.accent
+                                      : dl.status == "paused" ? Theme.amber
+                                      : Theme.text-dim;
+                                    animate width { duration: 300ms; }
+                                }
+                            }
+
+                            // Completed: full green bar
+                            if dl.status == "completed" : Rectangle {
+                                height: 4px;
+                                border-radius: 2px;
+                                background: #4caf50;
+                            }
+
+                            // Failed: red bar
+                            if dl.status == "failed" : Rectangle {
+                                height: 4px;
+                                border-radius: 2px;
+                                background: Theme.color-emotional;
+                                opacity: 0.6;
+                            }
+                        }
+
+                        // Separator
+                        Rectangle {
+                            y: parent.height - 1px;
+                            height: 1px;
+                            background: Theme.separator;
+                        }
+
+                        dl-row-ta := TouchArea { }
+                    }
+                }
+            }
+        }
+
+        // ── Error bar ──
+        if root.error-text != "" : Rectangle {
+            height: 36px;
+            background: #c0303018;
+            border-width: 1px;
+            border-color: #c0303040;
+
+            HorizontalLayout {
+                padding-left: 16px;
+                padding-right: 16px;
+                alignment: center;
+
+                Text {
+                    text: root.error-text;
+                    font-size: Theme.font-small;
+                    color: #e06060;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                    overflow: elide;
+                }
+            }
+        }
+
+        // ── Bottom Filter Tabs ──
+        Rectangle {
+            height: 40px;
+            background: Theme.bg-elevated;
+
+            HorizontalLayout {
+                padding-left: 20px;
+                padding-right: 20px;
+                spacing: 4px;
+                alignment: center;
+
+                // All
+                Rectangle {
+                    width: 64px;
+                    height: 30px;
+                    background: root.active-filter == 0 ? Theme.accent-glow : transparent;
+                    border-radius: Theme.radius-pill;
+                    border-width: root.active-filter == 0 ? 1px : 0;
+                    border-color: root.active-filter == 0 ? Theme.accent-dim : transparent;
+
+                    Text {
+                        text: "All";
+                        font-size: Theme.font-small;
+                        font-weight: root.active-filter == 0 ? 600 : 400;
+                        color: root.active-filter == 0 ? Theme.accent : Theme.text-secondary;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+
+                    TouchArea {
+                        clicked => {
+                            root.active-filter = 0;
+                            root.dl-filter(0);
+                        }
+                    }
+                }
+
+                // Active
+                Rectangle {
+                    width: 76px;
+                    height: 30px;
+                    background: root.active-filter == 1 ? Theme.accent-glow : transparent;
+                    border-radius: Theme.radius-pill;
+                    border-width: root.active-filter == 1 ? 1px : 0;
+                    border-color: root.active-filter == 1 ? Theme.accent-dim : transparent;
+
+                    Text {
+                        text: "Active";
+                        font-size: Theme.font-small;
+                        font-weight: root.active-filter == 1 ? 600 : 400;
+                        color: root.active-filter == 1 ? Theme.accent : Theme.text-secondary;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+
+                    TouchArea {
+                        clicked => {
+                            root.active-filter = 1;
+                            root.dl-filter(1);
+                        }
+                    }
+                }
+
+                // Completed
+                Rectangle {
+                    width: 92px;
+                    height: 30px;
+                    background: root.active-filter == 2 ? Theme.accent-glow : transparent;
+                    border-radius: Theme.radius-pill;
+                    border-width: root.active-filter == 2 ? 1px : 0;
+                    border-color: root.active-filter == 2 ? Theme.accent-dim : transparent;
+
+                    Text {
+                        text: "Completed";
+                        font-size: Theme.font-small;
+                        font-weight: root.active-filter == 2 ? 600 : 400;
+                        color: root.active-filter == 2 ? Theme.accent : Theme.text-secondary;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+
+                    TouchArea {
+                        clicked => {
+                            root.active-filter = 2;
+                            root.dl-filter(2);
+                        }
+                    }
+                }
+
+                // Failed
+                Rectangle {
+                    width: 72px;
+                    height: 30px;
+                    background: root.active-filter == 3 ? Theme.accent-glow : transparent;
+                    border-radius: Theme.radius-pill;
+                    border-width: root.active-filter == 3 ? 1px : 0;
+                    border-color: root.active-filter == 3 ? Theme.accent-dim : transparent;
+
+                    Text {
+                        text: "Failed";
+                        font-size: Theme.font-small;
+                        font-weight: root.active-filter == 3 ? 600 : 400;
+                        color: root.active-filter == 3 ? Theme.accent : Theme.text-secondary;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+
+                    TouchArea {
+                        clicked => {
+                            root.active-filter = 3;
+                            root.dl-filter(3);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

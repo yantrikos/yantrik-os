@@ -76,6 +76,17 @@ pub struct CompanionState {
     pub interactions_last_hour: u32,
     pub workflow_hints: Vec<serde_json::Value>,
     pub maintenance_report: Vec<serde_json::Value>,
+    // Natural Communication fields
+    /// Recent significant events for aftermath instinct: (description, timestamp, reflected)
+    pub recent_events: Vec<(String, f64, bool)>,
+    /// Average user message length over last 5 messages (for conversational metabolism)
+    pub avg_user_msg_length: f64,
+    /// Number of proactive messages sent today
+    pub daily_proactive_count: u32,
+    /// Last N messages sent by companion (for anti-repetition)
+    pub recent_sent_messages: Vec<String>,
+    /// Suppressed urges log: (urge_key, reason, timestamp)
+    pub suppressed_urges: Vec<(String, String, f64)>,
 }
 
 /// Response from handle_message().

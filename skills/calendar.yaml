@@ -1,0 +1,44 @@
+id: calendar
+name: Calendar
+description: Google Calendar integration with event management and meeting prep
+long_description: >
+  Connect to Google Calendar to view, create, and manage events. AI-powered meeting
+  preparation reminds you of upcoming meetings and provides context. Works with
+  email skill for calendar invitations.
+version: "1.0.0"
+author: Yantrik
+icon: calendar
+category: productivity
+tags: [google, events, meetings, schedule, reminders]
+
+tools:
+  - calendar_today
+  - calendar_list_events
+  - calendar_create_event
+  - calendar_update_event
+  - calendar_delete_event
+
+core_tools:
+  - calendar_today
+  - calendar_list_events
+  - calendar_create_event
+  - calendar_update_event
+  - calendar_delete_event
+
+instincts: []
+
+cortex_rules:
+  - meeting_prep
+
+services:
+  - calendar
+
+requires:
+  - email
+
+requires_config:
+  - calendar
+
+permissions:
+  - network
+  - background
