@@ -54,7 +54,8 @@ impl Instinct for NewsWatchInstinct {
              Only report events that are truly significant — natural disasters, \
              wars, major political events, elections, major tech announcements, \
              or events relevant to {}. If something major happened, write a brief \
-             1-2 sentence alert. If nothing significant, respond with just \"No major news.\"",
+             1-2 sentence alert. If nothing significant, respond with just \"No major news.\" \
+             After you're done, call browser_cleanup to free resources.",
             user,
         );
 
