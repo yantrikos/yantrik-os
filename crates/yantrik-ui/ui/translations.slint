@@ -1,0 +1,158 @@
+// Translations global — all user-facing strings go here.
+// Populated from Rust via i18n module at startup and on locale switch.
+// Reference: Tr.xxx in any Slint component that imports this global.
+
+export global Tr {
+    // ── Common ──
+    in-out property <string> ok: "OK";
+    in-out property <string> cancel: "Cancel";
+    in-out property <string> save: "Save";
+    in-out property <string> delete_: "Delete";
+    in-out property <string> close: "Close";
+    in-out property <string> back: "Back";
+    in-out property <string> next: "Next";
+    in-out property <string> skip: "Skip";
+    in-out property <string> done: "Done";
+    in-out property <string> search: "Search";
+    in-out property <string> refresh: "Refresh";
+    in-out property <string> loading: "Loading...";
+    in-out property <string> error: "Error";
+    in-out property <string> retry: "Retry";
+    in-out property <string> yes: "Yes";
+    in-out property <string> no: "No";
+    in-out property <string> apply: "Apply";
+    in-out property <string> settings: "Settings";
+    in-out property <string> none_: "None";
+    in-out property <string> copy: "Copy";
+    in-out property <string> paste: "Paste";
+    in-out property <string> select-all: "Select All";
+
+    // ── Desktop ──
+    in-out property <string> desktop-greeting: "Hey. I'm Yantrik.";
+    in-out property <string> desktop-lens-placeholder: "Ask me anything...";
+    in-out property <string> desktop-no-results: "No results";
+
+    // ── Dock ──
+    in-out property <string> dock-terminal: "Terminal";
+    in-out property <string> dock-browser: "Browser";
+    in-out property <string> dock-files: "Files";
+    in-out property <string> dock-notes: "Notes";
+    in-out property <string> dock-editor: "Editor";
+    in-out property <string> dock-bond: "Bond";
+    in-out property <string> dock-memory: "Memory";
+    in-out property <string> dock-alerts: "Alerts";
+    in-out property <string> dock-system: "System";
+    in-out property <string> dock-media: "Media";
+    in-out property <string> dock-email: "Email";
+    in-out property <string> dock-calendar: "Calendar";
+    in-out property <string> dock-network: "Network";
+    in-out property <string> dock-apps: "Apps";
+    in-out property <string> dock-settings: "Settings";
+
+    // ── Screen Titles ──
+    in-out property <string> title-bond: "Bond";
+    in-out property <string> title-personality: "Personality";
+    in-out property <string> title-memory: "Memory";
+    in-out property <string> title-settings: "Settings";
+    in-out property <string> title-files: "Files";
+    in-out property <string> title-notifications: "Notifications";
+    in-out property <string> title-system: "System";
+    in-out property <string> title-image-viewer: "Image Viewer";
+    in-out property <string> title-editor: "Editor";
+    in-out property <string> title-now-playing: "Now Playing";
+    in-out property <string> title-terminal: "Terminal";
+    in-out property <string> title-notes: "Notes";
+    in-out property <string> title-about: "About";
+    in-out property <string> title-email: "Email";
+    in-out property <string> title-calendar: "Calendar";
+    in-out property <string> title-packages: "Package Manager";
+    in-out property <string> title-network: "Network";
+    in-out property <string> title-weather: "Weather";
+    in-out property <string> title-music: "Music";
+    in-out property <string> title-sysmonitor: "System Monitor";
+    in-out property <string> title-downloads: "Downloads";
+    in-out property <string> title-snippets: "Snippets";
+    in-out property <string> title-containers: "Containers";
+    in-out property <string> title-devices: "Devices";
+    in-out property <string> title-permissions: "Permissions";
+
+    // ── Boot ──
+    in-out property <string> boot-loading: "Loading Yantrik OS...";
+    in-out property <string> boot-starting: "Starting services...";
+
+    // ── Lock Screen ──
+    in-out property <string> lock-enter-pin: "Enter PIN";
+    in-out property <string> lock-wrong-pin: "Wrong PIN";
+
+    // ── Terminal ──
+    in-out property <string> terminal-new-tab: "New Tab";
+    in-out property <string> terminal-close-tab: "Close Tab";
+
+    // ── Notes ──
+    in-out property <string> notes-new-note: "New Note";
+    in-out property <string> notes-no-notes: "No notes yet";
+
+    // ── Email ──
+    in-out property <string> email-inbox: "Inbox";
+    in-out property <string> email-sent: "Sent";
+    in-out property <string> email-drafts: "Drafts";
+    in-out property <string> email-compose: "Compose";
+    in-out property <string> email-no-emails: "No emails";
+
+    // ── Files ──
+    in-out property <string> files-name: "Name";
+    in-out property <string> files-size: "Size";
+    in-out property <string> files-modified: "Modified";
+    in-out property <string> files-empty: "Folder is empty";
+    in-out property <string> files-show-hidden: "Show hidden files";
+
+    // ── Power ──
+    in-out property <string> power-shutdown: "Shut Down";
+    in-out property <string> power-restart: "Restart";
+    in-out property <string> power-sleep: "Sleep";
+    in-out property <string> power-logout: "Log Out";
+
+    // ── Companion ──
+    in-out property <string> companion-thinking: "Thinking...";
+    in-out property <string> companion-typing: "Typing...";
+    in-out property <string> companion-error: "Something went wrong";
+
+    // ── Bond ──
+    in-out property <string> bond-score: "Bond Score";
+    in-out property <string> bond-level: "Level";
+    in-out property <string> bond-interactions: "Total Interactions";
+    in-out property <string> bond-days: "Days Together";
+    in-out property <string> bond-streak: "Current Streak";
+
+    // ── Notifications ──
+    in-out property <string> notifications-no-notifications: "No notifications";
+    in-out property <string> notifications-clear-all: "Clear All";
+
+    // ── Downloads ──
+    in-out property <string> downloads-add-url: "Add URL";
+    in-out property <string> downloads-active: "Active";
+    in-out property <string> downloads-completed: "Completed";
+
+    // ── Snippets ──
+    in-out property <string> snippets-new: "New Snippet";
+    in-out property <string> snippets-no-snippets: "No snippets yet";
+
+    // ── Containers ──
+    in-out property <string> containers-running: "Running";
+    in-out property <string> containers-stopped: "Stopped";
+    in-out property <string> containers-images: "Images";
+
+    // ── Weather ──
+    in-out property <string> weather-humidity: "Humidity";
+    in-out property <string> weather-wind: "Wind";
+
+    // ── Music ──
+    in-out property <string> music-library: "Library";
+    in-out property <string> music-now-playing: "Now Playing";
+    in-out property <string> music-no-tracks: "No music found";
+
+    // ── Packages ──
+    in-out property <string> packages-install: "Install";
+    in-out property <string> packages-remove: "Remove";
+    in-out property <string> packages-search: "Search packages...";
+}

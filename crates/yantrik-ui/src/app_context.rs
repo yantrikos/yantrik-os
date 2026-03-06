@@ -18,12 +18,14 @@ use crate::cards::CardManager;
 use crate::clipboard;
 use crate::features;
 use crate::frecency::FrecencyStore;
+use crate::i18n::I18n;
 use crate::notifications;
 use crate::system_context;
 use crate::wire::image_viewer::ImageViewerState;
 use crate::terminal::TerminalHandle;
 use crate::wire::media_player::MpvHandle;
 use crate::{App, AccentPreset, ThemeMode, ThemeOverrides, MessageData, UrgeCardData, WhisperCardItem};
+use yantrikdb_companion::skills::SkillRegistry;
 
 /// Clipboard operation for file browser copy/cut.
 #[derive(Clone, Debug)]
@@ -62,11 +64,14 @@ pub struct AppContext {
     pub terminals: Rc<RefCell<Vec<TerminalHandle>>>,
     pub terminal_active: Rc<RefCell<usize>>,
     pub user_name: String,
+    pub config_path: Option<PathBuf>,
+    pub skill_registry: Rc<RefCell<SkillRegistry>>,
+    pub i18n: I18n,
 }
 
 impl AppContext {
     /// Initialize all shared state. Moves setup logic that used to live in main().
-    pub fn init(config: CompanionConfig, ui: &App) -> Self {
+    pub fn init(config: CompanionConfig, ui: &App, config_path: Option<PathBuf>) -> Self {
         // Load persisted user settings (theme, tool perm, auto-lock, etc.)
         let user_settings = crate::wire::settings::load();
         ui.global::<ThemeMode>().set_dark(user_settings.dark_mode);
@@ -184,6 +189,7 @@ impl AppContext {
         let user_name = config.user_name.clone();
         let voice_config = config.voice.clone();
         let tg_config = config.telegram.clone();
+        let enabled_services = config.enabled_services.clone();
 
         // Start companion bridge (spawns worker thread)
         let bridge = Arc::new(CompanionBridge::start(config, ui.as_weak()));
@@ -249,6 +255,46 @@ impl AppContext {
         registry.register(Box::new(features::screen_watcher::ScreenWatcher::new()));
         registry.register(Box::new(features::project_consciousness::ProjectConsciousness::new()));
 
+        // Initialize Skill Registry
+        let skills_dir = {
+            // Check /opt/yantrik/skills/ first (deployed), then relative to binary
+            let deployed = std::path::PathBuf::from("/opt/yantrik/skills");
+            if deployed.exists() {
+                deployed
+            } else {
+                // Development fallback: relative to cwd
+                std::env::current_dir().unwrap_or_default().join("skills")
+            }
+        };
+        let skill_db_path = {
+            let home = std::env::var("HOME").unwrap_or_else(|_| "/root".to_string());
+            format!("{}/.config/yantrik/skills.db", home)
+        };
+        // Ensure parent directory exists
+        if let Some(parent) = std::path::Path::new(&skill_db_path).parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let skill_registry = match rusqlite::Connection::open(&skill_db_path) {
+            Ok(conn) => {
+                let mut reg = SkillRegistry::init(&conn, &skills_dir);
+                // Auto-enable skills matching config.enabled_services on first run
+                reg.auto_enable_for_services(&conn, &enabled_services);
+                tracing::info!(
+                    skills = reg.count(),
+                    enabled = reg.enabled_count(),
+                    dir = %skills_dir.display(),
+                    "Skill Registry initialized"
+                );
+                Rc::new(RefCell::new(reg))
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to open skills.db — using empty registry");
+                // Create a minimal in-memory registry
+                let conn = rusqlite::Connection::open_in_memory().unwrap();
+                Rc::new(RefCell::new(SkillRegistry::init(&conn, &skills_dir)))
+            }
+        };
+
         Self {
             bridge,
             installed_apps,
@@ -278,6 +324,9 @@ impl AppContext {
             terminals: Rc::new(RefCell::new(Vec::new())),
             terminal_active: Rc::new(RefCell::new(0)),
             user_name,
+            config_path,
+            skill_registry,
+            i18n: I18n::load(&I18n::detect_locale()),
         }
     }
 }

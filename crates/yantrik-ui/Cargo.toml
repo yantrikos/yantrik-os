@@ -14,7 +14,7 @@ path = "src/bin/test_brain.rs"
 
 [dependencies]
 yantrikdb-companion = { path = "../yantrikdb-companion" }
-yantrikdb-ml = { git = "https://github.com/spranab/yantrikdb.git", features = ["api-llm"] }
+yantrikdb-ml = { git = "https://github.com/spranab/yantrikdb.git", features = ["api-llm", "claude-cli"] }
 yantrikdb-core = { git = "https://github.com/spranab/yantrikdb.git" }
 yantrik-os = { path = "../yantrik-os" }
 slint = { version = "1.9", features = ["renderer-software"] }
@@ -29,9 +29,19 @@ rubato = "0.16"
 anyhow = "1"
 pty-process = "0.5"
 vt100 = "0.16"
+native-tls = "0.2"
+imap = "2.4"
+lettre = { version = "0.11", default-features = false, features = ["rustls-tls", "builder", "smtp-transport", "hostname"] }
+base64 = "0.22"
+ureq = { version = "2", features = ["json"] }
+mailparse = "0.15"
+html2text = "0.12"
+rusqlite = { version = "0.32", features = ["bundled"] }
+libc = "0.2"
 
 [features]
-default = []
+default = ["claude-cli"]
+claude-cli = ["yantrikdb-ml/claude-cli"]
 cuda = ["yantrikdb-ml/cuda"]
 metal = ["yantrikdb-ml/metal"]
 accelerate = ["yantrikdb-ml/accelerate"]

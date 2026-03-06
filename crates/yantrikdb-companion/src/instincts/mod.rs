@@ -4,49 +4,67 @@
 //! (things the companion should bring up with the user).
 
 mod activity_reflector;
+mod aftermath;
 mod automation;
 mod bond_milestone;
 mod check_in;
 mod cognitive_load;
 mod conflict_alerting;
+mod conversational_callback;
 mod emotional_awareness;
+mod evening_reflection;
 mod follow_up;
 mod humor;
 mod memory_weaver;
 mod morning_brief;
 mod pattern_surfacing;
 mod predictive_workflow;
+mod question_asking;
 mod reminder;
 mod routine;
 mod scheduler;
 mod self_awareness;
 mod serendipity;
+mod silence_reveal;
 mod smart_updates;
 mod weather_watch;
+mod email_watch;
+mod news_watch;
+mod curiosity;
+mod trend_watch;
 
 use crate::config::InstinctSettings;
 use crate::types::{CompanionState, UrgeSpec};
 
 pub use activity_reflector::ActivityReflectorInstinct;
+pub use aftermath::AftermathInstinct;
 pub use automation::AutomationInstinct;
 pub use bond_milestone::BondMilestoneInstinct;
+pub use conversational_callback::ConversationalCallbackInstinct;
 pub use check_in::CheckInInstinct;
 pub use cognitive_load::CognitiveLoadInstinct;
 pub use conflict_alerting::ConflictAlertingInstinct;
 pub use emotional_awareness::EmotionalAwarenessInstinct;
+pub use evening_reflection::EveningReflectionInstinct;
 pub use follow_up::FollowUpInstinct;
 pub use humor::HumorInstinct;
 pub use memory_weaver::MemoryWeaverInstinct;
 pub use morning_brief::MorningBriefInstinct;
 pub use pattern_surfacing::PatternSurfacingInstinct;
 pub use predictive_workflow::PredictiveWorkflowInstinct;
+pub use question_asking::QuestionAskingInstinct;
 pub use reminder::ReminderInstinct;
 pub use routine::RoutineInstinct;
 pub use scheduler::SchedulerInstinct;
 pub use self_awareness::SelfAwarenessInstinct;
 pub use serendipity::SerendipityInstinct;
+pub use silence_reveal::SilenceRevealInstinct;
 pub use smart_updates::SmartUpdatesInstinct;
 pub use weather_watch::WeatherWatchInstinct;
+pub use email_watch::EmailWatchInstinct;
+pub use news_watch::NewsWatchInstinct;
+pub use curiosity::CuriosityInstinct;
+pub use trend_watch::TrendWatchInstinct;
 
 /// Trait for companion instincts.
 pub trait Instinct: Send + Sync {
@@ -102,7 +120,7 @@ pub fn load_instincts(settings: &InstinctSettings) -> Vec<Box<dyn Instinct>> {
     // Soul instincts — bond-awareness, self-awareness, humor
     instincts.push(Box::new(BondMilestoneInstinct));
     instincts.push(Box::new(SelfAwarenessInstinct));
-    instincts.push(Box::new(HumorInstinct));
+    instincts.push(Box::new(HumorInstinct::new()));
 
     // V15: Proactive intelligence instincts
     instincts.push(Box::new(MorningBriefInstinct::new()));
@@ -123,6 +141,31 @@ pub fn load_instincts(settings: &InstinctSettings) -> Vec<Box<dyn Instinct>> {
     if settings.smart_updates_enabled {
         instincts.push(Box::new(SmartUpdatesInstinct::new()));
     }
+
+    if settings.email_watch_enabled {
+        instincts.push(Box::new(EmailWatchInstinct::new(settings.email_poll_minutes)));
+    }
+
+    // Browser-based proactive intelligence
+    if settings.news_watch_enabled {
+        instincts.push(Box::new(NewsWatchInstinct::new(settings.news_watch_interval_minutes)));
+    }
+    if settings.trend_watch_enabled {
+        instincts.push(Box::new(TrendWatchInstinct::new(settings.trend_watch_interval_minutes)));
+    }
+    if settings.curiosity_enabled {
+        instincts.push(Box::new(CuriosityInstinct::new(
+            settings.curiosity_idle_minutes,
+            settings.curiosity_interval_hours,
+        )));
+    }
+
+    // Natural Communication instincts (always loaded — bond-gated internally)
+    instincts.push(Box::new(AftermathInstinct));
+    instincts.push(Box::new(QuestionAskingInstinct::new()));
+    instincts.push(Box::new(EveningReflectionInstinct::new()));
+    instincts.push(Box::new(ConversationalCallbackInstinct));
+    instincts.push(Box::new(SilenceRevealInstinct::new()));
 
     instincts
 }

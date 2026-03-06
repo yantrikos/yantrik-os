@@ -1,0 +1,31 @@
+id: home-assistant
+name: Home Assistant
+description: Control smart home devices — lights, switches, sensors, and scenes
+long_description: >
+  Connect to your Home Assistant instance to control smart home devices with
+  natural language. Turn lights on/off, check sensor readings, trigger scenes,
+  and automate routines. Requires Home Assistant with Long-Lived Access Token.
+version: "1.0.0"
+author: Yantrik
+icon: home
+category: smart_home
+tags: [iot, smart-home, lights, switches, sensors, automation, hass]
+
+tools:
+  - ha_get_state
+  - ha_call_service
+  - ha_list_entities
+
+core_tools: []
+instincts: []
+cortex_rules: []
+
+services:
+  - home_assistant
+
+requires: []
+requires_config:
+  - home_assistant
+
+permissions:
+  - network

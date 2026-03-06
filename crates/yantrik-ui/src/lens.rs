@@ -66,6 +66,8 @@ pub const KNOWN_APPS: &[(&str, &str, &str)] = &[
 pub enum LensAction {
     /// Launch an app by command string (may include args).
     Launch(String),
+    /// Launch a built-in Yantrik app by app_id (routes via on_launch_app).
+    LaunchBuiltin(String),
     /// Open a URL in the default browser.
     OpenUrl(String),
     /// Submit a query to the AI companion (LLM).
@@ -97,9 +99,12 @@ pub fn resolve_action(action_id: &str, installed_apps: &[DesktopEntry]) -> LensA
     }
     if action_id.starts_with("launch:") {
         let app_id = &action_id[7..];
-        // First check installed .desktop apps
+        // First check installed / built-in apps
         for entry in installed_apps {
             if entry.app_id == app_id {
+                if entry.exec == "__builtin__" {
+                    return LensAction::LaunchBuiltin(app_id.to_string());
+                }
                 return LensAction::Launch(entry.exec.clone());
             }
         }

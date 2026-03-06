@@ -249,6 +249,53 @@ pub fn wire(ui: &App, ctx: &AppContext) {
                     super::notes::load_notes_list(&ui);
                 }
             }
+            // Email client
+            17 => {
+                tracing::debug!("Navigated to email client");
+                // Backend email sync will be triggered here when integrated
+            }
+            // Weather Dashboard
+            19 => {
+                tracing::debug!("Navigated to weather dashboard");
+            }
+            // Music Player
+            20 => {
+                tracing::debug!("Navigated to music player");
+            }
+            // Package Manager — auto-refresh on open
+            21 => {
+                tracing::debug!("Navigated to package manager");
+                if let Some(ui) = ui_weak.upgrade() {
+                    ui.invoke_pkg_refresh();
+                }
+            }
+            // System Monitor
+            23 => {
+                tracing::debug!("Navigated to system monitor");
+            }
+            // Download Manager
+            24 => {
+                tracing::debug!("Navigated to download manager");
+            }
+            // Code Snippet Manager
+            25 => {
+                tracing::debug!("Navigated to snippet manager");
+                if let Some(ui) = ui_weak.upgrade() {
+                    super::snippet_manager::load_snippets(&ui);
+                }
+            }
+            // Container Manager
+            26 => {
+                tracing::debug!("Navigated to container manager");
+            }
+            // Device Dashboard
+            27 => {
+                tracing::debug!("Navigated to device dashboard");
+            }
+            // Permission Dashboard
+            28 => {
+                tracing::debug!("Navigated to permission dashboard");
+            }
             _ => {}
         }
     });

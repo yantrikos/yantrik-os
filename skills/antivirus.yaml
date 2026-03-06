@@ -1,0 +1,29 @@
+id: antivirus
+name: Antivirus
+description: Scan files and directories for malware with ClamAV
+long_description: >
+  Malware scanning powered by ClamAV. Scan individual files, directories, or the
+  entire system. View quarantined files and update virus definitions. Keeps your
+  system safe with proactive scanning.
+version: "1.0.0"
+author: Yantrik
+icon: bug
+category: system
+tags: [security, malware, clamav, scan, virus, protection]
+
+tools:
+  - antivirus_scan
+  - antivirus_status
+  - antivirus_update
+  - antivirus_quarantine
+
+core_tools: []
+instincts: []
+cortex_rules: []
+services: []
+requires: []
+requires_config: []
+
+permissions:
+  - filesystem
+  - shell

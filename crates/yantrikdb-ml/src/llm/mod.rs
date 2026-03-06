@@ -6,6 +6,8 @@
 mod candle;
 #[cfg(feature = "api-llm")]
 mod api;
+#[cfg(feature = "claude-cli")]
+mod claude_cli;
 #[cfg(feature = "llamacpp")]
 mod llamacpp;
 
@@ -13,6 +15,8 @@ mod llamacpp;
 pub use self::candle::CandleLLM;
 #[cfg(feature = "api-llm")]
 pub use self::api::ApiLLM;
+#[cfg(feature = "claude-cli")]
+pub use self::claude_cli::ClaudeCliLLM;
 #[cfg(feature = "llamacpp")]
 pub use self::llamacpp::LlamaCppLLM;
 

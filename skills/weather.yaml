@@ -1,0 +1,27 @@
+id: weather
+name: Weather
+description: Location-based weather forecasts and alerts
+long_description: >
+  Get current weather conditions and forecasts for any location. Proactive weather
+  alerts notify you about significant changes. Uses wttr.in API — no API key needed.
+version: "1.0.0"
+author: Yantrik
+icon: cloud
+category: utility
+tags: [forecast, temperature, rain, wind, alerts]
+
+tools:
+  - get_weather
+
+core_tools: []
+
+instincts:
+  - weather_watch
+
+cortex_rules: []
+services: []
+requires: []
+requires_config: []
+
+permissions:
+  - network

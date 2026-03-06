@@ -59,10 +59,6 @@ pub struct LLMConfig {
     /// API key (required for OpenAI/Claude/DeepSeek, optional for Ollama/vLLM).
     #[serde(default)]
     pub api_key: Option<String>,
-    /// Separate model for vision tasks (browser_see). Defaults to "qwen3.5:9b".
-    /// Use a lighter model here since vision inference is compute-heavy.
-    #[serde(default)]
-    pub vision_model: Option<String>,
     /// Path to GGUF model file (for in-process inference).
     #[serde(default)]
     pub gguf_path: Option<String>,
@@ -118,7 +114,6 @@ impl Default for LLMConfig {
             api_base_url: None,
             api_model: None,
             api_key: None,
-            vision_model: None,
             gguf_path: None,
             tokenizer_path: None,
             model_dir: None,
@@ -135,7 +130,12 @@ impl Default for LLMConfig {
 impl LLMConfig {
     /// Returns true if this backend uses an external API (not in-process).
     pub fn is_api_backend(&self) -> bool {
-        !matches!(self.backend.as_str(), "candle" | "llamacpp")
+        !matches!(self.backend.as_str(), "candle" | "llamacpp" | "claude-cli")
+    }
+
+    /// Returns true if this backend uses the Claude Code CLI.
+    pub fn is_claude_cli_backend(&self) -> bool {
+        self.backend == "claude-cli"
     }
 
     /// Resolve the API base URL from the backend/provider name.
@@ -341,10 +341,37 @@ pub struct InstinctSettings {
     /// Minimum memories before weaving is worthwhile.
     #[serde(default = "default_weaver_min_memories")]
     pub memory_weaver_min_memories: i64,
+    /// Enable email monitoring instinct (requires email.enabled + accounts configured).
+    #[serde(default)]
+    pub email_watch_enabled: bool,
+    /// Minutes between email checks.
+    #[serde(default = "default_email_poll_minutes_f64")]
+    pub email_poll_minutes: f64,
+    /// Enable news monitoring (uses web_search).
+    #[serde(default = "default_true_val")]
+    pub news_watch_enabled: bool,
+    /// Minutes between news checks.
+    #[serde(default = "default_news_interval")]
+    pub news_watch_interval_minutes: f64,
+    /// Enable trend watching (searches Google/X/Reddit via browser).
+    #[serde(default = "default_true_val")]
+    pub trend_watch_enabled: bool,
+    /// Minutes between trend checks.
+    #[serde(default = "default_trend_interval")]
+    pub trend_watch_interval_minutes: f64,
+    /// Enable curiosity research (idle-triggered interest-based search).
+    #[serde(default = "default_true_val")]
+    pub curiosity_enabled: bool,
+    /// Minimum idle minutes before curiosity fires.
+    #[serde(default = "default_curiosity_idle")]
+    pub curiosity_idle_minutes: f64,
+    /// Hours between curiosity research sessions.
+    #[serde(default = "default_curiosity_interval")]
+    pub curiosity_interval_hours: f64,
 }
 
 fn default_check_in_hours() -> f64 {
-    2.0
+    6.0
 }
 fn default_follow_up_hours() -> f64 {
     4.0
@@ -358,6 +385,14 @@ fn default_weaver_idle_minutes() -> f64 {
 fn default_weaver_min_memories() -> i64 {
     10
 }
+fn default_email_poll_minutes_f64() -> f64 {
+    5.0
+}
+fn default_true_val() -> bool { true }
+fn default_news_interval() -> f64 { 60.0 }
+fn default_trend_interval() -> f64 { 45.0 }
+fn default_curiosity_idle() -> f64 { 15.0 }
+fn default_curiosity_interval() -> f64 { 4.0 }
 
 impl Default for InstinctSettings {
     fn default() -> Self {
@@ -378,6 +413,15 @@ impl Default for InstinctSettings {
             memory_weaver_enabled: true,
             memory_weaver_idle_minutes: default_weaver_idle_minutes(),
             memory_weaver_min_memories: default_weaver_min_memories(),
+            email_watch_enabled: false,
+            email_poll_minutes: default_email_poll_minutes_f64(),
+            news_watch_enabled: true,
+            news_watch_interval_minutes: default_news_interval(),
+            trend_watch_enabled: true,
+            trend_watch_interval_minutes: default_trend_interval(),
+            curiosity_enabled: true,
+            curiosity_idle_minutes: default_curiosity_idle(),
+            curiosity_interval_hours: default_curiosity_interval(),
         }
     }
 }
@@ -713,6 +757,88 @@ impl Default for MemoryEvolutionConfig {
     }
 }
 
+// ── Email Config ────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmailAccountConfig {
+    pub name: String,               // "Personal Gmail"
+    pub email: String,              // user@gmail.com
+    pub provider: String,           // "gmail", "outlook", "yahoo", "imap"
+    #[serde(default)]
+    pub imap_server: Option<String>,  // auto-detected from provider, or custom
+    #[serde(default = "default_imap_port")]
+    pub imap_port: u16,
+    #[serde(default)]
+    pub smtp_server: Option<String>,
+    #[serde(default = "default_smtp_port")]
+    pub smtp_port: u16,
+    #[serde(default)]
+    pub password: String,           // App password (empty if OAuth)
+    #[serde(default)]
+    pub auth_method: Option<String>, // "password" or "oauth2" (default: password)
+    #[serde(default)]
+    pub oauth_access_token: Option<String>,
+    #[serde(default)]
+    pub oauth_refresh_token: Option<String>,
+    #[serde(default)]
+    pub oauth_token_expiry: Option<f64>,  // unix timestamp
+}
+
+fn default_imap_port() -> u16 { 993 }
+fn default_smtp_port() -> u16 { 587 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmailConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub accounts: Vec<EmailAccountConfig>,
+    #[serde(default = "default_email_poll_minutes")]
+    pub poll_interval_minutes: u32,
+    #[serde(default = "default_evolution_enabled")]
+    pub notify_important: bool,
+}
+
+fn default_email_poll_minutes() -> u32 { 5 }
+
+impl Default for EmailConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            accounts: Vec::new(),
+            poll_interval_minutes: default_email_poll_minutes(),
+            notify_important: true,
+        }
+    }
+}
+
+// ── Calendar Config ─────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CalendarConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    /// Which email account to use for Google Calendar API (by name or email).
+    /// Defaults to first email account with OAuth2.
+    #[serde(default)]
+    pub account: Option<String>,
+    /// Minutes between calendar sync refreshes.
+    #[serde(default = "default_calendar_poll_minutes")]
+    pub poll_interval_minutes: u32,
+}
+
+fn default_calendar_poll_minutes() -> u32 { 10 }
+
+impl Default for CalendarConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            account: None,
+            poll_interval_minutes: default_calendar_poll_minutes(),
+        }
+    }
+}
+
 // ── Agent Loop Config ────────────────────────────────────────────────────────
 
 /// Configuration for the robust agent loop (nudge, error recovery, trace learning).
@@ -797,11 +923,80 @@ pub struct CompanionConfig {
     pub memory_evolution: MemoryEvolutionConfig,
     #[serde(default)]
     pub agent: AgentConfig,
+    #[serde(default)]
+    pub email: EmailConfig,
+    #[serde(default)]
+    pub calendar: CalendarConfig,
+    #[serde(default)]
+    pub connectors: ConnectorsConfig,
+    /// Services the user actually uses. Only cortex rules and instincts for
+    /// enabled services will fire. Examples: "email", "calendar", "git", "jira".
+    /// If empty, defaults to a minimal personal set.
+    #[serde(default = "default_enabled_services")]
+    pub enabled_services: Vec<String>,
+}
+
+/// OAuth connector configuration for external services.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConnectorsConfig {
+    /// OAuth2 callback port (default: 9876).
+    #[serde(default = "default_connector_port")]
+    pub callback_port: u16,
+    /// Google OAuth2 client ID (from Google Cloud Console).
+    #[serde(default)]
+    pub google_client_id: Option<String>,
+    /// Spotify OAuth2 client ID (from Spotify Developer Dashboard).
+    #[serde(default)]
+    pub spotify_client_id: Option<String>,
+    /// Spotify OAuth2 client secret (required — Spotify doesn't support PKCE-only).
+    #[serde(default)]
+    pub spotify_client_secret: Option<String>,
+    /// Facebook (Meta) App ID (from Meta for Developers).
+    #[serde(default)]
+    pub facebook_app_id: Option<String>,
+    /// Facebook App Secret (required for token exchange).
+    #[serde(default)]
+    pub facebook_app_secret: Option<String>,
+    /// Instagram uses the same Meta App ID as Facebook.
+    /// Set facebook_app_id to enable both.
+    #[serde(default)]
+    pub instagram_app_id: Option<String>,
+    /// Background sync interval in minutes (default: 30).
+    #[serde(default = "default_connector_sync_interval")]
+    pub sync_interval_minutes: u32,
+}
+
+fn default_connector_port() -> u16 { 9876 }
+fn default_connector_sync_interval() -> u32 { 30 }
+
+impl Default for ConnectorsConfig {
+    fn default() -> Self {
+        Self {
+            callback_port: default_connector_port(),
+            google_client_id: None,
+            spotify_client_id: None,
+            spotify_client_secret: None,
+            facebook_app_id: None,
+            facebook_app_secret: None,
+            instagram_app_id: None,
+            sync_interval_minutes: default_connector_sync_interval(),
+        }
+    }
 }
 
 fn default_user_name() -> String {
     "User".to_string()
 }
+
+/// Default enabled services — personal use, no enterprise tools.
+fn default_enabled_services() -> Vec<String> {
+    vec![
+        "email".to_string(),
+        "calendar".to_string(),
+        "browser".to_string(),
+    ]
+}
+
 
 impl Default for CompanionConfig {
     fn default() -> Self {
@@ -825,6 +1020,10 @@ impl Default for CompanionConfig {
             telegram: TelegramConfig::default(),
             memory_evolution: MemoryEvolutionConfig::default(),
             agent: AgentConfig::default(),
+            email: EmailConfig::default(),
+            calendar: CalendarConfig::default(),
+            connectors: ConnectorsConfig::default(),
+            enabled_services: default_enabled_services(),
         }
     }
 }
@@ -835,5 +1034,10 @@ impl CompanionConfig {
         let content = std::fs::read_to_string(path)?;
         let config: Self = serde_yaml::from_str(&content)?;
         Ok(config)
+    }
+
+    /// Check if a service is enabled by the user.
+    pub fn has_service(&self, service: &str) -> bool {
+        self.enabled_services.iter().any(|s| s.eq_ignore_ascii_case(service))
     }
 }

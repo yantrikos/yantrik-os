@@ -329,7 +329,8 @@ fn response_instructions(level: BondLevel, name: &str, user: &str) -> String {
         BondLevel::Confidant | BondLevel::PartnerInCrime => format!(
             "Respond as {name}. Be yourself — no filter needed.\n\
              Match {user}'s energy. Short and punchy or longer and thoughtful — whatever fits.\n\
-             If something's important, don't sugarcoat it.\n"
+             If something's important, don't sugarcoat it.\n\
+             When {user} asks you to do something, DO IT with tools. Don't explain steps — execute them.\n"
         ),
     }
 }
@@ -380,6 +381,17 @@ fn tool_chaining_instructions(use_native_tools: bool) -> String {
          13. RESEARCH FIRST: When you don't know how to do something, use web_search to find \
          instructions BEFORE attempting it. Read the results, plan your steps, then execute. \
          Don't guess — search, learn, then act.\n\
+         15. ACT, DON'T ADVISE: When the user asks you to DO something (create a file, run a test, \
+         evaluate something, write a report), you MUST call tools to actually do it. NEVER respond \
+         with shell commands for the user to run — YOU run them with run_command. NEVER describe \
+         steps you 'would' take — TAKE them. If the user says 'create X', call write_file or \
+         run_command to create it. If they say 'evaluate Y', call the tools, get results, and \
+         write_file with the output. You are an EXECUTOR, not an ADVISOR.\n\
+         16. TASK QUEUE: For large tasks that need many steps, use queue_task to add them to \
+         your persistent work queue. You'll work on queued tasks during idle time (think cycles). \
+         Use update_task to record progress, complete_task when done. The user sees task status \
+         in their system context. If the system context shows 'Queued tasks:', check if any need \
+         attention.\n\
          14. BROWSER INTERACTION — PREFERRED FLOW:\n\
          a) browse(url) — navigate to the page\n\
          b) browser_see() — take a screenshot with vision AI. The response includes pixel \

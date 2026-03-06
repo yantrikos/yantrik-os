@@ -1,0 +1,31 @@
+id: firewall
+name: Firewall
+description: Manage firewall rules, ports, and IP blocking
+long_description: >
+  View firewall status, list rules, allow/block ports and IPs. Uses iptables/nftables
+  under the hood. Helps secure your system with natural language commands.
+version: "1.0.0"
+author: Yantrik
+icon: shield
+category: system
+tags: [security, iptables, nftables, ports, network, block]
+
+tools:
+  - firewall_status
+  - firewall_list_rules
+  - firewall_allow_port
+  - firewall_block_port
+  - firewall_block_ip
+  - firewall_enable
+  - firewall_disable
+
+core_tools: []
+instincts: []
+cortex_rules: []
+services: []
+requires: []
+requires_config: []
+
+permissions:
+  - shell
+  - network

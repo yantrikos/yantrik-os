@@ -1,0 +1,40 @@
+id: git
+name: Git
+description: Git repository management, diffs, commits, and branch operations
+long_description: >
+  Interact with Git repositories through natural language. View status, diffs,
+  commit history, create branches, and make commits. Cortex integration monitors
+  repository activity and surfaces end-of-day summaries.
+version: "1.0.0"
+author: Yantrik
+icon: git-branch
+category: development
+tags: [version-control, github, gitlab, commits, branches, diff, merge]
+
+tools:
+  - git_status
+  - git_log
+  - git_diff
+  - git_clone
+  - git_branch
+  - git_commit
+  - git_show
+  - git_stash
+  - git_diff_file
+
+core_tools: []
+
+instincts: []
+
+cortex_rules:
+  - end_of_day
+
+services:
+  - git
+
+requires: []
+requires_config: []
+
+permissions:
+  - filesystem
+  - shell

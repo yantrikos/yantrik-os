@@ -1,0 +1,28 @@
+id: ssh
+name: SSH
+description: Manage and run commands on remote hosts via SSH
+long_description: >
+  List configured SSH hosts, check connectivity, and execute commands remotely.
+  Works with your existing SSH config (~/.ssh/config). Great for managing
+  remote servers and development environments.
+version: "1.0.0"
+author: Yantrik
+icon: terminal
+category: development
+tags: [remote, server, ssh, scp, deployment, linux]
+
+tools:
+  - ssh_list_hosts
+  - ssh_check_host
+  - ssh_run
+
+core_tools: []
+instincts: []
+cortex_rules: []
+services: []
+requires: []
+requires_config: []
+
+permissions:
+  - network
+  - shell

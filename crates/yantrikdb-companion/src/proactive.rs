@@ -61,11 +61,11 @@ impl ProactiveEngine {
     /// Confidant: 20 min, Partner-in-Crime: 10 min.
     fn effective_cooldown_secs(&self) -> f64 {
         let bond_cooldown: f64 = match self.bond_level {
-            BondLevel::Stranger => 60.0 * 60.0,
-            BondLevel::Acquaintance => 45.0 * 60.0,
-            BondLevel::Friend => 30.0 * 60.0,
-            BondLevel::Confidant => 20.0 * 60.0,
-            BondLevel::PartnerInCrime => 10.0 * 60.0,
+            BondLevel::Stranger => 120.0 * 60.0,
+            BondLevel::Acquaintance => 90.0 * 60.0,
+            BondLevel::Friend => 60.0 * 60.0,
+            BondLevel::Confidant => 40.0 * 60.0,
+            BondLevel::PartnerInCrime => 25.0 * 60.0,
         };
         // Config cooldown is a floor — never go below configured minimum
         let config_cooldown = self.config.cooldown_minutes as f64 * 60.0;
@@ -297,19 +297,13 @@ impl ProactiveEngine {
             "pattern_surfacing" => {
                 format!("I've been noticing something: {}", reason)
             }
-            "conflict_alerting" => {
-                if !msg.is_empty() {
-                    msg.clone()
-                } else {
-                    format!("Hey {} \u{2014} {}. Want me to sort through them?", user, reason)
+            "conflict_alerting" | "memoryweaver" => {
+                // Internal housekeeping urges — only deliver if instinct provided
+                // a concrete suggested_message (e.g. milestone celebrations).
+                if msg.is_empty() {
+                    return String::new();
                 }
-            }
-            "memoryweaver" => {
-                if !msg.is_empty() {
-                    msg.clone()
-                } else {
-                    format!("{}", reason)
-                }
+                msg.clone()
             }
             "bond_milestone" | "bondmilestone" => {
                 if msg.is_empty() {
@@ -325,15 +319,27 @@ impl ProactiveEngine {
                     msg.clone()
                 }
             }
+            "emailwatch" => {
+                if !msg.is_empty() { msg.clone() }
+                else if !reason.is_empty() { format!("Email alert \u{2014} {}", reason) }
+                else { return String::new(); }
+            }
             "self_awareness" | "selfawareness" => reason.clone(),
             "humor" => {
-                if !msg.is_empty() {
-                    msg.clone()
-                } else if !reason.is_empty() {
-                    format!("Random thought \u{2014} {}", reason)
-                } else {
+                // Humor urges are tone hints for conversations, not standalone messages.
+                // Only deliver if the instinct provided a concrete suggested_message.
+                if msg.is_empty() {
+                    return String::new(); // Skip — raw hint, not user-facing
+                }
+                msg.clone()
+            }
+            // Natural Communication instincts — all use EXECUTE so they produce
+            // suggested_message via LLM. Legacy fallback only if EXECUTE path failed.
+            "aftermath" | "questionasking" | "eveningreflection" | "conversationalcallback" | "silencereveal" => {
+                if msg.is_empty() {
                     return String::new();
                 }
+                msg.clone()
             }
             _ => {
                 // Unknown instinct — use whatever text is available

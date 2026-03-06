@@ -1,0 +1,801 @@
+// Weather Dashboard — screen 19.
+// Current conditions, hourly forecast, 5-day forecast, weather details.
+
+import { Theme } from "theme.slint";
+
+// ── Data structs ──
+
+export struct WeatherCurrent {
+    temperature: string,
+    feels-like: string,
+    condition: string,
+    icon: string,
+    location: string,
+    humidity: string,
+    wind-speed: string,
+    wind-direction: string,
+    uv-index: string,
+    visibility: string,
+    pressure: string,
+    cloud-cover: string,
+    dew-point: string,
+    sunrise: string,
+    sunset: string,
+    is-loading: bool,
+    error-text: string,
+}
+
+export struct WeatherHourly {
+    time: string,
+    icon: string,
+    temp: string,
+    is-current: bool,
+}
+
+export struct WeatherDaily {
+    day-name: string,
+    icon: string,
+    high: string,
+    low: string,
+    precip-chance: string,
+    high-value: float,
+    low-value: float,
+    temp-range-min: float,
+    temp-range-max: float,
+}
+
+export component WeatherDashboard inherits Rectangle {
+    background: Theme.bg-deep;
+
+    in property <WeatherCurrent> current: {
+        temperature: "--",
+        feels-like: "--",
+        condition: "Loading...",
+        icon: "...",
+        location: "...",
+        humidity: "--",
+        wind-speed: "--",
+        wind-direction: "--",
+        uv-index: "--",
+        visibility: "--",
+        pressure: "--",
+        cloud-cover: "--",
+        dew-point: "--",
+        sunrise: "--",
+        sunset: "--",
+        is-loading: true,
+        error-text: "",
+    };
+    in property <[WeatherHourly]> hourly: [];
+    in property <[WeatherDaily]> daily: [];
+
+    callback back-pressed();
+    callback refresh-pressed();
+
+    VerticalLayout {
+        width: 100%;
+        height: 100%;
+
+        // ── Header bar (56px) ──
+        Rectangle {
+            height: 56px;
+            background: Theme.bg-surface;
+
+            HorizontalLayout {
+                padding-left: 12px;
+                padding-right: 16px;
+                spacing: 12px;
+
+                // Back button
+                Rectangle {
+                    width: 36px;
+                    height: 36px;
+                    y: (parent.height - 36px) / 2;
+                    border-radius: 18px;
+                    background: ta-back.has-hover ? Theme.hover-fill-strong : transparent;
+
+                    ta-back := TouchArea {
+                        clicked => { root.back-pressed(); }
+                    }
+
+                    Text {
+                        text: "\u{2190}";
+                        color: Theme.text-primary;
+                        font-size: 20px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+
+                // Title
+                Text {
+                    text: "Weather";
+                    color: Theme.text-primary;
+                    font-size: Theme.font-title;
+                    font-weight: 600;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                }
+
+                // Location label
+                Text {
+                    text: root.current.location;
+                    color: Theme.text-secondary;
+                    font-size: Theme.font-small;
+                    vertical-alignment: center;
+                }
+
+                // Refresh button
+                Rectangle {
+                    width: 36px;
+                    height: 36px;
+                    y: (parent.height - 36px) / 2;
+                    border-radius: 18px;
+                    background: ta-refresh.has-hover ? Theme.hover-fill-strong : transparent;
+
+                    ta-refresh := TouchArea {
+                        clicked => { root.refresh-pressed(); }
+                    }
+
+                    Text {
+                        text: "\u{21BB}";
+                        color: Theme.accent;
+                        font-size: 18px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+        }
+
+        // ── Scrollable content ──
+        Flickable {
+            viewport-height: content-col.preferred-height + 40px;
+
+            content-col := VerticalLayout {
+                padding: 20px;
+                spacing: 16px;
+
+                // ══════ ERROR BANNER ══════
+                if root.current.error-text != "" : Rectangle {
+                    background: #e8444420;
+                    border-radius: Theme.radius-card;
+                    border-width: 1px;
+                    border-color: #e8444440;
+                    height: 48px;
+
+                    Text {
+                        text: root.current.error-text;
+                        color: #e88888;
+                        font-size: Theme.font-body;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+
+                // ══════ HERO SECTION — Current Conditions ══════
+                Rectangle {
+                    background: Theme.bg-card;
+                    border-radius: Theme.radius-card;
+                    border-width: 1px;
+                    border-color: Theme.border-subtle;
+                    height: hero-col.preferred-height;
+
+                    // Subtle accent glow at top
+                    Rectangle {
+                        height: 2px;
+                        width: parent.width;
+                        y: 0;
+                        background: Theme.accent-glow;
+                        border-radius: 1px;
+                    }
+
+                    hero-col := VerticalLayout {
+                        padding: 24px;
+                        spacing: 16px;
+
+                        // Loading indicator
+                        if root.current.is-loading : Text {
+                            text: "Fetching weather data...";
+                            color: Theme.text-dim;
+                            font-size: Theme.font-body;
+                            horizontal-alignment: center;
+                        }
+
+                        // Main temperature row
+                        HorizontalLayout {
+                            alignment: center;
+                            spacing: 16px;
+
+                            // Weather icon (large)
+                            Text {
+                                text: root.current.icon;
+                                font-size: 56px;
+                                vertical-alignment: center;
+                            }
+
+                            // Temperature + condition
+                            VerticalLayout {
+                                spacing: 4px;
+                                alignment: center;
+
+                                Text {
+                                    text: root.current.temperature;
+                                    color: Theme.text-primary;
+                                    font-size: 52px;
+                                    font-weight: 300;
+                                }
+
+                                Text {
+                                    text: root.current.condition;
+                                    color: Theme.text-secondary;
+                                    font-size: Theme.font-title;
+                                }
+
+                                Text {
+                                    text: "Feels like " + root.current.feels-like;
+                                    color: Theme.text-dim;
+                                    font-size: Theme.font-small;
+                                }
+                            }
+                        }
+
+                        // Divider
+                        Rectangle { height: 1px; background: Theme.separator; }
+
+                        // Quick stats row
+                        HorizontalLayout {
+                            spacing: 0px;
+
+                            // Humidity
+                            VerticalLayout {
+                                horizontal-stretch: 1;
+                                alignment: center;
+
+                                Text {
+                                    text: "\u{1F4A7}";
+                                    font-size: 18px;
+                                    horizontal-alignment: center;
+                                }
+                                Text {
+                                    text: root.current.humidity;
+                                    color: Theme.text-primary;
+                                    font-size: Theme.font-body;
+                                    font-weight: 600;
+                                    horizontal-alignment: center;
+                                }
+                                Text {
+                                    text: "Humidity";
+                                    color: Theme.text-dim;
+                                    font-size: 10px;
+                                    horizontal-alignment: center;
+                                }
+                            }
+
+                            // Wind
+                            VerticalLayout {
+                                horizontal-stretch: 1;
+                                alignment: center;
+
+                                Text {
+                                    text: "\u{1F4A8}";
+                                    font-size: 18px;
+                                    horizontal-alignment: center;
+                                }
+                                Text {
+                                    text: root.current.wind-speed;
+                                    color: Theme.text-primary;
+                                    font-size: Theme.font-body;
+                                    font-weight: 600;
+                                    horizontal-alignment: center;
+                                }
+                                Text {
+                                    text: "Wind " + root.current.wind-direction;
+                                    color: Theme.text-dim;
+                                    font-size: 10px;
+                                    horizontal-alignment: center;
+                                }
+                            }
+
+                            // UV Index
+                            VerticalLayout {
+                                horizontal-stretch: 1;
+                                alignment: center;
+
+                                Text {
+                                    text: "\u{2600}";
+                                    font-size: 18px;
+                                    horizontal-alignment: center;
+                                }
+                                Text {
+                                    text: root.current.uv-index;
+                                    color: Theme.text-primary;
+                                    font-size: Theme.font-body;
+                                    font-weight: 600;
+                                    horizontal-alignment: center;
+                                }
+                                Text {
+                                    text: "UV Index";
+                                    color: Theme.text-dim;
+                                    font-size: 10px;
+                                    horizontal-alignment: center;
+                                }
+                            }
+
+                            // Visibility
+                            VerticalLayout {
+                                horizontal-stretch: 1;
+                                alignment: center;
+
+                                Text {
+                                    text: "\u{1F441}";
+                                    font-size: 18px;
+                                    horizontal-alignment: center;
+                                }
+                                Text {
+                                    text: root.current.visibility;
+                                    color: Theme.text-primary;
+                                    font-size: Theme.font-body;
+                                    font-weight: 600;
+                                    horizontal-alignment: center;
+                                }
+                                Text {
+                                    text: "Visibility";
+                                    color: Theme.text-dim;
+                                    font-size: 10px;
+                                    horizontal-alignment: center;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // ══════ HOURLY FORECAST ══════
+                // Section header
+                HorizontalLayout {
+                    spacing: 8px;
+                    Rectangle {
+                        width: 3px; height: 14px;
+                        border-radius: 1.5px;
+                        background: Theme.accent;
+                        drop-shadow-blur: 4px;
+                        drop-shadow-color: Theme.accent-glow;
+                    }
+                    Text {
+                        text: "HOURLY FORECAST";
+                        color: Theme.text-dim;
+                        font-size: 11px;
+                        letter-spacing: 2px;
+                        vertical-alignment: center;
+                    }
+                }
+
+                Rectangle {
+                    background: Theme.bg-card;
+                    border-radius: Theme.radius-card;
+                    border-width: 1px;
+                    border-color: Theme.border-subtle;
+                    height: 110px;
+                    clip: true;
+
+                    Flickable {
+                        width: parent.width - 16px;
+                        x: 8px;
+                        height: parent.height;
+                        viewport-width: hourly.length * 70px + 16px;
+
+                        HorizontalLayout {
+                            padding: 8px;
+                            spacing: 4px;
+
+                            for hour[i] in root.hourly : Rectangle {
+                                width: 62px;
+                                border-radius: 8px;
+                                background: hour.is-current ? Theme.tint-accent : transparent;
+                                border-width: hour.is-current ? 1px : 0px;
+                                border-color: hour.is-current ? Theme.accent-dim : transparent;
+
+                                VerticalLayout {
+                                    padding: 8px;
+                                    spacing: 4px;
+                                    alignment: center;
+
+                                    Text {
+                                        text: hour.time;
+                                        color: hour.is-current ? Theme.accent : Theme.text-secondary;
+                                        font-size: 11px;
+                                        font-weight: hour.is-current ? 700 : 400;
+                                        horizontal-alignment: center;
+                                    }
+
+                                    Text {
+                                        text: hour.icon;
+                                        font-size: 22px;
+                                        horizontal-alignment: center;
+                                    }
+
+                                    Text {
+                                        text: hour.temp;
+                                        color: Theme.text-primary;
+                                        font-size: 13px;
+                                        font-weight: 600;
+                                        horizontal-alignment: center;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // ══════ 5-DAY FORECAST ══════
+                // Section header
+                HorizontalLayout {
+                    spacing: 8px;
+                    Rectangle {
+                        width: 3px; height: 14px;
+                        border-radius: 1.5px;
+                        background: Theme.amber;
+                        drop-shadow-blur: 4px;
+                        drop-shadow-color: Theme.amber-glow;
+                    }
+                    Text {
+                        text: "5-DAY FORECAST";
+                        color: Theme.text-dim;
+                        font-size: 11px;
+                        letter-spacing: 2px;
+                        vertical-alignment: center;
+                    }
+                }
+
+                Rectangle {
+                    background: Theme.bg-card;
+                    border-radius: Theme.radius-card;
+                    border-width: 1px;
+                    border-color: Theme.border-subtle;
+                    height: daily-col.preferred-height;
+
+                    daily-col := VerticalLayout {
+                        padding: 8px;
+                        spacing: 0px;
+
+                        for day[i] in root.daily : Rectangle {
+                            height: 56px;
+
+                            HorizontalLayout {
+                                padding-left: 16px;
+                                padding-right: 16px;
+                                spacing: 12px;
+
+                                // Day name
+                                Text {
+                                    text: day.day-name;
+                                    color: Theme.text-primary;
+                                    font-size: Theme.font-body;
+                                    vertical-alignment: center;
+                                    width: 80px;
+                                }
+
+                                // Icon
+                                Text {
+                                    text: day.icon;
+                                    font-size: 22px;
+                                    vertical-alignment: center;
+                                    width: 32px;
+                                    horizontal-alignment: center;
+                                }
+
+                                // Precipitation chance
+                                Text {
+                                    text: day.precip-chance;
+                                    color: Theme.holo-blue;
+                                    font-size: Theme.font-small;
+                                    vertical-alignment: center;
+                                    width: 42px;
+                                    horizontal-alignment: right;
+                                }
+
+                                // Temperature range bar
+                                Rectangle {
+                                    horizontal-stretch: 1;
+                                    height: 6px;
+                                    y: (parent.height - 6px) / 2;
+                                    border-radius: 3px;
+                                    background: Theme.bg-surface;
+
+                                    // Color-coded range indicator
+                                    Rectangle {
+                                        x: parent.width * clamp(day.temp-range-min, 0, 1);
+                                        width: parent.width * clamp(day.temp-range-max - day.temp-range-min, 0.05, 1);
+                                        height: 6px;
+                                        border-radius: 3px;
+                                        background: Theme.accent;
+                                    }
+                                }
+
+                                // Low temp
+                                Text {
+                                    text: day.low;
+                                    color: Theme.text-dim;
+                                    font-size: 13px;
+                                    vertical-alignment: center;
+                                    width: 38px;
+                                    horizontal-alignment: right;
+                                }
+
+                                // High temp
+                                Text {
+                                    text: day.high;
+                                    color: Theme.text-primary;
+                                    font-size: 13px;
+                                    font-weight: 600;
+                                    vertical-alignment: center;
+                                    width: 38px;
+                                    horizontal-alignment: right;
+                                }
+                            }
+
+                            // Separator
+                            Rectangle {
+                                height: 1px;
+                                x: 16px;
+                                width: parent.width - 32px;
+                                y: parent.height - 1px;
+                                background: Theme.separator;
+                            }
+                        }
+                    }
+                }
+
+                // ══════ WEATHER DETAILS GRID ══════
+                // Section header
+                HorizontalLayout {
+                    spacing: 8px;
+                    Rectangle {
+                        width: 3px; height: 14px;
+                        border-radius: 1.5px;
+                        background: Theme.cyan;
+                        drop-shadow-blur: 4px;
+                        drop-shadow-color: Theme.cyan-glow;
+                    }
+                    Text {
+                        text: "DETAILS";
+                        color: Theme.text-dim;
+                        font-size: 11px;
+                        letter-spacing: 2px;
+                        vertical-alignment: center;
+                    }
+                }
+
+                // Details grid (2 columns)
+                HorizontalLayout {
+                    spacing: 12px;
+
+                    // Left column
+                    VerticalLayout {
+                        horizontal-stretch: 1;
+                        spacing: 12px;
+
+                        // Sunrise
+                        Rectangle {
+                            background: Theme.bg-card;
+                            border-radius: Theme.radius-card;
+                            border-width: 1px;
+                            border-color: Theme.border-subtle;
+                            height: 72px;
+
+                            VerticalLayout {
+                                padding: 12px;
+                                spacing: 4px;
+
+                                HorizontalLayout {
+                                    spacing: 6px;
+                                    Text {
+                                        text: "\u{1F305}";
+                                        font-size: 16px;
+                                        vertical-alignment: center;
+                                    }
+                                    Text {
+                                        text: "Sunrise";
+                                        color: Theme.text-dim;
+                                        font-size: Theme.font-small;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                                Text {
+                                    text: root.current.sunrise;
+                                    color: Theme.text-primary;
+                                    font-size: 18px;
+                                    font-weight: 600;
+                                }
+                            }
+                        }
+
+                        // Pressure
+                        Rectangle {
+                            background: Theme.bg-card;
+                            border-radius: Theme.radius-card;
+                            border-width: 1px;
+                            border-color: Theme.border-subtle;
+                            height: 72px;
+
+                            VerticalLayout {
+                                padding: 12px;
+                                spacing: 4px;
+
+                                HorizontalLayout {
+                                    spacing: 6px;
+                                    Text {
+                                        text: "\u{1F4CA}";
+                                        font-size: 16px;
+                                        vertical-alignment: center;
+                                    }
+                                    Text {
+                                        text: "Pressure";
+                                        color: Theme.text-dim;
+                                        font-size: Theme.font-small;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                                Text {
+                                    text: root.current.pressure;
+                                    color: Theme.text-primary;
+                                    font-size: 18px;
+                                    font-weight: 600;
+                                }
+                            }
+                        }
+
+                        // Cloud Cover
+                        Rectangle {
+                            background: Theme.bg-card;
+                            border-radius: Theme.radius-card;
+                            border-width: 1px;
+                            border-color: Theme.border-subtle;
+                            height: 72px;
+
+                            VerticalLayout {
+                                padding: 12px;
+                                spacing: 4px;
+
+                                HorizontalLayout {
+                                    spacing: 6px;
+                                    Text {
+                                        text: "\u{2601}";
+                                        font-size: 16px;
+                                        vertical-alignment: center;
+                                    }
+                                    Text {
+                                        text: "Cloud Cover";
+                                        color: Theme.text-dim;
+                                        font-size: Theme.font-small;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                                Text {
+                                    text: root.current.cloud-cover;
+                                    color: Theme.text-primary;
+                                    font-size: 18px;
+                                    font-weight: 600;
+                                }
+                            }
+                        }
+                    }
+
+                    // Right column
+                    VerticalLayout {
+                        horizontal-stretch: 1;
+                        spacing: 12px;
+
+                        // Sunset
+                        Rectangle {
+                            background: Theme.bg-card;
+                            border-radius: Theme.radius-card;
+                            border-width: 1px;
+                            border-color: Theme.border-subtle;
+                            height: 72px;
+
+                            VerticalLayout {
+                                padding: 12px;
+                                spacing: 4px;
+
+                                HorizontalLayout {
+                                    spacing: 6px;
+                                    Text {
+                                        text: "\u{1F307}";
+                                        font-size: 16px;
+                                        vertical-alignment: center;
+                                    }
+                                    Text {
+                                        text: "Sunset";
+                                        color: Theme.text-dim;
+                                        font-size: Theme.font-small;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                                Text {
+                                    text: root.current.sunset;
+                                    color: Theme.text-primary;
+                                    font-size: 18px;
+                                    font-weight: 600;
+                                }
+                            }
+                        }
+
+                        // Dew Point
+                        Rectangle {
+                            background: Theme.bg-card;
+                            border-radius: Theme.radius-card;
+                            border-width: 1px;
+                            border-color: Theme.border-subtle;
+                            height: 72px;
+
+                            VerticalLayout {
+                                padding: 12px;
+                                spacing: 4px;
+
+                                HorizontalLayout {
+                                    spacing: 6px;
+                                    Text {
+                                        text: "\u{1F4A7}";
+                                        font-size: 16px;
+                                        vertical-alignment: center;
+                                    }
+                                    Text {
+                                        text: "Dew Point";
+                                        color: Theme.text-dim;
+                                        font-size: Theme.font-small;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                                Text {
+                                    text: root.current.dew-point;
+                                    color: Theme.text-primary;
+                                    font-size: 18px;
+                                    font-weight: 600;
+                                }
+                            }
+                        }
+
+                        // Precipitation
+                        Rectangle {
+                            background: Theme.bg-card;
+                            border-radius: Theme.radius-card;
+                            border-width: 1px;
+                            border-color: Theme.border-subtle;
+                            height: 72px;
+
+                            VerticalLayout {
+                                padding: 12px;
+                                spacing: 4px;
+
+                                HorizontalLayout {
+                                    spacing: 6px;
+                                    Text {
+                                        text: "\u{1F327}";
+                                        font-size: 16px;
+                                        vertical-alignment: center;
+                                    }
+                                    Text {
+                                        text: "Precip.";
+                                        color: Theme.text-dim;
+                                        font-size: Theme.font-small;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                                Text {
+                                    text: root.current.dew-point != "--" ? "See daily" : "--";
+                                    color: Theme.text-primary;
+                                    font-size: 18px;
+                                    font-weight: 600;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Bottom spacer
+                Rectangle { height: 40px; }
+            }
+        }
+    }
+}

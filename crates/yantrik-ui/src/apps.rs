@@ -25,11 +25,132 @@ pub struct DesktopEntry {
     pub icon_char: String,
 }
 
+/// Built-in Yantrik apps that appear in the app grid alongside system apps.
+pub fn builtin_apps() -> Vec<DesktopEntry> {
+    vec![
+        DesktopEntry {
+            name: "Terminal".into(), exec: "__builtin__".into(), icon: String::new(),
+            categories: "System;TerminalEmulator;".into(), comment: "Shell terminal".into(),
+            app_id: "terminal".into(), icon_char: ">_".into(),
+        },
+        DesktopEntry {
+            name: "Files".into(), exec: "__builtin__".into(), icon: String::new(),
+            categories: "System;FileManager;".into(), comment: "Browse files".into(),
+            app_id: "files".into(), icon_char: "F".into(),
+        },
+        DesktopEntry {
+            name: "Email".into(), exec: "__builtin__".into(), icon: String::new(),
+            categories: "Network;Email;".into(), comment: "AI-powered email client".into(),
+            app_id: "email".into(), icon_char: "@".into(),
+        },
+        DesktopEntry {
+            name: "Notes".into(), exec: "__builtin__".into(), icon: String::new(),
+            categories: "Office;TextEditor;".into(), comment: "Quick notes".into(),
+            app_id: "notes".into(), icon_char: "\u{270E}".into(),
+        },
+        DesktopEntry {
+            name: "Editor".into(), exec: "__builtin__".into(), icon: String::new(),
+            categories: "Development;TextEditor;".into(), comment: "Text editor with AI assist".into(),
+            app_id: "editor".into(), icon_char: "\u{2261}".into(),
+        },
+        DesktopEntry {
+            name: "Media Player".into(), exec: "__builtin__".into(), icon: String::new(),
+            categories: "AudioVideo;Player;".into(), comment: "Music & media".into(),
+            app_id: "media".into(), icon_char: "\u{266A}".into(),
+        },
+        DesktopEntry {
+            name: "Bond".into(), exec: "__builtin__".into(), icon: String::new(),
+            categories: "Utility;".into(), comment: "Companion bond tracker".into(),
+            app_id: "bond".into(), icon_char: "\u{2665}".into(),
+        },
+        DesktopEntry {
+            name: "Personality".into(), exec: "__builtin__".into(), icon: String::new(),
+            categories: "Utility;".into(), comment: "Companion personality evolution".into(),
+            app_id: "personality".into(), icon_char: "\u{2727}".into(),
+        },
+        DesktopEntry {
+            name: "Memory".into(), exec: "__builtin__".into(), icon: String::new(),
+            categories: "Utility;".into(), comment: "Browse companion memories".into(),
+            app_id: "memory".into(), icon_char: "\u{25C8}".into(),
+        },
+        DesktopEntry {
+            name: "Notifications".into(), exec: "__builtin__".into(), icon: String::new(),
+            categories: "Utility;".into(), comment: "Notification center".into(),
+            app_id: "notifications".into(), icon_char: "N".into(),
+        },
+        DesktopEntry {
+            name: "System".into(), exec: "__builtin__".into(), icon: String::new(),
+            categories: "System;Monitor;".into(), comment: "System dashboard".into(),
+            app_id: "system".into(), icon_char: "\u{25C9}".into(),
+        },
+        DesktopEntry {
+            name: "Settings".into(), exec: "__builtin__".into(), icon: String::new(),
+            categories: "Settings;".into(), comment: "Yantrik settings".into(),
+            app_id: "settings".into(), icon_char: "\u{2699}".into(),
+        },
+        DesktopEntry {
+            name: "About".into(), exec: "__builtin__".into(), icon: String::new(),
+            categories: "Utility;".into(), comment: "System info".into(),
+            app_id: "about".into(), icon_char: "\u{2139}".into(),
+        },
+        DesktopEntry {
+            name: "Packages".into(), exec: "__builtin__".into(), icon: String::new(),
+            categories: "System;PackageManager;".into(), comment: "Install and manage packages".into(),
+            app_id: "packages".into(), icon_char: "P".into(),
+        },
+        DesktopEntry {
+            name: "Network".into(), exec: "__builtin__".into(), icon: String::new(),
+            categories: "System;Network;".into(), comment: "WiFi, Ethernet, Bluetooth, VPN, Firewall".into(),
+            app_id: "network".into(), icon_char: "\u{25CE}".into(),
+        },
+        DesktopEntry {
+            name: "System Monitor".into(), exec: "__builtin__".into(), icon: String::new(),
+            categories: "System;Monitor;".into(), comment: "CPU, memory, disk, network, processes".into(),
+            app_id: "sysmonitor".into(), icon_char: "\u{2699}".into(),
+        },
+        DesktopEntry {
+            name: "Weather".into(), exec: "__builtin__".into(), icon: String::new(),
+            categories: "Utility;".into(), comment: "Weather forecast dashboard".into(),
+            app_id: "weather".into(), icon_char: "\u{26C5}".into(),
+        },
+        DesktopEntry {
+            name: "Music".into(), exec: "__builtin__".into(), icon: String::new(),
+            categories: "AudioVideo;Music;Player;".into(), comment: "Music library and player".into(),
+            app_id: "music".into(), icon_char: "\u{266B}".into(),
+        },
+        DesktopEntry {
+            name: "Downloads".into(), exec: "__builtin__".into(), icon: String::new(),
+            categories: "Network;FileTransfer;".into(), comment: "Download manager".into(),
+            app_id: "downloads".into(), icon_char: "\u{2B07}".into(),
+        },
+        DesktopEntry {
+            name: "Snippets".into(), exec: "__builtin__".into(), icon: String::new(),
+            categories: "Development;Utility;".into(), comment: "Code snippet manager".into(),
+            app_id: "snippets".into(), icon_char: "<>".into(),
+        },
+        DesktopEntry {
+            name: "Containers".into(), exec: "__builtin__".into(), icon: String::new(),
+            categories: "Development;System;".into(), comment: "Docker/Podman container manager".into(),
+            app_id: "containers".into(), icon_char: "\u{2338}".into(),
+        },
+        DesktopEntry {
+            name: "Devices".into(), exec: "__builtin__".into(), icon: String::new(),
+            categories: "System;HardwareSettings;".into(), comment: "Hardware device dashboard".into(),
+            app_id: "devices".into(), icon_char: "\u{2699}".into(),
+        },
+        DesktopEntry {
+            name: "Permissions".into(), exec: "__builtin__".into(), icon: String::new(),
+            categories: "System;Security;".into(), comment: "File & system permissions".into(),
+            app_id: "permissions".into(), icon_char: "\u{1F512}".into(),
+        },
+    ]
+}
+
 /// Scan all XDG application directories for .desktop files.
-/// Returns a deduplicated list sorted by name.
+/// Returns built-in Yantrik apps first, then system apps sorted by name.
 pub fn scan() -> Vec<DesktopEntry> {
-    let mut entries = Vec::new();
-    let mut seen_ids = std::collections::HashSet::new();
+    let mut entries = builtin_apps();
+    let mut seen_ids: std::collections::HashSet<String> = entries.iter().map(|e| e.app_id.clone()).collect();
 
     // XDG dirs: user-local first (overrides system), then system
     let dirs = app_dirs();

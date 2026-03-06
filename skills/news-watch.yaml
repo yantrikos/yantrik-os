@@ -1,0 +1,27 @@
+id: news-watch
+name: News Watch
+description: Monitor breaking news and headlines from around the web
+long_description: >
+  Periodically scans news sources for breaking stories and important developments.
+  AI filters noise and only surfaces genuinely significant news. Customizable
+  topics and sources based on your interests.
+version: "1.0.0"
+author: Yantrik
+icon: newspaper
+category: news
+tags: [headlines, breaking, world, politics, technology, rss]
+
+tools: []
+core_tools: []
+
+instincts:
+  - news_watch
+
+cortex_rules: []
+services: []
+requires: []
+requires_config: []
+
+permissions:
+  - network
+  - background

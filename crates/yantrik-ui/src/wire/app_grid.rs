@@ -18,14 +18,27 @@ pub fn wire(ui: &App, ctx: &AppContext) {
         .collect();
     ui.set_grid_apps(ModelRc::new(VecModel::from(apps)));
 
-    // Handle grid-launch-app
+    // Handle grid-launch-app — routes built-in apps to screens, external apps to processes
     let installed = ctx.installed_apps.clone();
     let ui_weak = ui.as_weak();
     ui.on_grid_launch_app(move |app_id| {
         let app_id_str = app_id.as_str();
+
+        // Close grid first
+        if let Some(ui) = ui_weak.upgrade() {
+            ui.set_app_grid_open(false);
+        }
+
+        // Built-in Yantrik apps → navigate to screen via launch-app callback
+        // (dock.rs already handles the app_id → screen mapping)
         if let Some(entry) = installed.iter().find(|e| e.app_id == app_id_str) {
+            if entry.exec == "__builtin__" {
+                if let Some(ui) = ui_weak.upgrade() {
+                    ui.invoke_launch_app(app_id);
+                }
+                return;
+            }
             tracing::info!(app = %entry.name, exec = %entry.exec, "Launching app from grid");
-            // Parse exec: strip field codes (%u, %f, etc.) and take first word as command
             let exec_clean = entry
                 .exec
                 .split_whitespace()
@@ -35,10 +48,6 @@ pub fn wire(ui: &App, ctx: &AppContext) {
                 let args = &exec_clean[1..];
                 let _ = std::process::Command::new(cmd).args(args).spawn();
             }
-        }
-        // Close grid
-        if let Some(ui) = ui_weak.upgrade() {
-            ui.set_app_grid_open(false);
         }
     });
 }

@@ -3,6 +3,7 @@
 // Categorized sidebar navigation with scrollable panels.
 
 import { Theme, AccentPreset } from "theme.slint";
+import { SkillStore, SkillData } from "skill_store.slint";
 
 export component SettingsScreen inherits Rectangle {
     background: Theme.bg-deep;
@@ -60,6 +61,27 @@ export component SettingsScreen inherits Rectangle {
 
     callback back-pressed();
     callback navigate-to(int);
+
+    // Connected Services (category 5)
+    // Each connector: status is "connected", "disconnected", or "connecting"
+    in property <string> conn-google-status: "disconnected";
+    in property <string> conn-google-detail: "";
+    in property <string> conn-spotify-status: "disconnected";
+    in property <string> conn-spotify-detail: "";
+    in property <string> conn-facebook-status: "disconnected";
+    in property <string> conn-facebook-detail: "";
+    in property <string> conn-instagram-status: "disconnected";
+    in property <string> conn-instagram-detail: "";
+    callback connect-service(string);
+    callback disconnect-service(string);
+    callback sync-service(string);
+
+    // Skills / Skill Store (category 6) — data-driven via models
+    in property <[SkillData]> skills;
+    in property <[string]> skill-categories: ["All"];
+    callback toggle-skill(string);
+    callback search-skills(string);
+    callback filter-skill-category(string);
 
     // Active settings category (sidebar)
     property <int> active-category: 0;
@@ -383,6 +405,95 @@ export component SettingsScreen inherits Rectangle {
                                     color: root.active-category == 4 ? Theme.text-primary : Theme.text-secondary;
                                     font-size: 13px;
                                     font-weight: root.active-category == 4 ? 600 : 400;
+                                    vertical-alignment: center;
+                                }
+                            }
+
+                            animate background { duration: 120ms; }
+                        }
+                    }
+                    // Category 5: Connected Services
+                    cat5-ta := TouchArea {
+                        height: 44px;
+                        clicked => { root.active-category = 5; }
+
+                        Rectangle {
+                            background: root.active-category == 5 ? Theme.bg-elevated : (cat5-ta.has-hover ? Theme.hover-fill : transparent);
+                            border-radius: 0;
+
+                            if root.active-category == 5 : Rectangle {
+                                x: 0;
+                                width: 2px;
+                                height: parent.height;
+                                background: Theme.cyan;
+                                drop-shadow-blur: 4px;
+                                drop-shadow-color: Theme.cyan-glow;
+                            }
+
+                            HorizontalLayout {
+                                padding-left: 16px;
+                                padding-right: 12px;
+                                spacing: 10px;
+                                alignment: start;
+
+                                Text {
+                                    text: "\u{1F517}";
+                                    color: root.active-category == 5 ? Theme.cyan : Theme.text-dim;
+                                    font-size: 16px;
+                                    vertical-alignment: center;
+                                    width: 24px;
+                                    horizontal-alignment: center;
+                                }
+                                Text {
+                                    text: "Connections";
+                                    color: root.active-category == 5 ? Theme.text-primary : Theme.text-secondary;
+                                    font-size: 13px;
+                                    font-weight: root.active-category == 5 ? 600 : 400;
+                                    vertical-alignment: center;
+                                }
+                            }
+
+                            animate background { duration: 120ms; }
+                        }
+                    }
+
+                    // Category 6: Skills
+                    cat6-ta := TouchArea {
+                        height: 44px;
+                        clicked => { root.active-category = 6; }
+
+                        Rectangle {
+                            background: root.active-category == 6 ? Theme.bg-elevated : (cat6-ta.has-hover ? Theme.hover-fill : transparent);
+                            border-radius: 0;
+
+                            if root.active-category == 6 : Rectangle {
+                                x: 0;
+                                width: 2px;
+                                height: parent.height;
+                                background: Theme.cyan;
+                                drop-shadow-blur: 4px;
+                                drop-shadow-color: Theme.cyan-glow;
+                            }
+
+                            HorizontalLayout {
+                                padding-left: 16px;
+                                padding-right: 12px;
+                                spacing: 10px;
+                                alignment: start;
+
+                                Text {
+                                    text: "\u{26A1}";
+                                    color: root.active-category == 6 ? Theme.cyan : Theme.text-dim;
+                                    font-size: 16px;
+                                    vertical-alignment: center;
+                                    width: 24px;
+                                    horizontal-alignment: center;
+                                }
+                                Text {
+                                    text: "Skills";
+                                    color: root.active-category == 6 ? Theme.text-primary : Theme.text-secondary;
+                                    font-size: 13px;
+                                    font-weight: root.active-category == 6 ? 600 : 400;
                                     vertical-alignment: center;
                                 }
                             }
@@ -1765,6 +1876,651 @@ export component SettingsScreen inherits Rectangle {
                         // Bottom spacer
                         Rectangle { height: 40px; }
                     }
+                }
+
+                // ===== CATEGORY 5: CONNECTED SERVICES =====
+                if root.active-category == 5 : Flickable {
+                    width: 100%;
+                    height: 100%;
+
+                    VerticalLayout {
+                        padding: 20px;
+                        spacing: 16px;
+                        alignment: start;
+
+                        // Section header
+                        HorizontalLayout {
+                            spacing: 8px;
+                            Rectangle {
+                                width: 3px; height: 14px;
+                                border-radius: 1.5px;
+                                background: Theme.cyan;
+                                drop-shadow-blur: 4px;
+                                drop-shadow-color: Theme.cyan-glow;
+                            }
+                            Text {
+                                text: "CONNECTED SERVICES";
+                                color: Theme.cyan;
+                                font-size: 10px;
+                                font-weight: 600;
+                                letter-spacing: 3px;
+                                vertical-alignment: center;
+                            }
+                        }
+
+                        // Description
+                        Text {
+                            text: "Connect external services to enrich Yantrik's knowledge about you — contacts, calendar, music taste, social graph.";
+                            color: Theme.text-dim;
+                            font-size: Theme.font-small;
+                            wrap: word-wrap;
+                        }
+
+                        // ── Google ──
+                        Rectangle {
+                            background: @linear-gradient(135deg, #12111a80 0%, #0c0b1060 100%);
+                            border-radius: Theme.radius-card;
+                            border-width: 1px;
+                            border-color: root.conn-google-status == "connected" ? #34a85340 : #ffffff08;
+                            height: google-layout.preferred-height;
+
+                            google-layout := VerticalLayout {
+                                padding: 16px;
+                                spacing: 10px;
+
+                                HorizontalLayout {
+                                    spacing: 12px;
+
+                                    // Icon
+                                    Rectangle {
+                                        width: 36px; height: 36px;
+                                        border-radius: 8px;
+                                        background: #4285f418;
+
+                                        Text {
+                                            text: "G";
+                                            color: #4285f4;
+                                            font-size: 18px;
+                                            font-weight: 700;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+
+                                    VerticalLayout {
+                                        horizontal-stretch: 1;
+                                        spacing: 2px;
+
+                                        Text {
+                                            text: "Google";
+                                            color: Theme.text-primary;
+                                            font-size: Theme.font-body;
+                                            font-weight: 600;
+                                        }
+                                        Text {
+                                            text: "Contacts, Calendar, Gmail";
+                                            color: Theme.text-dim;
+                                            font-size: Theme.font-small;
+                                        }
+                                    }
+
+                                    // Status badge
+                                    Rectangle {
+                                        width: google-status-text.preferred-width + 16px;
+                                        height: 24px;
+                                        border-radius: 12px;
+                                        background: root.conn-google-status == "connected" ? #34a85320 :
+                                                    root.conn-google-status == "connecting" ? #fbbc0520 : #ffffff08;
+                                        border-width: 1px;
+                                        border-color: root.conn-google-status == "connected" ? #34a85340 :
+                                                      root.conn-google-status == "connecting" ? #fbbc0540 : #ffffff10;
+
+                                        google-status-text := Text {
+                                            text: root.conn-google-status == "connected" ? "Connected" :
+                                                  root.conn-google-status == "connecting" ? "Connecting..." : "Not Connected";
+                                            color: root.conn-google-status == "connected" ? #34a853 :
+                                                   root.conn-google-status == "connecting" ? #fbbc05 : Theme.text-dim;
+                                            font-size: 10px;
+                                            font-weight: 600;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                }
+
+                                // Detail text (last sync, etc)
+                                if root.conn-google-detail != "" : Text {
+                                    text: root.conn-google-detail;
+                                    color: Theme.text-dim;
+                                    font-size: Theme.font-small;
+                                }
+
+                                // Action buttons
+                                HorizontalLayout {
+                                    spacing: 8px;
+                                    alignment: end;
+
+                                    if root.conn-google-status == "connected" : TouchArea {
+                                        width: sync-google-text.preferred-width + 20px;
+                                        height: 30px;
+                                        clicked => { root.sync-service("google"); }
+
+                                        Rectangle {
+                                            border-radius: 6px;
+                                            background: parent.has-hover ? #ffffff10 : #ffffff06;
+                                            border-width: 1px;
+                                            border-color: #ffffff10;
+
+                                            sync-google-text := Text {
+                                                text: "Sync";
+                                                color: Theme.text-secondary;
+                                                font-size: 11px;
+                                                horizontal-alignment: center;
+                                                vertical-alignment: center;
+                                            }
+                                        }
+                                    }
+
+                                    if root.conn-google-status == "connected" : TouchArea {
+                                        width: disc-google-text.preferred-width + 20px;
+                                        height: 30px;
+                                        clicked => { root.disconnect-service("google"); }
+
+                                        Rectangle {
+                                            border-radius: 6px;
+                                            background: parent.has-hover ? #ea433520 : transparent;
+                                            border-width: 1px;
+                                            border-color: #ea433530;
+
+                                            disc-google-text := Text {
+                                                text: "Disconnect";
+                                                color: #ea4335;
+                                                font-size: 11px;
+                                                horizontal-alignment: center;
+                                                vertical-alignment: center;
+                                            }
+                                        }
+                                    }
+
+                                    if root.conn-google-status == "disconnected" : TouchArea {
+                                        width: connect-google-text.preferred-width + 20px;
+                                        height: 30px;
+                                        clicked => { root.connect-service("google"); }
+
+                                        Rectangle {
+                                            border-radius: 6px;
+                                            background: parent.has-hover ? #4285f430 : #4285f420;
+                                            border-width: 1px;
+                                            border-color: #4285f440;
+
+                                            connect-google-text := Text {
+                                                text: "Connect";
+                                                color: #4285f4;
+                                                font-size: 11px;
+                                                font-weight: 600;
+                                                horizontal-alignment: center;
+                                                vertical-alignment: center;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // ── Spotify ──
+                        Rectangle {
+                            background: @linear-gradient(135deg, #12111a80 0%, #0c0b1060 100%);
+                            border-radius: Theme.radius-card;
+                            border-width: 1px;
+                            border-color: root.conn-spotify-status == "connected" ? #1db95440 : #ffffff08;
+                            height: spotify-layout.preferred-height;
+
+                            spotify-layout := VerticalLayout {
+                                padding: 16px;
+                                spacing: 10px;
+
+                                HorizontalLayout {
+                                    spacing: 12px;
+
+                                    Rectangle {
+                                        width: 36px; height: 36px;
+                                        border-radius: 8px;
+                                        background: #1db95418;
+
+                                        Text {
+                                            text: "\u{266B}";
+                                            color: #1db954;
+                                            font-size: 18px;
+                                            font-weight: 700;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+
+                                    VerticalLayout {
+                                        horizontal-stretch: 1;
+                                        spacing: 2px;
+
+                                        Text {
+                                            text: "Spotify";
+                                            color: Theme.text-primary;
+                                            font-size: Theme.font-body;
+                                            font-weight: 600;
+                                        }
+                                        Text {
+                                            text: "Top artists, genres, listening history";
+                                            color: Theme.text-dim;
+                                            font-size: Theme.font-small;
+                                        }
+                                    }
+
+                                    Rectangle {
+                                        width: spotify-status-text.preferred-width + 16px;
+                                        height: 24px;
+                                        border-radius: 12px;
+                                        background: root.conn-spotify-status == "connected" ? #1db95420 :
+                                                    root.conn-spotify-status == "connecting" ? #fbbc0520 : #ffffff08;
+                                        border-width: 1px;
+                                        border-color: root.conn-spotify-status == "connected" ? #1db95440 :
+                                                      root.conn-spotify-status == "connecting" ? #fbbc0540 : #ffffff10;
+
+                                        spotify-status-text := Text {
+                                            text: root.conn-spotify-status == "connected" ? "Connected" :
+                                                  root.conn-spotify-status == "connecting" ? "Connecting..." : "Not Connected";
+                                            color: root.conn-spotify-status == "connected" ? #1db954 :
+                                                   root.conn-spotify-status == "connecting" ? #fbbc05 : Theme.text-dim;
+                                            font-size: 10px;
+                                            font-weight: 600;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                }
+
+                                if root.conn-spotify-detail != "" : Text {
+                                    text: root.conn-spotify-detail;
+                                    color: Theme.text-dim;
+                                    font-size: Theme.font-small;
+                                }
+
+                                HorizontalLayout {
+                                    spacing: 8px;
+                                    alignment: end;
+
+                                    if root.conn-spotify-status == "connected" : TouchArea {
+                                        width: sync-spot-text.preferred-width + 20px;
+                                        height: 30px;
+                                        clicked => { root.sync-service("spotify"); }
+
+                                        Rectangle {
+                                            border-radius: 6px;
+                                            background: parent.has-hover ? #ffffff10 : #ffffff06;
+                                            border-width: 1px;
+                                            border-color: #ffffff10;
+
+                                            sync-spot-text := Text {
+                                                text: "Sync";
+                                                color: Theme.text-secondary;
+                                                font-size: 11px;
+                                                horizontal-alignment: center;
+                                                vertical-alignment: center;
+                                            }
+                                        }
+                                    }
+
+                                    if root.conn-spotify-status == "connected" : TouchArea {
+                                        width: disc-spot-text.preferred-width + 20px;
+                                        height: 30px;
+                                        clicked => { root.disconnect-service("spotify"); }
+
+                                        Rectangle {
+                                            border-radius: 6px;
+                                            background: parent.has-hover ? #ea433520 : transparent;
+                                            border-width: 1px;
+                                            border-color: #ea433530;
+
+                                            disc-spot-text := Text {
+                                                text: "Disconnect";
+                                                color: #ea4335;
+                                                font-size: 11px;
+                                                horizontal-alignment: center;
+                                                vertical-alignment: center;
+                                            }
+                                        }
+                                    }
+
+                                    if root.conn-spotify-status == "disconnected" : TouchArea {
+                                        width: connect-spot-text.preferred-width + 20px;
+                                        height: 30px;
+                                        clicked => { root.connect-service("spotify"); }
+
+                                        Rectangle {
+                                            border-radius: 6px;
+                                            background: parent.has-hover ? #1db95430 : #1db95420;
+                                            border-width: 1px;
+                                            border-color: #1db95440;
+
+                                            connect-spot-text := Text {
+                                                text: "Connect";
+                                                color: #1db954;
+                                                font-size: 11px;
+                                                font-weight: 600;
+                                                horizontal-alignment: center;
+                                                vertical-alignment: center;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // ── Facebook ──
+                        Rectangle {
+                            background: @linear-gradient(135deg, #12111a80 0%, #0c0b1060 100%);
+                            border-radius: Theme.radius-card;
+                            border-width: 1px;
+                            border-color: root.conn-facebook-status == "connected" ? #1877f240 : #ffffff08;
+                            height: fb-layout.preferred-height;
+
+                            fb-layout := VerticalLayout {
+                                padding: 16px;
+                                spacing: 10px;
+
+                                HorizontalLayout {
+                                    spacing: 12px;
+
+                                    Rectangle {
+                                        width: 36px; height: 36px;
+                                        border-radius: 8px;
+                                        background: #1877f218;
+
+                                        Text {
+                                            text: "f";
+                                            color: #1877f2;
+                                            font-size: 20px;
+                                            font-weight: 700;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+
+                                    VerticalLayout {
+                                        horizontal-stretch: 1;
+                                        spacing: 2px;
+
+                                        Text {
+                                            text: "Facebook";
+                                            color: Theme.text-primary;
+                                            font-size: Theme.font-body;
+                                            font-weight: 600;
+                                        }
+                                        Text {
+                                            text: "Friends, events, interests";
+                                            color: Theme.text-dim;
+                                            font-size: Theme.font-small;
+                                        }
+                                    }
+
+                                    Rectangle {
+                                        width: fb-status-text.preferred-width + 16px;
+                                        height: 24px;
+                                        border-radius: 12px;
+                                        background: root.conn-facebook-status == "connected" ? #1877f220 :
+                                                    root.conn-facebook-status == "connecting" ? #fbbc0520 : #ffffff08;
+                                        border-width: 1px;
+                                        border-color: root.conn-facebook-status == "connected" ? #1877f240 :
+                                                      root.conn-facebook-status == "connecting" ? #fbbc0540 : #ffffff10;
+
+                                        fb-status-text := Text {
+                                            text: root.conn-facebook-status == "connected" ? "Connected" :
+                                                  root.conn-facebook-status == "connecting" ? "Connecting..." : "Not Connected";
+                                            color: root.conn-facebook-status == "connected" ? #1877f2 :
+                                                   root.conn-facebook-status == "connecting" ? #fbbc05 : Theme.text-dim;
+                                            font-size: 10px;
+                                            font-weight: 600;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                }
+
+                                if root.conn-facebook-detail != "" : Text {
+                                    text: root.conn-facebook-detail;
+                                    color: Theme.text-dim;
+                                    font-size: Theme.font-small;
+                                }
+
+                                HorizontalLayout {
+                                    spacing: 8px;
+                                    alignment: end;
+
+                                    if root.conn-facebook-status == "connected" : TouchArea {
+                                        width: sync-fb-text.preferred-width + 20px;
+                                        height: 30px;
+                                        clicked => { root.sync-service("facebook"); }
+
+                                        Rectangle {
+                                            border-radius: 6px;
+                                            background: parent.has-hover ? #ffffff10 : #ffffff06;
+                                            border-width: 1px;
+                                            border-color: #ffffff10;
+
+                                            sync-fb-text := Text {
+                                                text: "Sync";
+                                                color: Theme.text-secondary;
+                                                font-size: 11px;
+                                                horizontal-alignment: center;
+                                                vertical-alignment: center;
+                                            }
+                                        }
+                                    }
+
+                                    if root.conn-facebook-status == "connected" : TouchArea {
+                                        width: disc-fb-text.preferred-width + 20px;
+                                        height: 30px;
+                                        clicked => { root.disconnect-service("facebook"); }
+
+                                        Rectangle {
+                                            border-radius: 6px;
+                                            background: parent.has-hover ? #ea433520 : transparent;
+                                            border-width: 1px;
+                                            border-color: #ea433530;
+
+                                            disc-fb-text := Text {
+                                                text: "Disconnect";
+                                                color: #ea4335;
+                                                font-size: 11px;
+                                                horizontal-alignment: center;
+                                                vertical-alignment: center;
+                                            }
+                                        }
+                                    }
+
+                                    if root.conn-facebook-status == "disconnected" : TouchArea {
+                                        width: connect-fb-text.preferred-width + 20px;
+                                        height: 30px;
+                                        clicked => { root.connect-service("facebook"); }
+
+                                        Rectangle {
+                                            border-radius: 6px;
+                                            background: parent.has-hover ? #1877f230 : #1877f220;
+                                            border-width: 1px;
+                                            border-color: #1877f240;
+
+                                            connect-fb-text := Text {
+                                                text: "Connect";
+                                                color: #1877f2;
+                                                font-size: 11px;
+                                                font-weight: 600;
+                                                horizontal-alignment: center;
+                                                vertical-alignment: center;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // ── Instagram ──
+                        Rectangle {
+                            background: @linear-gradient(135deg, #12111a80 0%, #0c0b1060 100%);
+                            border-radius: Theme.radius-card;
+                            border-width: 1px;
+                            border-color: root.conn-instagram-status == "connected" ? #e1306c40 : #ffffff08;
+                            height: ig-layout.preferred-height;
+
+                            ig-layout := VerticalLayout {
+                                padding: 16px;
+                                spacing: 10px;
+
+                                HorizontalLayout {
+                                    spacing: 12px;
+
+                                    Rectangle {
+                                        width: 36px; height: 36px;
+                                        border-radius: 8px;
+                                        background: @linear-gradient(135deg, #f5851518 0%, #e1306c18 50%, #c1325818 100%);
+
+                                        Text {
+                                            text: "\u{1F4F7}";
+                                            color: #e1306c;
+                                            font-size: 16px;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+
+                                    VerticalLayout {
+                                        horizontal-stretch: 1;
+                                        spacing: 2px;
+
+                                        Text {
+                                            text: "Instagram";
+                                            color: Theme.text-primary;
+                                            font-size: Theme.font-body;
+                                            font-weight: 600;
+                                        }
+                                        Text {
+                                            text: "Profile, interests, hashtags";
+                                            color: Theme.text-dim;
+                                            font-size: Theme.font-small;
+                                        }
+                                    }
+
+                                    Rectangle {
+                                        width: ig-status-text.preferred-width + 16px;
+                                        height: 24px;
+                                        border-radius: 12px;
+                                        background: root.conn-instagram-status == "connected" ? #e1306c20 :
+                                                    root.conn-instagram-status == "connecting" ? #fbbc0520 : #ffffff08;
+                                        border-width: 1px;
+                                        border-color: root.conn-instagram-status == "connected" ? #e1306c40 :
+                                                      root.conn-instagram-status == "connecting" ? #fbbc0540 : #ffffff10;
+
+                                        ig-status-text := Text {
+                                            text: root.conn-instagram-status == "connected" ? "Connected" :
+                                                  root.conn-instagram-status == "connecting" ? "Connecting..." : "Not Connected";
+                                            color: root.conn-instagram-status == "connected" ? #e1306c :
+                                                   root.conn-instagram-status == "connecting" ? #fbbc05 : Theme.text-dim;
+                                            font-size: 10px;
+                                            font-weight: 600;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                }
+
+                                if root.conn-instagram-detail != "" : Text {
+                                    text: root.conn-instagram-detail;
+                                    color: Theme.text-dim;
+                                    font-size: Theme.font-small;
+                                }
+
+                                HorizontalLayout {
+                                    spacing: 8px;
+                                    alignment: end;
+
+                                    if root.conn-instagram-status == "connected" : TouchArea {
+                                        width: sync-ig-text.preferred-width + 20px;
+                                        height: 30px;
+                                        clicked => { root.sync-service("instagram"); }
+
+                                        Rectangle {
+                                            border-radius: 6px;
+                                            background: parent.has-hover ? #ffffff10 : #ffffff06;
+                                            border-width: 1px;
+                                            border-color: #ffffff10;
+
+                                            sync-ig-text := Text {
+                                                text: "Sync";
+                                                color: Theme.text-secondary;
+                                                font-size: 11px;
+                                                horizontal-alignment: center;
+                                                vertical-alignment: center;
+                                            }
+                                        }
+                                    }
+
+                                    if root.conn-instagram-status == "connected" : TouchArea {
+                                        width: disc-ig-text.preferred-width + 20px;
+                                        height: 30px;
+                                        clicked => { root.disconnect-service("instagram"); }
+
+                                        Rectangle {
+                                            border-radius: 6px;
+                                            background: parent.has-hover ? #ea433520 : transparent;
+                                            border-width: 1px;
+                                            border-color: #ea433530;
+
+                                            disc-ig-text := Text {
+                                                text: "Disconnect";
+                                                color: #ea4335;
+                                                font-size: 11px;
+                                                horizontal-alignment: center;
+                                                vertical-alignment: center;
+                                            }
+                                        }
+                                    }
+
+                                    if root.conn-instagram-status == "disconnected" : TouchArea {
+                                        width: connect-ig-text.preferred-width + 20px;
+                                        height: 30px;
+                                        clicked => { root.connect-service("instagram"); }
+
+                                        Rectangle {
+                                            border-radius: 6px;
+                                            background: parent.has-hover ? #e1306c30 : #e1306c20;
+                                            border-width: 1px;
+                                            border-color: #e1306c40;
+
+                                            connect-ig-text := Text {
+                                                text: "Connect";
+                                                color: #e1306c;
+                                                font-size: 11px;
+                                                font-weight: 600;
+                                                horizontal-alignment: center;
+                                                vertical-alignment: center;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Bottom spacer
+                        Rectangle { height: 40px; }
+                    }
+                }
+
+                // ===== CATEGORY 6: SKILLS =====
+                if root.active-category == 6 : SkillStore {
+                    width: 100%;
+                    height: 100%;
+                    skills: root.skills;
+                    categories: root.skill-categories;
+                    toggle-skill(id) => { root.toggle-skill(id); }
+                    search-skills(query) => { root.search-skills(query); }
+                    filter-category(cat) => { root.filter-skill-category(cat); }
                 }
             }
         }

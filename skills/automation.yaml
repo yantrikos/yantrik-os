@@ -1,0 +1,48 @@
+id: automation
+name: Automation
+description: Create event-driven automations and scheduled workflows
+long_description: >
+  Build automations that trigger on events, schedules, or conditions. Combine
+  tools into multi-step workflows. Includes recipe engine for complex sequences
+  and task queue for persistent background work.
+version: "1.0.0"
+author: Yantrik
+icon: zap
+category: productivity
+tags: [workflows, triggers, cron, schedule, events, recipes]
+
+tools:
+  - create_automation
+  - list_automations
+  - run_automation
+  - delete_automation
+  - toggle_automation
+  - create_recipe
+  - list_recipes
+  - run_recipe
+  - queue_task
+  - list_tasks
+  - update_task
+  - complete_task
+
+core_tools:
+  - queue_task
+  - list_tasks
+  - update_task
+  - complete_task
+  - create_recipe
+  - list_recipes
+  - run_recipe
+
+instincts:
+  - automation
+  - scheduler
+
+cortex_rules: []
+services: []
+requires: []
+requires_config: []
+
+permissions:
+  - shell
+  - background

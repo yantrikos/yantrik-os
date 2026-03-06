@@ -14,9 +14,12 @@ pub fn wire(ui: &App, ctx: &AppContext) {
         let app = app_id.to_string();
         tracing::info!(app = %app, "Launching app");
 
-        // Check installed .desktop apps first
+        // Check installed .desktop apps first (skip built-in Yantrik apps)
         for entry in apps.iter() {
             if entry.app_id == app || entry.name.to_lowercase() == app {
+                if entry.exec == "__builtin__" {
+                    break; // Fall through to built-in screen routing below
+                }
                 let parts: Vec<&str> = entry.exec.split_whitespace().collect();
                 if let Some((bin, args)) = parts.split_first() {
                     match std::process::Command::new(bin).args(args).spawn() {
@@ -111,6 +114,98 @@ pub fn wire(ui: &App, ctx: &AppContext) {
                 if let Some(ui) = ui_weak.upgrade() {
                     ui.set_current_screen(13);
                     ui.invoke_navigate(13);
+                }
+                return;
+            }
+            "email" => {
+                if let Some(ui) = ui_weak.upgrade() {
+                    ui.set_current_screen(17);
+                    ui.invoke_navigate(17);
+                }
+                return;
+            }
+            "calendar" => {
+                if let Some(ui) = ui_weak.upgrade() {
+                    ui.set_current_screen(18);
+                    ui.invoke_navigate(18);
+                }
+                return;
+            }
+            "packages" => {
+                if let Some(ui) = ui_weak.upgrade() {
+                    ui.set_current_screen(21);
+                    ui.invoke_navigate(21);
+                }
+                return;
+            }
+            "network" => {
+                if let Some(ui) = ui_weak.upgrade() {
+                    ui.set_current_screen(22);
+                    ui.invoke_navigate(22);
+                }
+                return;
+            }
+            "sysmonitor" | "system_monitor" => {
+                if let Some(ui) = ui_weak.upgrade() {
+                    ui.set_current_screen(23);
+                    ui.invoke_navigate(23);
+                }
+                return;
+            }
+            "weather" => {
+                if let Some(ui) = ui_weak.upgrade() {
+                    ui.set_current_screen(19);
+                    ui.invoke_navigate(19);
+                }
+                return;
+            }
+            "music" | "music_player" => {
+                if let Some(ui) = ui_weak.upgrade() {
+                    ui.set_current_screen(20);
+                    ui.invoke_navigate(20);
+                }
+                return;
+            }
+            "downloads" | "download_manager" => {
+                if let Some(ui) = ui_weak.upgrade() {
+                    ui.set_current_screen(24);
+                    ui.invoke_navigate(24);
+                }
+                return;
+            }
+            "snippets" | "snippet_manager" => {
+                if let Some(ui) = ui_weak.upgrade() {
+                    ui.set_current_screen(25);
+                    ui.invoke_navigate(25);
+                }
+                return;
+            }
+            "containers" | "container_manager" => {
+                if let Some(ui) = ui_weak.upgrade() {
+                    ui.set_current_screen(26);
+                    ui.invoke_navigate(26);
+                }
+                return;
+            }
+            "devices" | "device_dashboard" => {
+                if let Some(ui) = ui_weak.upgrade() {
+                    ui.set_current_screen(27);
+                    ui.invoke_navigate(27);
+                }
+                return;
+            }
+            "permissions" | "permission_dashboard" => {
+                if let Some(ui) = ui_weak.upgrade() {
+                    ui.set_current_screen(28);
+                    ui.invoke_navigate(28);
+                }
+                return;
+            }
+            "launchpad" => {
+                if let Some(ui) = ui_weak.upgrade() {
+                    ui.set_current_screen(1);
+                    ui.invoke_navigate(1);
+                    ui.set_app_grid_open(true);
                 }
                 return;
             }

@@ -1,0 +1,45 @@
+id: email
+name: Email
+description: Read, send, and manage emails with AI summaries and smart triage
+long_description: >
+  Full email client integration supporting Gmail, Outlook, and Yahoo via IMAP/SMTP.
+  AI-powered features include automatic email summarization, smart importance triage,
+  and compose assistance. Background monitoring notifies you about urgent messages.
+version: "1.0.0"
+author: Yantrik
+icon: mail
+category: communication
+tags: [gmail, outlook, imap, smtp, inbox, compose, reply]
+
+tools:
+  - email_check
+  - email_list
+  - email_read
+  - email_send
+  - email_reply
+  - email_search
+
+core_tools:
+  - email_check
+  - email_list
+  - email_read
+  - email_send
+  - email_reply
+  - email_search
+
+instincts:
+  - email_watch
+
+cortex_rules:
+  - email_ticket_link
+
+services:
+  - email
+
+requires_config:
+  - email
+
+permissions:
+  - network
+  - external_messaging
+  - background

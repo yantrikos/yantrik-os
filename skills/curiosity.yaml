@@ -1,0 +1,27 @@
+id: curiosity
+name: Curiosity
+description: Autonomous interest-driven research during idle time
+long_description: >
+  When you're idle, Yantrik explores topics aligned with your interests — searching
+  the web, reading articles, and forming opinions. Shares interesting findings
+  naturally during conversation. Configurable research depth and frequency.
+version: "1.0.0"
+author: Yantrik
+icon: lightbulb
+category: search
+tags: [research, explore, interests, learning, autonomous, idle]
+
+tools: []
+core_tools: []
+
+instincts:
+  - curiosity
+
+cortex_rules: []
+services: []
+requires: []
+requires_config: []
+
+permissions:
+  - network
+  - background

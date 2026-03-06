@@ -1,0 +1,872 @@
+// System Monitor — comprehensive real-time resource monitoring.
+// Screen 23. CPU (overall + per-core), Memory, Disk, Network, Processes.
+// 2-column grid layout: CPU+Memory top, Disk+Network middle, Processes bottom.
+
+import { Theme } from "theme.slint";
+
+// ── Data structs ──
+
+export struct CpuCoreData {
+    core-id: int,
+    usage: float,
+}
+
+export struct DiskData {
+    mount-point: string,
+    filesystem: string,
+    used-bytes: string,
+    total-bytes: string,
+    usage-percent: float,
+}
+
+export struct NetworkInterfaceData {
+    name: string,
+    ip-address: string,
+    rx-bytes: string,
+    tx-bytes: string,
+    rx-speed: string,
+    tx-speed: string,
+}
+
+export struct MonitorProcessData {
+    pid: int,
+    name: string,
+    cpu-percent: float,
+    mem-percent: float,
+    status: string,
+}
+
+// ── Main component ──
+
+export component SystemMonitor inherits Rectangle {
+    background: Theme.bg-deep;
+
+    // CPU
+    in property <float> cpu-usage: 0.0;
+    in property <string> cpu-model: "";
+    in property <string> cpu-frequency: "";
+    in property <string> load-avg-1: "0.00";
+    in property <string> load-avg-5: "0.00";
+    in property <string> load-avg-15: "0.00";
+    in property <[CpuCoreData]> cpu-cores: [];
+
+    // Memory
+    in property <float> memory-usage: 0.0;
+    in property <string> memory-used-text: "";
+    in property <string> memory-total-text: "";
+    in property <string> memory-cached-text: "";
+    in property <string> memory-buffers-text: "";
+    in property <string> memory-available-text: "";
+    in property <float> swap-usage: 0.0;
+    in property <string> swap-used-text: "";
+    in property <string> swap-total-text: "";
+
+    // Disk
+    in property <[DiskData]> disks: [];
+
+    // Network
+    in property <[NetworkInterfaceData]> network-interfaces: [];
+
+    // Processes
+    in property <[MonitorProcessData]> processes: [];
+    in-out property <int> sort-column: 0;  // 0=CPU, 1=MEM
+    callback sort-by-column(int);
+
+    // Uptime
+    in property <string> uptime-text: "";
+
+    callback back-pressed();
+
+    VerticalLayout {
+        spacing: 0px;
+
+        // Header
+        Rectangle {
+            height: 48px;
+            background: Theme.bg-surface;
+
+            HorizontalLayout {
+                padding-left: 12px;
+                padding-right: 16px;
+                alignment: start;
+                spacing: 12px;
+
+                TouchArea {
+                    width: Theme.touch-target;
+                    height: Theme.touch-target;
+                    clicked => { root.back-pressed(); }
+                    Text {
+                        text: "\u{2190}";
+                        color: Theme.text-secondary;
+                        font-size: 20px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+
+                Text {
+                    text: "System Monitor";
+                    color: Theme.text-primary;
+                    font-size: Theme.font-title;
+                    font-weight: 600;
+                    vertical-alignment: center;
+                }
+
+                Rectangle { horizontal-stretch: 1; }
+
+                // Uptime badge
+                if root.uptime-text != "" : Rectangle {
+                    height: 24px;
+                    width: uptime-label.preferred-width + 16px;
+                    border-radius: 12px;
+                    background: Theme.bg-card;
+
+                    uptime-label := Text {
+                        text: "Up " + root.uptime-text;
+                        color: Theme.text-dim;
+                        font-size: 11px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+        }
+
+        // Content
+        Flickable {
+            vertical-stretch: 1;
+
+            VerticalLayout {
+                padding: 16px;
+                spacing: 12px;
+                alignment: start;
+
+                // ── Row 1: CPU + Memory ──
+                HorizontalLayout {
+                    spacing: 12px;
+
+                    // ── CPU Panel ──
+                    Rectangle {
+                        horizontal-stretch: 1;
+                        background: Theme.bg-card;
+                        border-radius: Theme.radius-card;
+                        height: cpu-inner.preferred-height;
+
+                        cpu-inner := VerticalLayout {
+                            padding: 14px;
+                            spacing: 10px;
+
+                            // Section header
+                            Text {
+                                text: "CPU";
+                                color: Theme.text-dim;
+                                font-size: 11px;
+                                letter-spacing: 2px;
+                            }
+
+                            // Overall gauge row
+                            HorizontalLayout {
+                                spacing: 16px;
+
+                                // Circular gauge (simulated with nested rects)
+                                Rectangle {
+                                    width: 80px;
+                                    height: 80px;
+
+                                    // Background ring
+                                    Rectangle {
+                                        width: 100%; height: 100%;
+                                        border-radius: 40px;
+                                        border-width: 5px;
+                                        border-color: Theme.bg-deep;
+                                        background: transparent;
+                                    }
+
+                                    // Foreground ring (full colored circle as progress indicator)
+                                    Rectangle {
+                                        width: 100%; height: 100%;
+                                        border-radius: 40px;
+                                        border-width: 5px;
+                                        border-color: root.cpu-usage > 80 ? Theme.color-emotional :
+                                                     root.cpu-usage > 50 ? Theme.amber : Theme.cyan;
+                                        background: transparent;
+                                        // Clip to show percentage (using opacity trick)
+                                        opacity: root.cpu-usage / 100;
+                                        animate opacity { duration: 300ms; }
+                                        animate border-color { duration: 300ms; }
+                                    }
+
+                                    // Center text
+                                    Text {
+                                        text: Math.round(root.cpu-usage) + "%";
+                                        color: root.cpu-usage > 80 ? Theme.color-emotional :
+                                               root.cpu-usage > 50 ? Theme.amber : Theme.cyan;
+                                        font-size: 18px;
+                                        font-weight: 700;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+                                }
+
+                                // CPU info
+                                VerticalLayout {
+                                    spacing: 4px;
+                                    alignment: center;
+
+                                    if root.cpu-model != "" : Text {
+                                        text: root.cpu-model;
+                                        color: Theme.text-primary;
+                                        font-size: 11px;
+                                        overflow: elide;
+                                    }
+
+                                    if root.cpu-frequency != "" : Text {
+                                        text: root.cpu-frequency;
+                                        color: Theme.text-dim;
+                                        font-size: 10px;
+                                    }
+
+                                    // Load averages
+                                    HorizontalLayout {
+                                        spacing: 8px;
+                                        Text {
+                                            text: "Load:";
+                                            color: Theme.text-dim;
+                                            font-size: 10px;
+                                        }
+                                        Text {
+                                            text: root.load-avg-1;
+                                            color: Theme.text-secondary;
+                                            font-size: 10px;
+                                            font-weight: 600;
+                                        }
+                                        Text {
+                                            text: root.load-avg-5;
+                                            color: Theme.text-dim;
+                                            font-size: 10px;
+                                        }
+                                        Text {
+                                            text: root.load-avg-15;
+                                            color: Theme.text-dim;
+                                            font-size: 10px;
+                                        }
+                                    }
+                                }
+                            }
+
+                            Rectangle { height: 1px; background: Theme.bg-elevated; }
+
+                            // Per-core bars
+                            Text {
+                                text: "CORES";
+                                color: Theme.text-dim;
+                                font-size: 10px;
+                                letter-spacing: 1px;
+                            }
+
+                            for core in root.cpu-cores : HorizontalLayout {
+                                spacing: 8px;
+                                height: 16px;
+
+                                Text {
+                                    text: core.core-id;
+                                    color: Theme.text-dim;
+                                    font-size: 10px;
+                                    min-width: 16px;
+                                    horizontal-alignment: right;
+                                    vertical-alignment: center;
+                                }
+
+                                Rectangle {
+                                    horizontal-stretch: 1;
+                                    height: 8px;
+                                    border-radius: 4px;
+                                    background: Theme.bg-deep;
+
+                                    Rectangle {
+                                        width: max(0px, parent.width * core.usage / 100);
+                                        height: 100%;
+                                        border-radius: 4px;
+                                        background: core.usage > 80 ? Theme.color-emotional :
+                                                   core.usage > 50 ? Theme.amber : Theme.cyan;
+                                        animate width { duration: 300ms; }
+                                    }
+                                }
+
+                                Text {
+                                    text: Math.round(core.usage) + "%";
+                                    color: core.usage > 80 ? Theme.color-emotional :
+                                           core.usage > 50 ? Theme.amber : Theme.text-dim;
+                                    font-size: 10px;
+                                    min-width: 32px;
+                                    horizontal-alignment: right;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+                    }
+
+                    // ── Memory Panel ──
+                    Rectangle {
+                        horizontal-stretch: 1;
+                        background: Theme.bg-card;
+                        border-radius: Theme.radius-card;
+                        height: mem-inner.preferred-height;
+
+                        mem-inner := VerticalLayout {
+                            padding: 14px;
+                            spacing: 10px;
+
+                            // Section header
+                            Text {
+                                text: "MEMORY";
+                                color: Theme.text-dim;
+                                font-size: 11px;
+                                letter-spacing: 2px;
+                            }
+
+                            // RAM gauge row
+                            HorizontalLayout {
+                                spacing: 16px;
+
+                                // Circular gauge
+                                Rectangle {
+                                    width: 80px;
+                                    height: 80px;
+
+                                    Rectangle {
+                                        width: 100%; height: 100%;
+                                        border-radius: 40px;
+                                        border-width: 5px;
+                                        border-color: Theme.bg-deep;
+                                        background: transparent;
+                                    }
+
+                                    Rectangle {
+                                        width: 100%; height: 100%;
+                                        border-radius: 40px;
+                                        border-width: 5px;
+                                        border-color: root.memory-usage > 85 ? Theme.color-emotional :
+                                                     root.memory-usage > 60 ? Theme.amber : Theme.cyan;
+                                        background: transparent;
+                                        opacity: root.memory-usage / 100;
+                                        animate opacity { duration: 300ms; }
+                                        animate border-color { duration: 300ms; }
+                                    }
+
+                                    Text {
+                                        text: Math.round(root.memory-usage) + "%";
+                                        color: root.memory-usage > 85 ? Theme.color-emotional :
+                                               root.memory-usage > 60 ? Theme.amber : Theme.cyan;
+                                        font-size: 18px;
+                                        font-weight: 700;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+                                }
+
+                                // Memory details
+                                VerticalLayout {
+                                    spacing: 4px;
+                                    alignment: center;
+
+                                    Text {
+                                        text: root.memory-used-text + " / " + root.memory-total-text;
+                                        color: Theme.text-primary;
+                                        font-size: 12px;
+                                        font-weight: 500;
+                                    }
+
+                                    if root.memory-available-text != "" : Text {
+                                        text: "Available: " + root.memory-available-text;
+                                        color: Theme.text-secondary;
+                                        font-size: 10px;
+                                    }
+                                }
+                            }
+
+                            Rectangle { height: 1px; background: Theme.bg-elevated; }
+
+                            // Memory breakdown
+                            Text {
+                                text: "BREAKDOWN";
+                                color: Theme.text-dim;
+                                font-size: 10px;
+                                letter-spacing: 1px;
+                            }
+
+                            // Breakdown rows
+                            HorizontalLayout {
+                                height: 20px;
+                                Text { text: "Used"; color: Theme.text-secondary; font-size: 11px; horizontal-stretch: 1; vertical-alignment: center; }
+                                Text { text: root.memory-used-text; color: Theme.text-primary; font-size: 11px; font-weight: 500; vertical-alignment: center; }
+                            }
+                            HorizontalLayout {
+                                height: 20px;
+                                Text { text: "Cached"; color: Theme.text-secondary; font-size: 11px; horizontal-stretch: 1; vertical-alignment: center; }
+                                Text { text: root.memory-cached-text; color: Theme.text-primary; font-size: 11px; font-weight: 500; vertical-alignment: center; }
+                            }
+                            HorizontalLayout {
+                                height: 20px;
+                                Text { text: "Buffers"; color: Theme.text-secondary; font-size: 11px; horizontal-stretch: 1; vertical-alignment: center; }
+                                Text { text: root.memory-buffers-text; color: Theme.text-primary; font-size: 11px; font-weight: 500; vertical-alignment: center; }
+                            }
+                            HorizontalLayout {
+                                height: 20px;
+                                Text { text: "Available"; color: Theme.text-secondary; font-size: 11px; horizontal-stretch: 1; vertical-alignment: center; }
+                                Text { text: root.memory-available-text; color: Theme.text-primary; font-size: 11px; font-weight: 500; vertical-alignment: center; }
+                            }
+
+                            Rectangle { height: 1px; background: Theme.bg-elevated; }
+
+                            // Swap
+                            Text {
+                                text: "SWAP";
+                                color: Theme.text-dim;
+                                font-size: 10px;
+                                letter-spacing: 1px;
+                            }
+
+                            HorizontalLayout {
+                                spacing: 8px;
+
+                                Text {
+                                    text: root.swap-used-text + " / " + root.swap-total-text;
+                                    color: root.swap-usage > 80 ? Theme.color-emotional :
+                                           root.swap-usage > 50 ? Theme.amber : Theme.text-secondary;
+                                    font-size: 11px;
+                                    horizontal-stretch: 1;
+                                    vertical-alignment: center;
+                                }
+
+                                Text {
+                                    text: Math.round(root.swap-usage) + "%";
+                                    color: root.swap-usage > 80 ? Theme.color-emotional :
+                                           root.swap-usage > 50 ? Theme.amber : Theme.text-dim;
+                                    font-size: 11px;
+                                    font-weight: 600;
+                                    vertical-alignment: center;
+                                }
+                            }
+
+                            Rectangle {
+                                height: 6px;
+                                border-radius: 3px;
+                                background: Theme.bg-deep;
+
+                                Rectangle {
+                                    width: max(0px, parent.width * root.swap-usage / 100);
+                                    height: 100%;
+                                    border-radius: 3px;
+                                    background: root.swap-usage > 80 ? Theme.color-emotional :
+                                               root.swap-usage > 50 ? Theme.amber : Theme.amber;
+                                    opacity: 0.8;
+                                    animate width { duration: 300ms; }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // ── Row 2: Disk + Network ──
+                HorizontalLayout {
+                    spacing: 12px;
+
+                    // ── Disk Panel ──
+                    Rectangle {
+                        horizontal-stretch: 1;
+                        background: Theme.bg-card;
+                        border-radius: Theme.radius-card;
+                        height: disk-inner.preferred-height;
+
+                        disk-inner := VerticalLayout {
+                            padding: 14px;
+                            spacing: 10px;
+
+                            Text {
+                                text: "DISK";
+                                color: Theme.text-dim;
+                                font-size: 11px;
+                                letter-spacing: 2px;
+                            }
+
+                            if root.disks.length == 0 : Text {
+                                text: "No disk data";
+                                color: Theme.text-dim;
+                                font-size: Theme.font-small;
+                            }
+
+                            for disk in root.disks : VerticalLayout {
+                                spacing: 4px;
+
+                                HorizontalLayout {
+                                    Text {
+                                        text: disk.mount-point;
+                                        color: Theme.text-primary;
+                                        font-size: 11px;
+                                        font-weight: 500;
+                                        horizontal-stretch: 1;
+                                        overflow: elide;
+                                    }
+                                    Text {
+                                        text: disk.used-bytes + " / " + disk.total-bytes;
+                                        color: Theme.text-dim;
+                                        font-size: 10px;
+                                    }
+                                }
+
+                                HorizontalLayout {
+                                    spacing: 8px;
+
+                                    Rectangle {
+                                        horizontal-stretch: 1;
+                                        height: 8px;
+                                        border-radius: 4px;
+                                        background: Theme.bg-deep;
+
+                                        Rectangle {
+                                            width: max(0px, parent.width * disk.usage-percent / 100);
+                                            height: 100%;
+                                            border-radius: 4px;
+                                            background: disk.usage-percent > 90 ? Theme.color-emotional :
+                                                       disk.usage-percent > 75 ? Theme.amber : Theme.cyan;
+                                            animate width { duration: 300ms; }
+                                        }
+                                    }
+
+                                    Text {
+                                        text: Math.round(disk.usage-percent) + "%";
+                                        color: disk.usage-percent > 90 ? Theme.color-emotional :
+                                               disk.usage-percent > 75 ? Theme.amber : Theme.text-dim;
+                                        font-size: 10px;
+                                        font-weight: 600;
+                                        min-width: 32px;
+                                        horizontal-alignment: right;
+                                    }
+                                }
+
+                                if disk.filesystem != "" : Text {
+                                    text: disk.filesystem;
+                                    color: Theme.text-dim;
+                                    font-size: 9px;
+                                }
+
+                                Rectangle { height: 1px; background: Theme.bg-elevated; }
+                            }
+                        }
+                    }
+
+                    // ── Network Panel ──
+                    Rectangle {
+                        horizontal-stretch: 1;
+                        background: Theme.bg-card;
+                        border-radius: Theme.radius-card;
+                        height: net-inner.preferred-height;
+
+                        net-inner := VerticalLayout {
+                            padding: 14px;
+                            spacing: 10px;
+
+                            Text {
+                                text: "NETWORK";
+                                color: Theme.text-dim;
+                                font-size: 11px;
+                                letter-spacing: 2px;
+                            }
+
+                            if root.network-interfaces.length == 0 : Text {
+                                text: "No network interfaces";
+                                color: Theme.text-dim;
+                                font-size: Theme.font-small;
+                            }
+
+                            for iface in root.network-interfaces : VerticalLayout {
+                                spacing: 4px;
+
+                                // Interface name + IP
+                                HorizontalLayout {
+                                    spacing: 8px;
+
+                                    // Status dot
+                                    Rectangle {
+                                        width: 6px;
+                                        height: 6px;
+                                        y: (parent.height - 6px) / 2;
+                                        border-radius: 3px;
+                                        background: Theme.cyan;
+                                    }
+
+                                    Text {
+                                        text: iface.name;
+                                        color: Theme.text-primary;
+                                        font-size: 12px;
+                                        font-weight: 600;
+                                        vertical-alignment: center;
+                                    }
+
+                                    Rectangle { horizontal-stretch: 1; }
+
+                                    if iface.ip-address != "" : Text {
+                                        text: iface.ip-address;
+                                        color: Theme.text-dim;
+                                        font-size: 10px;
+                                        vertical-alignment: center;
+                                    }
+                                }
+
+                                // Speed indicators
+                                HorizontalLayout {
+                                    spacing: 16px;
+                                    height: 20px;
+
+                                    // Download
+                                    HorizontalLayout {
+                                        spacing: 4px;
+                                        Text {
+                                            text: "\u{2193}";
+                                            color: Theme.cyan;
+                                            font-size: 12px;
+                                            vertical-alignment: center;
+                                        }
+                                        Text {
+                                            text: iface.rx-speed;
+                                            color: Theme.text-secondary;
+                                            font-size: 11px;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+
+                                    // Upload
+                                    HorizontalLayout {
+                                        spacing: 4px;
+                                        Text {
+                                            text: "\u{2191}";
+                                            color: Theme.amber;
+                                            font-size: 12px;
+                                            vertical-alignment: center;
+                                        }
+                                        Text {
+                                            text: iface.tx-speed;
+                                            color: Theme.text-secondary;
+                                            font-size: 11px;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                }
+
+                                // Total transferred
+                                HorizontalLayout {
+                                    spacing: 12px;
+                                    height: 18px;
+
+                                    Text {
+                                        text: "Total RX: " + iface.rx-bytes;
+                                        color: Theme.text-dim;
+                                        font-size: 10px;
+                                        vertical-alignment: center;
+                                    }
+                                    Text {
+                                        text: "TX: " + iface.tx-bytes;
+                                        color: Theme.text-dim;
+                                        font-size: 10px;
+                                        vertical-alignment: center;
+                                    }
+                                }
+
+                                Rectangle { height: 1px; background: Theme.bg-elevated; }
+                            }
+                        }
+                    }
+                }
+
+                // ── Row 3: Processes (full width) ──
+                Rectangle {
+                    background: Theme.bg-card;
+                    border-radius: Theme.radius-card;
+                    height: proc-inner.preferred-height;
+
+                    proc-inner := VerticalLayout {
+                        padding: 14px;
+                        spacing: 6px;
+
+                        // Header row
+                        HorizontalLayout {
+                            spacing: 8px;
+
+                            Text {
+                                text: "PROCESSES";
+                                color: Theme.text-dim;
+                                font-size: 11px;
+                                letter-spacing: 2px;
+                                vertical-alignment: center;
+                            }
+
+                            Rectangle { horizontal-stretch: 1; }
+
+                            Text {
+                                text: root.processes.length + " shown";
+                                color: Theme.text-dim;
+                                font-size: 10px;
+                                vertical-alignment: center;
+                            }
+                        }
+
+                        Rectangle { height: 1px; background: Theme.bg-elevated; }
+
+                        // Column headers
+                        HorizontalLayout {
+                            spacing: 8px;
+                            height: 28px;
+
+                            Text {
+                                text: "PID";
+                                color: Theme.text-dim;
+                                font-size: 10px;
+                                letter-spacing: 1px;
+                                min-width: 52px;
+                                vertical-alignment: center;
+                            }
+
+                            Text {
+                                text: "NAME";
+                                color: Theme.text-dim;
+                                font-size: 10px;
+                                letter-spacing: 1px;
+                                horizontal-stretch: 1;
+                                vertical-alignment: center;
+                            }
+
+                            // CPU% (sortable)
+                            TouchArea {
+                                min-width: 56px;
+                                height: 28px;
+                                clicked => { root.sort-by-column(0); }
+
+                                HorizontalLayout {
+                                    spacing: 2px;
+                                    Text {
+                                        text: "CPU%";
+                                        color: root.sort-column == 0 ? Theme.cyan : Theme.text-dim;
+                                        font-size: 10px;
+                                        letter-spacing: 1px;
+                                        font-weight: root.sort-column == 0 ? 700 : 400;
+                                        horizontal-alignment: right;
+                                        vertical-alignment: center;
+                                    }
+                                    if root.sort-column == 0 : Text {
+                                        text: "\u{25BC}";
+                                        color: Theme.cyan;
+                                        font-size: 8px;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                            }
+
+                            // MEM% (sortable)
+                            TouchArea {
+                                min-width: 56px;
+                                height: 28px;
+                                clicked => { root.sort-by-column(1); }
+
+                                HorizontalLayout {
+                                    spacing: 2px;
+                                    Text {
+                                        text: "MEM%";
+                                        color: root.sort-column == 1 ? Theme.cyan : Theme.text-dim;
+                                        font-size: 10px;
+                                        letter-spacing: 1px;
+                                        font-weight: root.sort-column == 1 ? 700 : 400;
+                                        horizontal-alignment: right;
+                                        vertical-alignment: center;
+                                    }
+                                    if root.sort-column == 1 : Text {
+                                        text: "\u{25BC}";
+                                        color: Theme.cyan;
+                                        font-size: 8px;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                            }
+
+                            Text {
+                                text: "STATUS";
+                                color: Theme.text-dim;
+                                font-size: 10px;
+                                letter-spacing: 1px;
+                                min-width: 44px;
+                                horizontal-alignment: right;
+                                vertical-alignment: center;
+                            }
+                        }
+
+                        Rectangle { height: 1px; background: Theme.bg-elevated; }
+
+                        if root.processes.length == 0 : Text {
+                            text: "No process data";
+                            color: Theme.text-dim;
+                            font-size: Theme.font-small;
+                        }
+
+                        for proc in root.processes : HorizontalLayout {
+                            spacing: 8px;
+                            height: 26px;
+
+                            Text {
+                                text: proc.pid;
+                                color: Theme.text-dim;
+                                font-size: 10px;
+                                min-width: 52px;
+                                vertical-alignment: center;
+                            }
+
+                            Text {
+                                text: proc.name;
+                                color: Theme.text-primary;
+                                font-size: Theme.font-small;
+                                horizontal-stretch: 1;
+                                overflow: elide;
+                                vertical-alignment: center;
+                            }
+
+                            Text {
+                                text: Math.round(proc.cpu-percent * 10) / 10 + "%";
+                                color: proc.cpu-percent > 80 ? Theme.color-emotional :
+                                       proc.cpu-percent > 50 ? Theme.amber : Theme.text-secondary;
+                                font-size: Theme.font-small;
+                                font-weight: 500;
+                                min-width: 56px;
+                                horizontal-alignment: right;
+                                vertical-alignment: center;
+                            }
+
+                            Text {
+                                text: Math.round(proc.mem-percent * 10) / 10 + "%";
+                                color: proc.mem-percent > 80 ? Theme.color-emotional :
+                                       proc.mem-percent > 50 ? Theme.amber : Theme.text-secondary;
+                                font-size: Theme.font-small;
+                                font-weight: 500;
+                                min-width: 56px;
+                                horizontal-alignment: right;
+                                vertical-alignment: center;
+                            }
+
+                            Text {
+                                text: proc.status;
+                                color: proc.status == "R" ? Theme.cyan :
+                                       proc.status == "S" ? Theme.text-dim :
+                                       proc.status == "Z" ? Theme.color-emotional : Theme.text-dim;
+                                font-size: 10px;
+                                min-width: 44px;
+                                horizontal-alignment: right;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                }
+
+                // Bottom spacer
+                Rectangle { height: 32px; }
+            }
+        }
+    }
+}

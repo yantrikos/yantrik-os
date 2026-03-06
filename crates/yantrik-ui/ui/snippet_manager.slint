@@ -1,0 +1,557 @@
+// Code Snippet Manager — screen 25
+// 2-panel: snippet list + detail/editor. SQLite-backed, tag filtering, search.
+// Wrapped in WindowFrame by app.slint — no internal window header needed.
+
+import { Theme } from "theme.slint";
+import { ListView, LineEdit, TextEdit } from "std-widgets.slint";
+
+export struct SnippetData {
+    id: int,
+    title: string,
+    language: string,
+    code: string,
+    tags: string,
+    preview: string,
+    date-text: string,
+    is-selected: bool,
+}
+
+export struct TagChip {
+    name: string,
+    is-active: bool,
+}
+
+export component SnippetManagerScreen inherits Rectangle {
+    background: transparent;
+
+    in property <[SnippetData]> snippets: [];
+    in property <[TagChip]> tag-chips: [];
+    in property <int> snippet-count: 0;
+
+    // Detail panel state
+    in property <int> detail-id: -1;
+    in-out property <string> detail-title: "";
+    in-out property <string> detail-language: "";
+    in-out property <string> detail-code: "";
+    in-out property <string> detail-tags: "";
+
+    in-out property <string> search-query: "";
+
+    callback snip-search(string);
+    callback snip-select(int);
+    callback snip-new();
+    callback snip-save(int, string, string, string, string);
+    callback snip-delete(int);
+    callback snip-copy(int);
+    callback snip-tag-filter(string);
+
+    HorizontalLayout {
+        // ── Left Panel: Search + Tags + Snippet List ──
+        Rectangle {
+            width: 280px;
+            background: Theme.bg-surface;
+
+            VerticalLayout {
+                padding: 12px;
+                spacing: 10px;
+
+                // Search bar
+                Rectangle {
+                    height: 36px;
+                    background: Theme.bg-input;
+                    border-radius: Theme.radius-pill;
+                    border-width: 1px;
+                    border-color: search-field.has-focus ? Theme.accent : Theme.border-subtle;
+
+                    HorizontalLayout {
+                        padding-left: 12px;
+                        padding-right: 8px;
+                        spacing: 8px;
+                        alignment: center;
+
+                        Text {
+                            text: "\u{1F50D}";
+                            font-size: 13px;
+                            vertical-alignment: center;
+                        }
+
+                        search-field := LineEdit {
+                            horizontal-stretch: 1;
+                            text <=> root.search-query;
+                            placeholder-text: "Search snippets...";
+                            font-size: Theme.font-body;
+                            edited(text) => {
+                                root.snip-search(text);
+                            }
+                        }
+                    }
+                }
+
+                // Tag filter chips (horizontal wrap via Flickable)
+                if root.tag-chips.length > 0 : Flickable {
+                    height: 32px;
+                    viewport-width: tag-row.preferred-width;
+
+                    tag-row := HorizontalLayout {
+                        spacing: 6px;
+
+                        for chip[idx] in root.tag-chips : Rectangle {
+                            width: chip-label.width + 16px;
+                            height: 26px;
+                            background: chip.is-active ? Theme.accent-glow : Theme.hover-fill;
+                            border-radius: 13px;
+                            border-width: 1px;
+                            border-color: chip.is-active ? Theme.accent-dim : Theme.border-subtle;
+
+                            chip-label := Text {
+                                text: chip.name;
+                                font-size: Theme.font-small;
+                                color: chip.is-active ? Theme.accent : Theme.text-secondary;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+
+                            TouchArea {
+                                clicked => {
+                                    root.snip-tag-filter(chip.name);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Separator
+                Rectangle { height: 1px; background: Theme.separator; }
+
+                // Snippet list
+                if root.snippets.length == 0 : Rectangle {
+                    vertical-stretch: 1;
+
+                    VerticalLayout {
+                        alignment: center;
+                        spacing: 8px;
+
+                        Text {
+                            text: root.search-query != "" ? "No snippets found" : "No snippets yet";
+                            font-size: Theme.font-body;
+                            color: Theme.text-dim;
+                            horizontal-alignment: center;
+                        }
+
+                        Text {
+                            text: root.search-query != "" ? "Try a different search" : "Create your first snippet";
+                            font-size: Theme.font-small;
+                            color: Theme.text-dim;
+                            horizontal-alignment: center;
+                        }
+                    }
+                }
+
+                if root.snippets.length > 0 : ListView {
+                    vertical-stretch: 1;
+
+                    for snip[idx] in root.snippets : Rectangle {
+                        height: 76px;
+                        background: snip.is-selected ? Theme.bg-selected
+                            : row-ta.has-hover ? Theme.hover-fill : transparent;
+
+                        VerticalLayout {
+                            padding: 8px;
+                            padding-left: 12px;
+                            padding-right: 12px;
+                            spacing: 4px;
+
+                            // Title row
+                            HorizontalLayout {
+                                spacing: 8px;
+
+                                Text {
+                                    text: snip.title;
+                                    font-size: Theme.font-body;
+                                    font-weight: 600;
+                                    color: Theme.text-primary;
+                                    overflow: elide;
+                                    horizontal-stretch: 1;
+                                }
+
+                                // Language badge
+                                if snip.language != "" : Rectangle {
+                                    width: lang-text.width + 10px;
+                                    height: 18px;
+                                    background: Theme.accent-glow;
+                                    border-radius: 9px;
+
+                                    lang-text := Text {
+                                        text: snip.language;
+                                        font-size: 10px;
+                                        color: Theme.accent;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                            }
+
+                            // Preview line (monospace)
+                            Text {
+                                text: snip.preview;
+                                font-size: Theme.font-small;
+                                font-family: "monospace";
+                                color: Theme.text-secondary;
+                                overflow: elide;
+                            }
+
+                            // Tags + date row
+                            HorizontalLayout {
+                                spacing: 6px;
+
+                                if snip.tags != "" : Text {
+                                    text: snip.tags;
+                                    font-size: 10px;
+                                    color: Theme.text-dim;
+                                    overflow: elide;
+                                    horizontal-stretch: 1;
+                                }
+
+                                if snip.tags == "" : Rectangle {
+                                    horizontal-stretch: 1;
+                                }
+
+                                Text {
+                                    text: snip.date-text;
+                                    font-size: 10px;
+                                    color: Theme.text-dim;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+
+                        // Bottom separator
+                        Rectangle {
+                            y: parent.height - 1px;
+                            height: 1px;
+                            background: Theme.separator;
+                        }
+
+                        row-ta := TouchArea {
+                            clicked => {
+                                root.snip-select(snip.id);
+                            }
+                        }
+                    }
+                }
+
+                // "New Snippet" button
+                Rectangle {
+                    height: 40px;
+                    background: new-ta.has-hover ? Theme.accent : Theme.accent-dim;
+                    border-radius: Theme.radius-pill;
+
+                    HorizontalLayout {
+                        alignment: center;
+                        spacing: 6px;
+
+                        Text {
+                            text: "+";
+                            font-size: 18px;
+                            color: #ffffff;
+                            font-weight: 700;
+                            vertical-alignment: center;
+                        }
+
+                        Text {
+                            text: "New Snippet";
+                            font-size: Theme.font-body;
+                            color: #ffffff;
+                            font-weight: 600;
+                            vertical-alignment: center;
+                        }
+                    }
+
+                    new-ta := TouchArea {
+                        clicked => { root.snip-new(); }
+                    }
+                }
+            }
+        }
+
+        // ── Vertical separator ──
+        Rectangle { width: 1px; background: Theme.separator; }
+
+        // ── Right Panel: Detail / Editor ──
+        Rectangle {
+            horizontal-stretch: 1;
+            background: Theme.bg-card;
+
+            // Empty state
+            if root.detail-id < 0 : VerticalLayout {
+                alignment: center;
+                spacing: 12px;
+
+                Text {
+                    text: "\u{1F4CB}";
+                    font-size: 48px;
+                    horizontal-alignment: center;
+                }
+
+                Text {
+                    text: "Select a snippet";
+                    font-size: Theme.font-title;
+                    color: Theme.text-dim;
+                    horizontal-alignment: center;
+                }
+
+                Text {
+                    text: "or create a new one to get started";
+                    font-size: Theme.font-small;
+                    color: Theme.text-dim;
+                    horizontal-alignment: center;
+                }
+            }
+
+            // Editor view
+            if root.detail-id >= 0 : VerticalLayout {
+                padding: 20px;
+                spacing: 14px;
+
+                // Title input
+                Rectangle {
+                    height: 40px;
+                    background: Theme.bg-input;
+                    border-radius: Theme.radius-card;
+                    border-width: 1px;
+                    border-color: title-field.has-focus ? Theme.accent : Theme.border-subtle;
+
+                    HorizontalLayout {
+                        padding-left: 12px;
+                        padding-right: 12px;
+                        alignment: center;
+
+                        title-field := LineEdit {
+                            horizontal-stretch: 1;
+                            text <=> root.detail-title;
+                            placeholder-text: "Snippet title...";
+                            font-size: Theme.font-title;
+                        }
+                    }
+                }
+
+                // Language + Tags row
+                HorizontalLayout {
+                    spacing: 10px;
+                    height: 36px;
+
+                    // Language input
+                    Rectangle {
+                        width: 160px;
+                        height: 36px;
+                        background: Theme.bg-input;
+                        border-radius: Theme.radius-card;
+                        border-width: 1px;
+                        border-color: lang-field.has-focus ? Theme.accent : Theme.border-subtle;
+
+                        HorizontalLayout {
+                            padding-left: 10px;
+                            padding-right: 10px;
+                            alignment: center;
+
+                            lang-field := LineEdit {
+                                horizontal-stretch: 1;
+                                text <=> root.detail-language;
+                                placeholder-text: "Language";
+                                font-size: Theme.font-body;
+                            }
+                        }
+                    }
+
+                    // Tags input
+                    Rectangle {
+                        horizontal-stretch: 1;
+                        height: 36px;
+                        background: Theme.bg-input;
+                        border-radius: Theme.radius-card;
+                        border-width: 1px;
+                        border-color: tags-field.has-focus ? Theme.accent : Theme.border-subtle;
+
+                        HorizontalLayout {
+                            padding-left: 10px;
+                            padding-right: 10px;
+                            spacing: 6px;
+                            alignment: center;
+
+                            Text {
+                                text: "\u{1F3F7}";
+                                font-size: 13px;
+                                vertical-alignment: center;
+                            }
+
+                            tags-field := LineEdit {
+                                horizontal-stretch: 1;
+                                text <=> root.detail-tags;
+                                placeholder-text: "Tags (comma-separated)";
+                                font-size: Theme.font-body;
+                            }
+                        }
+                    }
+                }
+
+                // Code editor area
+                Rectangle {
+                    vertical-stretch: 1;
+                    background: Theme.bg-deep;
+                    border-radius: Theme.radius-card;
+                    border-width: 1px;
+                    border-color: Theme.border-subtle;
+
+                    VerticalLayout {
+                        padding: 2px;
+
+                        code-editor := TextEdit {
+                            vertical-stretch: 1;
+                            text <=> root.detail-code;
+                            font-size: 14px;
+                            font-family: "monospace";
+                        }
+                    }
+                }
+
+                // Action buttons row
+                HorizontalLayout {
+                    spacing: 10px;
+                    height: 38px;
+
+                    // Save button
+                    Rectangle {
+                        width: 100px;
+                        height: 38px;
+                        background: save-ta.has-hover ? Theme.accent : Theme.accent-dim;
+                        border-radius: Theme.radius-pill;
+
+                        Text {
+                            text: "Save";
+                            font-size: Theme.font-body;
+                            color: #ffffff;
+                            font-weight: 600;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+
+                        save-ta := TouchArea {
+                            clicked => {
+                                root.snip-save(root.detail-id, root.detail-title, root.detail-language, root.detail-code, root.detail-tags);
+                            }
+                        }
+                    }
+
+                    // Copy button
+                    Rectangle {
+                        width: 100px;
+                        height: 38px;
+                        background: copy-ta.has-hover ? Theme.hover-fill-strong : Theme.hover-fill;
+                        border-radius: Theme.radius-pill;
+                        border-width: 1px;
+                        border-color: Theme.border-subtle;
+
+                        HorizontalLayout {
+                            alignment: center;
+                            spacing: 6px;
+
+                            Text {
+                                text: "\u{1F4CB}";
+                                font-size: 13px;
+                                vertical-alignment: center;
+                            }
+
+                            Text {
+                                text: "Copy";
+                                font-size: Theme.font-body;
+                                color: Theme.text-secondary;
+                                font-weight: 500;
+                                vertical-alignment: center;
+                            }
+                        }
+
+                        copy-ta := TouchArea {
+                            clicked => {
+                                root.snip-copy(root.detail-id);
+                            }
+                        }
+                    }
+
+                    // Spacer
+                    Rectangle { horizontal-stretch: 1; }
+
+                    // Delete button
+                    Rectangle {
+                        width: 100px;
+                        height: 38px;
+                        background: del-ta.has-hover ? #d44040 : #c03030;
+                        border-radius: Theme.radius-pill;
+
+                        Text {
+                            text: "Delete";
+                            font-size: Theme.font-body;
+                            color: #ffffff;
+                            font-weight: 600;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+
+                        del-ta := TouchArea {
+                            clicked => {
+                                root.snip-delete(root.detail-id);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // ── Status bar ──
+    Rectangle {
+        y: parent.height - 28px;
+        height: 28px;
+        width: 100%;
+        background: Theme.bg-elevated;
+
+        HorizontalLayout {
+            padding-left: 16px;
+            padding-right: 16px;
+            alignment: center;
+
+            if root.snippet-count > 0 : HorizontalLayout {
+                horizontal-stretch: 1;
+                spacing: 4px;
+
+                Text {
+                    text: root.snippet-count;
+                    font-size: Theme.font-small;
+                    color: Theme.text-dim;
+                    vertical-alignment: center;
+                }
+
+                Text {
+                    text: "snippets";
+                    font-size: Theme.font-small;
+                    color: Theme.text-dim;
+                    vertical-alignment: center;
+                }
+            }
+
+            if root.snippet-count == 0 : Text {
+                text: "No snippets";
+                font-size: Theme.font-small;
+                color: Theme.text-dim;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+            }
+
+            if root.detail-language != "" : Text {
+                text: root.detail-language;
+                font-size: Theme.font-small;
+                color: Theme.accent;
+                vertical-alignment: center;
+            }
+        }
+    }
+}
