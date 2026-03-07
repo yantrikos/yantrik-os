@@ -1,0 +1,28 @@
+id: opportunity-scout
+name: Opportunity Scout
+description: Scans for opportunities matching your skills and interests
+long_description: >
+  Actively scans for opportunities that match your skill set and interests — job
+  openings, hackathons, grants, conferences, open source projects, collaborations.
+  Filters signal from noise so you only see what's genuinely relevant.
+version: "1.0.0"
+author: Yantrik
+icon: search
+category: intelligence
+tags: [opportunities, jobs, hackathons, grants, conferences]
+
+tools: []
+core_tools: []
+
+instincts:
+  - OpportunityScout
+
+cortex_rules: []
+services: []
+requires: []
+requires_config: []
+
+permissions:
+  - memory
+  - network
+  - background

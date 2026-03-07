@@ -1,0 +1,28 @@
+id: health-pulse
+name: Health Pulse
+description: Notices health mentions and researches the science behind patterns
+long_description: >
+  Monitors conversations for health-related mentions — sleep quality, energy levels,
+  exercise habits, diet changes — and connects the dots over time. Researches the
+  science behind patterns it notices, offering evidence-based insights when relevant.
+version: "1.0.0"
+author: Yantrik
+icon: heart
+category: intelligence
+tags: [health, wellness, sleep, energy, patterns]
+
+tools: []
+core_tools: []
+
+instincts:
+  - HealthPulse
+
+cortex_rules: []
+services: []
+requires: []
+requires_config: []
+
+permissions:
+  - memory
+  - network
+  - background

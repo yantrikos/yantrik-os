@@ -1,0 +1,27 @@
+id: relationship-radar
+name: Relationship Radar
+description: Social graph intelligence — remembers people in your life
+long_description: >
+  Builds and maintains a social graph from conversation mentions. Remembers who matters
+  to you, tracks relationship context, and gently reminds you when someone hasn't been
+  mentioned in a while. Helps you be more intentional about the people in your life.
+version: "1.0.0"
+author: Yantrik
+icon: users
+category: intelligence
+tags: [social, friends, family, relationships, connections]
+
+tools: []
+core_tools: []
+
+instincts:
+  - RelationshipRadar
+
+cortex_rules: []
+services: []
+requires: []
+requires_config: []
+
+permissions:
+  - memory
+  - background

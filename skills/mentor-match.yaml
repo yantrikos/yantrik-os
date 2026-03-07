@@ -1,0 +1,28 @@
+id: mentor-match
+name: Mentor Match
+description: The right teacher at the right moment changes everything
+long_description: >
+  Matches your current challenges and learning edges with the right mentors, thinkers,
+  books, and resources. Not a generic reading list — specific recommendations based on
+  exactly where you are in your understanding and what would unlock the next level.
+version: "1.0.0"
+author: Yantrik
+icon: book
+category: intelligence
+tags: [mentors, learning, books, thinkers, resources]
+
+tools: []
+core_tools: []
+
+instincts:
+  - MentorMatch
+
+cortex_rules: []
+services: []
+requires: []
+requires_config: []
+
+permissions:
+  - memory
+  - network
+  - background

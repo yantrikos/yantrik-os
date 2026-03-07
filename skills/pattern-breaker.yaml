@@ -1,0 +1,27 @@
+id: pattern-breaker
+name: Pattern Breaker
+description: Gently points out recurring loops and suggests different approaches
+long_description: >
+  Notices when you're stuck in recurring patterns — same complaints, same avoidance,
+  same cycles. Gently mirrors what it sees and suggests concrete alternatives. Not
+  therapy, just a friend who notices things and cares enough to mention them.
+version: "1.0.0"
+author: Yantrik
+icon: refresh
+category: intelligence
+tags: [patterns, habits, loops, stuck, procrastination]
+
+tools: []
+core_tools: []
+
+instincts:
+  - PatternBreaker
+
+cortex_rules: []
+services: []
+requires: []
+requires_config: []
+
+permissions:
+  - memory
+  - background

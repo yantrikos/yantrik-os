@@ -1,0 +1,27 @@
+id: future-self
+name: Future Self
+description: Forward projection with evidence — where you'll be at this rate
+long_description: >
+  Projects your current trajectory forward based on observed patterns. Shows where
+  you're heading with your current habits, skills, and choices — not to judge, but
+  to make the invisible visible. Celebrates positive trends and gently flags concerning ones.
+version: "1.0.0"
+author: Yantrik
+icon: telescope
+category: intelligence
+tags: [projection, trajectory, growth, forecast, progress]
+
+tools: []
+core_tools: []
+
+instincts:
+  - FutureSelf
+
+cortex_rules: []
+services: []
+requires: []
+requires_config: []
+
+permissions:
+  - memory
+  - background

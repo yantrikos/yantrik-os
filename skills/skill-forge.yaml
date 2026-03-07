@@ -1,0 +1,28 @@
+id: skill-forge
+name: Skill Forge
+description: Learning path intelligence — the mental model that makes it click
+long_description: >
+  Tracks what you're learning and finds the right mental models, analogies, and
+  resources to accelerate understanding. Suggests practice exercises, identifies
+  knowledge gaps, and connects new skills to things you already know.
+version: "1.0.0"
+author: Yantrik
+icon: hammer
+category: intelligence
+tags: [learning, skills, education, growth, mastery]
+
+tools: []
+core_tools: []
+
+instincts:
+  - SkillForge
+
+cortex_rules: []
+services: []
+requires: []
+requires_config: []
+
+permissions:
+  - memory
+  - network
+  - background

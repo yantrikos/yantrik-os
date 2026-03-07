@@ -410,6 +410,14 @@ fn worker_loop(
                 };
 
                 tracing::info!(text = %text, "Processing message");
+                // Resonance Model: record user interaction (positive quality for now)
+                {
+                    let now_r = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs_f64();
+                    companion.resonance.record_user_interaction(now_r, 0.8);
+                }
                 let start = std::time::Instant::now();
                 let mut token_count = 0u32;
 
@@ -867,6 +875,9 @@ fn worker_loop(
                 }
 
                 // V22: Evaluate instincts + check proactive engine for messages
+                // Resonance Model: tick phase dynamics each think cycle
+                companion.resonance.tick_phase(companion.bond_level(), 60.0);
+
                 let state = companion.build_state();
                 let mut urge_specs = companion.evaluate_instincts(&state);
 
@@ -962,7 +973,42 @@ fn worker_loop(
                 // strips tool-calling intent and causes the LLM to fabricate responses.
                 let mut execute_produced_message = false;
                 if !execute_urges.is_empty() {
-                    // Sort by urgency descending, pick the best one
+                    // ── Resonance Model: rescore urgencies ──────────────────
+                    // Replace raw urgency with resonance-weighted score that
+                    // accounts for phase alignment, novelty, fatigue, variety,
+                    // disclosure depth, and bond dynamics.
+                    for urge in &mut execute_urges {
+                        let r = companion.resonance.score(
+                            &urge.instinct_name,
+                            urge.urgency,
+                            &urge.reason,
+                            companion.last_sent_messages(10),
+                            companion.bond_level(),
+                            companion.bond_score(),
+                            now_ts,
+                        );
+                        if r.suppress {
+                            tracing::info!(
+                                instinct = %urge.instinct_name,
+                                reason = %r.suppress_reason,
+                                raw_urgency = urge.urgency,
+                                resonance = r.score,
+                                "Resonance Model suppressed urge"
+                            );
+                            urge.urgency = 0.0; // Will sort to bottom
+                        } else {
+                            urge.urgency = r.score;
+                        }
+                    }
+                    // Remove suppressed (urgency=0) urges
+                    execute_urges.retain(|u| u.urgency > 0.0);
+                    if execute_urges.is_empty() {
+                        // All urges suppressed by resonance — skip
+                        tracing::info!("All EXECUTE urges suppressed by Resonance Model");
+                    }
+                }
+                if !execute_urges.is_empty() {
+                    // Sort by resonance-weighted urgency descending
                     execute_urges.sort_by(|a, b| b.urgency.partial_cmp(&a.urgency).unwrap_or(std::cmp::Ordering::Equal));
                     let exec_urge = &execute_urges[0];
 
@@ -1090,6 +1136,12 @@ fn worker_loop(
                         // Record sent message for anti-repetition tracking
                         companion.record_sent_message(&msg.text);
                         companion.record_proactive_context(&msg.text, msg.urge_ids.clone());
+
+                        // Resonance Model: record sent for fatigue/phase tracking
+                        let instinct_name = msg.urge_ids.first()
+                            .map(|s| s.split(':').next().unwrap_or("unknown").to_string())
+                            .unwrap_or_else(|| "unknown".to_string());
+                        companion.resonance.record_sent(&instinct_name, now_ts);
 
                         let text = msg.text.clone();
                         let notif_text = msg.text.clone();

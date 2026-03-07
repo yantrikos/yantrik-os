@@ -1,0 +1,27 @@
+id: debrief-partner
+name: Debrief Partner
+description: Structured post-event debrief — what went well, what to improve
+long_description: >
+  Offers structured debriefs after significant events — meetings, presentations,
+  difficult conversations, project milestones. Guides reflection on what went well,
+  what could improve, and what to carry forward. Turns experiences into lessons.
+version: "1.0.0"
+author: Yantrik
+icon: clipboard
+category: intelligence
+tags: [debrief, reflection, events, meetings, review]
+
+tools: []
+core_tools: []
+
+instincts:
+  - DebriefPartner
+
+cortex_rules: []
+services: []
+requires: []
+requires_config: []
+
+permissions:
+  - memory
+  - background

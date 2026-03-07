@@ -1,0 +1,28 @@
+id: philosophy-companion
+name: Philosophy Companion
+description: Connects daily experiences to deeper philosophical frameworks
+long_description: >
+  Bridges the gap between everyday experiences and philosophical wisdom. When life
+  throws something at you, connects it to relevant thinkers, frameworks, and ideas
+  that provide deeper perspective. Philosophy as a living practice, not an academic exercise.
+version: "1.0.0"
+author: Yantrik
+icon: lightbulb
+category: intelligence
+tags: [philosophy, meaning, wisdom, perspective, thinking]
+
+tools: []
+core_tools: []
+
+instincts:
+  - PhilosophyCompanion
+
+cortex_rules: []
+services: []
+requires: []
+requires_config: []
+
+permissions:
+  - memory
+  - network
+  - background

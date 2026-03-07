@@ -1,0 +1,27 @@
+id: time-capture
+name: Time Capture
+description: Micro-journaling at emotionally significant moments
+long_description: >
+  Captures emotionally significant moments through micro-journaling prompts. Notices
+  when something meaningful happens in conversation and offers to preserve the moment
+  with a brief reflection. Builds a timeline of what mattered, not just what happened.
+version: "1.0.0"
+author: Yantrik
+icon: camera
+category: intelligence
+tags: [journaling, moments, emotions, memories, capture]
+
+tools: []
+core_tools: []
+
+instincts:
+  - TimeCapture
+
+cortex_rules: []
+services: []
+requires: []
+requires_config: []
+
+permissions:
+  - memory
+  - background

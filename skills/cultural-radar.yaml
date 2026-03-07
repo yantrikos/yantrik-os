@@ -1,0 +1,28 @@
+id: cultural-radar
+name: Cultural Radar
+description: Pop culture matched to your taste — new releases you'll love
+long_description: >
+  Tracks your cultural interests — music, books, shows, movies, games — and surfaces
+  new releases, hidden gems, and trending content matched to your specific taste.
+  Goes beyond algorithms by understanding why you like what you like.
+version: "1.0.0"
+author: Yantrik
+icon: radio
+category: intelligence
+tags: [culture, music, books, shows, entertainment, taste]
+
+tools: []
+core_tools: []
+
+instincts:
+  - CulturalRadar
+
+cortex_rules: []
+services: []
+requires: []
+requires_config: []
+
+permissions:
+  - memory
+  - network
+  - background

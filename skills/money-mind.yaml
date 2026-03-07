@@ -1,0 +1,28 @@
+id: money-mind
+name: Money Mind
+description: Financial awareness connecting market interests to deeper insights
+long_description: >
+  Financial intelligence that goes beyond price alerts. Connects your market interests,
+  spending patterns, and investment curiosities to deeper economic insights. Surfaces
+  relevant financial news and analysis matched to what you actually care about.
+version: "1.0.0"
+author: Yantrik
+icon: dollar
+category: intelligence
+tags: [finance, investing, budget, markets, money]
+
+tools: []
+core_tools: []
+
+instincts:
+  - MoneyMind
+
+cortex_rules: []
+services: []
+requires: []
+requires_config: []
+
+permissions:
+  - memory
+  - network
+  - background
