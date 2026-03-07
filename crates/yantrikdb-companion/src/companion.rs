@@ -165,8 +165,14 @@ pub struct CompanionService {
     /// Uses Kuramoto phase dynamics + information theory + social penetration theory.
     pub resonance: ResonanceEngine,
 
+    /// Adaptive User Model — learns interaction patterns to adjust proactive behavior.
+    pub user_model: crate::user_model::UserModel,
+
     /// Context Cortex — cross-system intelligence engine.
     pub cortex: Option<crate::cortex::ContextCortex>,
+
+    /// Playbook Engine — deterministic anticipatory workflows.
+    pub playbook_engine: crate::cortex::playbook::PlaybookEngine,
 
     /// Connector state — OAuth connector manager for external services.
     pub connector_state: Option<std::sync::Arc<std::sync::Mutex<tools::connector::ConnectorState>>>,
@@ -294,6 +300,16 @@ impl CompanionService {
             }
         };
 
+        // Adaptive User Model — init tables and load saved state
+        crate::user_model::UserModel::init_db(db.conn());
+        let user_model = crate::user_model::UserModel::load(db.conn());
+
+        // Playbook Engine — deterministic anticipatory workflows
+        crate::cortex::playbook::PlaybookEngine::init_db(db.conn());
+        let mut playbook_engine = crate::cortex::playbook::PlaybookEngine::new();
+        crate::cortex::playbook::register_default_playbooks(&mut playbook_engine);
+        playbook_engine.load(db.conn());
+
         // Load current bond state
         let bond_state = BondTracker::get_state(db.conn());
 
@@ -336,7 +352,9 @@ impl CompanionService {
             suppressed_urges: Vec::new(),
             last_proactive_context: None,
             resonance: ResonanceEngine::new(),
+            user_model,
             cortex,
+            playbook_engine,
             connector_state,
             user_interests,
             user_location,
@@ -1603,13 +1621,17 @@ impl CompanionService {
 
     /// Get daily message budget based on bond level.
     pub fn daily_message_budget(&self) -> u32 {
-        match self.bond_level {
+        let base = match self.bond_level {
             BondLevel::Stranger => 3,
             BondLevel::Acquaintance => 5,
             BondLevel::Friend => 8,
             BondLevel::Confidant => 10,
             BondLevel::PartnerInCrime => 14,
-        }
+        };
+        // Apply adaptive user model budget multiplier
+        let mult = self.user_model.budget_multiplier();
+        let adjusted = (base as f64 * mult).round() as u32;
+        adjusted.clamp(2, 20) // MIN_BUDGET=2, MAX_BUDGET=20
     }
 
     /// Check if daily proactive budget is exceeded.

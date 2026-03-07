@@ -26,6 +26,7 @@ pub mod situation;
 pub mod baselines;
 pub mod patterns;
 pub mod reasoner;
+pub mod playbook;
 
 use rusqlite::Connection;
 

@@ -229,6 +229,12 @@ fn ensure_headless_browser() -> Result<(), String> {
             "--no-first-run",
             "--no-default-browser-check",
             "--disable-gpu",
+            // Anti-detection: prevent navigator.webdriver=true (primary CAPTCHA trigger)
+            "--disable-blink-features=AutomationControlled",
+            // Anti-detection: real Chrome user-agent (not "HeadlessChrome")
+            "--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
+            // Anti-detection: realistic viewport size
+            "--window-size=1920,1080",
             "about:blank",
         ])
         .env("WAYLAND_DISPLAY", "wayland-0")
@@ -312,6 +318,12 @@ impl Tool for LaunchBrowserTool {
             "--no-first-run",
             "--no-default-browser-check",
             "--disable-gpu",
+            // Anti-detection: prevent navigator.webdriver=true (primary CAPTCHA trigger)
+            "--disable-blink-features=AutomationControlled",
+            // Anti-detection: real Chrome user-agent (not "HeadlessChrome")
+            "--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
+            // Anti-detection: realistic viewport size
+            "--window-size=1920,1080",
         ];
         if headless {
             chrome_args.push("--headless=new");

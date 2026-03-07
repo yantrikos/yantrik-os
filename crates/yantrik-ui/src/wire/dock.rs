@@ -42,7 +42,29 @@ pub fn wire(ui: &App, ctx: &AppContext) {
                 }
                 return;
             }
-            "browser" => "chromium",
+            "browser" => {
+                // Launch visible Chromium with Wayland + separate user-data-dir
+                // (headless instance may be holding the default profile lock)
+                match std::process::Command::new("chromium")
+                    .args([
+                        "--ozone-platform=wayland",
+                        "--no-first-run",
+                        "--no-default-browser-check",
+                        "--disable-gpu",
+                        "--user-data-dir=/tmp/chromium-visible",
+                    ])
+                    .env("WAYLAND_DISPLAY", "wayland-0")
+                    .env("XDG_RUNTIME_DIR", "/run/user/1000")
+                    .stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .spawn()
+                {
+                    Ok(_) => tracing::info!("Browser launched (visible mode)"),
+                    Err(e) => tracing::error!(error = %e, "Failed to launch browser"),
+                }
+                return;
+            }
             "files" => {
                 if let Some(ui) = ui_weak.upgrade() {
                     ui.set_current_screen(8);
@@ -214,10 +236,5 @@ pub fn wire(ui: &App, ctx: &AppContext) {
                 return;
             }
         };
-
-        match std::process::Command::new(cmd).spawn() {
-            Ok(_) => tracing::info!(cmd, "App started"),
-            Err(e) => tracing::error!(cmd, error = %e, "Failed to launch app"),
-        }
     });
 }
