@@ -148,7 +148,7 @@ fn build_system_prompt(
     // ── 5. User memories (confidence-aware) ──
     if !over_budget(&prompt) {
         let remaining_chars = (max_prompt_tokens.saturating_sub(estimate_tokens(&prompt))) * 4;
-        let mem_budget = remaining_chars.min(600);
+        let mem_budget = remaining_chars.min(1200);
 
         let (confidence, hint) = if let Some(s) = signals {
             (s.recall_confidence, s.recall_hint)
@@ -404,7 +404,34 @@ fn tool_chaining_instructions(use_native_tools: bool) -> String {
          browser_see, NEVER guess coordinates.\n\
          FALLBACK: browser_click_element(N) / browser_type_element(N, text) with [N] numbers \
          from browser_snapshot — use ONLY for simple static HTML pages where elements are \
-         clearly numbered.\n\n"
+         clearly numbered.\n\
+         CAPTCHA SOLVING: If browse/web_search detects a CAPTCHA, follow the solve \
+         instructions in the response. You CAN solve simple CAPTCHAs:\n\
+         - Checkbox ('I'm not a robot'): browser_see → find checkbox → browser_click_xy\n\
+         - Image grid ('select all X'): browser_see → identify matching tiles → click each\n\
+         - Text CAPTCHA: browser_see → read distorted text → type answer\n\
+         Always attempt to solve before falling back to alternatives.\n\
+         17. FACTUAL RECALL: When the user asks a direct factual question about themselves \
+         (name, website, GitHub, LinkedIn, location, job, etc.), ALWAYS use recall(query) \
+         to search your memory FIRST. Give direct, confident answers from recalled facts. \
+         Never say 'I don't have that stored' without actually calling recall to check. \
+         Identity facts are stored with high importance — recall will find them.\n\
+         18. CODING & EXECUTION: You can write and execute code. NEVER tell the user to run \
+         something manually — you ARE the executor.\n\
+         - code_execute: Run code INLINE for quick tasks (calculations, API calls, one-off analysis). \
+           No need to save first. Use this for anything that doesn't need to persist.\n\
+         - script_write + script_run: For persistent scripts. Saved to ~/.config/yantrik/scripts/.\n\
+         - script_patch: Fix specific lines after errors. Read the ERROR ANALYSIS from script_run, \
+           then patch the failing line and re-run. This is how you self-heal.\n\
+         - Dependencies auto-install: pip (Python), npm (Node), gem (Ruby) — detected from imports.\n\
+         - Generated files: Scripts can save output (charts, CSVs, HTML) to $YANTRIK_OUTPUT_DIR. \
+           script_run reports all generated files automatically.\n\
+         - SELF-HEALING LOOP: If script_run fails, read the error analysis, use script_patch to \
+           fix it, then script_run again. Iterate until it works. Don't give up after one failure.\n\
+         19. VAULT SECURITY: The vault stores passwords encrypted with AES-256-GCM. When a PIN \
+         is set, vault_get requires the PIN — ask the user for it, NEVER guess. vault_list is \
+         always safe (shows service names only, no passwords). Use vault_generate_password to \
+         create strong passwords, then vault_store to save them.\n\n"
     )
 }
 

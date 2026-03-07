@@ -96,6 +96,8 @@ pub mod calendar;
 pub mod task_queue;
 pub mod recipe;
 pub mod claude;
+pub mod vault;
+pub mod coder;
 pub mod plugin;
 
 use crate::config::CompanionConfig;
@@ -326,6 +328,8 @@ fn audit_log(db: &YantrikDB, tool_name: &str, args: &serde_json::Value, result: 
 }
 
 /// Compact JSON summary for audit (keys only, truncated values).
+/// Uses ASCII "..." for truncation to avoid creating non-ASCII URLs in memory
+/// that the LLM might copy verbatim.
 fn summarize_json(val: &serde_json::Value) -> String {
     match val {
         serde_json::Value::Object(map) => {
@@ -334,12 +338,13 @@ fn summarize_json(val: &serde_json::Value) -> String {
                 .take(4)
                 .map(|(k, v)| {
                     let short = match v {
-                        serde_json::Value::String(s) if s.len() > 30 => {
-                            format!("\"{}…\"", &s[..s.floor_char_boundary(30)])
+                        serde_json::Value::String(s) if s.len() > 40 => {
+                            format!("\"{}...\"", &s[..s.floor_char_boundary(40)])
                         }
+                        serde_json::Value::String(s) => format!("\"{}\"", s),
                         _ => {
                             let s = v.to_string();
-                            if s.len() > 30 { format!("{}…", &s[..s.floor_char_boundary(30)]) } else { s }
+                            if s.len() > 40 { format!("{}...", &s[..s.floor_char_boundary(40)]) } else { s }
                         }
                     };
                     format!("{k}={short}")
@@ -360,7 +365,18 @@ pub fn build_registry(config: &CompanionConfig) -> ToolRegistry {
     desktop::register(&mut reg);
     files::register(&mut reg);
     system::register(&mut reg);
-    network::register(&mut reg);
+    // Network tools — web_fetch gets LLM for AI extraction
+    {
+        let (ollama_base, model) = if config.llm.is_api_backend() {
+            let url = config.llm.resolve_api_base_url().unwrap_or_default();
+            let base = url.trim_end_matches("/v1").trim_end_matches('/').to_string();
+            let mdl = config.llm.api_model.as_deref().unwrap_or("qwen3.5:35b").to_string();
+            (base, mdl)
+        } else {
+            (String::new(), String::new())
+        };
+        network::register(&mut reg, &ollama_base, &model);
+    }
     media::register(&mut reg);
     display::register(&mut reg);
     archive::register(&mut reg);
@@ -400,6 +416,8 @@ pub fn build_registry(config: &CompanionConfig) -> ToolRegistry {
     task_queue::register(&mut reg);
     recipe::register(&mut reg);
     claude::register(&mut reg);
+    vault::register(&mut reg);
+    coder::register(&mut reg);
     // Life assistant tools — need Ollama for LLM extraction
     if config.llm.is_api_backend() {
         let api_url = config.llm.resolve_api_base_url().unwrap_or_default();

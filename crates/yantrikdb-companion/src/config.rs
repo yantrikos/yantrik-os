@@ -1235,6 +1235,8 @@ pub struct CompanionConfig {
     pub calendar: CalendarConfig,
     #[serde(default)]
     pub connectors: ConnectorsConfig,
+    #[serde(default)]
+    pub vault: VaultConfig,
     /// Services the user actually uses. Only cortex rules and instincts for
     /// enabled services will fire. Examples: "email", "calendar", "git", "jira".
     /// If empty, defaults to a minimal personal set.
@@ -1274,6 +1276,35 @@ pub struct ConnectorsConfig {
 
 fn default_connector_port() -> u16 { 9876 }
 fn default_connector_sync_interval() -> u32 { 30 }
+
+/// Vault security configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VaultConfig {
+    /// Security PIN hash (blake3). Set via `vault_set_pin` tool.
+    /// When set, vault_get requires PIN verification before returning passwords.
+    /// Protects against unauthorized access over Telegram or if someone gains
+    /// physical access to an unlocked session.
+    #[serde(default)]
+    pub pin_hash: Option<String>,
+    /// Require PIN for vault_get (default: true when pin_hash is set).
+    #[serde(default = "default_true")]
+    pub require_pin: bool,
+    /// Auto-lock vault after N seconds of inactivity (default: 300 = 5 min).
+    #[serde(default = "default_vault_lock_timeout")]
+    pub lock_timeout_secs: u64,
+}
+
+fn default_vault_lock_timeout() -> u64 { 300 }
+
+impl Default for VaultConfig {
+    fn default() -> Self {
+        Self {
+            pin_hash: None,
+            require_pin: true,
+            lock_timeout_secs: default_vault_lock_timeout(),
+        }
+    }
+}
 
 impl Default for ConnectorsConfig {
     fn default() -> Self {
@@ -1329,6 +1360,7 @@ impl Default for CompanionConfig {
             email: EmailConfig::default(),
             calendar: CalendarConfig::default(),
             connectors: ConnectorsConfig::default(),
+            vault: VaultConfig::default(),
             enabled_services: default_enabled_services(),
         }
     }
