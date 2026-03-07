@@ -8,13 +8,13 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crossbeam_channel::{Receiver, Sender};
-use yantrikdb_companion::{CompanionConfig, CompanionService};
-use yantrikdb_companion::bond::{BondLevel, BondTracker};
-use yantrikdb_companion::evolution::Evolution;
-use yantrikdb_ml::{CandleEmbedder, CandleLLM, GGUFFiles, LLMBackend};
-use yantrikdb_ml::ApiLLM;
+use yantrik_companion::{CompanionConfig, CompanionService};
+use yantrik_companion::bond::{BondLevel, BondTracker};
+use yantrik_companion::evolution::Evolution;
+use yantrik_ml::{CandleEmbedder, CandleLLM, GGUFFiles, LLMBackend};
+use yantrik_ml::ApiLLM;
 #[cfg(feature = "claude-cli")]
-use yantrikdb_ml::ClaudeCliLLM;
+use yantrik_ml::ClaudeCliLLM;
 
 use slint::{Model, ModelRc, SharedString, VecModel};
 
@@ -356,7 +356,7 @@ fn worker_loop(
         } else {
             std::env::current_dir().unwrap_or_default().join("skills")
         };
-        let snapshot = yantrikdb_companion::skills::load_skill_snapshot_with_services(&skills_dir, &config_services);
+        let snapshot = yantrik_companion::skills::load_skill_snapshot_with_services(&skills_dir, &config_services);
         tracing::info!(
             services = snapshot.enabled_services.len(),
             instincts = snapshot.enabled_instincts.len(),
@@ -394,7 +394,7 @@ fn worker_loop(
     cached_bond.store(companion.bond_level().as_u8(), Ordering::Relaxed);
 
     // Resume any running/waiting recipes from before shutdown
-    for rid in yantrikdb_companion::recipe::RecipeStore::get_resumable(companion.db.conn()) {
+    for rid in yantrik_companion::recipe::RecipeStore::get_resumable(companion.db.conn()) {
         tracing::info!(recipe_id = %rid, "Resuming recipe from previous session");
         let _ = cmd_tx.send(CompanionCommand::ProcessRecipeStep { recipe_id: rid });
     }
@@ -532,11 +532,11 @@ fn worker_loop(
                 cached_bond.store(companion.bond_level().as_u8(), Ordering::Relaxed);
 
                 // If tasks are pending (maybe user just queued one), signal the task processor
-                if yantrikdb_companion::task_queue::TaskQueue::active_count(companion.db.conn()) > 0 {
+                if yantrik_companion::task_queue::TaskQueue::active_count(companion.db.conn()) > 0 {
                     let _ = cmd_tx.send(CompanionCommand::ProcessNextTask);
                 }
                 // If recipes are pending (maybe user just called run_recipe), signal them
-                for rid in yantrikdb_companion::recipe::RecipeStore::get_resumable(companion.db.conn()) {
+                for rid in yantrik_companion::recipe::RecipeStore::get_resumable(companion.db.conn()) {
                     let _ = cmd_tx.send(CompanionCommand::ProcessRecipeStep { recipe_id: rid });
                 }
             }
@@ -703,13 +703,13 @@ fn worker_loop(
                     });
                     // Forward to Telegram
                     if companion.config.telegram.enabled && companion.config.telegram.forward_proactive {
-                        let _ = yantrikdb_companion::telegram::send_message(
+                        let _ = yantrik_companion::telegram::send_message(
                             &companion.config.telegram, notif,
                         );
                     }
                 }
                 let task_summary = companion.active_tasks_summary();
-                let sched_summary = yantrikdb_companion::scheduler::Scheduler::format_summary(companion.db.conn());
+                let sched_summary = yantrik_companion::scheduler::Scheduler::format_summary(companion.db.conn());
                 let mut full_ctx = context;
                 if !task_summary.is_empty() {
                     full_ctx.push('\n');
@@ -719,13 +719,13 @@ fn worker_loop(
                     full_ctx.push('\n');
                     full_ctx.push_str(&sched_summary);
                 }
-                let auto_summary = yantrikdb_companion::automation::AutomationStore::format_summary(companion.db.conn());
+                let auto_summary = yantrik_companion::automation::AutomationStore::format_summary(companion.db.conn());
                 if !auto_summary.is_empty() {
                     full_ctx.push('\n');
                     full_ctx.push_str(&auto_summary);
                 }
                 // Task queue summary — shows pending/in-progress persistent tasks
-                let tq_summary = yantrikdb_companion::task_queue::TaskQueue::format_active_summary(companion.db.conn());
+                let tq_summary = yantrik_companion::task_queue::TaskQueue::format_active_summary(companion.db.conn());
                 if !tq_summary.is_empty() {
                     full_ctx.push('\n');
                     full_ctx.push_str(&tq_summary);
@@ -853,7 +853,7 @@ fn worker_loop(
                         });
 
                     // Check scheduler for due tasks — inject as triggers
-                    let due_tasks = yantrikdb_companion::scheduler::Scheduler::get_due(companion.db.conn());
+                    let due_tasks = yantrik_companion::scheduler::Scheduler::get_due(companion.db.conn());
                     for task in &due_tasks {
                         triggers.push(serde_json::json!({
                             "trigger_type": "scheduled_task",
@@ -864,14 +864,14 @@ fn worker_loop(
                             "schedule_type": task.schedule_type,
                             "action": task.action,
                         }));
-                        yantrikdb_companion::scheduler::Scheduler::advance(companion.db.conn(), &task.task_id);
+                        yantrik_companion::scheduler::Scheduler::advance(companion.db.conn(), &task.task_id);
                     }
                     if !due_tasks.is_empty() {
                         tracing::info!(count = due_tasks.len(), "Scheduler: advanced due tasks");
                     }
 
                     // V15: Serendipity — surface a random older memory as a connection trigger
-                    if companion.bond_level() >= yantrikdb_companion::types::BondLevel::Friend {
+                    if companion.bond_level() >= yantrik_companion::types::BondLevel::Friend {
                         if let Some(memory) = pick_serendipity_memory(&companion.db) {
                             triggers.push(serde_json::json!({
                                 "trigger_type": "serendipity",
@@ -928,7 +928,7 @@ fn worker_loop(
                         let hash_val = std::hash::Hasher::finish(&attention_hasher);
                         let cortex_cooldown = format!("cortex:situation:{:x}", hash_val);
 
-                        let cortex_urge = yantrikdb_companion::UrgeSpec::new(
+                        let cortex_urge = yantrik_companion::UrgeSpec::new(
                             "Cortex",
                             &format!("EXECUTE {}", briefing),
                             0.7,
@@ -945,7 +945,7 @@ fn worker_loop(
                     // LLM Reasoner — deep reflection every ~4 hours
                     if let Some(reflection_prompt) = cortex.maybe_deep_reflection(companion.db.conn()) {
                         tracing::info!("Cortex LLM reasoner: triggering deep reflection");
-                        let reasoner_urge = yantrikdb_companion::UrgeSpec::new(
+                        let reasoner_urge = yantrik_companion::UrgeSpec::new(
                             "CortexReasoner",
                             &reflection_prompt,
                             0.6,
@@ -970,7 +970,7 @@ fn worker_loop(
                         .unwrap_or_default();
 
                     let pb_now = state.current_ts;
-                    let pb_state = yantrikdb_companion::cortex::playbook::PlaybookState {
+                    let pb_state = yantrik_companion::cortex::playbook::PlaybookState {
                         attention_items: &pb_attention,
                         current_focus: cortex_focus.as_ref(),
                         now_ts: pb_now,
@@ -987,7 +987,7 @@ fn worker_loop(
 
                     for action in &pb_actions {
                         match action {
-                            yantrikdb_companion::cortex::playbook::CortexAction::Notify {
+                            yantrik_companion::cortex::playbook::CortexAction::Notify {
                                 title, body, explanation, playbook_id,
                             } => {
                                 tracing::info!(
@@ -997,14 +997,14 @@ fn worker_loop(
                                 );
                                 // Deliver as proactive message
                                 let text = format!("{}\n{}", title, body);
-                                let msg = yantrikdb_companion::types::ProactiveMessage {
+                                let msg = yantrik_companion::types::ProactiveMessage {
                                     text,
                                     urge_ids: vec![format!("playbook:{}", playbook_id)],
                                     generated_at: pb_now,
                                 };
                                 companion.set_proactive_message(msg);
                             }
-                            yantrikdb_companion::cortex::playbook::CortexAction::QueueTask {
+                            yantrik_companion::cortex::playbook::CortexAction::QueueTask {
                                 description, playbook_id,
                             } => {
                                 tracing::info!(
@@ -1012,7 +1012,7 @@ fn worker_loop(
                                     description = %description,
                                     "Playbook QueueTask action"
                                 );
-                                yantrikdb_companion::task_queue::TaskQueue::enqueue(
+                                yantrik_companion::task_queue::TaskQueue::enqueue(
                                     companion.db.conn(),
                                     &format!("Playbook: {}", playbook_id),
                                     description,
@@ -1020,7 +1020,7 @@ fn worker_loop(
                                     "playbook_engine",
                                 );
                             }
-                            yantrikdb_companion::cortex::playbook::CortexAction::SuggestTool {
+                            yantrik_companion::cortex::playbook::CortexAction::SuggestTool {
                                 tool_name, explanation, playbook_id, ..
                             } => {
                                 tracing::info!(
@@ -1029,7 +1029,7 @@ fn worker_loop(
                                     "Playbook SuggestTool action"
                                 );
                                 let text = format!("Suggestion: {}", explanation);
-                                let msg = yantrikdb_companion::types::ProactiveMessage {
+                                let msg = yantrik_companion::types::ProactiveMessage {
                                     text,
                                     urge_ids: vec![format!("playbook:{}", playbook_id)],
                                     generated_at: pb_now,
@@ -1085,7 +1085,7 @@ fn worker_loop(
                     if spec.reason.starts_with("EXECUTE ") {
                         // Check cooldown with jitter
                         let last = execute_cooldowns.get(&spec.cooldown_key).copied().unwrap_or(0.0);
-                        let jittered_cooldown = yantrikdb_companion::synthesis_gate::jitter_cooldown(EXECUTE_COOLDOWN_SECS);
+                        let jittered_cooldown = yantrik_companion::synthesis_gate::jitter_cooldown(EXECUTE_COOLDOWN_SECS);
                         if now_ts - last < jittered_cooldown {
                             tracing::debug!(
                                 key = %spec.cooldown_key,
@@ -1140,7 +1140,7 @@ fn worker_loop(
                             urge.urgency = 0.0; // Will sort to bottom
                         } else {
                             // Apply adaptive user model multiplier (category, time, backoff, budget)
-                            let cat = yantrikdb_companion::resonance::InstinctCategory::from_instinct(&urge.instinct_name);
+                            let cat = yantrik_companion::resonance::InstinctCategory::from_instinct(&urge.instinct_name);
                             let hour = (now_ts as i64 % 86400 / 3600) as u32;
                             let user_mult = companion.user_model.urgency_multiplier(&format!("{:?}", cat), hour);
                             urge.urgency = (r.score * user_mult).clamp(0.0, 1.0);
@@ -1173,7 +1173,7 @@ fn worker_loop(
 
                     let mut instruction = exec_urge.reason.trim_start_matches("EXECUTE ").to_string();
                     // Anti-repetition: append recent messages as negative examples
-                    let anti_rep = yantrikdb_companion::synthesis_gate::anti_repetition_instruction(
+                    let anti_rep = yantrik_companion::synthesis_gate::anti_repetition_instruction(
                         companion.last_sent_messages(5),
                         state.avg_user_msg_length,
                     );
@@ -1193,7 +1193,7 @@ fn worker_loop(
                     let resp = companion.handle_message(&instruction);
                     let response_text = resp.message.trim().to_string();
                     if !response_text.is_empty() && !is_nothing_response(&response_text) {
-                        let msg = yantrikdb_companion::types::ProactiveMessage {
+                        let msg = yantrik_companion::types::ProactiveMessage {
                             text: response_text,
                             urge_ids: vec![exec_urge.cooldown_key.clone()],
                             generated_at: now_ts,
@@ -1216,7 +1216,7 @@ fn worker_loop(
                 // If no EXECUTE urges fired and there are pending tasks,
                 // signal the event-driven task processor to start working.
                 if !execute_produced_message && !over_budget {
-                    if yantrikdb_companion::task_queue::TaskQueue::active_count(companion.db.conn()) > 0 {
+                    if yantrik_companion::task_queue::TaskQueue::active_count(companion.db.conn()) > 0 {
                         let _ = cmd_tx.send(CompanionCommand::ProcessNextTask);
                     }
                 }
@@ -1230,7 +1230,7 @@ fn worker_loop(
                 if let Some(msg) = companion.take_proactive_message() {
                     // Per-key cooldown: don't deliver same urge key within 2 hours
                     let delivery_key = msg.urge_ids.first().cloned().unwrap_or_default();
-                    let jittered_delivery_cd = yantrikdb_companion::synthesis_gate::jitter_cooldown(DELIVERED_COOLDOWN_SECS);
+                    let jittered_delivery_cd = yantrik_companion::synthesis_gate::jitter_cooldown(DELIVERED_COOLDOWN_SECS);
                     let on_cooldown = if !delivery_key.is_empty() {
                         let last = delivered_cooldowns.get(&delivery_key).copied().unwrap_or(0.0);
                         now_ts - last < jittered_delivery_cd
@@ -1241,7 +1241,7 @@ fn worker_loop(
                     // not session_turn_count which gets bumped by EXECUTE urges too
                     let user_idle_secs = now_ts - last_user_message_ts;
                     let conversation_active = last_user_message_ts > 0.0 && user_idle_secs < 300.0;
-                    let gate_result = yantrikdb_companion::synthesis_gate::evaluate(
+                    let gate_result = yantrik_companion::synthesis_gate::evaluate(
                         &msg.text,
                         companion.last_sent_messages(10),
                         companion.daily_proactive_count,
@@ -1251,8 +1251,8 @@ fn worker_loop(
                         0.5, // default urgency for template messages
                     );
 
-                    let gate_suppressed = matches!(gate_result, yantrikdb_companion::synthesis_gate::GateDecision::Suppress { .. });
-                    if let yantrikdb_companion::synthesis_gate::GateDecision::Suppress { ref reason } = gate_result {
+                    let gate_suppressed = matches!(gate_result, yantrik_companion::synthesis_gate::GateDecision::Suppress { .. });
+                    if let yantrik_companion::synthesis_gate::GateDecision::Suppress { ref reason } = gate_result {
                         tracing::info!(
                             reason = %reason,
                             text = msg.text,
@@ -1295,7 +1295,7 @@ fn worker_loop(
                         companion.resonance.record_sent(&instinct_name, now_ts);
 
                         // Adaptive User Model: record proactive send (starts pending response tracking)
-                        let category = yantrikdb_companion::resonance::InstinctCategory::from_instinct(&instinct_name);
+                        let category = yantrik_companion::resonance::InstinctCategory::from_instinct(&instinct_name);
                         companion.user_model.on_proactive_sent(&instinct_name, &format!("{:?}", category), now_ts);
 
                         // Update global cortex cooldown if this was a cortex-originated message
@@ -1331,7 +1331,7 @@ fn worker_loop(
 
                         // Forward proactive messages to Telegram
                         if companion.config.telegram.enabled && companion.config.telegram.forward_proactive {
-                            if let Err(e) = yantrikdb_companion::telegram::send_message(
+                            if let Err(e) = yantrik_companion::telegram::send_message(
                                 &companion.config.telegram, &msg.text,
                             ) {
                                 tracing::warn!(error = %e, "Failed to forward proactive to Telegram");
@@ -1384,7 +1384,7 @@ fn worker_loop(
 
                 if over_budget {
                     tracing::debug!("Task processing skipped — over daily budget");
-                } else if let Some(task) = yantrikdb_companion::task_queue::TaskQueue::next_task(companion.db.conn()) {
+                } else if let Some(task) = yantrik_companion::task_queue::TaskQueue::next_task(companion.db.conn()) {
                     tracing::info!(
                         task_id = %task.task_id,
                         title = %task.title,
@@ -1419,7 +1419,7 @@ fn worker_loop(
                     };
 
                     // Mark as in_progress
-                    yantrikdb_companion::task_queue::TaskQueue::update_progress(
+                    yantrik_companion::task_queue::TaskQueue::update_progress(
                         companion.db.conn(), &task.task_id,
                         &if task.progress.is_empty() { "Starting...".to_string() } else { task.progress.clone() },
                         task.steps_completed,
@@ -1433,7 +1433,7 @@ fn worker_loop(
 
                     if was_completed {
                         let notify_text = format!("Task completed: {}\n\n{}", task.title, response_text);
-                        let msg = yantrikdb_companion::types::ProactiveMessage {
+                        let msg = yantrik_companion::types::ProactiveMessage {
                             text: notify_text,
                             urge_ids: vec![format!("task_queue:{}", task.task_id)],
                             generated_at: now_ts,
@@ -1456,7 +1456,7 @@ fn worker_loop(
                     // Self-signal: if there are more tasks or this one isn't done yet,
                     // continue processing. The signal goes to the back of the channel
                     // queue, so any pending user messages get processed first.
-                    if !was_completed || yantrikdb_companion::task_queue::TaskQueue::active_count(companion.db.conn()) > 0 {
+                    if !was_completed || yantrik_companion::task_queue::TaskQueue::active_count(companion.db.conn()) > 0 {
                         let _ = cmd_tx.send(CompanionCommand::ProcessNextTask);
                     }
                 } else {
@@ -1464,7 +1464,7 @@ fn worker_loop(
                 }
             }
             Ok(CompanionCommand::ProcessRecipeStep { recipe_id }) => {
-                use yantrikdb_companion::recipe::*;
+                use yantrik_companion::recipe::*;
 
                 let recipe = match RecipeStore::get(companion.db.conn(), &recipe_id) {
                     Some(r) => r,
@@ -1487,7 +1487,7 @@ fn worker_loop(
                     RecipeStore::update_status(companion.db.conn(), &recipe_id, &RecipeStatus::Done, recipe.current_step);
                     tracing::info!(recipe_id = %recipe_id, name = %recipe.name, "Recipe completed");
                     // Notify user
-                    let msg = yantrikdb_companion::types::ProactiveMessage {
+                    let msg = yantrik_companion::types::ProactiveMessage {
                         text: format!("Recipe completed: {}", recipe.name),
                         urge_ids: vec![format!("recipe:{}", recipe_id)],
                         generated_at: std::time::SystemTime::now()
@@ -1611,7 +1611,7 @@ fn worker_loop(
 
                     RecipeStep::Notify { message } => {
                         let resolved_msg = resolve_vars(message, &vars);
-                        let msg = yantrikdb_companion::types::ProactiveMessage {
+                        let msg = yantrik_companion::types::ProactiveMessage {
                             text: resolved_msg,
                             urge_ids: vec![format!("recipe:{}", recipe_id)],
                             generated_at: std::time::SystemTime::now()

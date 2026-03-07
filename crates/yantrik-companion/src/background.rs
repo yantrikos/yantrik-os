@@ -5,7 +5,7 @@
 //! (no async runtime needed — all operations are synchronous).
 
 use yantrikdb_core::types::ThinkConfig;
-use yantrikdb_ml::{ChatMessage, GenerationConfig, parse_tool_calls};
+use yantrik_ml::{ChatMessage, GenerationConfig, parse_tool_calls};
 
 use crate::automation::AutomationStore;
 use crate::bond::BondTracker;

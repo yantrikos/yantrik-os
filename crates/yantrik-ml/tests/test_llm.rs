@@ -5,7 +5,7 @@
 //!
 //! Uses Q4_K_M quantization (~491MB) — same as production deployment.
 
-use yantrikdb_ml::{
+use yantrik_ml::{
     ChatMessage, GGUFFiles, GenerationConfig, LLMEngine,
 };
 
@@ -139,7 +139,7 @@ fn test_llm_tool_calling() {
         }
     })];
 
-    let tool_text = yantrikdb_ml::format_tools(&tool_defs);
+    let tool_text = yantrik_ml::format_tools(&tool_defs);
 
     let messages = vec![
         ChatMessage::system(format!("You are a helpful assistant.{tool_text}")),

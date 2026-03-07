@@ -1,11 +1,10 @@
 [package]
-name = "yantrikdb-ml"
+name = "yantrik-ml"
 version = "0.1.0"
 edition = "2021"
-description = "Pluggable ML inference for YantrikDB (candle, llama.cpp, API)"
+description = "Pluggable AI inference — LLM backends, embeddings, vision, TTS"
 
 [dependencies]
-yantrikdb-core = { path = "../yantrikdb-core" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tracing = "0.1"

@@ -789,9 +789,14 @@ fn wire_notifications(ui: &App, ctx: &AppContext) {
 // ── Quick Settings ──
 
 fn wire_quick_settings(ui: &App) {
+    use super::dep_check::has_command;
+
     // Toggle WiFi via nmcli
     ui.on_toggle_wifi(move || {
-        // Read current state and toggle
+        if !has_command("nmcli") {
+            tracing::warn!("nmcli not installed — WiFi toggle unavailable (apk add networkmanager)");
+            return;
+        }
         let output = std::process::Command::new("nmcli")
             .args(["radio", "wifi"])
             .output();
@@ -807,6 +812,10 @@ fn wire_quick_settings(ui: &App) {
 
     // Brightness via brightnessctl
     ui.on_brightness_changed(move |level| {
+        if !has_command("brightnessctl") {
+            tracing::debug!("brightnessctl not installed — brightness control unavailable");
+            return;
+        }
         let pct = format!("{}%", level);
         let _ = std::process::Command::new("brightnessctl")
             .args(["s", &pct])
@@ -816,6 +825,10 @@ fn wire_quick_settings(ui: &App) {
 
     // Volume via amixer
     ui.on_volume_changed(move |level| {
+        if !has_command("amixer") {
+            tracing::debug!("amixer not installed — volume control unavailable");
+            return;
+        }
         let pct = format!("{}%", level);
         let _ = std::process::Command::new("amixer")
             .args(["-M", "set", "Master", &pct])

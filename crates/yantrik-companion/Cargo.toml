@@ -1,12 +1,12 @@
 [package]
-name = "yantrikdb-companion"
+name = "yantrik-companion"
 version = "0.1.0"
 edition = "2021"
 description = "Yantrik companion agent — instincts, urges, context, learning, all in-process"
 
 [dependencies]
-yantrikdb-core = { git = "https://github.com/spranab/yantrikdb.git" }
-yantrikdb-ml = { git = "https://github.com/spranab/yantrikdb.git" }
+yantrikdb-core = { git = "https://github.com/yantrikos/yantrikdb.git" }
+yantrik-ml = { git = "https://github.com/yantrikos/yantrik-ml.git" }
 rusqlite = { version = "0.32", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

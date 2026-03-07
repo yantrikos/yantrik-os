@@ -97,11 +97,14 @@ fn populate_about_info(ui_weak: &slint::Weak<App>) {
         .unwrap_or_else(|| "\u{2014}".to_string());
     ui.set_about_uptime(uptime.into());
 
-    // Version
-    ui.set_about_version("0.3.0".into());
+    // Version from Cargo.toml + git hash
+    let version = match option_env!("GIT_HASH") {
+        Some(hash) => format!("{} ({})", env!("CARGO_PKG_VERSION"), hash),
+        None => env!("CARGO_PKG_VERSION").to_string(),
+    };
+    ui.set_about_version(version.into());
 
-    // Build date via compile-time env macro
-    let build_date = option_env!("BUILD_DATE")
-        .unwrap_or(env!("CARGO_PKG_VERSION"));
+    // Build date from build.rs
+    let build_date = option_env!("BUILD_DATE").unwrap_or("unknown");
     ui.set_about_build_date(build_date.into());
 }

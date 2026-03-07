@@ -29,7 +29,7 @@
 //!   yantrik-ui [config.yaml]
 
 use std::path::PathBuf;
-use yantrikdb_companion::CompanionConfig;
+use yantrik_companion::CompanionConfig;
 
 mod activity_feed;
 mod ambient;

@@ -11,9 +11,9 @@ use slint::{ComponentHandle, ModelRc, Timer, TimerMode, VecModel};
 
 use crate::app_context::AppContext;
 use crate::{App, CalendarDay, CalendarEvent};
-use yantrikdb_companion::calendar;
-use yantrikdb_companion::config::{CompanionConfig, EmailAccountConfig};
-use yantrikdb_companion::email;
+use yantrik_companion::calendar;
+use yantrik_companion::config::{CompanionConfig, EmailAccountConfig};
+use yantrik_companion::email;
 
 /// Calendar state — tracks current month/year and events.
 struct CalState {

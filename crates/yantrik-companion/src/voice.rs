@@ -4,7 +4,7 @@
 //! pipeline, adding voice activity detection and bond-level voice adaptation.
 
 use crate::bond::BondLevel;
-use yantrikdb_ml::tts::VoiceParams;
+use yantrik_ml::tts::VoiceParams;
 
 /// Voice Activity Detection events.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

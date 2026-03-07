@@ -4,7 +4,7 @@
 //! (cached in ~/.cache/huggingface/hub/).
 
 use yantrikdb_core::Embedder;
-use yantrikdb_ml::CandleEmbedder;
+use yantrik_ml::CandleEmbedder;
 
 #[test]
 fn test_embedder_from_hub() {

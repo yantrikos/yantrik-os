@@ -9,9 +9,9 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use yantrikdb_companion::config::VoiceConfig;
-use yantrikdb_companion::voice::{voice_profile_for_bond, SimpleVAD, VADEvent};
-use yantrikdb_ml::{TTSEngine, WhisperEngine};
+use yantrik_companion::config::VoiceConfig;
+use yantrik_companion::voice::{voice_profile_for_bond, SimpleVAD, VADEvent};
+use yantrik_ml::{TTSEngine, WhisperEngine};
 
 use crate::bridge::CompanionBridge;
 use crate::App;
@@ -225,7 +225,7 @@ fn voice_loop(
                 let bond_rx = bridge.request_bond_level();
                 let bond_level = bond_rx
                     .recv_timeout(std::time::Duration::from_secs(2))
-                    .unwrap_or(yantrikdb_companion::bond::BondLevel::Stranger);
+                    .unwrap_or(yantrik_companion::bond::BondLevel::Stranger);
 
                 let profile = voice_profile_for_bond(&bond_level);
                 let params = profile.to_voice_params();

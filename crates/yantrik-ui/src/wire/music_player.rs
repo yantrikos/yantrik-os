@@ -280,6 +280,10 @@ impl MusicPlayerState {
         if idx >= self.queue.len() {
             return;
         }
+        if !super::dep_check::has_command("mpv") {
+            tracing::warn!("mpv not installed — music playback unavailable (apk add mpv)");
+            return;
+        }
 
         // Stop current playback
         if let Some(ref mut mpv) = self.mpv {

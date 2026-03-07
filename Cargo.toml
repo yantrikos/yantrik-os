@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/yantrikdb-companion",
+    "crates/yantrik-companion",
     "crates/yantrikdb-server",
     "crates/yantrik",
     "crates/yantrik-ui",
@@ -14,6 +14,8 @@ members = [
 opt-level = 2
 
 # Local override: adds "thinking": false to API requests for Qwen3.5/DeepSeek
-[patch."https://github.com/spranab/yantrikdb.git"]
-yantrikdb-ml = { path = "crates/yantrikdb-ml" }
+[patch."https://github.com/yantrikos/yantrikdb.git"]
 yantrikdb-core = { path = "crates/yantrikdb-core" }
+
+[patch."https://github.com/yantrikos/yantrik-ml.git"]
+yantrik-ml = { path = "crates/yantrik-ml" }

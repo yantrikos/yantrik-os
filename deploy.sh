@@ -32,7 +32,7 @@ fail() { echo -e "${RED}!!! $1${NC}"; exit 1; }
 if [ "${1:-}" != "--skip-build" ]; then
     step "Clearing fingerprints (WSL timestamp sync)..."
     wsl.exe -d Ubuntu -- bash -lc \
-        'rm -rf /home/yantrik/target-yantrik/release/.fingerprint/yantrikdb-companion-* \
+        'rm -rf /home/yantrik/target-yantrik/release/.fingerprint/yantrik-companion-* \
                 /home/yantrik/target-yantrik/release/.fingerprint/yantrik-ui-* \
                 /home/yantrik/target-yantrik/release/.fingerprint/yantrik-[0-9a-f]*'
 

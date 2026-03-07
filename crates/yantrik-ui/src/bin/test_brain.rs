@@ -9,10 +9,10 @@
 use std::path::Path;
 use std::time::Instant;
 
-use yantrikdb_companion::{CompanionConfig, CompanionService};
+use yantrik_companion::{CompanionConfig, CompanionService};
 use yantrikdb_core::YantrikDB;
-use yantrikdb_ml::{CandleEmbedder, CandleLLM, LLMBackend};
-use yantrikdb_ml::ApiLLM;
+use yantrik_ml::{CandleEmbedder, CandleLLM, LLMBackend};
+use yantrik_ml::ApiLLM;
 
 fn main() {
     // Init tracing

@@ -3,8 +3,8 @@
 //! Uses real YantrikDB (in-memory) + real LLM (Qwen2.5-0.5B Q4_K_M).
 //! Downloads model from HuggingFace Hub on first run (~491MB).
 
-use yantrikdb_companion::{CompanionConfig, CompanionService};
-use yantrikdb_ml::{CandleEmbedder, GGUFFiles, LLMEngine};
+use yantrik_companion::{CompanionConfig, CompanionService};
+use yantrik_ml::{CandleEmbedder, GGUFFiles, LLMEngine};
 
 const GGUF_REPO: &str = "Qwen/Qwen2.5-0.5B-Instruct-GGUF";
 const GGUF_FILE: &str = "qwen2.5-0.5b-instruct-q4_k_m.gguf";
@@ -84,7 +84,7 @@ fn test_urge_queue() {
     let mut companion = build_companion();
 
     // Push a test urge
-    let spec = yantrikdb_companion::UrgeSpec::new("test", "Test urge reason", 0.5)
+    let spec = yantrik_companion::UrgeSpec::new("test", "Test urge reason", 0.5)
         .with_cooldown("test:1");
     companion.urge_queue.push(companion.db.conn(), &spec);
 

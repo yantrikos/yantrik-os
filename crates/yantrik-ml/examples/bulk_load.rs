@@ -3,10 +3,10 @@
 //! Uses real CandleEmbedder for genuine semantic embeddings.
 //! Generates diverse memories spanning months of a simulated personal history.
 //!
-//! Run: cargo run -p yantrikdb-ml --example bulk_load --release
+//! Run: cargo run -p yantrik-ml --example bulk_load --release
 
 use std::time::Instant;
-use yantrikdb_ml::CandleEmbedder;
+use yantrik_ml::CandleEmbedder;
 use yantrikdb_core::types::ThinkConfig;
 
 const EMBEDDER_REPO: &str = "sentence-transformers/all-MiniLM-L6-v2";

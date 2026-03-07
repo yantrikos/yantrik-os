@@ -1,4 +1,4 @@
-//! YantrikDB ML — Pluggable inference for embeddings, LLM, STT, and TTS.
+//! Yantrik ML — Pluggable inference for embeddings, LLM, STT, and TTS.
 //!
 //! This crate provides multiple backend implementations:
 //! - **Candle** (default): `CandleLLM`, `CandleWhisper`, `CandleEmbedder` — in-process via candle
@@ -43,7 +43,7 @@ pub use model_loader::{GGUFFiles, ModelFiles};
 // ── Shared type + trait exports ──────────────────────────────────────
 
 pub use types::{ApiToolCall, ApiToolCallFunction, ChatMessage, GenerationConfig, LLMResponse, ToolCall, TranscribeResult, VoiceParams};
-pub use traits::{LLMBackend, STTBackend};
+pub use traits::{LLMBackend, STTBackend, Embedder};
 
 // ── Chat template exports ────────────────────────────────────────────
 

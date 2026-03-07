@@ -8,7 +8,7 @@
 //! compound-splitting fallback, and cleaned response input.
 
 use yantrikdb_core::YantrikDB;
-use yantrikdb_ml::{ChatMessage, GenerationConfig, LLMBackend};
+use yantrik_ml::{ChatMessage, GenerationConfig, LLMBackend};
 
 use crate::bond::BondTracker;
 use crate::config::MemoryEvolutionConfig;

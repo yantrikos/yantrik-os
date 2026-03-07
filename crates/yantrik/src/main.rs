@@ -17,11 +17,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
-use yantrikdb_companion::{CompanionConfig, CompanionService};
-use yantrikdb_ml::{CandleEmbedder, CandleLLM, GGUFFiles, LLMBackend};
-use yantrikdb_ml::ApiLLM;
+use yantrik_companion::{CompanionConfig, CompanionService};
+use yantrik_ml::{CandleEmbedder, CandleLLM, GGUFFiles, LLMBackend};
+use yantrik_ml::ApiLLM;
 #[cfg(feature = "claude-cli")]
-use yantrikdb_ml::ClaudeCliLLM;
+use yantrik_ml::ClaudeCliLLM;
 
 #[derive(Parser)]
 #[command(name = "yantrik", about = "Personal AI companion — single binary")]
@@ -190,7 +190,7 @@ fn build_companion(config: CompanionConfig) -> CompanionService {
     } else {
         std::env::current_dir().unwrap_or_default().join("skills")
     };
-    let snapshot = yantrikdb_companion::skills::load_skill_snapshot_with_services(&skills_dir, &config_services);
+    let snapshot = yantrik_companion::skills::load_skill_snapshot_with_services(&skills_dir, &config_services);
     companion.apply_skill_snapshot(&snapshot);
 
     companion
@@ -329,8 +329,8 @@ fn cmd_ask(config_path: Option<PathBuf>, message: &str, json_output: bool) {
 
 fn cmd_voice(config_path: Option<PathBuf>) {
     use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-    use yantrikdb_companion::voice::{voice_profile_for_bond, SimpleVAD, VADEvent};
-    use yantrikdb_ml::{TTSEngine, WhisperEngine};
+    use yantrik_companion::voice::{voice_profile_for_bond, SimpleVAD, VADEvent};
+    use yantrik_ml::{TTSEngine, WhisperEngine};
 
     let config = load_config(config_path);
     let voice_config = config.voice.clone();

@@ -287,9 +287,9 @@ const SENSITIVE_FRAGMENTS: &[&str] = &[
     "ToolContext",
     "CompanionService",
     "CompanionConfig",
-    "yantrikdb_companion",
+    "yantrik_companion",
     "yantrikdb_core",
-    "yantrikdb_ml",
+    "yantrik_ml",
     // Memory DB internals
     "record_text(",
     "recall_text(",
