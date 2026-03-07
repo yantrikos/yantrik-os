@@ -15,7 +15,7 @@ use std::collections::{HashMap, HashSet};
 use rusqlite::Connection;
 use yantrikdb_core::YantrikDB;
 use yantrikdb_core::types::RecallResult;
-use yantrikdb_ml::{ChatMessage, GenerationConfig, LLMBackend};
+use yantrik_ml::{ChatMessage, GenerationConfig, LLMBackend};
 
 use crate::config::MemoryEvolutionConfig;
 use crate::evolution::{Evolution, SharedReference};

@@ -7,7 +7,7 @@
 //! L5 (Partner-in-Crime): Full Jexi mode — snarky, opinionated, real
 
 use yantrikdb_core::types::PersonalityProfile;
-use yantrikdb_ml::ChatMessage;
+use yantrik_ml::ChatMessage;
 
 use crate::bond::BondLevel;
 use crate::config::CompanionConfig;

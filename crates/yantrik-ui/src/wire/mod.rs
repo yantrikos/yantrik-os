@@ -8,6 +8,7 @@
 
 mod about;
 mod app_grid;
+pub mod dep_check;
 mod callbacks;
 mod chat;
 mod clipboard;
@@ -47,6 +48,7 @@ use crate::App;
 
 /// Wire all Slint callbacks. Called once from main().
 pub fn wire_all(ui: &App, ctx: &AppContext) {
+    dep_check::log_dep_summary();
     i18n::wire(ui, ctx);
     timers::wire(ui, ctx);
     chat::wire(ui, ctx);

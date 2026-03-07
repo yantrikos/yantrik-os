@@ -1,6 +1,6 @@
 [package]
 name = "yantrik-ui"
-version = "0.1.0"
+version = "0.3.0"
 edition = "2021"
 description = "Yantrik OS desktop shell — Slint native UI"
 
@@ -13,9 +13,9 @@ name = "test-brain"
 path = "src/bin/test_brain.rs"
 
 [dependencies]
-yantrikdb-companion = { path = "../yantrikdb-companion" }
-yantrikdb-ml = { git = "https://github.com/spranab/yantrikdb.git", features = ["api-llm", "claude-cli"] }
-yantrikdb-core = { git = "https://github.com/spranab/yantrikdb.git" }
+yantrik-companion = { path = "../yantrik-companion" }
+yantrik-ml = { git = "https://github.com/yantrikos/yantrik-ml.git", features = ["api-llm", "claude-cli"] }
+yantrikdb-core = { git = "https://github.com/yantrikos/yantrikdb.git" }
 yantrik-os = { path = "../yantrik-os" }
 slint = { version = "1.9", features = ["renderer-software"] }
 crossbeam-channel = "0.5"
@@ -41,10 +41,10 @@ libc = "0.2"
 
 [features]
 default = ["claude-cli"]
-claude-cli = ["yantrikdb-ml/claude-cli"]
-cuda = ["yantrikdb-ml/cuda"]
-metal = ["yantrikdb-ml/metal"]
-accelerate = ["yantrikdb-ml/accelerate"]
+claude-cli = ["yantrik-ml/claude-cli"]
+cuda = ["yantrik-ml/cuda"]
+metal = ["yantrik-ml/metal"]
+accelerate = ["yantrik-ml/accelerate"]
 
 [build-dependencies]
 slint-build = "1.9"

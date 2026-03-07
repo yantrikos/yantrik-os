@@ -9,8 +9,8 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use slint::{ComponentHandle, ModelRc, Timer, VecModel};
-use yantrikdb_companion::CompanionConfig;
-use yantrikdb_companion::config::VoiceConfig;
+use yantrik_companion::CompanionConfig;
+use yantrik_companion::config::VoiceConfig;
 
 use crate::activity_feed::ActivityAccumulator;
 use crate::bridge::CompanionBridge;
@@ -25,7 +25,7 @@ use crate::wire::image_viewer::ImageViewerState;
 use crate::terminal::TerminalHandle;
 use crate::wire::media_player::MpvHandle;
 use crate::{App, AccentPreset, ThemeMode, ThemeOverrides, MessageData, UrgeCardData, WhisperCardItem};
-use yantrikdb_companion::skills::SkillRegistry;
+use yantrik_companion::skills::SkillRegistry;
 
 /// Clipboard operation for file browser copy/cut.
 #[derive(Clone, Debug)]

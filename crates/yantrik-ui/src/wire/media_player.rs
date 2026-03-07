@@ -222,6 +222,13 @@ pub fn start_playback(
     path: &PathBuf,
     player: &Rc<RefCell<Option<MpvHandle>>>,
 ) {
+    if !super::dep_check::has_command("mpv") {
+        ui.set_player_track_name("mpv not installed".into());
+        ui.set_player_is_playing(false);
+        tracing::warn!("mpv not installed — media playback unavailable (apk add mpv)");
+        return;
+    }
+
     // Stop existing playback
     if let Some(ref mut old) = *player.borrow_mut() {
         old.stop();

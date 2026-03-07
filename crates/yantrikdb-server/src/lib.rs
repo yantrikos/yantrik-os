@@ -9,7 +9,7 @@ use std::sync::Mutex;
 
 use axum::Router;
 use tower_http::cors::CorsLayer;
-use yantrikdb_companion::CompanionService;
+use yantrik_companion::CompanionService;
 
 /// Shared application state.
 pub struct AppState {

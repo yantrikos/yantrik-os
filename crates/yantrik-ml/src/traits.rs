@@ -65,3 +65,23 @@ pub trait STTBackend: Send + Sync {
     /// Human-readable backend name (e.g. "candle-whisper", "api").
     fn backend_name(&self) -> &str;
 }
+
+// ── Embedder ──────────────────────────────────────────────────────────
+
+/// Trait for text-to-embedding conversion.
+///
+/// Implementations can be candle-based (local ML), HTTP-based (external server),
+/// or mock (for tests). Concrete implementations live in this crate
+/// (e.g., `CandleEmbedder`); consumers like yantrikdb-core use this trait.
+pub trait Embedder: Send + Sync {
+    /// Embed a single text string into a vector.
+    fn embed(&self, text: &str) -> std::result::Result<Vec<f32>, Box<dyn std::error::Error + Send + Sync>>;
+
+    /// Embed multiple texts. Default implementation calls embed() in a loop.
+    fn embed_batch(&self, texts: &[&str]) -> std::result::Result<Vec<Vec<f32>>, Box<dyn std::error::Error + Send + Sync>> {
+        texts.iter().map(|t| self.embed(t)).collect()
+    }
+
+    /// The dimensionality of produced embeddings.
+    fn dim(&self) -> usize;
+}

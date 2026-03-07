@@ -16,6 +16,7 @@ zstd = "0.13"
 tracing = "0.1"
 aes-gcm = "0.10"
 base64 = "0.22"
+yantrik-ml = { git = "https://github.com/yantrikos/yantrik-ml.git", default-features = false }
 
 [features]
 default = []

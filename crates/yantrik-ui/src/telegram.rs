@@ -9,7 +9,7 @@
 use std::sync::Arc;
 
 use slint::{Model, ModelRc, SharedString, VecModel};
-use yantrikdb_companion::config::{TelegramConfig, VoiceConfig};
+use yantrik_companion::config::{TelegramConfig, VoiceConfig};
 
 use crate::bridge::CompanionBridge;
 use crate::App;
@@ -77,7 +77,7 @@ fn poller_loop(
     voice_config: VoiceConfig,
 ) {
     // Check voice dependencies (ffmpeg + espeak-ng) once at startup
-    let voice_available = match yantrikdb_companion::audio_convert::check_dependencies() {
+    let voice_available = match yantrik_companion::audio_convert::check_dependencies() {
         Ok(()) => {
             tracing::info!("Telegram voice: ffmpeg + espeak-ng available");
             true
@@ -112,7 +112,7 @@ fn poller_loop(
                 count,
                 digest_buffer.join("\n\n\u{2500}\u{2500}\u{2500}\n\n")
             );
-            if let Err(e) = yantrikdb_companion::telegram::send_message(&config, &digest) {
+            if let Err(e) = yantrik_companion::telegram::send_message(&config, &digest) {
                 tracing::warn!(error = %e, "Failed to send Telegram digest");
             } else {
                 tracing::info!(count, "Telegram daily digest sent");
@@ -130,13 +130,13 @@ fn poller_loop(
                     buffered = digest_buffer.len(),
                     "Telegram message buffered (quiet hours)"
                 );
-            } else if let Err(e) = yantrikdb_companion::telegram::send_message(&config, &text) {
+            } else if let Err(e) = yantrik_companion::telegram::send_message(&config, &text) {
                 tracing::warn!(error = %e, "Failed to send outbound Telegram message");
             }
         }
 
         // Long-poll for inbound messages
-        match yantrikdb_companion::telegram::get_updates(&config, offset, poll_timeout) {
+        match yantrik_companion::telegram::get_updates(&config, offset, poll_timeout) {
             Ok(updates) => {
                 for update in updates {
                     offset = update.update_id + 1;
@@ -180,12 +180,12 @@ fn poller_loop(
                     });
 
                     // React with eyes emoji to show we're reading the message
-                    let _ = yantrikdb_companion::telegram::set_reaction(
+                    let _ = yantrik_companion::telegram::set_reaction(
                         &config, update.message_id, "\u{1f440}",
                     );
 
                     // Show "typing..." indicator
-                    let _ = yantrikdb_companion::telegram::send_typing(&config);
+                    let _ = yantrik_companion::telegram::send_typing(&config);
 
                     // Send to companion and collect full response
                     let token_rx = bridge.send_message(update.text);
@@ -210,16 +210,16 @@ fn poller_loop(
 
                                 // Refresh typing indicator every 4s (Telegram expires it after 5s)
                                 if typing_refresh.elapsed().as_secs() >= 4 {
-                                    let _ = yantrikdb_companion::telegram::send_typing(&config);
+                                    let _ = yantrik_companion::telegram::send_typing(&config);
                                     typing_refresh = std::time::Instant::now();
                                 }
                             }
                             Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
                                 // No tokens for 30s — send periodic status update
                                 status_update_count += 1;
-                                let _ = yantrikdb_companion::telegram::send_typing(&config);
+                                let _ = yantrik_companion::telegram::send_typing(&config);
                                 if status_update_count == 1 {
-                                    let _ = yantrikdb_companion::telegram::send_message(
+                                    let _ = yantrik_companion::telegram::send_message(
                                         &config, "Still working on it...",
                                     );
                                 }
@@ -250,12 +250,12 @@ fn poller_loop(
                     }
 
                     // Clear the eyes reaction now that we're responding
-                    let _ = yantrikdb_companion::telegram::clear_reaction(
+                    let _ = yantrik_companion::telegram::clear_reaction(
                         &config, update.message_id,
                     );
 
                     // Send response back to Telegram
-                    if let Err(e) = yantrikdb_companion::telegram::send_message(&config, &response) {
+                    if let Err(e) = yantrik_companion::telegram::send_message(&config, &response) {
                         tracing::warn!(error = %e, "Failed to send Telegram response");
                     }
 
@@ -293,7 +293,7 @@ fn handle_voice_message(
     config: &TelegramConfig,
     bridge: &Arc<CompanionBridge>,
     ui_weak: &slint::Weak<App>,
-    update: &yantrikdb_companion::telegram::TelegramUpdate,
+    update: &yantrik_companion::telegram::TelegramUpdate,
     voice_config: &VoiceConfig,
 ) {
     let voice = match &update.voice {
@@ -308,47 +308,47 @@ fn handle_voice_message(
     );
 
     // React with eyes + typing to show we're processing
-    let _ = yantrikdb_companion::telegram::set_reaction(
+    let _ = yantrik_companion::telegram::set_reaction(
         config, update.message_id, "\u{1f440}",
     );
-    let _ = yantrikdb_companion::telegram::send_typing(config);
+    let _ = yantrik_companion::telegram::send_typing(config);
 
     // 1. Download the voice file
     let ogg_path = format!("/tmp/tg_voice_{}.ogg", update.message_id);
-    let file_path = match yantrikdb_companion::telegram::get_file(config, &voice.file_id) {
+    let file_path = match yantrik_companion::telegram::get_file(config, &voice.file_id) {
         Ok(p) => p,
         Err(e) => {
             tracing::warn!(error = %e, "Failed to get voice file path");
-            let _ = yantrikdb_companion::telegram::send_message(
+            let _ = yantrik_companion::telegram::send_message(
                 config, "(couldn't download your voice message)",
             );
-            let _ = yantrikdb_companion::telegram::clear_reaction(config, update.message_id);
+            let _ = yantrik_companion::telegram::clear_reaction(config, update.message_id);
             return;
         }
     };
 
-    if let Err(e) = yantrikdb_companion::telegram::download_file(config, &file_path, &ogg_path) {
+    if let Err(e) = yantrik_companion::telegram::download_file(config, &file_path, &ogg_path) {
         tracing::warn!(error = %e, "Failed to download voice file");
-        let _ = yantrikdb_companion::telegram::send_message(
+        let _ = yantrik_companion::telegram::send_message(
             config, "(couldn't download your voice message)",
         );
-        let _ = yantrikdb_companion::telegram::clear_reaction(config, update.message_id);
+        let _ = yantrik_companion::telegram::clear_reaction(config, update.message_id);
         return;
     }
 
     // 2. Convert OGG → PCM f32
-    let pcm = match yantrikdb_companion::audio_convert::ogg_to_pcm_f32(&ogg_path) {
+    let pcm = match yantrik_companion::audio_convert::ogg_to_pcm_f32(&ogg_path) {
         Ok(samples) => {
             tracing::info!(samples = samples.len(), "Voice decoded to PCM");
             samples
         }
         Err(e) => {
             tracing::warn!(error = %e, "Failed to decode voice OGG");
-            let _ = yantrikdb_companion::telegram::send_message(
+            let _ = yantrik_companion::telegram::send_message(
                 config, "(couldn't decode your voice message)",
             );
             let _ = std::fs::remove_file(&ogg_path);
-            let _ = yantrikdb_companion::telegram::clear_reaction(config, update.message_id);
+            let _ = yantrik_companion::telegram::clear_reaction(config, update.message_id);
             return;
         }
     };
@@ -363,10 +363,10 @@ fn handle_voice_message(
                 let t = result.text.trim().to_string();
                 if t.is_empty() {
                     tracing::info!("Voice message transcribed to empty text");
-                    let _ = yantrikdb_companion::telegram::send_message(
+                    let _ = yantrik_companion::telegram::send_message(
                         config, "(couldn't understand your voice message)",
                     );
-                    let _ = yantrikdb_companion::telegram::clear_reaction(config, update.message_id);
+                    let _ = yantrik_companion::telegram::clear_reaction(config, update.message_id);
                     return;
                 }
                 tracing::info!(text = %t, "Voice transcribed");
@@ -374,19 +374,19 @@ fn handle_voice_message(
             }
             Err(e) => {
                 tracing::warn!(error = %e, "Whisper STT failed");
-                let _ = yantrikdb_companion::telegram::send_message(
+                let _ = yantrik_companion::telegram::send_message(
                     config, "(speech recognition failed)",
                 );
-                let _ = yantrikdb_companion::telegram::clear_reaction(config, update.message_id);
+                let _ = yantrik_companion::telegram::clear_reaction(config, update.message_id);
                 return;
             }
         },
         None => {
             tracing::warn!("Whisper engine not available");
-            let _ = yantrikdb_companion::telegram::send_message(
+            let _ = yantrik_companion::telegram::send_message(
                 config, "(speech recognition not configured)",
             );
-            let _ = yantrikdb_companion::telegram::clear_reaction(config, update.message_id);
+            let _ = yantrik_companion::telegram::clear_reaction(config, update.message_id);
             return;
         }
     };
@@ -429,15 +429,15 @@ fn handle_voice_message(
                 response.push_str(&token);
 
                 if typing_refresh.elapsed().as_secs() >= 4 {
-                    let _ = yantrikdb_companion::telegram::send_typing(config);
+                    let _ = yantrik_companion::telegram::send_typing(config);
                     typing_refresh = std::time::Instant::now();
                 }
             }
             Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
                 status_update_count += 1;
-                let _ = yantrikdb_companion::telegram::send_typing(config);
+                let _ = yantrik_companion::telegram::send_typing(config);
                 if status_update_count == 1 {
-                    let _ = yantrikdb_companion::telegram::send_message(
+                    let _ = yantrik_companion::telegram::send_message(
                         config, "Still working on it...",
                     );
                 }
@@ -467,22 +467,22 @@ fn handle_voice_message(
     }
 
     // 6. Clear eyes reaction
-    let _ = yantrikdb_companion::telegram::clear_reaction(config, update.message_id);
+    let _ = yantrik_companion::telegram::clear_reaction(config, update.message_id);
 
     // 7. Send text response
-    if let Err(e) = yantrikdb_companion::telegram::send_message(config, &response) {
+    if let Err(e) = yantrik_companion::telegram::send_message(config, &response) {
         tracing::warn!(error = %e, "Failed to send text response");
     }
 
     // 8. Generate and send voice response
-    let _ = yantrikdb_companion::telegram::send_recording_voice(config);
+    let _ = yantrik_companion::telegram::send_recording_voice(config);
 
     let (rate, pitch) = tts_params_for_bond(bridge);
     let reply_ogg = format!("/tmp/tg_reply_{}.ogg", update.message_id);
 
-    match yantrikdb_companion::audio_convert::text_to_ogg(&response, &reply_ogg, rate, pitch) {
+    match yantrik_companion::audio_convert::text_to_ogg(&response, &reply_ogg, rate, pitch) {
         Ok(()) => {
-            if let Err(e) = yantrikdb_companion::telegram::send_voice(config, &reply_ogg) {
+            if let Err(e) = yantrik_companion::telegram::send_voice(config, &reply_ogg) {
                 tracing::warn!(error = %e, "Failed to send voice reply");
             } else {
                 tracing::info!("Voice reply sent");
@@ -515,16 +515,16 @@ fn handle_voice_message(
 }
 
 /// Lazily load Whisper STT engine (loaded once on first voice message).
-fn load_whisper(voice_config: &VoiceConfig) -> Option<&'static yantrikdb_ml::WhisperEngine> {
+fn load_whisper(voice_config: &VoiceConfig) -> Option<&'static yantrik_ml::WhisperEngine> {
     use std::sync::OnceLock;
-    static WHISPER: OnceLock<Option<yantrikdb_ml::WhisperEngine>> = OnceLock::new();
+    static WHISPER: OnceLock<Option<yantrik_ml::WhisperEngine>> = OnceLock::new();
 
     WHISPER.get_or_init(|| {
         tracing::info!("Loading Whisper for Telegram voice...");
         let result = if let Some(ref dir) = voice_config.whisper_model_dir {
-            yantrikdb_ml::WhisperEngine::from_dir(std::path::Path::new(dir))
+            yantrik_ml::WhisperEngine::from_dir(std::path::Path::new(dir))
         } else {
-            yantrikdb_ml::WhisperEngine::from_hub(&voice_config.whisper_model)
+            yantrik_ml::WhisperEngine::from_hub(&voice_config.whisper_model)
         };
         match result {
             Ok(engine) => {

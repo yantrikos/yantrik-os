@@ -5,7 +5,7 @@
 //! persists across sessions.
 
 use rusqlite::{params, Connection};
-use yantrikdb_ml::{ChatMessage, GenerationConfig, LLMBackend};
+use yantrik_ml::{ChatMessage, GenerationConfig, LLMBackend};
 
 use crate::bond::BondLevel;
 

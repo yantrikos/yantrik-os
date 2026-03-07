@@ -1,6 +1,6 @@
 //! CandleEmbedder — MiniLM/BERT sentence embeddings via candle.
 //!
-//! Implements `yantrikdb_core::Embedder` so it can be plugged directly into YantrikDB:
+//! Implements `Embedder` trait so it can be plugged directly into YantrikDB:
 //! ```rust,ignore
 //! let embedder = CandleEmbedder::from_dir("/path/to/all-MiniLM-L6-v2")?;
 //! db.set_embedder(Box::new(embedder));
@@ -139,7 +139,7 @@ impl CandleEmbedder {
     }
 }
 
-impl yantrikdb_core::types::Embedder for CandleEmbedder {
+impl crate::traits::Embedder for CandleEmbedder {
     fn embed(
         &self,
         text: &str,
@@ -178,7 +178,7 @@ mod tests {
     #[test]
     fn test_embedder_trait_object() {
         // Verify CandleEmbedder can be used as a trait object
-        fn assert_embedder<T: yantrikdb_core::types::Embedder>() {}
+        fn assert_embedder<T: crate::traits::Embedder>() {}
         assert_embedder::<CandleEmbedder>();
     }
 }

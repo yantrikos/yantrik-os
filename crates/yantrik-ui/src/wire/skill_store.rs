@@ -4,7 +4,7 @@ use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use yantrikdb_companion::skills::SkillRegistry;
+use yantrik_companion::skills::SkillRegistry;
 
 use crate::app_context::AppContext;
 use crate::App;
@@ -73,7 +73,7 @@ fn populate_skills(
         reg.search(query)
     } else if category != "All" {
         // Find matching category
-        use yantrikdb_companion::skills::SkillCategory;
+        use yantrik_companion::skills::SkillCategory;
         let cat = match category.to_lowercase().as_str() {
             "productivity" => Some(SkillCategory::Productivity),
             "communication" => Some(SkillCategory::Communication),

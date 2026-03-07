@@ -5,7 +5,7 @@
 //! personality evolution, and self-narrative into a single 9-step pipeline.
 
 use yantrikdb_core::YantrikDB;
-use yantrikdb_ml::{
+use yantrik_ml::{
     ChatMessage, GenerationConfig, LLMBackend, ToolCall,
     format_tools, parse_tool_calls, extract_text_content,
 };
@@ -1976,7 +1976,7 @@ fn execute_tool_round(
     max_perm: PermissionLevel,
     task_manager: &std::sync::Mutex<crate::task_manager::TaskManager>,
     use_native_tools: bool,
-    api_tool_calls: &[yantrikdb_ml::ApiToolCall],
+    api_tool_calls: &[yantrik_ml::ApiToolCall],
     native_tools: &mut Vec<serde_json::Value>,
     incognito: bool,
 ) {
@@ -2088,7 +2088,7 @@ fn execute_tool_round_tracked(
     max_perm: PermissionLevel,
     task_manager: &std::sync::Mutex<crate::task_manager::TaskManager>,
     use_native_tools: bool,
-    api_tool_calls: &[yantrikdb_ml::ApiToolCall],
+    api_tool_calls: &[yantrik_ml::ApiToolCall],
     native_tools: &mut Vec<serde_json::Value>,
     agent_loop: &mut AgentLoop,
     error_recovery: bool,
