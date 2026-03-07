@@ -71,7 +71,7 @@ pub struct AppContext {
 
 impl AppContext {
     /// Initialize all shared state. Moves setup logic that used to live in main().
-    pub fn init(config: CompanionConfig, ui: &App, config_path: Option<PathBuf>) -> Self {
+    pub fn init(mut config: CompanionConfig, ui: &App, config_path: Option<PathBuf>) -> Self {
         // Load persisted user settings (theme, tool perm, auto-lock, etc.)
         let user_settings = crate::wire::settings::load();
         ui.global::<ThemeMode>().set_dark(user_settings.dark_mode);
@@ -131,9 +131,19 @@ impl AppContext {
         // Lock screen PIN file
         crate::lock::ensure_pin_file();
 
-        // Populate settings panel
-        ui.set_settings_user_name(config.user_name.clone().into());
-        ui.set_settings_companion_name(config.personality.name.clone().into());
+        // Populate settings panel — saved names override config defaults
+        let display_user_name = if !user_settings.user_name.is_empty() {
+            user_settings.user_name.clone()
+        } else {
+            config.user_name.clone()
+        };
+        let display_companion_name = if !user_settings.companion_name.is_empty() {
+            user_settings.companion_name.clone()
+        } else {
+            config.personality.name.clone()
+        };
+        ui.set_settings_user_name(display_user_name.into());
+        ui.set_settings_companion_name(display_companion_name.into());
         ui.set_settings_model_name(config.llm.hub_repo.clone().into());
         ui.set_settings_max_context(config.llm.max_context_tokens as i32);
         ui.set_settings_max_tokens(config.llm.max_tokens as i32);
@@ -184,6 +194,14 @@ impl AppContext {
 
         // Start clipboard watcher
         let clip_history = clipboard::start_watcher();
+
+        // Override config names with saved user settings (if user renamed)
+        if !user_settings.user_name.is_empty() {
+            config.user_name = user_settings.user_name.clone();
+        }
+        if !user_settings.companion_name.is_empty() {
+            config.personality.name = user_settings.companion_name.clone();
+        }
 
         // Save fields before moving config into bridge
         let user_name = config.user_name.clone();

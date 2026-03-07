@@ -9,8 +9,10 @@ export component SettingsScreen inherits Rectangle {
     background: Theme.bg-deep;
 
     // Account
-    in property <string> user-name: "";
-    in property <string> companion-name: "Yantrik";
+    in-out property <string> user-name: "";
+    in-out property <string> companion-name: "Yantrik";
+    callback rename-user(string);
+    callback rename-companion(string);
 
     // AI Model
     in property <string> model-name: "";
@@ -1086,6 +1088,8 @@ export component SettingsScreen inherits Rectangle {
                                 padding: 16px;
                                 spacing: 12px;
 
+                                // Editable user name
+                                property <bool> editing-user: false;
                                 HorizontalLayout {
                                     Text {
                                         text: "User";
@@ -1093,15 +1097,50 @@ export component SettingsScreen inherits Rectangle {
                                         font-size: Theme.font-body;
                                         horizontal-stretch: 1;
                                     }
-                                    Text {
-                                        text: root.user-name;
-                                        color: Theme.text-primary;
-                                        font-size: Theme.font-body;
+                                    if !acct-layout.editing-user: TouchArea {
+                                        width: user-display.preferred-width;
+                                        height: user-display.preferred-height;
+                                        clicked => { acct-layout.editing-user = true; }
+                                        user-display := HorizontalLayout {
+                                            spacing: 6px;
+                                            Text {
+                                                text: root.user-name;
+                                                color: Theme.text-primary;
+                                                font-size: Theme.font-body;
+                                            }
+                                            Text {
+                                                text: "✎";
+                                                color: Theme.text-dim;
+                                                font-size: 11px;
+                                                vertical-alignment: center;
+                                            }
+                                        }
+                                    }
+                                    if acct-layout.editing-user: Rectangle {
+                                        width: 160px;
+                                        height: 28px;
+                                        border-radius: 4px;
+                                        background: #ffffff10;
+                                        border-width: 1px;
+                                        border-color: Theme.cyan;
+                                        user-input := TextInput {
+                                            text: root.user-name;
+                                            color: Theme.text-primary;
+                                            font-size: Theme.font-body;
+                                            vertical-alignment: center;
+                                            accepted => {
+                                                root.user-name = self.text;
+                                                root.rename-user(self.text);
+                                                acct-layout.editing-user = false;
+                                            }
+                                        }
                                     }
                                 }
 
                                 Rectangle { height: 1px; background: #ffffff08; }
 
+                                // Editable companion name
+                                property <bool> editing-companion: false;
                                 HorizontalLayout {
                                     Text {
                                         text: "Companion";
@@ -1109,11 +1148,45 @@ export component SettingsScreen inherits Rectangle {
                                         font-size: Theme.font-body;
                                         horizontal-stretch: 1;
                                     }
-                                    Text {
-                                        text: root.companion-name;
-                                        color: Theme.amber;
-                                        font-size: Theme.font-body;
-                                        font-weight: 500;
+                                    if !acct-layout.editing-companion: TouchArea {
+                                        width: comp-display.preferred-width;
+                                        height: comp-display.preferred-height;
+                                        clicked => { acct-layout.editing-companion = true; }
+                                        comp-display := HorizontalLayout {
+                                            spacing: 6px;
+                                            Text {
+                                                text: root.companion-name;
+                                                color: Theme.amber;
+                                                font-size: Theme.font-body;
+                                                font-weight: 500;
+                                            }
+                                            Text {
+                                                text: "✎";
+                                                color: Theme.text-dim;
+                                                font-size: 11px;
+                                                vertical-alignment: center;
+                                            }
+                                        }
+                                    }
+                                    if acct-layout.editing-companion: Rectangle {
+                                        width: 160px;
+                                        height: 28px;
+                                        border-radius: 4px;
+                                        background: #ffffff10;
+                                        border-width: 1px;
+                                        border-color: Theme.amber;
+                                        comp-input := TextInput {
+                                            text: root.companion-name;
+                                            color: Theme.amber;
+                                            font-size: Theme.font-body;
+                                            font-weight: 500;
+                                            vertical-alignment: center;
+                                            accepted => {
+                                                root.companion-name = self.text;
+                                                root.rename-companion(self.text);
+                                                acct-layout.editing-companion = false;
+                                            }
+                                        }
                                     }
                                 }
                             }

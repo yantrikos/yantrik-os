@@ -202,8 +202,10 @@ export component App inherits Window {
     callback lock-screen();
 
     // Settings state (screen 7)
-    in property <string> settings-user-name: "";
-    in property <string> settings-companion-name: "Yantrik";
+    in-out property <string> settings-user-name: "";
+    in-out property <string> settings-companion-name: "Yantrik";
+    callback rename-user(string);
+    callback rename-companion(string);
     in property <string> settings-model-name: "";
     in property <int> settings-max-context: 4096;
     in property <int> settings-max-tokens: 512;
@@ -752,6 +754,17 @@ export component App inherits Window {
         // Onboarding (first boot only)
         if current-screen == 2 : OnboardingScreen {
             width: 100%; height: 100%;
+            companion-name: root.settings-companion-name;
+            set-names(user-name, comp-name) => {
+                if user-name != "" {
+                    root.rename-user(user-name);
+                    root.settings-user-name = user-name;
+                }
+                if comp-name != "" {
+                    root.rename-companion(comp-name);
+                    root.settings-companion-name = comp-name;
+                }
+            }
             ready => {
                 root.current-screen = 1;
                 root.navigate(1);
@@ -979,8 +992,10 @@ export component App inherits Window {
 
             SettingsScreen {
                 width: 100%; height: 100%;
-                user-name: root.settings-user-name;
-                companion-name: root.settings-companion-name;
+                user-name <=> root.settings-user-name;
+                companion-name <=> root.settings-companion-name;
+                rename-user(name) => { root.rename-user(name); }
+                rename-companion(name) => { root.rename-companion(name); }
                 model-name: root.settings-model-name;
                 max-context: root.settings-max-context;
                 max-tokens: root.settings-max-tokens;

@@ -90,6 +90,10 @@ pub enum CompanionCommand {
     ProcessNextTask,
     /// Execute the next step of a recipe. Self-signals for continuous execution.
     ProcessRecipeStep { recipe_id: String },
+    /// Rename the user (persists to config).
+    RenameUser { name: String },
+    /// Rename the companion (persists to config).
+    RenameCompanion { name: String },
     /// Shut down the worker.
     Shutdown,
 }
@@ -286,6 +290,16 @@ impl CompanionBridge {
     /// Toggle incognito mode (no data persistence while active).
     pub fn set_incognito(&self, enabled: bool) {
         let _ = self.cmd_tx.send(CompanionCommand::SetIncognitoMode { enabled });
+    }
+
+    /// Rename the user at runtime (updates config + companion).
+    pub fn rename_user(&self, name: String) {
+        let _ = self.cmd_tx.send(CompanionCommand::RenameUser { name });
+    }
+
+    /// Rename the companion at runtime (updates config + companion).
+    pub fn rename_companion(&self, name: String) {
+        let _ = self.cmd_tx.send(CompanionCommand::RenameCompanion { name });
     }
 
     /// Get ambient intelligence state (sentiment, cognitive_load).
@@ -1611,6 +1625,14 @@ fn worker_loop(
                         let _ = cmd_tx.send(CompanionCommand::ProcessRecipeStep { recipe_id: recipe_id.clone() });
                     }
                 }
+            }
+            Ok(CompanionCommand::RenameUser { name }) => {
+                companion.config.user_name = name.clone();
+                tracing::info!(user_name = %name, "User renamed at runtime");
+            }
+            Ok(CompanionCommand::RenameCompanion { name }) => {
+                companion.config.personality.name = name.clone();
+                tracing::info!(companion_name = %name, "Companion renamed at runtime");
             }
             Ok(CompanionCommand::Shutdown) | Err(_) => {
                 tracing::info!("Companion worker shutting down");
