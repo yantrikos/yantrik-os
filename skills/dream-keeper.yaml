@@ -1,0 +1,28 @@
+id: dream-keeper
+name: Dream Keeper
+description: Makes dreams actionable — your aspirations deserve more than someday
+long_description: >
+  Captures dreams and aspirations mentioned in conversation and transforms them from
+  vague wishes into concrete possibilities. Researches what it would actually take,
+  finds first steps, and keeps the flame alive without being pushy.
+version: "1.0.0"
+author: Yantrik
+icon: star
+category: intelligence
+tags: [dreams, aspirations, goals, wishes, plans]
+
+tools: []
+core_tools: []
+
+instincts:
+  - DreamKeeper
+
+cortex_rules: []
+services: []
+requires: []
+requires_config: []
+
+permissions:
+  - memory
+  - network
+  - background

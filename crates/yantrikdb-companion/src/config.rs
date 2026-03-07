@@ -470,6 +470,108 @@ pub struct InstinctSettings {
     /// Hours between second brain analysis sessions.
     #[serde(default = "default_second_brain_interval")]
     pub second_brain_interval_hours: f64,
+    /// Enable health pulse (tracks health mentions, researches underlying science).
+    #[serde(default = "default_true_val")]
+    pub health_pulse_enabled: bool,
+    /// Hours between health pulse evaluations.
+    #[serde(default = "default_health_pulse_interval")]
+    pub health_pulse_interval_hours: f64,
+    /// Enable money mind (financial awareness connected to user's interests).
+    #[serde(default = "default_true_val")]
+    pub money_mind_enabled: bool,
+    /// Hours between money mind evaluations.
+    #[serde(default = "default_money_mind_interval")]
+    pub money_mind_interval_hours: f64,
+    /// Enable relationship radar (social graph intelligence, reach-out nudges).
+    #[serde(default = "default_true_val")]
+    pub relationship_radar_enabled: bool,
+    /// Hours between relationship radar checks.
+    #[serde(default = "default_relationship_radar_interval")]
+    pub relationship_radar_interval_hours: f64,
+    /// Enable goal keeper (gentle accountability for stated intentions).
+    #[serde(default = "default_true_val")]
+    pub goal_keeper_enabled: bool,
+    /// Hours between goal keeper checks.
+    #[serde(default = "default_goal_keeper_interval")]
+    pub goal_keeper_interval_hours: f64,
+    /// Enable decision lab (finds hidden tradeoffs in active decisions).
+    #[serde(default = "default_true_val")]
+    pub decision_lab_enabled: bool,
+    /// Hours between decision lab evaluations.
+    #[serde(default = "default_decision_lab_interval")]
+    pub decision_lab_interval_hours: f64,
+    /// Enable skill forge (finds the mental model that unblocks learning).
+    #[serde(default = "default_true_val")]
+    pub skill_forge_enabled: bool,
+    /// Hours between skill forge evaluations.
+    #[serde(default = "default_skill_forge_interval")]
+    pub skill_forge_interval_hours: f64,
+    /// Enable time capture (micro-journaling prompts at emotionally significant moments).
+    #[serde(default = "default_true_val")]
+    pub time_capture_enabled: bool,
+    /// Hours between time capture checks.
+    #[serde(default = "default_time_capture_interval")]
+    pub time_capture_interval_hours: f64,
+    /// Enable mentor match (finds the right teacher/resource for current learning edge).
+    #[serde(default = "default_true_val")]
+    pub mentor_match_enabled: bool,
+    /// Hours between mentor match evaluations.
+    #[serde(default = "default_mentor_match_interval")]
+    pub mentor_match_interval_hours: f64,
+    /// Enable debrief partner (structured reflection after significant events).
+    #[serde(default = "default_true_val")]
+    pub debrief_partner_enabled: bool,
+    /// Hours between debrief partner checks.
+    #[serde(default = "default_debrief_partner_interval")]
+    pub debrief_partner_interval_hours: f64,
+    /// Enable philosophy companion (connects experiences to philosophical frameworks).
+    #[serde(default = "default_true_val")]
+    pub philosophy_companion_enabled: bool,
+    /// Hours between philosophy companion reflections.
+    #[serde(default = "default_philosophy_companion_interval")]
+    pub philosophy_companion_interval_hours: f64,
+    /// Enable devil's advocate (challenges user's strongest convictions with credible counterarguments).
+    #[serde(default = "default_true_val")]
+    pub devils_advocate_enabled: bool,
+    /// Hours between devil's advocate challenges.
+    #[serde(default = "default_devils_advocate_interval")]
+    pub devils_advocate_interval_hours: f64,
+    /// Enable energy map (observes chronotype and energy patterns).
+    #[serde(default = "default_true_val")]
+    pub energy_map_enabled: bool,
+    /// Hours between energy map observations.
+    #[serde(default = "default_energy_map_interval")]
+    pub energy_map_interval_hours: f64,
+    /// Enable future self (projects current trajectories forward).
+    #[serde(default = "default_true_val")]
+    pub future_self_enabled: bool,
+    /// Hours between future self projections.
+    #[serde(default = "default_future_self_interval")]
+    pub future_self_interval_hours: f64,
+    /// Enable dream keeper (turns aspirations into actionable next steps).
+    #[serde(default = "default_true_val")]
+    pub dream_keeper_enabled: bool,
+    /// Hours between dream keeper actionizations.
+    #[serde(default = "default_dream_keeper_interval")]
+    pub dream_keeper_interval_hours: f64,
+    /// Enable cultural radar (discovers new content matching user's taste).
+    #[serde(default = "default_true_val")]
+    pub cultural_radar_enabled: bool,
+    /// Hours between cultural radar discoveries.
+    #[serde(default = "default_cultural_radar_interval")]
+    pub cultural_radar_interval_hours: f64,
+    /// Enable pattern breaker (identifies and surfaces recurring loops).
+    #[serde(default = "default_true_val")]
+    pub pattern_breaker_enabled: bool,
+    /// Hours between pattern breaker observations.
+    #[serde(default = "default_pattern_breaker_interval")]
+    pub pattern_breaker_interval_hours: f64,
+    /// Enable opportunity scout (finds real-world opportunities matching user's profile).
+    #[serde(default = "default_true_val")]
+    pub opportunity_scout_enabled: bool,
+    /// Hours between opportunity scout searches.
+    #[serde(default = "default_opportunity_scout_interval")]
+    pub opportunity_scout_interval_hours: f64,
 }
 
 fn default_check_in_hours() -> f64 {
@@ -512,6 +614,23 @@ fn default_identity_thread_interval() -> f64 { 168.0 } // ~weekly
 fn default_myth_buster_interval() -> f64 { 8.0 }
 fn default_cooking_companion_interval() -> f64 { 6.0 }
 fn default_second_brain_interval() -> f64 { 12.0 }
+fn default_health_pulse_interval() -> f64 { 8.0 }
+fn default_money_mind_interval() -> f64 { 12.0 }
+fn default_relationship_radar_interval() -> f64 { 24.0 }
+fn default_goal_keeper_interval() -> f64 { 48.0 }
+fn default_decision_lab_interval() -> f64 { 8.0 }
+fn default_skill_forge_interval() -> f64 { 12.0 }
+fn default_time_capture_interval() -> f64 { 12.0 }
+fn default_mentor_match_interval() -> f64 { 48.0 }
+fn default_debrief_partner_interval() -> f64 { 6.0 }
+fn default_philosophy_companion_interval() -> f64 { 48.0 }
+fn default_devils_advocate_interval() -> f64 { 24.0 }
+fn default_energy_map_interval() -> f64 { 48.0 }
+fn default_future_self_interval() -> f64 { 72.0 }
+fn default_dream_keeper_interval() -> f64 { 72.0 }
+fn default_cultural_radar_interval() -> f64 { 24.0 }
+fn default_pattern_breaker_interval() -> f64 { 72.0 }
+fn default_opportunity_scout_interval() -> f64 { 48.0 }
 
 impl Default for InstinctSettings {
     fn default() -> Self {
@@ -575,6 +694,40 @@ impl Default for InstinctSettings {
             cooking_companion_interval_hours: default_cooking_companion_interval(),
             second_brain_enabled: true,
             second_brain_interval_hours: default_second_brain_interval(),
+            health_pulse_enabled: true,
+            health_pulse_interval_hours: default_health_pulse_interval(),
+            money_mind_enabled: true,
+            money_mind_interval_hours: default_money_mind_interval(),
+            relationship_radar_enabled: true,
+            relationship_radar_interval_hours: default_relationship_radar_interval(),
+            goal_keeper_enabled: true,
+            goal_keeper_interval_hours: default_goal_keeper_interval(),
+            decision_lab_enabled: true,
+            decision_lab_interval_hours: default_decision_lab_interval(),
+            skill_forge_enabled: true,
+            skill_forge_interval_hours: default_skill_forge_interval(),
+            time_capture_enabled: true,
+            time_capture_interval_hours: default_time_capture_interval(),
+            mentor_match_enabled: true,
+            mentor_match_interval_hours: default_mentor_match_interval(),
+            debrief_partner_enabled: true,
+            debrief_partner_interval_hours: default_debrief_partner_interval(),
+            philosophy_companion_enabled: true,
+            philosophy_companion_interval_hours: default_philosophy_companion_interval(),
+            devils_advocate_enabled: true,
+            devils_advocate_interval_hours: default_devils_advocate_interval(),
+            energy_map_enabled: true,
+            energy_map_interval_hours: default_energy_map_interval(),
+            future_self_enabled: true,
+            future_self_interval_hours: default_future_self_interval(),
+            dream_keeper_enabled: true,
+            dream_keeper_interval_hours: default_dream_keeper_interval(),
+            cultural_radar_enabled: true,
+            cultural_radar_interval_hours: default_cultural_radar_interval(),
+            pattern_breaker_enabled: true,
+            pattern_breaker_interval_hours: default_pattern_breaker_interval(),
+            opportunity_scout_enabled: true,
+            opportunity_scout_interval_hours: default_opportunity_scout_interval(),
         }
     }
 }

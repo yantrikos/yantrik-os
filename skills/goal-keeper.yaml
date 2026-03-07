@@ -1,0 +1,27 @@
+id: goal-keeper
+name: Goal Keeper
+description: Accountability partner that tracks stated intentions gently
+long_description: >
+  Listens for stated intentions and goals in conversation, then follows up on them
+  naturally over time. Not a nagging task manager — a gentle accountability partner
+  that notices when you mention wanting to do something and checks in later.
+version: "1.0.0"
+author: Yantrik
+icon: target
+category: intelligence
+tags: [goals, accountability, intentions, progress, habits]
+
+tools: []
+core_tools: []
+
+instincts:
+  - GoalKeeper
+
+cortex_rules: []
+services: []
+requires: []
+requires_config: []
+
+permissions:
+  - memory
+  - background

@@ -1,0 +1,27 @@
+id: energy-map
+name: Energy Map
+description: Chronotype intelligence — work with your rhythm, not against it
+long_description: >
+  Learns your energy patterns over time — when you're sharpest, when you hit walls,
+  what drains and recharges you. Suggests optimal timing for different types of work
+  and gently flags when you're pushing against your natural rhythm.
+version: "1.0.0"
+author: Yantrik
+icon: zap
+category: intelligence
+tags: [productivity, chronotype, energy, timing, focus]
+
+tools: []
+core_tools: []
+
+instincts:
+  - EnergyMap
+
+cortex_rules: []
+services: []
+requires: []
+requires_config: []
+
+permissions:
+  - memory
+  - background

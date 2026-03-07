@@ -87,6 +87,15 @@ if [ -d "$I18N_SRC" ]; then
         || warn "Failed to deploy i18n files (non-fatal)"
 fi
 
+# Step 3c: Deploy skill manifests
+SKILLS_SRC="/c/Users/sync/codes/yantrik-os/skills"
+if [ -d "$SKILLS_SRC" ]; then
+    step "Deploying skill manifests..."
+    ssh $SSH_OPTS $SSH_HOST "mkdir -p /opt/yantrik/skills"
+    scp $SCP_OPTS "$SKILLS_SRC"/*.yaml "$SSH_HOST:/opt/yantrik/skills/" \
+        || warn "Failed to deploy skill manifests (non-fatal)"
+fi
+
 # Step 4: Kill old process, update binaries, restart
 step "Restarting yantrik-ui..."
 # Kill old process

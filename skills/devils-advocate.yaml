@@ -1,0 +1,28 @@
+id: devils-advocate
+name: Devil's Advocate
+description: Constructive contrarianism that strengthens your thinking
+long_description: >
+  Provides thoughtful counterarguments and alternative perspectives when you're forming
+  opinions or making plans. Not contrarian for its own sake — it finds the genuine blind
+  spots and steel-mans the opposing view to make your thinking more robust.
+version: "1.0.0"
+author: Yantrik
+icon: shield
+category: intelligence
+tags: [critical-thinking, debate, counterarguments, perspective]
+
+tools: []
+core_tools: []
+
+instincts:
+  - DevilsAdvocate
+
+cortex_rules: []
+services: []
+requires: []
+requires_config: []
+
+permissions:
+  - memory
+  - network
+  - background

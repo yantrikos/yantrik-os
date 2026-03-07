@@ -27,6 +27,7 @@ use crate::tool_cache::ToolCache;
 use crate::tool_traces::ToolTraces;
 use crate::tools::{self, PermissionLevel, ToolContext, ToolRegistry, parse_permission};
 use crate::types::{AgentResponse, CompanionState, ProactiveMessage};
+use crate::resonance::ResonanceEngine;
 use crate::urges::UrgeQueue;
 
 /// Core tools always included in the LLM prompt — no discover_tools needed for these.
@@ -159,6 +160,10 @@ pub struct CompanionService {
     pub user_interests: Vec<String>,
     /// User's location for local relevance.
     pub user_location: String,
+
+    /// Resonance Engine — mathematical communication priority scoring.
+    /// Uses Kuramoto phase dynamics + information theory + social penetration theory.
+    pub resonance: ResonanceEngine,
 
     /// Context Cortex — cross-system intelligence engine.
     pub cortex: Option<crate::cortex::ContextCortex>,
@@ -330,6 +335,7 @@ impl CompanionService {
             recent_sent_messages: Vec::new(),
             suppressed_urges: Vec::new(),
             last_proactive_context: None,
+            resonance: ResonanceEngine::new(),
             cortex,
             connector_state,
             user_interests,

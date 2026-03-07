@@ -33,6 +33,7 @@ pub mod proactive;
 pub mod proactive_templates;
 pub mod sanitize;
 pub mod scheduler;
+pub mod resonance;
 pub mod synthesis_gate;
 pub mod security;
 pub mod telegram;

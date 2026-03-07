@@ -1,0 +1,28 @@
+id: decision-lab
+name: Decision Lab
+description: Structured research for active decisions — finds the hidden factor
+long_description: >
+  When you're weighing options, Decision Lab provides structured analysis and research.
+  It finds the factors you haven't considered, surfaces relevant data, and helps you
+  think through tradeoffs systematically without being prescriptive.
+version: "1.0.0"
+author: Yantrik
+icon: scale
+category: intelligence
+tags: [decisions, analysis, comparison, tradeoffs, research]
+
+tools: []
+core_tools: []
+
+instincts:
+  - DecisionLab
+
+cortex_rules: []
+services: []
+requires: []
+requires_config: []
+
+permissions:
+  - memory
+  - network
+  - background
