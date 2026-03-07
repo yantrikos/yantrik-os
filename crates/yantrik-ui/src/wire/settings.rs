@@ -23,6 +23,10 @@ pub struct UserSettings {
     pub auto_lock_secs: i32,
     pub dnd_mode: bool,
     pub wallpaper: String,
+    #[serde(default)]
+    pub user_name: String,
+    #[serde(default)]
+    pub companion_name: String,
 }
 
 impl Default for UserSettings {
@@ -34,6 +38,8 @@ impl Default for UserSettings {
             auto_lock_secs: 300,
             dnd_mode: false,
             wallpaper: String::new(),
+            user_name: String::new(),
+            companion_name: String::new(),
         }
     }
 }
@@ -365,6 +371,34 @@ pub fn wire(ui: &App, ctx: &AppContext) {
         } else {
             tracing::warn!(path = %wp, "Wallpaper file not found");
         }
+    });
+
+    // Rename user
+    let s = settings.clone();
+    let bridge = ctx.bridge.clone();
+    ui.on_rename_user(move |name| {
+        let name = name.to_string().trim().to_string();
+        if name.is_empty() { return; }
+        if let Ok(mut st) = s.lock() {
+            st.user_name = name.clone();
+        }
+        persist(&s);
+        bridge.rename_user(name.clone());
+        tracing::info!(user_name = %name, "User renamed");
+    });
+
+    // Rename companion
+    let s = settings.clone();
+    let bridge = ctx.bridge.clone();
+    ui.on_rename_companion(move |name| {
+        let name = name.to_string().trim().to_string();
+        if name.is_empty() { return; }
+        if let Ok(mut st) = s.lock() {
+            st.companion_name = name.clone();
+        }
+        persist(&s);
+        bridge.rename_companion(name.clone());
+        tracing::info!(companion_name = %name, "Companion renamed");
     });
 
     // Skill toggles are now handled by wire/skill_store.rs

@@ -8,25 +8,29 @@ import { Orb } from "components/orb.slint";
 import { ParticleField } from "components/particle_field.slint";
 
 export component OnboardingScreen inherits Rectangle {
-    callback ready();   // User tapped orb or pressed Super
+    callback ready();   // User completed onboarding
     callback skip();    // User wants to skip onboarding
+    callback set-names(string, string);  // (user_name, companion_name)
+
+    in-out property <string> companion-name: "Yantrik";
 
     background: Theme.bg-deep;
     clip: true;
 
-    // Phase tracking: 0=dim, 1=orb kindles, 2=greeting, 3=instruction, 4=waiting
+    // Phase tracking: 0=dim, 1=orb kindles, 2=greeting, 3=name-input, 4=instruction, 5=waiting
     property <int> phase: 0;
     property <float> timer-elapsed: 0;
+    property <string> input-user-name: "";
+    property <string> input-companion-name: "";
 
     Timer {
         interval: 16ms;
-        running: phase < 4;
+        running: phase < 3;
         triggered => {
             timer-elapsed += 0.016;
             if timer-elapsed > 0.5 && phase == 0 { phase = 1; }
             if timer-elapsed > 2.0 && phase == 1 { phase = 2; }
             if timer-elapsed > 4.0 && phase == 2 { phase = 3; }
-            if timer-elapsed > 6.0 && phase == 3 { phase = 4; }
         }
     }
 
@@ -48,27 +52,24 @@ export component OnboardingScreen inherits Rectangle {
     VerticalLayout {
         alignment: center;
         spacing: 24px;
+        padding-left: 40px;
+        padding-right: 40px;
 
         // Orb (kindles at phase 1)
         HorizontalLayout {
             alignment: center;
 
-            TouchArea {
-                width: 160px; height: 160px;
-                clicked => { root.ready(); }
-
-                Orb {
-                    width: 100%; height: 100%;
-                    size-px: 160;
-                    opacity: phase >= 1 ? 1.0 : 0;
-                    animate opacity { duration: 2000ms; easing: ease-out; }
-                }
+            Orb {
+                width: 120px; height: 120px;
+                size-px: 120;
+                opacity: phase >= 1 ? 1.0 : 0;
+                animate opacity { duration: 2000ms; easing: ease-out; }
             }
         }
 
         // Greeting text
         Text {
-            text: "Hey. I'm Yantrik.";
+            text: "Hey. I'm " + root.companion-name + ".";
             color: Theme.cyan;
             font-size: 28px;
             font-weight: 300;
@@ -78,18 +79,121 @@ export component OnboardingScreen inherits Rectangle {
             animate opacity { duration: 1500ms; easing: ease-out; }
         }
 
-        // Instruction text
+        // Name input section (phase 3+)
+        VerticalLayout {
+            spacing: 16px;
+            opacity: phase >= 3 ? 1.0 : 0;
+            animate opacity { duration: 800ms; easing: ease-out; }
+            horizontal-stretch: 0;
+
+            // "What should I call you?"
+            Text {
+                text: "What should I call you?";
+                color: Theme.text-secondary;
+                font-size: 14px;
+                horizontal-alignment: center;
+                letter-spacing: 1px;
+            }
+
+            HorizontalLayout {
+                alignment: center;
+                Rectangle {
+                    width: 260px;
+                    height: 36px;
+                    border-radius: 8px;
+                    background: #ffffff0a;
+                    border-width: 1px;
+                    border-color: #ffffff18;
+
+                    TextInput {
+                        text <=> root.input-user-name;
+                        color: Theme.text-primary;
+                        font-size: 16px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+
+            // "And what would you like to call me?"
+            Text {
+                text: "And what would you like to call me?";
+                color: Theme.text-secondary;
+                font-size: 14px;
+                horizontal-alignment: center;
+                letter-spacing: 1px;
+            }
+
+            HorizontalLayout {
+                alignment: center;
+                Rectangle {
+                    width: 260px;
+                    height: 36px;
+                    border-radius: 8px;
+                    background: #ffffff0a;
+                    border-width: 1px;
+                    border-color: #ffffff18;
+
+                    TextInput {
+                        text <=> root.input-companion-name;
+                        color: Theme.amber;
+                        font-size: 16px;
+                        font-weight: 500;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+
+            // Let's go button
+            HorizontalLayout {
+                alignment: center;
+                TouchArea {
+                    width: 140px;
+                    height: 40px;
+                    clicked => {
+                        root.set-names(root.input-user-name, root.input-companion-name);
+                        root.phase = 4;
+                    }
+
+                    Rectangle {
+                        width: 100%;
+                        height: 100%;
+                        border-radius: 20px;
+                        background: Theme.cyan;
+                        opacity: 0.15;
+                    }
+                    Rectangle {
+                        width: 100%;
+                        height: 100%;
+                        border-radius: 20px;
+                        border-width: 1px;
+                        border-color: Theme.cyan;
+                    }
+                    Text {
+                        text: "Let's go →";
+                        color: Theme.cyan;
+                        font-size: 14px;
+                        font-weight: 600;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+        }
+
+        // Post-name instruction (phase 4+)
         Text {
             text: "Press Super to talk to me about anything.";
             color: Theme.text-dim;
             font-size: 14px;
             letter-spacing: 1px;
             horizontal-alignment: center;
-            opacity: phase >= 3 ? 0.7 : 0;
+            opacity: phase >= 4 ? 0.7 : 0;
             animate opacity { duration: 1200ms; easing: ease-out; }
         }
 
-        // Subtle hint below
+        // Subtle hint
         Text {
             text: "or tap the orb";
             color: Theme.text-dim;
@@ -99,6 +203,13 @@ export component OnboardingScreen inherits Rectangle {
             opacity: phase >= 4 ? 0.4 : 0;
             animate opacity { duration: 800ms; easing: ease-out; }
         }
+    }
+
+    // Ready orb tap area (only after names set)
+    if phase >= 4: TouchArea {
+        width: 100%;
+        height: 100%;
+        clicked => { root.ready(); }
     }
 
     // Skip link — bottom right
@@ -115,7 +226,7 @@ export component OnboardingScreen inherits Rectangle {
             font-size: 11px;
             horizontal-alignment: right;
             vertical-alignment: center;
-            opacity: phase >= 4 ? 0.4 : 0;
+            opacity: phase >= 3 ? 0.4 : 0;
             animate opacity { duration: 600ms; }
         }
     }
