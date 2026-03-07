@@ -85,7 +85,10 @@ pub fn max_result_len_for_tool(tool_name: &str) -> usize {
         // browse/read: page content + elements
         "browse" | "browser_read" | "web_search" => 12_000,
         // File & shell: command output and file contents can be long
-        "read_file" | "search_files" | "run_command" | "http_fetch" => 8_000,
+        // web_fetch: AI-processed content, already focused
+        "web_fetch" => 8_000,
+        "read_file" | "search_files" | "run_command" | "http_fetch"
+            | "code_execute" | "script_run" | "script_read" => 8_000,
         // Everything else: default
         _ => MAX_TOOL_RESULT_LEN,
     }

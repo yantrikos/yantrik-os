@@ -281,6 +281,11 @@ impl YantrikDB {
         self.enc.is_some()
     }
 
+    /// Get a reference to the encryption provider (for vault operations).
+    pub fn encryption(&self) -> Option<&EncryptionProvider> {
+        self.enc.as_ref()
+    }
+
     // ── Encryption helpers (transparent to callers) ──
 
     /// Encrypt a string field if encryption is enabled, otherwise pass through.

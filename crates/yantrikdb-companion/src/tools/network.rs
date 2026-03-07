@@ -1,10 +1,17 @@
-//! Network tools — download_file, http_fetch.
+//! Network tools — download_file, http_fetch, web_fetch.
 
+use std::io::Read as _;
 use super::{Tool, ToolContext, ToolRegistry, PermissionLevel, validate_path};
 
-pub fn register(reg: &mut ToolRegistry) {
+/// Register network tools. `ollama_base` and `model` are optional —
+/// when provided, `web_fetch` uses LLM extraction for smart content processing.
+pub fn register(reg: &mut ToolRegistry, ollama_base: &str, model: &str) {
     reg.register(Box::new(DownloadFileTool));
     reg.register(Box::new(HttpFetchTool));
+    reg.register(Box::new(WebFetchTool {
+        ollama_base: ollama_base.to_string(),
+        model: model.to_string(),
+    }));
 }
 
 // ── Download File ──
@@ -21,14 +28,14 @@ impl Tool for DownloadFileTool {
             "type": "function",
             "function": {
                 "name": "download_file",
-                "description": "Download a file from a URL to a local path.",
+                "description": "Download a file from a URL and save it locally.",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "url": {"type": "string", "description": "https:// URL to download"},
-                        "save_path": {"type": "string", "description": "Where to save (e.g. ~/Downloads/file.pdf)"}
+                        "url": {"type": "string", "description": "URL to download from"},
+                        "path": {"type": "string", "description": "Local path to save to"}
                     },
-                    "required": ["url", "save_path"]
+                    "required": ["url", "path"]
                 }
             }
         })
@@ -36,63 +43,40 @@ impl Tool for DownloadFileTool {
 
     fn execute(&self, _ctx: &ToolContext, args: &serde_json::Value) -> String {
         let url = args.get("url").and_then(|v| v.as_str()).unwrap_or_default();
-        let save_path = args.get("save_path").and_then(|v| v.as_str()).unwrap_or_default();
+        let path = args.get("path").and_then(|v| v.as_str()).unwrap_or_default();
 
-        if url.is_empty() || save_path.is_empty() {
-            return "Error: url and save_path are required".to_string();
+        if url.is_empty() || path.is_empty() {
+            return "Error: url and path are required".to_string();
         }
 
-        if !url.starts_with("https://") {
-            return "Error: URL must start with https://".to_string();
+        if !url.starts_with("https://") && !url.starts_with("http://localhost") {
+            return "Error: URL must start with https:// (or http://localhost)".to_string();
         }
 
-        // Validate URL has no shell metacharacters
-        if url.contains(|c: char| c == '`' || c == '$' || c == ';' || c == '|' || c == '&') {
-            return "Error: URL contains invalid characters".to_string();
+        if let Err(e) = validate_path(path) {
+            return format!("Error: {e}");
         }
 
-        let expanded = match validate_path(save_path) {
-            Ok(p) => p,
-            Err(e) => return format!("Error: {e}"),
-        };
-
-        // Create parent dirs
-        if let Some(parent) = std::path::Path::new(&expanded).parent() {
-            if !parent.exists() {
-                let _ = std::fs::create_dir_all(parent);
-            }
-        }
-
-        // Download via curl with safety limits
         match std::process::Command::new("curl")
-            .args([
-                "-fsSL",
-                "--max-time", "30",
-                "--max-filesize", "104857600",  // 100MB
-                "-o", &expanded,
-                url,
-            ])
+            .args(["-fsSL", "--max-time", "60", "--max-filesize", "10485760", "-o", path, url])
             .output()
         {
             Ok(output) if output.status.success() => {
-                // Report file size
-                let size = std::fs::metadata(&expanded)
-                    .map(|m| super::format_size(m.len()))
-                    .unwrap_or_else(|_| "unknown size".to_string());
-                format!("Downloaded {url} → {save_path} ({size})")
+                let size = std::fs::metadata(path)
+                    .map(|m| m.len())
+                    .unwrap_or(0);
+                format!("Downloaded {} bytes to {path}", size)
             }
             Ok(output) => {
                 let err = String::from_utf8_lossy(&output.stderr);
-                // Clean up partial download
-                let _ = std::fs::remove_file(&expanded);
                 format!("Download failed: {err}")
             }
-            Err(e) => format!("Error (curl not available?): {e}"),
+            Err(e) => format!("Error: {e}"),
         }
     }
 }
 
-// ── HTTP Fetch ──
+// ── HTTP Fetch (raw, fast, no AI) ──
 
 pub struct HttpFetchTool;
 
@@ -106,7 +90,7 @@ impl Tool for HttpFetchTool {
             "type": "function",
             "function": {
                 "name": "http_fetch",
-                "description": "Fetch text from a URL. Returns first 3000 chars.",
+                "description": "Fetch raw text from a URL. Returns stripped HTML content. For smarter extraction with AI processing, use web_fetch instead.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -123,20 +107,11 @@ impl Tool for HttpFetchTool {
         let url = args.get("url").and_then(|v| v.as_str()).unwrap_or_default();
         let extract = args.get("extract").and_then(|v| v.as_str()).unwrap_or("text");
 
-        if url.is_empty() {
-            return "Error: url is required".to_string();
-        }
-
-        if !url.starts_with("https://") {
-            return "Error: URL must start with https://".to_string();
-        }
-
-        if url.contains(|c: char| c == '`' || c == '$' || c == ';' || c == '|' || c == '&') {
-            return "Error: URL contains invalid characters".to_string();
+        if let Err(e) = validate_fetch_url(url) {
+            return format!("Error: {e}");
         }
 
         if extract == "headers" {
-            // Fetch headers only
             return match std::process::Command::new("curl")
                 .args(["-fsS", "-I", "--max-time", "10", url])
                 .output()
@@ -163,10 +138,8 @@ impl Tool for HttpFetchTool {
                 let body = String::from_utf8_lossy(&output.stdout);
 
                 let processed = if extract == "json" {
-                    // Return raw JSON (truncated)
                     body.to_string()
                 } else {
-                    // Strip HTML tags for text mode
                     strip_html(&body)
                 };
 
@@ -183,6 +156,192 @@ impl Tool for HttpFetchTool {
             Err(e) => format!("Error (curl not available?): {e}"),
         }
     }
+}
+
+// ── Web Fetch (AI-powered, like Claude Code's WebFetch) ──
+
+pub struct WebFetchTool {
+    ollama_base: String,
+    model: String,
+}
+
+impl Tool for WebFetchTool {
+    fn name(&self) -> &'static str { "web_fetch" }
+    fn permission(&self) -> PermissionLevel { PermissionLevel::Safe }
+    fn category(&self) -> &'static str { "network" }
+
+    fn definition(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "function",
+            "function": {
+                "name": "web_fetch",
+                "description": "Fetch a web page and extract information using AI. Converts HTML to clean markdown, then uses an AI model to process the content based on your prompt. Returns a focused, relevant answer instead of raw page text. Best for articles, documentation, search results, and any page where you need specific information extracted.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "url": {
+                            "type": "string",
+                            "description": "URL to fetch (https:// only)"
+                        },
+                        "prompt": {
+                            "type": "string",
+                            "description": "What to extract or analyze from the page (e.g., 'summarize the main article', 'extract all prices', 'find the author and publication date')"
+                        }
+                    },
+                    "required": ["url", "prompt"]
+                }
+            }
+        })
+    }
+
+    fn execute(&self, _ctx: &ToolContext, args: &serde_json::Value) -> String {
+        let url = args.get("url").and_then(|v| v.as_str()).unwrap_or_default();
+        let prompt = args.get("prompt").and_then(|v| v.as_str()).unwrap_or("Summarize the main content of this page.");
+
+        if let Err(e) = validate_fetch_url(url) {
+            return format!("Error: {e}");
+        }
+
+        if prompt.is_empty() {
+            return "Error: prompt is required".to_string();
+        }
+
+        // Step 1: Fetch HTML via ureq (pure Rust, no curl dependency)
+        let html = match fetch_html(url) {
+            Ok(h) => h,
+            Err(e) => return format!("Fetch error: {e}"),
+        };
+
+        // Step 2: Convert HTML → clean markdown via html2text
+        let markdown = html2text::from_read(html.as_bytes(), 100);
+
+        // Truncate to reasonable size for LLM context
+        let max_content = 12000;
+        let content = if markdown.len() > max_content {
+            let boundary = markdown.floor_char_boundary(max_content);
+            format!("{}\n\n[Content truncated — {} total chars]", &markdown[..boundary], markdown.len())
+        } else {
+            markdown
+        };
+
+        // Step 3: If LLM is available, extract with AI
+        if !self.ollama_base.is_empty() {
+            match llm_extract(&self.ollama_base, &self.model, &content, prompt, url) {
+                Ok(result) => return result,
+                Err(e) => {
+                    tracing::warn!("web_fetch LLM extraction failed: {e}, returning raw markdown");
+                    // Fall through to raw content
+                }
+            }
+        }
+
+        // Fallback: return clean markdown without AI processing
+        if content.len() > 6000 {
+            let boundary = content.floor_char_boundary(6000);
+            format!("Page: {url}\n\n{}\n\n[Truncated — AI extraction unavailable]", &content[..boundary])
+        } else {
+            format!("Page: {url}\n\n{content}")
+        }
+    }
+}
+
+// ── Shared helpers ──
+
+/// Validate a URL for fetch operations.
+fn validate_fetch_url(url: &str) -> Result<(), String> {
+    if url.is_empty() {
+        return Err("url is required".to_string());
+    }
+    if !url.starts_with("https://") {
+        return Err("URL must start with https://".to_string());
+    }
+    // Reject truncated URLs (from tool trace ellipsis in memory)
+    if url.contains('\u{2026}') || url.ends_with("...") {
+        return Err("URL appears truncated (contains '...'). Construct the full URL instead of copying from memory traces.".to_string());
+    }
+    // Reject non-ASCII characters
+    if url.contains(|c: char| !c.is_ascii()) {
+        return Err("URL contains non-ASCII characters. Use percent-encoding for special characters.".to_string());
+    }
+    if url.contains(|c: char| c == '`' || c == '$' || c == ';' || c == '|' || c == '&') {
+        return Err("URL contains invalid characters".to_string());
+    }
+    Ok(())
+}
+
+/// Fetch HTML content from a URL using ureq.
+fn fetch_html(url: &str) -> Result<String, String> {
+    let resp = ureq::get(url)
+        .set("User-Agent", "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36")
+        .set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+        .set("Accept-Language", "en-US,en;q=0.5")
+        .call()
+        .map_err(|e| format!("HTTP request failed: {e}"))?;
+
+    let status = resp.status();
+    if status >= 400 {
+        return Err(format!("HTTP {status}"));
+    }
+
+    // Read body with size limit (1MB)
+    let mut body = String::new();
+    resp.into_reader()
+        .take(1_048_576)
+        .read_to_string(&mut body)
+        .map_err(|e| format!("Read error: {e}"))?;
+
+    Ok(body)
+}
+
+/// Call LLM to extract/summarize content from a web page.
+fn llm_extract(ollama_base: &str, model: &str, content: &str, prompt: &str, url: &str) -> Result<String, String> {
+    let system = format!(
+        "You are a web content extraction assistant. The user has fetched a web page and wants specific information from it.\n\
+         Page URL: {url}\n\n\
+         RULES:\n\
+         - Answer based ONLY on the page content provided\n\
+         - Be concise and direct\n\
+         - If the requested information is not in the page, say so clearly\n\
+         - Format your response in clean markdown"
+    );
+
+    let user_msg = format!(
+        "PAGE CONTENT:\n{content}\n\n---\n\nEXTRACT: {prompt}"
+    );
+
+    let payload = serde_json::json!({
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user_msg}
+        ],
+        "stream": false,
+        "options": {
+            "temperature": 0.1,
+            "num_predict": 1024
+        }
+    });
+
+    let api_url = format!("{}/api/chat", ollama_base);
+
+    let resp: serde_json::Value = ureq::post(&api_url)
+        .set("Content-Type", "application/json")
+        .send_string(&payload.to_string())
+        .map_err(|e| format!("LLM request failed: {e}"))?
+        .into_json()
+        .map_err(|e| format!("LLM response parse error: {e}"))?;
+
+    let answer = resp["message"]["content"]
+        .as_str()
+        .ok_or("No content in LLM response")?
+        .trim()
+        .to_string();
+
+    if answer.is_empty() {
+        return Err("Empty LLM response".to_string());
+    }
+
+    Ok(answer)
 }
 
 /// Strip HTML tags from text. Simple approach: remove <...> sequences.
@@ -211,4 +370,3 @@ fn strip_html(html: &str) -> String {
 
     result.trim().to_string()
 }
-

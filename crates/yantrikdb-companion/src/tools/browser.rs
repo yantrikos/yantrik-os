@@ -98,6 +98,35 @@ fn connect_first_tab() -> Result<(WebSocket<MaybeTlsStream<TcpStream>>, CdpTab),
     Ok((ws, tab))
 }
 
+/// Inject anti-detection JS to make headless Chrome look like a real browser.
+/// Call this via Page.addScriptToEvaluateOnNewDocument so it runs before page JS.
+fn inject_stealth(ws: &mut WebSocket<MaybeTlsStream<TcpStream>>) {
+    let stealth_js = r#"
+        // Override navigator.webdriver
+        Object.defineProperty(navigator, 'webdriver', { get: () => false });
+        // Add realistic plugins
+        Object.defineProperty(navigator, 'plugins', {
+            get: () => [1, 2, 3, 4, 5].map(() => ({ length: 1 }))
+        });
+        // Add realistic languages
+        Object.defineProperty(navigator, 'languages', {
+            get: () => ['en-US', 'en']
+        });
+        // Hide automation-related Chrome properties
+        window.chrome = { runtime: {} };
+        // Override permissions query
+        const origQuery = window.Notification && Notification.permission;
+        if (origQuery) {
+            const handler = { apply: function(target, ctx, args) {
+                return args[0].name === 'notifications'
+                    ? Promise.resolve({ state: Notification.permission })
+                    : Reflect.apply(target, ctx, args);
+            }};
+        }
+    "#;
+    let _ = cdp_send(ws, "Page.addScriptToEvaluateOnNewDocument", json!({ "source": stealth_js }));
+}
+
 /// Send a CDP command and wait for the matching response.
 fn cdp_send(
     ws: &mut WebSocket<MaybeTlsStream<TcpStream>>,
@@ -140,6 +169,14 @@ fn cdp_send(
 
 /// Validate a URL for browser navigation.
 fn validate_url(url: &str) -> Result<(), String> {
+    // Reject truncated URLs (from tool trace ellipsis)
+    if url.contains('\u{2026}') || url.ends_with("...") || url.ends_with("…") {
+        return Err("URL appears truncated (contains '…'). Use the full URL.".to_string());
+    }
+    // Reject non-ASCII characters in URLs (they should be percent-encoded)
+    if url.contains(|c: char| !c.is_ascii()) {
+        return Err("URL contains non-ASCII characters. Percent-encode special characters.".to_string());
+    }
     if url.starts_with("https://") || url.starts_with("http://localhost") || url.starts_with("http://127.0.0.1") {
         // Block shell metacharacters
         if url.contains(|c: char| c == '`' || c == '$' || c == ';' || c == '|' || c == '&') {
@@ -151,6 +188,106 @@ fn validate_url(url: &str) -> Result<(), String> {
     } else {
         Err("URL must start with https://".to_string())
     }
+}
+
+/// Detect CAPTCHA or bot-protection pages and return solve instructions.
+fn detect_captcha(title: &str, text: &str, elements: &str) -> Option<String> {
+    let tl = title.to_lowercase();
+    let xl = text.to_lowercase();
+    let el = elements.to_lowercase();
+
+    // ── Cloudflare challenges ──
+    if (tl.contains("just a moment") && (tl.contains("cloudflare") || xl.contains("cloudflare")))
+        || (xl.contains("checking your browser") && xl.contains("cloudflare"))
+        || (xl.contains("ray id") && xl.contains("cloudflare"))
+    {
+        return Some(
+            "CAPTCHA: Cloudflare challenge detected.\n\
+             ACTION: Cloudflare challenges often auto-resolve after a few seconds. \
+             Wait 5 seconds and use browser_see() to check. If a checkbox or turnstile \
+             widget appears, use browser_click_xy on it. If it persists, use http_fetch \
+             or try a different URL/search engine.".to_string()
+        );
+    }
+
+    // ── reCAPTCHA checkbox ("I'm not a robot") ──
+    if xl.contains("i'm not a robot") || xl.contains("i am not a robot") {
+        return Some(
+            "CAPTCHA: reCAPTCHA checkbox detected.\n\
+             SOLVE IT: Use browser_see() to find the checkbox, then browser_click_xy(x, y) \
+             on it. After clicking, browser_see() again — if an image grid appeared, \
+             analyze the images and click matching tiles, then click Verify.".to_string()
+        );
+    }
+
+    // ── Image grid CAPTCHA ("select all traffic lights") ──
+    if (xl.contains("select all") && (xl.contains("images") || xl.contains("squares") || xl.contains("tiles")))
+        || xl.contains("click each image")
+        || xl.contains("select all matching")
+    {
+        return Some(
+            "CAPTCHA: Image selection grid detected.\n\
+             SOLVE IT: Use browser_see(question=\"Describe the CAPTCHA grid. What does it \
+             ask to select? Identify the (x,y) coordinates of ALL matching tiles.\") \
+             Then browser_click_xy on each matching tile. Click Verify/Submit when done. \
+             browser_see() again to confirm.".to_string()
+        );
+    }
+
+    // ── Text/code CAPTCHA ──
+    if (xl.contains("type the") && (xl.contains("characters") || xl.contains("text") || xl.contains("letters")))
+        || (xl.contains("enter the") && xl.contains("code"))
+        || xl.contains("solve the captcha") || xl.contains("complete the captcha")
+    {
+        return Some(
+            "CAPTCHA: Text/code input detected.\n\
+             SOLVE IT: Use browser_see(question=\"Read the distorted text/code in the \
+             CAPTCHA image. What characters or numbers does it show?\") Then \
+             browser_type_xy(x, y, \"the_text\") into the input field and submit.".to_string()
+        );
+    }
+
+    // ── Generic verify-human signals ──
+    if xl.contains("verify you are human") || xl.contains("prove you're not a robot")
+        || tl.contains("captcha") || tl.contains("are you a robot")
+        || (xl.contains("recaptcha") && xl.contains("verify"))
+        || xl.contains("hcaptcha")
+        || tl.contains("verify you are human")
+    {
+        return Some(
+            "CAPTCHA: Human verification detected.\n\
+             SOLVE IT: Use browser_see() to identify the CAPTCHA type and location. \
+             Then use browser_click_xy to interact with it. Common patterns:\n\
+             - Checkbox: click it\n\
+             - Image grid: identify and click matching tiles, then Verify\n\
+             - Turnstile/widget: click the challenge area".to_string()
+        );
+    }
+
+    // ── Hard blocks (not solvable) ──
+    if (xl.contains("unusual traffic") && xl.contains("computer"))
+        || tl.contains("access denied")
+        || (xl.contains("blocked") && xl.contains("automated"))
+    {
+        return Some(
+            "BOT PROTECTION: Hard block — this site rejected automated access.\n\
+             Cannot solve this. Alternatives:\n\
+             1. Use http_fetch with a different search engine (DuckDuckGo, Bing)\n\
+             2. Try accessing via API instead of web scraping\n\
+             3. Use a different URL or source".to_string()
+        );
+    }
+
+    // ── Element-level detection (iframe captcha widgets) ──
+    if el.contains("captcha") || el.contains("recaptcha") || el.contains("hcaptcha") {
+        return Some(
+            "CAPTCHA: Widget detected in page elements.\n\
+             SOLVE IT: Use browser_see() to visually inspect the CAPTCHA, then \
+             browser_click_xy to interact with it.".to_string()
+        );
+    }
+
+    None
 }
 
 /// Validate and sanitize a CSS selector.
@@ -235,6 +372,14 @@ fn ensure_headless_browser() -> Result<(), String> {
             "--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
             // Anti-detection: realistic viewport size
             "--window-size=1920,1080",
+            // Anti-detection: enable plugins/WebGL to look like real browser
+            "--enable-webgl",
+            "--enable-features=NetworkService,NetworkServiceInProcess",
+            // Anti-detection: disable automation-related infobars
+            "--disable-infobars",
+            "--excludeSwitches=enable-automation",
+            // Anti-detection: use real browser profile dir for persistent cookies/state
+            "--user-data-dir=/tmp/chromium-profile",
             "about:blank",
         ])
         .env("WAYLAND_DISPLAY", "wayland-0")
@@ -249,6 +394,10 @@ fn ensure_headless_browser() -> Result<(), String> {
             for _ in 0..10 {
                 std::thread::sleep(Duration::from_millis(500));
                 if is_browser_running() {
+                    // Inject stealth scripts before any page loads
+                    if let Ok((mut ws, _)) = connect_first_tab() {
+                        inject_stealth(&mut ws);
+                    }
                     return Ok(());
                 }
             }
@@ -424,7 +573,19 @@ impl Tool for BrowseTool {
         let elements = eval_js(&mut ws, SCAN_ELEMENTS_JS).unwrap_or_default();
         let element_count = if elements.is_empty() { 0 } else { elements.lines().count() };
 
-        let mut out = format!("Title: {title}\nURL: {url}\n\n{truncated}\n\n");
+        let mut out = format!("Title: {title}\nURL: {url}\n\n");
+
+        // Detect CAPTCHA / bot protection
+        if let Some(captcha_msg) = detect_captcha(&title, &truncated, &elements) {
+            out.push_str(&captcha_msg);
+            out.push_str("\n\n");
+            out.push_str(&truncated);
+            cleanup_after_data_extraction(&mut ws);
+            return out;
+        }
+
+        out.push_str(&truncated);
+        out.push_str("\n\n");
         out.push_str(&format!("--- Interactive Elements ({element_count}) ---\n"));
         if elements.is_empty() {
             out.push_str("(no interactive elements found)\n");
@@ -870,7 +1031,18 @@ impl Tool for BrowserSearchTool {
         std::thread::sleep(Duration::from_secs(3));
 
         // Read search results
+        let title = eval_js(&mut ws, "document.title").unwrap_or_default();
         let text = eval_js(&mut ws, "document.body?.innerText || ''").unwrap_or_default();
+
+        // Check for CAPTCHA/bot protection
+        if let Some(captcha_msg) = detect_captcha(&title, &text, "") {
+            cleanup_after_data_extraction(&mut ws);
+            return format!(
+                "Search for '{query}' hit bot protection:\n{captcha_msg}\n\n\
+                 STOP retrying Google — use http_fetch with DuckDuckGo instead:\n\
+                 http_fetch(url=\"https://html.duckduckgo.com/html/?q=YOUR+QUERY\")"
+            );
+        }
 
         let truncated = if text.len() > MAX_TEXT_CHARS {
             format!("{}...\n(truncated)", &text[..MAX_TEXT_CHARS])
@@ -878,6 +1050,7 @@ impl Tool for BrowserSearchTool {
             text
         };
 
+        cleanup_after_data_extraction(&mut ws);
         format!("Search results for: {query}\n\n{truncated}")
     }
 }
@@ -986,6 +1159,17 @@ impl Tool for WebSearchTool {
         "#;
 
         let raw = eval_js(&mut ws, js).unwrap_or_default();
+
+        // Check for CAPTCHA on Google search
+        let page_title = eval_js(&mut ws, "document.title").unwrap_or_default();
+        if let Some(captcha_msg) = detect_captcha(&page_title, &raw, "") {
+            cleanup_after_data_extraction(&mut ws);
+            return format!(
+                "Search for '{query}' hit bot protection:\n{captcha_msg}\n\n\
+                 STOP retrying Google — use http_fetch with DuckDuckGo instead:\n\
+                 http_fetch(url=\"https://html.duckduckgo.com/html/?q=YOUR+QUERY\")"
+            );
+        }
 
         if raw.starts_with("NO_STRUCTURED_RESULTS") {
             // Fallback to plain text results
@@ -1114,8 +1298,17 @@ impl Tool for BrowserSnapshotTool {
             let truncated = if text.len() > max {
                 format!("{}...\n(truncated, {} total chars)", &text[..max], text.len())
             } else {
-                text
+                text.clone()
             };
+
+            // Check for CAPTCHA
+            if let Some(captcha_msg) = detect_captcha(&title, &text, &elements) {
+                out.push_str(&captcha_msg);
+                out.push_str("\n\n");
+                out.push_str(&truncated);
+                return out;
+            }
+
             out.push_str("--- Page Text ---\n");
             out.push_str(&truncated);
             out.push_str("\n\n");

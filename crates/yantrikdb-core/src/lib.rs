@@ -7,7 +7,7 @@ mod knowledge;
 mod vector;
 
 // ── Re-exports at original crate paths ──
-pub use base::{bench_utils, compression, encryption, error, hlc, schema, scoring, serde_helpers, types};
+pub use base::{bench_utils, compression, encryption, error, hlc, schema, scoring, serde_helpers, types, vault};
 pub use cognition::{consolidate, patterns, personality, triggers};
 pub use distributed::{conflict, replication, sync};
 pub use knowledge::{graph, graph_index};

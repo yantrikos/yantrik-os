@@ -60,7 +60,7 @@ pub const CORE_TOOLS: &[&str] = &[
     // Browser lifecycle (cleanup zombie processes)
     "browser_cleanup", "browser_status",
     // Network & HTTP
-    "http_fetch", "network_diagnose",
+    "http_fetch", "web_fetch", "network_diagnose",
     // Utility
     "calculate", "screenshot",
     // Email (check, list, read, send, reply, search)
@@ -79,6 +79,10 @@ pub const CORE_TOOLS: &[&str] = &[
     "get_weather", "check_bond",
     // Connectors (OAuth — Google, Spotify, etc.)
     "list_connections", "connect_service", "sync_service", "disconnect_service",
+    // Vault (encrypted credential storage)
+    "vault_store", "vault_get", "vault_list", "vault_delete", "vault_generate_password", "vault_set_pin",
+    // Coder (code execution, script management — modeled after Claude Code)
+    "code_execute", "script_write", "script_run", "script_patch", "script_list", "script_read",
 ];
 
 /// The companion agent — memory + inference + instincts + bond + evolution in one struct.
@@ -212,6 +216,8 @@ impl CompanionService {
         crate::recipe::RecipeStore::ensure_tables(db.conn());
         // Calendar local cache
         crate::calendar::ensure_table(db.conn());
+        // Vault tables (encrypted credential storage)
+        yantrikdb_core::vault::init_tables(db.conn());
 
         // Memory evolution tables + backfill existing memories
         memory_evolution::ensure_tables(db.conn());
@@ -487,8 +493,21 @@ impl CompanionService {
             let mems = self.db.recall_text(user_text, 5).unwrap_or_default();
             memory_evolution::SmartRecallResult::from_primary(mems)
         };
-        let memories = smart.all_unique();
+        let mut memories = smart.all_unique();
         let (recall_confidence, recall_hint) = (smart.confidence, smart.hint);
+
+        // Step 2b: Always include identity anchor memories (name, website, GitHub, etc.)
+        // These are high-importance facts that should always be available regardless of query.
+        {
+            let existing_rids: std::collections::HashSet<String> =
+                memories.iter().map(|m| m.rid.clone()).collect();
+            let identity_facts = self.recall_identity_facts();
+            for fact in identity_facts {
+                if !existing_rids.contains(&fact.rid) {
+                    memories.push(fact);
+                }
+            }
+        }
 
         // Step 3: Recall self-memories (reflections about the companion itself)
         let self_memories = self
@@ -921,8 +940,20 @@ impl CompanionService {
             let mems = self.db.recall_text(user_text, 5).unwrap_or_default();
             memory_evolution::SmartRecallResult::from_primary(mems)
         };
-        let memories = smart.all_unique();
+        let mut memories = smart.all_unique();
         let (recall_confidence, recall_hint) = (smart.confidence, smart.hint);
+
+        // Always include identity anchor memories
+        {
+            let existing_rids: std::collections::HashSet<String> =
+                memories.iter().map(|m| m.rid.clone()).collect();
+            let identity_facts = self.recall_identity_facts();
+            for fact in identity_facts {
+                if !existing_rids.contains(&fact.rid) {
+                    memories.push(fact);
+                }
+            }
+        }
 
         let self_memories = self
             .db
@@ -1731,6 +1762,54 @@ impl CompanionService {
         self.bond_score
     }
 
+    /// Recall high-importance identity facts (name, website, GitHub, etc.)
+    /// These are always included in context regardless of query topic.
+    fn recall_identity_facts(&self) -> Vec<yantrikdb_core::types::RecallResult> {
+        let conn = self.db.conn();
+        // Fetch identity + high-importance work facts (name, website, GitHub, etc.)
+        let query = "SELECT rid, text, importance, domain FROM memories \
+                     WHERE ((domain = 'identity' AND importance >= 0.7) \
+                        OR (domain = 'work' AND importance >= 0.85)) \
+                     AND consolidation_status = 'active' \
+                     ORDER BY importance DESC LIMIT 8";
+        let mut stmt = match conn.prepare(query) {
+            Ok(s) => s,
+            Err(_) => return vec![],
+        };
+        stmt.query_map([], |row| {
+            Ok(yantrikdb_core::types::RecallResult {
+                rid: row.get(0)?,
+                text: row.get(1)?,
+                memory_type: "semantic".to_string(),
+                created_at: 0.0,
+                importance: row.get::<_, f64>(2)?,
+                valence: 0.0,
+                score: row.get::<_, f64>(2)?, // use importance as score
+                scores: yantrikdb_core::types::ScoreBreakdown {
+                    similarity: 1.0,
+                    decay: 1.0,
+                    recency: 1.0,
+                    importance: row.get::<_, f64>(2).unwrap_or(0.8),
+                    graph_proximity: 0.0,
+                    contributions: yantrikdb_core::types::ScoreContributions {
+                        similarity: 1.0, decay: 1.0, recency: 1.0, importance: 1.0, graph_proximity: 0.0,
+                    },
+                    valence_multiplier: 1.0,
+                },
+                why_retrieved: vec!["identity anchor".to_string()],
+                metadata: serde_json::Value::Null,
+                namespace: "default".to_string(),
+                certainty: 0.9,
+                domain: row.get(3)?,
+                source: "companion".to_string(),
+                emotional_state: None,
+            })
+        })
+        .ok()
+        .map(|rows| rows.flatten().collect())
+        .unwrap_or_default()
+    }
+
     fn check_session_timeout(&mut self) {
         let idle = self.idle_seconds();
         let timeout = self.config.conversation.session_timeout_minutes as f64 * 60.0;
@@ -2221,6 +2300,7 @@ fn format_tool_progress(tool_names: &[&str], step: usize) -> String {
         "system_info" => "Checking system",
         "telegram_send" => "Sending message",
         "http_fetch" => "Fetching data",
+        "web_fetch" => "Fetching & analyzing page",
         "life_search" | "search_sources" => "Searching for options",
         "rank_results" => "Ranking results",
         "queue_task" => "Queuing task",
