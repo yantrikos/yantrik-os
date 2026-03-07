@@ -1,3 +1,4 @@
+
 //! Resonance Model — A novel mathematical framework for communication priority
 //! and connection building in AI companion systems.
 //!
@@ -20,10 +21,13 @@
 //!    the user's disclosure depth, not exceed it. Depth is modeled as layers
 //!    of an onion, with bond level gating access to deeper layers.
 //!
-//! # The Resonance Score
+//! # The Resonance Score (v3)
 //!
 //! ```text
-//! R(m, t) = I(m) · P(t) · D(t) · B(t) · (1 - F(t)) · V(m)
+//! log(quality) = Σ(w_i · ln(x_i)) / Σw_i - γ · Var(ln(x_i))
+//! gate = (1-ε) · D·B·(1-F) + ε · g₀
+//! R = quality · gate · sigmoid_gates
+//! final = 0.4 · urgency + 0.6 · R
 //! ```
 //!
 //! Where:
@@ -122,6 +126,23 @@ const DEPTH_MATCH_GAMMA: f64 = 0.005;
 /// Depth penalty for exceeding user's disclosure level.
 /// Companion going too deep too fast erodes trust.
 const DEPTH_OVERSHOOT_PENALTY: f64 = 0.01;
+
+/// Balance penalty coefficient (γ) for log-space variance.
+/// Penalizes imbalanced quality components (one great, one terrible).
+/// Higher γ → stronger preference for balanced scores.
+const BALANCE_GAMMA: f64 = 0.3;
+
+/// Exploration prior ε — fraction of gate that's always "on".
+/// Ensures the companion is never 100% silent, even in poor conditions.
+const GATE_EPSILON: f64 = 0.1;
+const GATE_BASELINE: f64 = 0.15;
+
+/// Adaptive frequency learning rate (μ) — how fast Δω adjusts.
+/// Hebbian: consistent lead/lag slowly corrects the mismatch.
+const ADAPTIVE_FREQ_MU: f64 = 0.0005;
+
+/// Adaptive frequency forgetting rate (λ) — natural decay of learned Δω.
+const ADAPTIVE_FREQ_LAMBDA: f64 = 0.001;
 
 // ─── Instinct Categories for Variety Scoring ────────────────────────────────
 
@@ -282,6 +303,12 @@ pub struct ResonanceEngine {
     /// Timestamp of last user interaction.
     last_user_ts: Mutex<f64>,
 
+    // ── Adaptive Frequency Mismatch ──────────────────────────────────────
+    /// Learned frequency offset (Hebbian). Evolves via:
+    /// dΔω_adapt/dt = -λ·Δω_adapt + μ·sin(φ)
+    /// Positive = companion tends to lead; negative = companion tends to lag.
+    adaptive_delta_omega: Mutex<f64>,
+
     // ── Connection Building Strategy ────────────────────────────────────
     /// Bond growth recommendation: positive = invest more, negative = pull back.
     growth_signal: Mutex<f64>,
@@ -324,6 +351,7 @@ impl ResonanceEngine {
             quality_history: Mutex::new(Vec::new()),
             last_sent_ts: Mutex::new(0.0),
             last_user_ts: Mutex::new(0.0),
+            adaptive_delta_omega: Mutex::new(0.0),
             growth_signal: Mutex::new(0.0),
         }
     }
@@ -357,61 +385,74 @@ impl ResonanceEngine {
         let variety = self.variety_bonus(instinct_name);
         let depth_fit = self.depth_appropriateness(instinct_name, bond_level);
 
-        // ── The Resonance Formula ───────────────────────────────────────
+        // ── The Resonance Formula (v3) ──────────────────────────────────
         //
-        //   R = I^0.6 · P · D · B · (1-F) · V · Depth
+        // Product-of-experts interpretation: each quality factor is a
+        // calibrated "compatibility probability." We aggregate in log-space
+        // with a variance penalty for balance (inequality aversion).
         //
-        // We blend with raw_urgency to respect instinct-level priorities:
+        //   log(quality) = Σ(w_i · ln(x_i)) / Σw_i - γ · Var(ln(x_i))
+        //   gate = (1-ε) · D·B·(1-F) + ε · g₀    (exploration prior)
+        //   R = quality · gate · suppress_mult
         //   final = 0.4 · raw_urgency + 0.6 · R
         //
-        // This ensures high-urgency events (bond milestones, scheduled tasks)
-        // still fire even if resonance conditions aren't perfect.
-        let resonance = novelty.powf(0.6)
-            * phase_alignment
-            * desire
-            * bond_factor
-            * fatigue_inv
-            * variety
-            * depth_fit;
+        // The variance penalty rewards balanced quality profiles and
+        // subsumes the need for separate resilience/collapse protection.
+
+        let w_novelty = 2.0_f64;
+        let w_phase = 1.5_f64;
+        let w_variety = 1.0_f64;
+        let w_depth = 2.0_f64;
+        let w_sum = w_novelty + w_phase + w_variety + w_depth;
+
+        // Log-space quality with variance penalty
+        let ln_i = novelty.max(0.01).ln();
+        let ln_p = phase_alignment.max(0.01).ln();
+        let ln_v = variety.max(0.5).ln(); // variety min is 0.5
+        let ln_d = depth_fit.max(0.01).ln();
+
+        let weighted_logs = [w_novelty * ln_i, w_phase * ln_p, w_variety * ln_v, w_depth * ln_d];
+        let mean_log = weighted_logs.iter().sum::<f64>() / w_sum;
+
+        // Variance of the individual (unweighted) log values
+        let logs = [ln_i, ln_p, ln_v, ln_d];
+        let log_mean = logs.iter().sum::<f64>() / 4.0;
+        let var_log = logs.iter().map(|l| (l - log_mean).powi(2)).sum::<f64>() / 4.0;
+
+        let quality = (mean_log - BALANCE_GAMMA * var_log).exp();
+
+        // Gate with ε-mixture exploration prior (smooth, interpretable)
+        let raw_gate = desire * bond_factor * fatigue_inv;
+        let gate = (1.0 - GATE_EPSILON) * raw_gate + GATE_EPSILON * GATE_BASELINE;
+
+        // Smooth suppression via sigmoid gates (no hard thresholds)
+        // Each gate outputs ~0 below threshold, ~1 above, with smooth transition.
+        fn sigmoid(x: f64) -> f64 {
+            1.0 / (1.0 + (-x).exp())
+        }
+        let phase_gate = sigmoid(15.0 * (phase_alignment - 0.1));
+        let depth_gate = sigmoid(12.0 * (depth_fit - 0.25));
+        let fatigue_gate = sigmoid(20.0 * (fatigue_inv - 0.08));
+        let suppress_mult = phase_gate * depth_gate * fatigue_gate;
+
+        let resonance = quality * gate * suppress_mult;
 
         // Blend: instinct urgency (40%) + resonance dynamics (60%)
         let blended = 0.4 * raw_urgency + 0.6 * resonance;
         let score = blended.clamp(0.0, 1.0);
 
-        // ── Suppression Rules ───────────────────────────────────────────
-        let mut suppress = false;
-        let mut suppress_reason = String::new();
-
-        // Rule 1: Phase misalignment gate
-        // When phase_alignment < 0.2, we're badly out of sync. Only allow
-        // high-urgency (>0.8) messages through.
-        if phase_alignment < 0.2 && raw_urgency < 0.8 {
-            suppress = true;
-            suppress_reason = format!(
-                "Phase misalignment ({:.2}) — companion and user out of sync",
-                phase_alignment
-            );
-        }
-
-        // Rule 2: Depth overshoot
-        // Don't send messages that are too deep for the current bond level.
-        if depth_fit < 0.3 {
-            suppress = true;
-            suppress_reason = format!(
-                "Disclosure depth too deep for bond level (fit={:.2})",
-                depth_fit
-            );
-        }
-
-        // Rule 3: Fatigue overload
-        // If fatigue is extremely high (>0.9), only allow critical messages.
-        if fatigue_inv < 0.1 && raw_urgency < 0.9 {
-            suppress = true;
-            suppress_reason = format!(
-                "Communication fatigue too high (fatigue_inv={:.2})",
-                fatigue_inv
-            );
-        }
+        // ── Suppression Decision ─────────────────────────────────────────
+        // Smooth gates handle most suppression via low scores.
+        // Hard suppress only for extreme cases (belt-and-suspenders).
+        let suppress = suppress_mult < 0.05 && raw_urgency < 0.8;
+        let suppress_reason = if suppress {
+            format!(
+                "Resonance gates suppressed (phase={:.2}, depth={:.2}, fatigue_inv={:.2})",
+                phase_alignment, depth_fit, fatigue_inv
+            )
+        } else {
+            String::new()
+        };
 
         ResonanceScore {
             score,
@@ -522,8 +563,9 @@ impl ResonanceEngine {
         }
 
         // Normalize: each message at age=0 contributes 1.0 fatigue.
-        // Cap at 1.0 to stay in [0, 1] range.
-        (fatigue / 3.0).min(1.0)
+        // Divisor of 5.0 means it takes ~5 rapid-fire messages to saturate.
+        // This prevents the companion from going silent after normal activity.
+        (fatigue / 5.0).min(1.0)
     }
 
     /// Variety Bonus V(cat): rewards switching between instinct categories.
@@ -660,12 +702,18 @@ impl ResonanceEngine {
 
     /// Advance the phase dynamics by one tick (called every think cycle).
     ///
-    /// This implements the discrete Kuramoto equation:
-    /// φ(t+dt) = φ(t) + dt · (Δω - K · sin(φ(t)))
+    /// Implements adaptive Kuramoto with fatigue-coupled entrainment:
+    /// ```text
+    /// dφ/dt = (Δω + Δω_adapt) - K·(1-F)·sin(φ)
+    /// dΔω_adapt/dt = -λ·Δω_adapt + μ·sin(φ)
+    /// ```
     ///
-    /// Where dt is the time since last tick.
+    /// Key properties:
+    /// - Fatigue reduces coupling strength → system drifts when user is tired
+    /// - Adaptive Δω learns persistent frequency mismatches (Hebbian entrainment)
+    /// - Subdivided timestep for numerical stability
     pub fn tick_phase(&self, bond_level: BondLevel, dt_secs: f64) {
-        let coupling = match bond_level {
+        let base_coupling = match bond_level {
             BondLevel::Stranger => COUPLING_STRANGER,
             BondLevel::Acquaintance => COUPLING_ACQUAINTANCE,
             BondLevel::Friend => COUPLING_FRIEND,
@@ -673,18 +721,50 @@ impl ResonanceEngine {
             BondLevel::PartnerInCrime => COUPLING_PARTNER,
         };
 
+        // Fatigue-coupled coupling: K_eff = K · (1 - F)
+        // When fatigued, entrainment weakens → phase drifts → messages feel mistimed
+        let fatigue = self.fatigue_factor(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs_f64(),
+        );
+        let coupling = base_coupling * (1.0 - fatigue);
+
         let user_freq = *self.user_frequency.lock().unwrap();
         let comp_freq = *self.companion_frequency.lock().unwrap();
 
-        // Frequency mismatch in radians/second
-        let delta_omega = (comp_freq - user_freq) * std::f64::consts::TAU / 3600.0;
+        // Base frequency mismatch + learned adaptive component
+        let base_delta_omega = (comp_freq - user_freq) * std::f64::consts::TAU / 3600.0;
+        let mut adapt_dw = self.adaptive_delta_omega.lock().unwrap();
+        let delta_omega = base_delta_omega + *adapt_dw;
 
         let mut phi = self.phase.lock().unwrap();
-        let dt = dt_secs.min(120.0); // Cap to prevent huge jumps
+        let total_dt = dt_secs.min(120.0);
 
-        // Kuramoto: dφ/dt = Δω - K · sin(φ)
-        *phi += dt * (delta_omega - coupling * phi.sin());
+        // Subdivide for stability: dt_step * K < 1.0
+        let n_steps = (total_dt * base_coupling.max(0.01)).ceil().max(1.0) as usize;
+        let dt_step = total_dt / n_steps as f64;
+
+        for _ in 0..n_steps {
+            let sin_phi = phi.sin();
+            // Perturbation at unstable equilibrium (φ = π)
+            let perturbation = if sin_phi.abs() < 1e-10 && (phi.cos() + 1.0).abs() < 0.1 {
+                0.001
+            } else {
+                0.0
+            };
+
+            // Phase evolution: dφ/dt = Δω - K_eff·sin(φ)
+            *phi += dt_step * (delta_omega - coupling * sin_phi) + perturbation;
+
+            // Adaptive Δω: Hebbian learning of frequency mismatch
+            // dΔω/dt = -λ·Δω + μ·sin(φ)
+            *adapt_dw += dt_step * (-ADAPTIVE_FREQ_LAMBDA * *adapt_dw + ADAPTIVE_FREQ_MU * sin_phi);
+        }
         *phi = phi.rem_euclid(std::f64::consts::TAU);
+        // Clamp adaptive Δω to prevent runaway
+        *adapt_dw = adapt_dw.clamp(-0.01, 0.01);
     }
 
     /// Compute the bond growth recommendation.
