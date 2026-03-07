@@ -359,6 +359,12 @@ fn worker_loop(
     let mut execute_cooldowns: std::collections::HashMap<String, f64> = std::collections::HashMap::new();
     const EXECUTE_COOLDOWN_SECS: f64 = 7200.0; // 2 hours between same EXECUTE urge
 
+    // Global cortex cooldown — prevents ANY cortex message within this window.
+    // Individual cortex patterns use hash-based keys, but similar-but-different
+    // patterns can still spam. This global cooldown is the backstop.
+    let mut last_cortex_fire_ts: f64 = 0.0;
+    const CORTEX_GLOBAL_COOLDOWN_SECS: f64 = 3600.0; // 1 hour between ANY cortex messages
+
     // Cooldown tracker for delivered proactive messages (key → last_delivered_ts)
     let mut delivered_cooldowns: std::collections::HashMap<String, f64> = std::collections::HashMap::new();
     const DELIVERED_COOLDOWN_SECS: f64 = 7200.0; // 2 hours between same proactive key
@@ -417,6 +423,8 @@ fn worker_loop(
                         .unwrap_or_default()
                         .as_secs_f64();
                     companion.resonance.record_user_interaction(now_r, 0.8);
+                    // Adaptive User Model: record user message (checks for pending proactive response)
+                    companion.user_model.on_user_message(now_r);
                 }
                 let start = std::time::Instant::now();
                 let mut token_count = 0u32;
@@ -880,25 +888,44 @@ fn worker_loop(
 
                 let state = companion.build_state();
                 let mut urge_specs = companion.evaluate_instincts(&state);
+                let now_ts = state.current_ts;
 
                 // Context Cortex think step — run rules + baselines + patterns
                 if let Some(ref mut cortex) = companion.cortex {
                     let attention_items = cortex.think(companion.db.conn());
-                    if !attention_items.is_empty() {
+                    // Global cortex cooldown: suppress ALL cortex urges within 1 hour
+                    // of the last cortex message. Prevents similar-but-different patterns
+                    // from spamming the user every think cycle.
+                    let cortex_globally_cooled = now_ts - last_cortex_fire_ts < CORTEX_GLOBAL_COOLDOWN_SECS;
+
+                    if !attention_items.is_empty() && !cortex_globally_cooled {
                         let focus = cortex.current_focus();
                         let briefing = cortex.build_briefing(companion.db.conn(), focus.as_ref(), &attention_items);
                         tracing::info!(
                             attention_count = attention_items.len(),
                             "Cortex attention items fired"
                         );
-                        // Convert briefing into an EXECUTE urge
+                        // Hash the attention item summaries into the cooldown key
+                        // so the same pattern doesn't fire every think cycle.
+                        let mut attention_hasher = std::collections::hash_map::DefaultHasher::new();
+                        for item in &attention_items {
+                            std::hash::Hash::hash(&item.summary, &mut attention_hasher);
+                        }
+                        let hash_val = std::hash::Hasher::finish(&attention_hasher);
+                        let cortex_cooldown = format!("cortex:situation:{:x}", hash_val);
+
                         let cortex_urge = yantrikdb_companion::UrgeSpec::new(
                             "Cortex",
                             &format!("EXECUTE {}", briefing),
                             0.7,
                         )
-                        .with_cooldown("cortex:situation");
+                        .with_cooldown(&cortex_cooldown);
                         urge_specs.push(cortex_urge);
+                    } else if cortex_globally_cooled && !attention_items.is_empty() {
+                        tracing::debug!(
+                            attention_count = attention_items.len(),
+                            "Cortex attention suppressed by global cooldown"
+                        );
                     }
 
                     // LLM Reasoner — deep reflection every ~4 hours
@@ -911,6 +938,96 @@ fn worker_loop(
                         )
                         .with_cooldown("cortex:deep_reflection");
                         urge_specs.push(reasoner_urge);
+                    }
+                }
+
+                // ── Playbook Engine: deterministic anticipatory actions ──
+                // Playbooks bypass the urge queue — they fire directly as
+                // notifications when conviction + evidence thresholds are met.
+                {
+                    let cortex_focus = companion.cortex.as_ref()
+                        .and_then(|c| c.current_focus());
+                    // Gather attention items for playbook state (re-run is cheap)
+                    let pb_attention = companion.cortex.as_ref()
+                        .map(|_| {
+                            // Use empty attention — playbooks query DB directly
+                            Vec::new()
+                        })
+                        .unwrap_or_default();
+
+                    let pb_now = state.current_ts;
+                    let pb_state = yantrikdb_companion::cortex::playbook::PlaybookState {
+                        attention_items: &pb_attention,
+                        current_focus: cortex_focus.as_ref(),
+                        now_ts: pb_now,
+                        user_hour: (pb_now as i64 % 86400 / 3600) as u32,
+                        conn: companion.db.conn(),
+                        bond_level: companion.bond_level() as u8,
+                    };
+
+                    let user_receptivity = companion.user_model.engagement();
+                    let pb_actions = companion.playbook_engine.evaluate(&pb_state, user_receptivity);
+
+                    // Check timeouts for pending playbook outcomes
+                    companion.playbook_engine.check_timeouts(pb_now);
+
+                    for action in &pb_actions {
+                        match action {
+                            yantrikdb_companion::cortex::playbook::CortexAction::Notify {
+                                title, body, explanation, playbook_id,
+                            } => {
+                                tracing::info!(
+                                    playbook = %playbook_id,
+                                    title = %title,
+                                    "Playbook Notify action"
+                                );
+                                // Deliver as proactive message
+                                let text = format!("{}\n{}", title, body);
+                                let msg = yantrikdb_companion::types::ProactiveMessage {
+                                    text,
+                                    urge_ids: vec![format!("playbook:{}", playbook_id)],
+                                    generated_at: pb_now,
+                                };
+                                companion.set_proactive_message(msg);
+                            }
+                            yantrikdb_companion::cortex::playbook::CortexAction::QueueTask {
+                                description, playbook_id,
+                            } => {
+                                tracing::info!(
+                                    playbook = %playbook_id,
+                                    description = %description,
+                                    "Playbook QueueTask action"
+                                );
+                                yantrikdb_companion::task_queue::TaskQueue::enqueue(
+                                    companion.db.conn(),
+                                    &format!("Playbook: {}", playbook_id),
+                                    description,
+                                    0, // normal priority
+                                    "playbook_engine",
+                                );
+                            }
+                            yantrikdb_companion::cortex::playbook::CortexAction::SuggestTool {
+                                tool_name, explanation, playbook_id, ..
+                            } => {
+                                tracing::info!(
+                                    playbook = %playbook_id,
+                                    tool = %tool_name,
+                                    "Playbook SuggestTool action"
+                                );
+                                let text = format!("Suggestion: {}", explanation);
+                                let msg = yantrikdb_companion::types::ProactiveMessage {
+                                    text,
+                                    urge_ids: vec![format!("playbook:{}", playbook_id)],
+                                    generated_at: pb_now,
+                                };
+                                companion.set_proactive_message(msg);
+                            }
+                        }
+                    }
+
+                    // Save playbook conviction state periodically (every 10 think cycles)
+                    if companion.playbook_engine.diagnostic_summary().contains("fires=") {
+                        companion.playbook_engine.save(companion.db.conn());
                     }
                 }
 
@@ -972,6 +1089,17 @@ fn worker_loop(
                 // Pick the highest-urgency one only — braiding EXECUTE urges
                 // strips tool-calling intent and causes the LLM to fabricate responses.
                 let mut execute_produced_message = false;
+
+                // v4: Suppress EXECUTE urges when LLM is offline.
+                // Prevents "local mode" raw memory dumps from being sent to users.
+                if !execute_urges.is_empty() && !online.load(Ordering::Relaxed) {
+                    tracing::info!(
+                        count = execute_urges.len(),
+                        "Suppressing EXECUTE urges — LLM offline"
+                    );
+                    execute_urges.clear();
+                }
+
                 if !execute_urges.is_empty() {
                     // ── Resonance Model: rescore urgencies ──────────────────
                     // Replace raw urgency with resonance-weighted score that
@@ -997,7 +1125,11 @@ fn worker_loop(
                             );
                             urge.urgency = 0.0; // Will sort to bottom
                         } else {
-                            urge.urgency = r.score;
+                            // Apply adaptive user model multiplier (category, time, backoff, budget)
+                            let cat = yantrikdb_companion::resonance::InstinctCategory::from_instinct(&urge.instinct_name);
+                            let hour = (now_ts as i64 % 86400 / 3600) as u32;
+                            let user_mult = companion.user_model.urgency_multiplier(&format!("{:?}", cat), hour);
+                            urge.urgency = (r.score * user_mult).clamp(0.0, 1.0);
                         }
                     }
                     // Remove suppressed (urgency=0) urges
@@ -1034,6 +1166,11 @@ fn worker_loop(
                     instruction.push_str(&anti_rep);
 
                     let instinct_name = exec_urge.instinct_name.clone();
+                    // Update global cortex cooldown BEFORE LLM call
+                    // so concurrent think cycles don't queue more cortex urges
+                    if instinct_name == "Cortex" || instinct_name == "CortexReasoner" {
+                        last_cortex_fire_ts = now_ts;
+                    }
                     tracing::info!(
                         instinct = %instinct_name,
                         instruction = %instruction,
@@ -1143,6 +1280,15 @@ fn worker_loop(
                             .unwrap_or_else(|| "unknown".to_string());
                         companion.resonance.record_sent(&instinct_name, now_ts);
 
+                        // Adaptive User Model: record proactive send (starts pending response tracking)
+                        let category = yantrikdb_companion::resonance::InstinctCategory::from_instinct(&instinct_name);
+                        companion.user_model.on_proactive_sent(&instinct_name, &format!("{:?}", category), now_ts);
+
+                        // Update global cortex cooldown if this was a cortex-originated message
+                        if instinct_name == "Cortex" || instinct_name == "CortexReasoner" {
+                            last_cortex_fire_ts = now_ts;
+                        }
+
                         let text = msg.text.clone();
                         let notif_text = msg.text.clone();
                         let weak = ui_weak.clone();
@@ -1190,6 +1336,20 @@ fn worker_loop(
                         "No proactive message this cycle"
                     );
                 }
+
+                // Adaptive User Model: check for ignored proactive messages (2h timeout)
+                {
+                    let m = companion.user_model.inner_pending_ts();
+                    if let Some(sent_ts) = m {
+                        if now_ts - sent_ts > 2.0 * 3600.0 {
+                            companion.user_model.on_proactive_ignored(now_ts);
+                            tracing::info!("UserModel: proactive message expired (2h without response)");
+                        }
+                    }
+                }
+
+                // Periodic save of adaptive user model (every think cycle is fine — it's cheap)
+                companion.user_model.save(companion.db.conn());
 
                 // Push updated urges to Home screen
                 push_urges(&companion, &ui_weak);

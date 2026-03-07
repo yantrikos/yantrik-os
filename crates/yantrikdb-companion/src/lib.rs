@@ -51,6 +51,7 @@ pub mod skills;
 pub mod tools;
 pub mod types;
 pub mod urges;
+pub mod user_model;
 pub mod voice;
 
 pub use companion::CompanionService;

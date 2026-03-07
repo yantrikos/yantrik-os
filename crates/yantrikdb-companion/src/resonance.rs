@@ -144,6 +144,24 @@ const ADAPTIVE_FREQ_MU: f64 = 0.0005;
 /// Adaptive frequency forgetting rate (λ) — natural decay of learned Δω.
 const ADAPTIVE_FREQ_LAMBDA: f64 = 0.001;
 
+/// Second-harmonic coupling ratio (K₂ = ratio * K₁).
+/// Destabilizes anti-phase equilibrium (φ=π) so perturbations push away.
+/// From generalized Kuramoto models (Acebrón et al., 2005).
+const SECOND_HARMONIC_RATIO: f64 = 0.4;
+
+/// Anti-phase escape learning rate (μ₂) for sin(φ/2) term.
+/// Only active near φ≈π via sigmoid gate. Small to avoid bias when healthy.
+const ANTIPHASE_ESCAPE_MU: f64 = 0.001;
+
+/// Phase evidence decay time constant (seconds).
+/// Controls how fast phase certainty decays without user interaction.
+/// At τ=1800 (30 min): evidence halves every ~21 minutes.
+const PHASE_EVIDENCE_TAU: f64 = 1800.0;
+
+/// Post-stuck Δω cooldown time constant (seconds).
+/// After a stuck reset, base drift is reduced for this duration.
+const STUCK_COOLDOWN_TAU: f64 = 1800.0;
+
 // ─── Instinct Categories for Variety Scoring ────────────────────────────────
 
 /// Categories for variety tracking — instincts grouped by function.
@@ -309,6 +327,12 @@ pub struct ResonanceEngine {
     /// Positive = companion tends to lead; negative = companion tends to lag.
     adaptive_delta_omega: Mutex<f64>,
 
+    // ── Stuck Detection ────────────────────────────────────────────────
+    /// Consecutive ticks where |φ| > 2.5 rad (near anti-phase).
+    stuck_counter: Mutex<u32>,
+    /// Timestamp of last stuck reset (for post-reset Δω cooldown).
+    stuck_reset_ts: Mutex<f64>,
+
     // ── Connection Building Strategy ────────────────────────────────────
     /// Bond growth recommendation: positive = invest more, negative = pull back.
     growth_signal: Mutex<f64>,
@@ -352,6 +376,8 @@ impl ResonanceEngine {
             last_sent_ts: Mutex::new(0.0),
             last_user_ts: Mutex::new(0.0),
             adaptive_delta_omega: Mutex::new(0.0),
+            stuck_counter: Mutex::new(0),
+            stuck_reset_ts: Mutex::new(0.0),
             growth_signal: Mutex::new(0.0),
         }
     }
@@ -378,26 +404,36 @@ impl ResonanceEngine {
         now_ts: f64,
     ) -> ResonanceScore {
         let novelty = self.information_novelty(message_text, recent_messages);
-        let phase_alignment = self.phase_alignment_score();
+        let phase_alignment_raw = self.phase_alignment_score();
         let desire = self.desire_pressure(now_ts);
         let bond_factor = self.bond_resonance(bond_level, bond_score);
         let fatigue_inv = 1.0 - self.fatigue_factor(now_ts);
         let variety = self.variety_bonus(instinct_name);
         let depth_fit = self.depth_appropriateness(instinct_name, bond_level);
 
-        // ── The Resonance Formula (v3) ──────────────────────────────────
+        // ── Phase Uncertainty Blending (v4) ──────────────────────────────
+        // When user interactions are sparse, phase is poorly identified.
+        // Blend toward neutral (0.5) proportional to evidence decay.
+        let last_user = *self.last_user_ts.lock().unwrap();
+        let silence_secs = if last_user > 0.0 { (now_ts - last_user).max(0.0) } else { 0.0 };
+        let evidence = (-silence_secs / PHASE_EVIDENCE_TAU).exp().clamp(0.0, 1.0);
+        let phase_alignment = evidence * phase_alignment_raw + (1.0 - evidence) * 0.5;
+
+        // Interaction sparsity scalar for downstream adjustments
+        let sparsity = 1.0 - (-silence_secs / 1200.0).exp(); // τ_S = 20 min
+
+        // ── The Resonance Formula (v4) ──────────────────────────────────
         //
         // Product-of-experts interpretation: each quality factor is a
         // calibrated "compatibility probability." We aggregate in log-space
         // with a variance penalty for balance (inequality aversion).
         //
-        //   log(quality) = Σ(w_i · ln(x_i)) / Σw_i - γ · Var(ln(x_i))
+        //   log(quality) = Σ(w_i · ln(x_i)) / Σw_i - γ_eff · Var(ln(x_i))
         //   gate = (1-ε) · D·B·(1-F) + ε · g₀    (exploration prior)
-        //   R = quality · gate · suppress_mult
+        //   R = quality · gate · sigmoid_gates
         //   final = 0.4 · raw_urgency + 0.6 · R
         //
-        // The variance penalty rewards balanced quality profiles and
-        // subsumes the need for separate resilience/collapse protection.
+        // v4: γ softened under sparsity (noisier component estimates).
 
         let w_novelty = 2.0_f64;
         let w_phase = 1.5_f64;
@@ -419,14 +455,15 @@ impl ResonanceEngine {
         let log_mean = logs.iter().sum::<f64>() / 4.0;
         let var_log = logs.iter().map(|l| (l - log_mean).powi(2)).sum::<f64>() / 4.0;
 
-        let quality = (mean_log - BALANCE_GAMMA * var_log).exp();
+        // v4: Soften variance penalty under sparsity (noisier estimates)
+        let gamma_eff = BALANCE_GAMMA * (1.0 - 0.4 * sparsity);
+        let quality = (mean_log - gamma_eff * var_log).exp();
 
         // Gate with ε-mixture exploration prior (smooth, interpretable)
         let raw_gate = desire * bond_factor * fatigue_inv;
         let gate = (1.0 - GATE_EPSILON) * raw_gate + GATE_EPSILON * GATE_BASELINE;
 
         // Smooth suppression via sigmoid gates (no hard thresholds)
-        // Each gate outputs ~0 below threshold, ~1 above, with smooth transition.
         fn sigmoid(x: f64) -> f64 {
             1.0 / (1.0 + (-x).exp())
         }
@@ -447,12 +484,35 @@ impl ResonanceEngine {
         let suppress = suppress_mult < 0.05 && raw_urgency < 0.8;
         let suppress_reason = if suppress {
             format!(
-                "Resonance gates suppressed (phase={:.2}, depth={:.2}, fatigue_inv={:.2})",
-                phase_alignment, depth_fit, fatigue_inv
+                "Phase misalignment ({:.2}) — companion and user out of sync",
+                phase_alignment_raw,
             )
         } else {
             String::new()
         };
+
+        // ── Component Telemetry (v4) ─────────────────────────────────────
+        tracing::debug!(
+            instinct = %instinct_name,
+            novelty = %format!("{:.3}", novelty),
+            phase_raw = %format!("{:.3}", phase_alignment_raw),
+            phase_eff = %format!("{:.3}", phase_alignment),
+            evidence = %format!("{:.3}", evidence),
+            variety = %format!("{:.3}", variety),
+            depth = %format!("{:.3}", depth_fit),
+            desire = %format!("{:.3}", desire),
+            bond = %format!("{:.3}", bond_factor),
+            fatigue_inv = %format!("{:.3}", fatigue_inv),
+            quality = %format!("{:.3}", quality),
+            gate = %format!("{:.3}", gate),
+            suppress_mult = %format!("{:.3}", suppress_mult),
+            sparsity = %format!("{:.3}", sparsity),
+            gamma_eff = %format!("{:.3}", gamma_eff),
+            resonance = %format!("{:.4}", resonance),
+            final_score = %format!("{:.4}", score),
+            suppress = suppress,
+            "Resonance component breakdown"
+        );
 
         ResonanceScore {
             score,
@@ -702,15 +762,18 @@ impl ResonanceEngine {
 
     /// Advance the phase dynamics by one tick (called every think cycle).
     ///
-    /// Implements adaptive Kuramoto with fatigue-coupled entrainment:
+    /// Implements generalized Kuramoto with second-harmonic coupling (v4):
     /// ```text
-    /// dφ/dt = (Δω + Δω_adapt) - K·(1-F)·sin(φ)
-    /// dΔω_adapt/dt = -λ·Δω_adapt + μ·sin(φ)
+    /// dφ/dt = Δω_eff - K₁·sin(φ) - K₂·sin(2φ)
+    /// dΔω_adapt/dt = -λ·Δω_adapt + μ₁·sin(φ) + μ₂·g(φ)·sin(φ/2)
     /// ```
     ///
-    /// Key properties:
-    /// - Fatigue reduces coupling strength → system drifts when user is tired
-    /// - Adaptive Δω learns persistent frequency mismatches (Hebbian entrainment)
+    /// Key properties (v4):
+    /// - Fatigue REMOVED from oscillator (applied downstream in gate only)
+    /// - Second-harmonic K₂·sin(2φ) destabilizes anti-phase (φ=π)
+    /// - Gated sin(φ/2) learning: maximal at π, enables escape
+    /// - Stuck detector: deterministic reset after 10 minutes at anti-phase
+    /// - Post-stuck Δω cooldown: reduces drift after reset
     /// - Subdivided timestep for numerical stability
     pub fn tick_phase(&self, bond_level: BondLevel, dt_secs: f64) {
         let base_coupling = match bond_level {
@@ -721,23 +784,31 @@ impl ResonanceEngine {
             BondLevel::PartnerInCrime => COUPLING_PARTNER,
         };
 
-        // Fatigue-coupled coupling: K_eff = K · (1 - F)
-        // When fatigued, entrainment weakens → phase drifts → messages feel mistimed
-        let fatigue = self.fatigue_factor(
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs_f64(),
-        );
-        let coupling = base_coupling * (1.0 - fatigue);
+        // v4: Fatigue removed from oscillator — coupling is pure bond-based.
+        // Fatigue only affects downstream gate, preventing the vicious cycle
+        // where high fatigue → low coupling → phase drifts → can't recover.
+        let coupling = base_coupling;
+        let k2 = SECOND_HARMONIC_RATIO * coupling;
 
         let user_freq = *self.user_frequency.lock().unwrap();
         let comp_freq = *self.companion_frequency.lock().unwrap();
 
-        // Base frequency mismatch + learned adaptive component
         let base_delta_omega = (comp_freq - user_freq) * std::f64::consts::TAU / 3600.0;
         let mut adapt_dw = self.adaptive_delta_omega.lock().unwrap();
-        let delta_omega = base_delta_omega + *adapt_dw;
+
+        // v4: Post-stuck cooldown — reduce base drift after a reset
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs_f64();
+        let stuck_reset = *self.stuck_reset_ts.lock().unwrap();
+        let cooldown = if stuck_reset > 0.0 {
+            (-(now - stuck_reset) / STUCK_COOLDOWN_TAU).exp()
+        } else {
+            0.0
+        };
+        let effective_base_dw = base_delta_omega * (1.0 - 0.7 * cooldown);
+        let delta_omega = effective_base_dw + *adapt_dw;
 
         let mut phi = self.phase.lock().unwrap();
         let total_dt = dt_secs.min(120.0);
@@ -746,25 +817,53 @@ impl ResonanceEngine {
         let n_steps = (total_dt * base_coupling.max(0.01)).ceil().max(1.0) as usize;
         let dt_step = total_dt / n_steps as f64;
 
+        // Sigmoid helper for anti-phase gate
+        fn sigmoid(x: f64) -> f64 {
+            1.0 / (1.0 + (-x).exp())
+        }
+
         for _ in 0..n_steps {
             let sin_phi = phi.sin();
-            // Perturbation at unstable equilibrium (φ = π)
-            let perturbation = if sin_phi.abs() < 1e-10 && (phi.cos() + 1.0).abs() < 0.1 {
-                0.001
-            } else {
-                0.0
-            };
 
-            // Phase evolution: dφ/dt = Δω - K_eff·sin(φ)
-            *phi += dt_step * (delta_omega - coupling * sin_phi) + perturbation;
+            // v4: Generalized Kuramoto with second-harmonic coupling
+            // dφ/dt = Δω - K₁·sin(φ) - K₂·sin(2φ)
+            // Second harmonic makes φ=π locally unstable (slope 2K₂ > 0)
+            *phi += dt_step * (delta_omega - coupling * sin_phi - k2 * (2.0 * *phi).sin());
 
-            // Adaptive Δω: Hebbian learning of frequency mismatch
-            // dΔω/dt = -λ·Δω + μ·sin(φ)
-            *adapt_dw += dt_step * (-ADAPTIVE_FREQ_LAMBDA * *adapt_dw + ADAPTIVE_FREQ_MU * sin_phi);
+            // v4: Adaptive Δω with gated sin(φ/2) for anti-phase escape
+            // sin(φ/2) is maximal at φ=π, enabling learning when sin(φ)≈0
+            // Gated so it only activates near anti-phase (|φ| > 2.3 rad)
+            let near_antiphase = sigmoid(8.0 * (phi.abs() - 2.3));
+            *adapt_dw += dt_step * (
+                -ADAPTIVE_FREQ_LAMBDA * *adapt_dw
+                + ADAPTIVE_FREQ_MU * sin_phi
+                + ANTIPHASE_ESCAPE_MU * near_antiphase * (*phi / 2.0).sin()
+            );
         }
         *phi = phi.rem_euclid(std::f64::consts::TAU);
         // Clamp adaptive Δω to prevent runaway
-        *adapt_dw = adapt_dw.clamp(-0.01, 0.01);
+        *adapt_dw = adapt_dw.clamp(-0.1, 0.1);
+
+        // v4: Stuck detector — deterministic reset after 10 consecutive
+        // ticks (10 minutes) with |φ| near π. More reliable than random nudges.
+        {
+            let mut stuck = self.stuck_counter.lock().unwrap();
+            // Check if phase is near anti-phase (φ in [π-0.64, π+0.64])
+            let phi_centered = (*phi - std::f64::consts::PI).abs();
+            if phi_centered < 0.64 {
+                *stuck += 1;
+                if *stuck >= 10 {
+                    // Reset: pull 70% toward neutral, clear learned drift
+                    *phi = *phi * 0.3;
+                    *adapt_dw = 0.0;
+                    *self.stuck_reset_ts.lock().unwrap() = now;
+                    *stuck = 0;
+                    tracing::info!("Kuramoto stuck detector: reset phase from anti-phase");
+                }
+            } else {
+                *stuck = 0;
+            }
+        }
     }
 
     /// Compute the bond growth recommendation.
