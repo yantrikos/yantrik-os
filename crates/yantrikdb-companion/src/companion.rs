@@ -32,58 +32,140 @@ use crate::urges::UrgeQueue;
 
 /// Core tools always included in the LLM prompt — no discover_tools needed for these.
 /// These cover the most common user needs. Everything else is discoverable.
-pub const CORE_TOOLS: &[&str] = &[
-    // Memory (always essential)
+/// Tools ALWAYS sent on every request (tiny set — the model's core abilities).
+pub const ALWAYS_TOOLS: &[&str] = &[
     "remember", "recall", "discover_tools",
-    // Files & system
+    "run_command", "web_search", "calculate",
+];
+
+/// Tool categories for keyword-based routing.
+/// Each entry: (category_name, keyword_patterns, tool_names).
+pub const TOOL_CATEGORIES: &[(&str, &[&str], &[&str])] = &[
+    ("files", &["file", "read", "write", "directory", "folder", "list files", "search file", "find file", "create file", "edit file", "delete file", "save"],
+     &["read_file", "write_file", "list_files", "search_files"]),
+    ("system", &["system", "process", "disk", "cpu", "memory usage", "uptime", "diagnose", "kill"],
+     &["system_info", "disk_usage", "list_processes", "diagnose_process", "date_calc"]),
+    ("browser", &["browse", "website", "click", "navigate", "open page", "web page", "url", "browser", "screenshot"],
+     &["launch_browser", "browse", "browser_snapshot", "browser_scroll",
+       "browser_click_element", "browser_type_element", "browser_search",
+       "browser_see", "browser_click_xy", "browser_type_xy",
+       "browser_cleanup", "browser_status"]),
+    ("network", &["fetch", "http", "api", "download", "curl", "request", "network"],
+     &["http_fetch", "web_fetch", "network_diagnose"]),
+    ("vault", &["vault", "password", "credential", "secret", "login", "pin", "store password", "generate password"],
+     &["vault_store", "vault_get", "vault_list", "vault_delete", "vault_generate_password", "vault_set_pin"]),
+    ("coder", &["code", "script", "execute", "python", "javascript", "run code", "program", "coding"],
+     &["code_execute", "script_write", "script_run", "script_patch", "script_list", "script_read"]),
+    ("email", &["email", "inbox", "mail", "send email", "check email", "reply"],
+     &["email_check", "email_list", "email_read", "email_send", "email_reply", "email_search"]),
+    ("calendar", &["calendar", "event", "meeting", "schedule", "appointment", "today"],
+     &["calendar_today", "calendar_list_events", "calendar_create_event", "calendar_update_event", "calendar_delete_event"]),
+    ("scheduling", &["reminder", "alarm", "schedule", "timer", "cron"],
+     &["set_reminder", "create_schedule", "list_schedules"]),
+    ("communication", &["telegram", "notify", "send message", "notification"],
+     &["telegram_send", "send_notification"]),
+    ("life", &["recommend", "suggestion", "preference", "find me", "search for", "best", "top", "nearby", "restaurant", "hotel"],
+     &["life_search", "recall_preferences", "save_user_fact", "search_sources", "extract_search_results", "rank_results"]),
+    ("memory", &["memory", "memories", "forget", "conflict", "review memory"],
+     &["memory_stats", "resolve_conflicts", "review_memories"]),
+    ("tasks", &["task", "queue", "todo", "backlog"],
+     &["queue_task", "list_tasks", "update_task", "complete_task"]),
+    ("recipes", &["recipe", "automation", "workflow", "automate"],
+     &["create_recipe", "list_recipes", "run_recipe"]),
+    ("weather", &["weather", "temperature", "forecast", "rain", "sunny"],
+     &["get_weather"]),
+    ("connectors", &["connect", "oauth", "google", "spotify", "sync service"],
+     &["list_connections", "connect_service", "sync_service", "disconnect_service"]),
+    ("delegation", &["think hard", "complex", "analyze", "deep think", "claude"],
+     &["claude_think", "claude_code"]),
+    ("bond", &["bond", "relationship", "trust level"],
+     &["check_bond"]),
+    ("screenshot", &["screenshot", "capture screen", "screen"],
+     &["screenshot"]),
+];
+
+/// Flat list of ALL tools that were formerly in CORE_TOOLS (for backwards compat).
+pub const CORE_TOOLS: &[&str] = &[
+    "remember", "recall", "discover_tools",
     "run_command", "read_file", "write_file", "list_files", "search_files",
     "system_info", "date_calc", "disk_usage",
-    // Process & diagnostics
     "list_processes", "diagnose_process",
-    // Scheduling & reminders
     "set_reminder", "create_schedule", "list_schedules",
-    // Communication
     "telegram_send", "send_notification",
-    // Browser (full workflow — launch → navigate → interact → read)
     "launch_browser", "browse", "browser_snapshot", "browser_scroll",
     "browser_click_element", "browser_type_element", "browser_search",
-    // Browser vision (screenshot + AI analysis)
-    "browser_see",
-    // Browser coordinate-based interaction (works with ANY site — React, Shadow DOM, etc.)
-    "browser_click_xy", "browser_type_xy",
-    // Web search (lightweight, no browser needed)
+    "browser_see", "browser_click_xy", "browser_type_xy",
     "web_search",
-    // Life assistant (real-world search + ranking + preferences)
     "life_search", "recall_preferences", "save_user_fact",
-    // Life assistant sub-tools (search pipeline)
     "search_sources", "extract_search_results", "rank_results",
-    // Browser lifecycle (cleanup zombie processes)
     "browser_cleanup", "browser_status",
-    // Network & HTTP
     "http_fetch", "web_fetch", "network_diagnose",
-    // Utility
     "calculate", "screenshot",
-    // Email (check, list, read, send, reply, search)
     "email_check", "email_list", "email_read", "email_send", "email_reply", "email_search",
-    // Calendar (today, list, create, update, delete)
     "calendar_today", "calendar_list_events", "calendar_create_event", "calendar_update_event", "calendar_delete_event",
-    // Memory hygiene (review, conflicts, stats)
     "memory_stats", "resolve_conflicts", "review_memories",
-    // Task queue (persistent work across think cycles)
     "queue_task", "list_tasks", "update_task", "complete_task",
-    // Recipe engine (structured automation)
     "create_recipe", "list_recipes", "run_recipe",
-    // Claude Code delegation (complex reasoning)
     "claude_think", "claude_code",
-    // Weather & bond
     "get_weather", "check_bond",
-    // Connectors (OAuth — Google, Spotify, etc.)
     "list_connections", "connect_service", "sync_service", "disconnect_service",
-    // Vault (encrypted credential storage)
     "vault_store", "vault_get", "vault_list", "vault_delete", "vault_generate_password", "vault_set_pin",
-    // Coder (code execution, script management — modeled after Claude Code)
     "code_execute", "script_write", "script_run", "script_patch", "script_list", "script_read",
 ];
+
+/// Select tools for a specific query using keyword routing + embedding fallback.
+/// Returns a deduplicated list of tool names (ALWAYS_TOOLS + routed + embedding top-K).
+/// Target: 8-15 tools per query instead of 83+.
+pub fn select_tools_for_query(query: &str, db: &YantrikDB, max_extra: usize) -> Vec<&'static str> {
+    let mut selected: Vec<&'static str> = ALWAYS_TOOLS.to_vec();
+    let query_lower = query.to_lowercase();
+
+    // Tier 2: keyword routing — match query against category patterns
+    let mut matched_categories = 0u32;
+    for &(_cat_name, keywords, tools) in TOOL_CATEGORIES {
+        let hit = keywords.iter().any(|kw| query_lower.contains(kw));
+        if hit {
+            for tool in tools {
+                if !selected.contains(tool) {
+                    selected.push(tool);
+                }
+            }
+            matched_categories += 1;
+        }
+    }
+
+    // Tier 3: embedding fallback — if no categories matched, use semantic similarity
+    if matched_categories == 0 {
+        let relevant = crate::tool_cache::ToolCache::select_relevant(
+            db.conn(), db, query, max_extra,
+        );
+        for def in &relevant {
+            if let Some(name) = def["function"]["name"].as_str() {
+                // Check if it's a known tool name from any category
+                let is_known = TOOL_CATEGORIES.iter().any(|&(_, _, tools)| tools.contains(&name));
+                if is_known && !selected.iter().any(|&s| s == name) {
+                    // We can't push &str from a String, so we need to find the static ref
+                    for &(_, _, tools) in TOOL_CATEGORIES {
+                        for &tool in tools {
+                            if tool == name && !selected.contains(&tool) {
+                                selected.push(tool);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    tracing::info!(
+        query_short = &query[..query.len().min(60)],
+        categories = matched_categories,
+        total = selected.len(),
+        "Dynamic tool selection"
+    );
+
+    selected
+}
 
 /// The companion agent — memory + inference + instincts + bond + evolution in one struct.
 pub struct CompanionService {
@@ -128,9 +210,12 @@ pub struct CompanionService {
     // Used ONLY for non-API backends (candle, llama.cpp in-process).
     tools_system_message: String,
 
-    // Native tools JSON array — passed via API `tools` parameter for API backends.
-    // llama-server with --jinja renders these into the chat template natively.
+    // Native tools JSON array — ALWAYS_TOOLS definitions (small, stable set).
+    // Additional tools selected dynamically per query via select_tools_for_query().
     native_core_tools: Vec<serde_json::Value>,
+
+    // Extra tool names added by Skill Store (always included in per-query selection).
+    skill_extra_tools: Vec<String>,
 
     // Whether to use native OpenAI tool calling format (API backend with --jinja).
     use_native_tools: bool,
@@ -247,34 +332,36 @@ impl CompanionService {
             Some(arc)
         };
 
-        // Build stable tools prefix — core tools only for KV caching.
-        // Full tool set is discoverable via discover_tools meta-tool.
+        // Build stable tools prefix — ALWAYS_TOOLS only (small set for KV caching).
+        // Additional tools selected dynamically per query via select_tools_for_query().
+        // Full tool set discoverable via discover_tools meta-tool.
         let max_perm = parse_permission(&config.tools.max_permission);
         let use_native_tools = llm.backend_name() == "api";
 
-        // Native tools: JSON array for API `tools` parameter
+        // Native tools: only ALWAYS_TOOLS (6 tools) — rest added dynamically per query
+        tracing::debug!(always_on = ALWAYS_TOOLS.len(), "Dynamic tool selection initialized");
         let native_core_tools = if config.tools.enabled {
-            registry.definitions_for(CORE_TOOLS, max_perm)
+            registry.definitions_for(ALWAYS_TOOLS, max_perm)
         } else {
             Vec::new()
         };
 
-        // Text-injected tools: only for non-API backends
+        // Text-injected tools: only for non-API backends (also uses ALWAYS_TOOLS)
         let tools_system_message = if config.tools.enabled && !use_native_tools {
-            let core_defs = registry.definitions_for(CORE_TOOLS, max_perm);
+            let core_defs = registry.definitions_for(ALWAYS_TOOLS, max_perm);
             tracing::info!(
-                core = core_defs.len(),
+                always = core_defs.len(),
                 total = registry.definitions(max_perm).len(),
-                "Tools prefix: text-injected for {} backend",
+                "Tools prefix: text-injected for {} backend (dynamic selection active)",
                 llm.backend_name(),
             );
             format_tools(&core_defs)
         } else {
             if config.tools.enabled {
                 tracing::info!(
-                    core = native_core_tools.len(),
+                    always = native_core_tools.len(),
                     total = registry.definitions(max_perm).len(),
-                    "Native tool calling: {} core tools via API tools parameter",
+                    "Native tool calling: {} always-on + dynamic per-query selection",
                     native_core_tools.len(),
                 );
             }
@@ -348,6 +435,7 @@ impl CompanionService {
             proactive_engine,
             tools_system_message,
             native_core_tools,
+            skill_extra_tools: Vec::new(),
             use_native_tools,
             task_manager: std::sync::Mutex::new(task_mgr),
             recent_events: Vec::new(),
@@ -418,17 +506,12 @@ impl CompanionService {
             );
         }
 
-        // 3. Extend native core tools with extra tools from enabled skills
+        // 3. Store extra tool names from skills — included in per-query dynamic selection
         if !snapshot.extra_core_tools.is_empty() {
-            let max_perm = tools::parse_permission(&self.config.tools.max_permission);
-            let extra_names: Vec<&str> = snapshot.extra_core_tools.iter().map(|s| s.as_str()).collect();
-            let extra_defs = self.registry.definitions_for(&extra_names, max_perm);
-            let added = extra_defs.len();
-            self.native_core_tools.extend(extra_defs);
+            self.skill_extra_tools = snapshot.extra_core_tools.clone();
             tracing::info!(
-                added,
                 extra = ?snapshot.extra_core_tools,
-                "Extended core tools from Skill Store"
+                "Skill Store extra tools registered for dynamic selection"
             );
         }
     }
@@ -590,60 +673,59 @@ impl CompanionService {
         let max_perm = parse_permission(&self.config.tools.max_permission);
         let mut messages = Vec::with_capacity(context_messages.len() + 1);
 
-        // Build native tools array (for API backend) or text prefix (for non-API)
-        let needs_tools = self.config.tools.enabled && user_text.split_whitespace().count() > 2;
+        // Dynamic tool selection: ALWAYS_TOOLS + keyword-routed + embedding fallback
+        // Dynamic tool selection: ALWAYS_TOOLS + keyword-routed + embedding fallback.
+        // Target: 8-15 tools per query instead of 83+.
+        let word_count = user_text.split_whitespace().count();
+        let needs_tools = self.config.tools.enabled && word_count > 2;
+        tracing::info!(
+            tools_enabled = self.config.tools.enabled,
+            word_count,
+            needs_tools,
+            "Tool selection gate"
+        );
+        let mut selected_tool_names: Vec<&str> = if needs_tools {
+            select_tools_for_query(user_text, &self.db, 8)
+        } else {
+            ALWAYS_TOOLS.to_vec()
+        };
+
+        // Build native tools array from dynamically selected + skill extra tools
         let mut native_tools: Vec<serde_json::Value> = if self.use_native_tools {
-            self.native_core_tools.clone()
+            let mut defs = self.registry.definitions_for(&selected_tool_names, max_perm);
+            // Add skill extra tools by name (String-based lookup)
+            if !self.skill_extra_tools.is_empty() {
+                let extra_refs: Vec<&str> = self.skill_extra_tools.iter()
+                    .filter(|s| !selected_tool_names.contains(&s.as_str()))
+                    .map(|s| s.as_str())
+                    .collect();
+                defs.extend(self.registry.definitions_for(&extra_refs, max_perm));
+            }
+            defs
         } else {
             Vec::new()
         };
 
-        // Per-query relevant tool selection
-        if needs_tools {
-            let relevant: Vec<_> = ToolCache::select_relevant(
-                self.db.conn(), &self.db, user_text, 10,
-            ).into_iter().filter(|def| {
-                let name = def["function"]["name"].as_str().unwrap_or("");
-                !CORE_TOOLS.contains(&name)
-            }).take(5).collect();
-
-            if self.use_native_tools {
-                // API backend: add to native tools array
-                native_tools.extend(relevant);
-            } else {
-                // Non-API backend: text-inject into system message
-                let mut tools_prefix = self.tools_system_message.clone();
-                if !relevant.is_empty() {
-                    tools_prefix.push_str(&format_tools(&relevant));
-                }
-                if !tools_prefix.is_empty() {
-                    if let Some(first) = context_messages.first() {
-                        let combined = format!("{}\n\n{}", tools_prefix, first.content);
-                        messages.push(ChatMessage::system(&combined));
-                        messages.extend_from_slice(&context_messages[1..]);
-                    } else {
-                        messages.push(ChatMessage::system(&tools_prefix));
-                    }
-                } else {
-                    messages.extend(context_messages.clone());
-                }
-            }
-        }
-
-        // For API backend or when no tools needed: just use context messages directly
-        if messages.is_empty() {
-            if !self.use_native_tools && !self.tools_system_message.is_empty() && self.config.tools.enabled {
-                // Non-API with core tools but no per-query tools: still text-inject core
+        // For non-API backends: text-inject selected tools into system message
+        if !self.use_native_tools && self.config.tools.enabled {
+            let selected_defs = self.registry.definitions_for(&selected_tool_names, max_perm);
+            let tools_text = format_tools(&selected_defs);
+            if !tools_text.is_empty() {
                 if let Some(first) = context_messages.first() {
-                    let combined = format!("{}\n\n{}", self.tools_system_message, first.content);
+                    let combined = format!("{}\n\n{}", tools_text, first.content);
                     messages.push(ChatMessage::system(&combined));
                     messages.extend_from_slice(&context_messages[1..]);
                 } else {
-                    messages.push(ChatMessage::system(&self.tools_system_message));
+                    messages.push(ChatMessage::system(&tools_text));
                 }
             } else {
-                messages.extend(context_messages);
+                messages.extend(context_messages.clone());
             }
+        }
+
+        // For API backend or when no text injection happened: use context messages directly
+        if messages.is_empty() {
+            messages.extend(context_messages);
         }
 
         // Tool chain learning: inject trace hints into system prompt
@@ -1022,55 +1104,53 @@ impl CompanionService {
         let max_perm = parse_permission(&self.config.tools.max_permission);
         let mut messages = Vec::with_capacity(context_messages.len() + 1);
 
-        // Build native tools array (for API backend) or text prefix (for non-API)
-        let needs_tools = self.config.tools.enabled && user_text.split_whitespace().count() > 2;
+        // Dynamic tool selection (same as non-streaming path)
+        let word_count = user_text.split_whitespace().count();
+        let needs_tools = self.config.tools.enabled && word_count > 2;
+        tracing::debug!(
+            tools_enabled = self.config.tools.enabled,
+            word_count,
+            needs_tools,
+            "Tool selection gate"
+        );
+        let selected_tool_names: Vec<&str> = if needs_tools {
+            select_tools_for_query(user_text, &self.db, 8)
+        } else {
+            ALWAYS_TOOLS.to_vec()
+        };
+
         let mut native_tools: Vec<serde_json::Value> = if self.use_native_tools {
-            self.native_core_tools.clone()
+            let mut defs = self.registry.definitions_for(&selected_tool_names, max_perm);
+            if !self.skill_extra_tools.is_empty() {
+                let extra_refs: Vec<&str> = self.skill_extra_tools.iter()
+                    .filter(|s| !selected_tool_names.contains(&s.as_str()))
+                    .map(|s| s.as_str())
+                    .collect();
+                defs.extend(self.registry.definitions_for(&extra_refs, max_perm));
+            }
+            defs
         } else {
             Vec::new()
         };
 
-        if needs_tools {
-            let relevant: Vec<_> = ToolCache::select_relevant(
-                self.db.conn(), &self.db, user_text, 10,
-            ).into_iter().filter(|def| {
-                let name = def["function"]["name"].as_str().unwrap_or("");
-                !CORE_TOOLS.contains(&name)
-            }).take(5).collect();
-
-            if self.use_native_tools {
-                native_tools.extend(relevant);
-            } else {
-                let mut tools_prefix = self.tools_system_message.clone();
-                if !relevant.is_empty() {
-                    tools_prefix.push_str(&format_tools(&relevant));
-                }
-                if !tools_prefix.is_empty() {
-                    if let Some(first) = context_messages.first() {
-                        let combined = format!("{}\n\n{}", tools_prefix, first.content);
-                        messages.push(ChatMessage::system(&combined));
-                        messages.extend_from_slice(&context_messages[1..]);
-                    } else {
-                        messages.push(ChatMessage::system(&tools_prefix));
-                    }
+        if !self.use_native_tools && self.config.tools.enabled {
+            let selected_defs = self.registry.definitions_for(&selected_tool_names, max_perm);
+            let tools_text = format_tools(&selected_defs);
+            if !tools_text.is_empty() {
+                if let Some(first) = context_messages.first() {
+                    let combined = format!("{}\n\n{}", tools_text, first.content);
+                    messages.push(ChatMessage::system(&combined));
+                    messages.extend_from_slice(&context_messages[1..]);
                 } else {
-                    messages.extend(context_messages.clone());
+                    messages.push(ChatMessage::system(&tools_text));
                 }
+            } else {
+                messages.extend(context_messages.clone());
             }
         }
 
         if messages.is_empty() {
-            if !self.use_native_tools && !self.tools_system_message.is_empty() && self.config.tools.enabled {
-                if let Some(first) = context_messages.first() {
-                    let combined = format!("{}\n\n{}", self.tools_system_message, first.content);
-                    messages.push(ChatMessage::system(&combined));
-                    messages.extend_from_slice(&context_messages[1..]);
-                } else {
-                    messages.push(ChatMessage::system(&self.tools_system_message));
-                }
-            } else {
-                messages.extend(context_messages);
-            }
+            messages.extend(context_messages);
         }
 
         // Tool chain learning: inject trace hints into system prompt
