@@ -210,6 +210,8 @@ impl CompanionService {
         crate::task_queue::TaskQueue::ensure_table(db.conn());
         // Recipe engine tables
         crate::recipe::RecipeStore::ensure_tables(db.conn());
+        // Calendar local cache
+        crate::calendar::ensure_table(db.conn());
 
         // Memory evolution tables + backfill existing memories
         memory_evolution::ensure_tables(db.conn());

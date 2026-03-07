@@ -262,6 +262,104 @@ pub fn update_event(
     })
 }
 
+// ── Local SQLite Cache ──
+
+/// Create the calendar_events table for local caching.
+pub fn ensure_table(conn: &rusqlite::Connection) {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS calendar_events (
+            id TEXT PRIMARY KEY,
+            summary TEXT NOT NULL,
+            description TEXT,
+            location TEXT,
+            start TEXT NOT NULL,
+            end TEXT NOT NULL,
+            is_all_day INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'confirmed',
+            html_link TEXT,
+            cached_at REAL NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_calendar_events_start ON calendar_events(start);"
+    ).ok();
+}
+
+/// Cache a list of events into the local SQLite table.
+/// Replaces all events within the given date range.
+pub fn cache_events(conn: &rusqlite::Connection, events: &[CalEvent], time_min: &str, time_max: &str) {
+    // Delete existing events in this range
+    conn.execute(
+        "DELETE FROM calendar_events WHERE start >= ?1 AND start <= ?2",
+        rusqlite::params![time_min, time_max],
+    ).ok();
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs_f64();
+
+    for e in events {
+        conn.execute(
+            "INSERT OR REPLACE INTO calendar_events (id, summary, description, location, start, end, is_all_day, status, html_link, cached_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            rusqlite::params![
+                e.id, e.summary, e.description, e.location,
+                e.start, e.end, e.is_all_day as i32, e.status,
+                e.html_link, now,
+            ],
+        ).ok();
+    }
+}
+
+/// Read cached events from the local SQLite table within a date range.
+pub fn get_cached_events(
+    conn: &rusqlite::Connection,
+    time_min: &str,
+    time_max: &str,
+) -> Vec<CalEvent> {
+    let mut stmt = match conn.prepare(
+        "SELECT id, summary, description, location, start, end, is_all_day, status, html_link
+         FROM calendar_events
+         WHERE start >= ?1 AND start <= ?2 AND status != 'cancelled'
+         ORDER BY start ASC"
+    ) {
+        Ok(s) => s,
+        Err(_) => return vec![],
+    };
+
+    stmt.query_map(rusqlite::params![time_min, time_max], |row| {
+        Ok(CalEvent {
+            id: row.get(0)?,
+            summary: row.get(1)?,
+            description: row.get(2)?,
+            location: row.get(3)?,
+            start: row.get(4)?,
+            end: row.get(5)?,
+            is_all_day: row.get::<_, i32>(6)? != 0,
+            status: row.get(7)?,
+            html_link: row.get(8)?,
+        })
+    })
+    .ok()
+    .map(|rows| rows.flatten().collect())
+    .unwrap_or_default()
+}
+
+/// Get the timestamp of the most recent cache update.
+pub fn cache_age_secs(conn: &rusqlite::Connection) -> f64 {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs_f64();
+
+    let cached_at: f64 = conn.query_row(
+        "SELECT MAX(cached_at) FROM calendar_events",
+        [],
+        |row| row.get(0),
+    ).unwrap_or(0.0);
+
+    if cached_at == 0.0 { f64::MAX } else { now - cached_at }
+}
+
 // ── Helpers ──
 
 fn parse_event_time(val: &serde_json::Value) -> (String, bool) {

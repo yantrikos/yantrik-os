@@ -82,6 +82,42 @@ fn format_event(e: &calendar::CalEvent) -> String {
     line
 }
 
+/// Format a list of events with just the basic info.
+fn format_event_list(events: &[calendar::CalEvent], header: &str) -> String {
+    if events.is_empty() {
+        return header.replace("0 events", "No events").replace(" (cached)", "");
+    }
+    let mut result = format!("{}\n\n", header);
+    for e in events {
+        result.push_str(&format_event(e));
+        result.push('\n');
+    }
+    result
+}
+
+/// Format a list of events with descriptions included.
+fn format_event_list_detailed(events: &[calendar::CalEvent], header: &str) -> String {
+    if events.is_empty() {
+        return header.replace("0 found", "none found").replace(" (cached)", "");
+    }
+    let mut result = format!("{}\n\n", header);
+    for e in events {
+        result.push_str(&format_event(e));
+        if let Some(ref desc) = e.description {
+            if !desc.is_empty() {
+                let short = if desc.len() > 100 {
+                    format!("{}...", &desc[..desc.char_indices().take(97).last().map(|(i,_)| i).unwrap_or(0)])
+                } else {
+                    desc.clone()
+                };
+                result.push_str(&format!("  Note: {}", short));
+            }
+        }
+        result.push('\n');
+    }
+    result
+}
+
 // ── calendar_today ──
 
 struct CalendarTodayTool {
@@ -107,30 +143,45 @@ impl Tool for CalendarTodayTool {
         })
     }
 
-    fn execute(&self, _ctx: &ToolContext, _args: &serde_json::Value) -> String {
-        let token = match get_token(&self.accounts) {
-            Ok(t) => t,
-            Err(e) => return e,
-        };
-
+    fn execute(&self, ctx: &ToolContext, _args: &serde_json::Value) -> String {
         let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
         let time_min = format!("{}T00:00:00Z", today);
         let time_max = format!("{}T23:59:59Z", today);
 
-        match calendar::list_events(&token, None, Some(&time_min), Some(&time_max), 20, None) {
-            Ok(events) => {
-                if events.is_empty() {
-                    format!("No events scheduled for today ({}).", today)
-                } else {
-                    let mut result = format!("Today's events ({}) — {} events:\n\n", today, events.len());
-                    for e in &events {
-                        result.push_str(&format_event(e));
-                        result.push('\n');
+        // Try local cache first (< 30 min old)
+        let cached = calendar::get_cached_events(ctx.db.conn(), &time_min, &time_max);
+        let cache_fresh = calendar::cache_age_secs(ctx.db.conn()) < 1800.0;
+
+        if !cached.is_empty() && cache_fresh {
+            return format_event_list(&cached, &format!("Today's events ({}) — {} events (cached):", today, cached.len()));
+        }
+
+        // Try API, cache results
+        match get_token(&self.accounts) {
+            Ok(token) => {
+                match calendar::list_events(&token, None, Some(&time_min), Some(&time_max), 20, None) {
+                    Ok(events) => {
+                        calendar::cache_events(ctx.db.conn(), &events, &time_min, &time_max);
+                        format_event_list(&events, &format!("Today's events ({}) — {} events:", today, events.len()))
                     }
-                    result
+                    Err(e) => {
+                        // API failed — fall back to cache (even if stale)
+                        if !cached.is_empty() {
+                            format_event_list(&cached, &format!("Today's events ({}) — {} events (from cache, API unavailable):", today, cached.len()))
+                        } else {
+                            format!("Failed to fetch today's events: {}", e)
+                        }
+                    }
                 }
             }
-            Err(e) => format!("Failed to fetch today's events: {}", e),
+            Err(_) => {
+                // No token — use cache
+                if !cached.is_empty() {
+                    format_event_list(&cached, &format!("Today's events ({}) — {} events (offline):", today, cached.len()))
+                } else {
+                    format!("No events scheduled for today ({}) — calendar not connected.", today)
+                }
+            }
         }
     }
 }
@@ -177,12 +228,7 @@ impl Tool for CalendarListEventsTool {
         })
     }
 
-    fn execute(&self, _ctx: &ToolContext, args: &serde_json::Value) -> String {
-        let token = match get_token(&self.accounts) {
-            Ok(t) => t,
-            Err(e) => return e,
-        };
-
+    fn execute(&self, ctx: &ToolContext, args: &serde_json::Value) -> String {
         let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
         let start = args.get("start_date").and_then(|v| v.as_str()).unwrap_or(&today);
         let end = args.get("end_date").and_then(|v| v.as_str()).map(|s| s.to_string()).unwrap_or_else(|| {
@@ -200,30 +246,46 @@ impl Tool for CalendarListEventsTool {
         let time_min = format!("{}T00:00:00Z", start);
         let time_max = format!("{}T23:59:59Z", end);
 
-        match calendar::list_events(&token, None, Some(&time_min), Some(&time_max), max, query) {
-            Ok(events) => {
-                if events.is_empty() {
-                    format!("No events found between {} and {}.", start, end)
-                } else {
-                    let mut result = format!("Events from {} to {} — {} found:\n\n", start, end, events.len());
-                    for e in &events {
-                        result.push_str(&format_event(e));
-                        if let Some(ref desc) = e.description {
-                            if !desc.is_empty() {
-                                let short = if desc.len() > 100 {
-                                    format!("{}...", &desc[..desc.floor_char_boundary(97)])
-                                } else {
-                                    desc.clone()
-                                };
-                                result.push_str(&format!("  Note: {}", short));
-                            }
+        // Try local cache first
+        let cached = calendar::get_cached_events(ctx.db.conn(), &time_min, &time_max);
+        let cache_fresh = calendar::cache_age_secs(ctx.db.conn()) < 1800.0;
+
+        // For queries, always try API (cache doesn't support text search)
+        let use_cache = query.is_none() && !cached.is_empty() && cache_fresh;
+
+        if use_cache {
+            let events: Vec<_> = cached.into_iter().take(max).collect();
+            return format_event_list_detailed(&events, &format!("Events from {} to {} — {} found (cached):", start, end, events.len()));
+        }
+
+        match get_token(&self.accounts) {
+            Ok(token) => {
+                match calendar::list_events(&token, None, Some(&time_min), Some(&time_max), max, query) {
+                    Ok(events) => {
+                        if query.is_none() {
+                            calendar::cache_events(ctx.db.conn(), &events, &time_min, &time_max);
                         }
-                        result.push('\n');
+                        format_event_list_detailed(&events, &format!("Events from {} to {} — {} found:", start, end, events.len()))
                     }
-                    result
+                    Err(e) => {
+                        // API failed — fall back to cache
+                        if !cached.is_empty() {
+                            let events: Vec<_> = cached.into_iter().take(max).collect();
+                            format_event_list_detailed(&events, &format!("Events from {} to {} — {} found (from cache, API unavailable):", start, end, events.len()))
+                        } else {
+                            format!("Failed to list events: {}", e)
+                        }
+                    }
                 }
             }
-            Err(e) => format!("Failed to list events: {}", e),
+            Err(_) => {
+                if !cached.is_empty() {
+                    let events: Vec<_> = cached.into_iter().take(max).collect();
+                    format_event_list_detailed(&events, &format!("Events from {} to {} — {} found (offline):", start, end, events.len()))
+                } else {
+                    format!("No events found between {} and {} — calendar not connected.", start, end)
+                }
+            }
         }
     }
 }

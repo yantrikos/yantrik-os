@@ -295,13 +295,15 @@ fn update_ui(ui: &App, state: &CalState) {
 }
 
 /// Try to load config and find an OAuth2 email account for Google Calendar.
-fn load_calendar_account(config_path: &Option<std::path::PathBuf>) -> Option<(EmailAccountConfig, String)> {
+/// Returns (account, config_path, db_path).
+fn load_calendar_account(config_path: &Option<std::path::PathBuf>) -> Option<(EmailAccountConfig, String, String)> {
     let path = config_path.as_ref()?;
     let config = CompanionConfig::from_yaml(path).ok()?;
     if !config.calendar.enabled {
         return None;
     }
 
+    let db_path = config.yantrikdb.db_path.clone();
     let preferred = config.calendar.account.as_deref();
 
     // Find OAuth2 account
@@ -317,10 +319,11 @@ fn load_calendar_account(config_path: &Option<std::path::PathBuf>) -> Option<(Em
             .cloned()
     };
 
-    account.map(|a| (a, path.to_string_lossy().to_string()))
+    account.map(|a| (a, path.to_string_lossy().to_string(), db_path))
 }
 
 /// Fetch Google Calendar events for a month in a background thread.
+/// Also caches events to the local SQLite `calendar_events` table.
 fn fetch_month_events(
     account: EmailAccountConfig,
     config_path: String,
@@ -328,6 +331,7 @@ fn fetch_month_events(
     month: u32,
     state: Arc<Mutex<CalState>>,
     ui_weak: slint::Weak<App>,
+    db_path: Option<String>,
 ) {
     std::thread::spawn(move || {
         let mut account = account;
@@ -346,6 +350,14 @@ fn fetch_month_events(
         match calendar::list_events(&token, None, Some(&time_min), Some(&time_max), 100, None) {
             Ok(events) => {
                 tracing::info!("Fetched {} calendar events for {:04}-{:02}", events.len(), year, month);
+                // Cache to local SQLite
+                if let Some(ref path) = db_path {
+                    if let Ok(conn) = rusqlite::Connection::open(path) {
+                        calendar::ensure_table(&conn);
+                        calendar::cache_events(&conn, &events, &time_min, &time_max);
+                        tracing::info!("Cached {} calendar events to local DB", events.len());
+                    }
+                }
                 if let Ok(mut s) = state.lock() {
                     s.load_google_events(events);
                     // Capture data needed for UI update
@@ -387,15 +399,18 @@ pub fn wire(ui: &App, ctx: &AppContext) {
     }
 
     // Try to load Google Calendar config
-    let cal_account = load_calendar_account(&ctx.config_path);
-    let has_google = cal_account.is_some();
+    let cal_info = load_calendar_account(&ctx.config_path);
+    let has_google = cal_info.is_some();
+    // Split into (account, config_path) tuple + separate db_path for caching
+    let db_path: Option<String> = cal_info.as_ref().map(|(_, _, dp)| dp.clone());
+    let cal_account: Option<(EmailAccountConfig, String)> = cal_info.map(|(a, cp, _)| (a, cp));
 
     // If Google Calendar is configured, fetch events for current month
     if let Some((account, config_path)) = cal_account.clone() {
         ui.set_cal_is_loading(true);
         let year = state.lock().map(|s| s.year).unwrap_or(2026);
         let month = state.lock().map(|s| s.month).unwrap_or(3);
-        fetch_month_events(account, config_path, year, month, state.clone(), ui.as_weak());
+        fetch_month_events(account, config_path, year, month, state.clone(), ui.as_weak(), db_path.clone());
     }
 
     // ── Prev month ──
@@ -403,6 +418,7 @@ pub fn wire(ui: &App, ctx: &AppContext) {
         let st = state.clone();
         let ui_weak = ui.as_weak();
         let cal_account = cal_account.clone();
+        let db_path = db_path.clone();
         ui.on_cal_prev_month(move || {
             if let Ok(mut s) = st.try_lock() {
                 if s.month == 1 {
@@ -419,7 +435,7 @@ pub fn wire(ui: &App, ctx: &AppContext) {
                         ui.set_cal_is_loading(true);
                         fetch_month_events(
                             account.clone(), config_path.clone(),
-                            s.year, s.month, st.clone(), ui.as_weak(),
+                            s.year, s.month, st.clone(), ui.as_weak(), db_path.clone(),
                         );
                     }
                 }
@@ -432,6 +448,7 @@ pub fn wire(ui: &App, ctx: &AppContext) {
         let st = state.clone();
         let ui_weak = ui.as_weak();
         let cal_account = cal_account.clone();
+        let db_path = db_path.clone();
         ui.on_cal_next_month(move || {
             if let Ok(mut s) = st.try_lock() {
                 if s.month == 12 {
@@ -448,7 +465,7 @@ pub fn wire(ui: &App, ctx: &AppContext) {
                         ui.set_cal_is_loading(true);
                         fetch_month_events(
                             account.clone(), config_path.clone(),
-                            s.year, s.month, st.clone(), ui.as_weak(),
+                            s.year, s.month, st.clone(), ui.as_weak(), db_path.clone(),
                         );
                     }
                 }
@@ -475,6 +492,7 @@ pub fn wire(ui: &App, ctx: &AppContext) {
         let st = state.clone();
         let ui_weak = ui.as_weak();
         let cal_account = cal_account.clone();
+        let db_path = db_path.clone();
         ui.on_cal_today_pressed(move || {
             if let Ok(mut s) = st.try_lock() {
                 let today = current_date();
@@ -490,7 +508,7 @@ pub fn wire(ui: &App, ctx: &AppContext) {
                             ui.set_cal_is_loading(true);
                             fetch_month_events(
                                 account.clone(), config_path.clone(),
-                                s.year, s.month, st.clone(), ui.as_weak(),
+                                s.year, s.month, st.clone(), ui.as_weak(), db_path.clone(),
                             );
                         }
                     }
@@ -669,13 +687,14 @@ pub fn wire(ui: &App, ctx: &AppContext) {
         let sync_timer = Timer::default();
         let st = state.clone();
         let ui_weak = ui.as_weak();
+        let db_path = db_path.clone();
         sync_timer.start(TimerMode::Repeated, std::time::Duration::from_secs(600), move || {
             if let Ok(s) = st.try_lock() {
                 let year = s.year;
                 let month = s.month;
                 fetch_month_events(
                     account.clone(), config_path.clone(),
-                    year, month, st.clone(), ui_weak.clone(),
+                    year, month, st.clone(), ui_weak.clone(), db_path.clone(),
                 );
             }
         });
