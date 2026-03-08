@@ -111,7 +111,7 @@ pub fn builtin_apps() -> Vec<DesktopEntry> {
         DesktopEntry {
             name: "Weather".into(), exec: "__builtin__".into(), icon: String::new(),
             categories: "Utility;".into(), comment: "Weather forecast dashboard".into(),
-            app_id: "weather".into(), icon_char: "\u{26C5}".into(),
+            app_id: "weather".into(), icon_char: "\u{2602}".into(),
         },
         DesktopEntry {
             name: "Music".into(), exec: "__builtin__".into(), icon: String::new(),
@@ -141,16 +141,39 @@ pub fn builtin_apps() -> Vec<DesktopEntry> {
         DesktopEntry {
             name: "Permissions".into(), exec: "__builtin__".into(), icon: String::new(),
             categories: "System;Security;".into(), comment: "File & system permissions".into(),
-            app_id: "permissions".into(), icon_char: "\u{1F512}".into(),
+            app_id: "permissions".into(), icon_char: "\u{2318}".into(),
         },
     ]
 }
+
+/// System apps that duplicate Yantrik built-ins or are noise in the launcher.
+const HIDDEN_APP_IDS: &[&str] = &[
+    "xfce4-about",        // About Xfce — we have our own About
+    "xfce4-settings-manager", // Xfce Settings — we have Settings
+    "thunar",             // Thunar — we have Files
+    "thunar-settings",    // Thunar settings
+    "thunar-bulk-rename", // Bulk rename — Thunar extension
+    "Thunar-bulk-rename", // Alternate casing
+    "xfce4-file-manager", // Another Thunar alias
+    "foot-client",        // Foot Client — we have Terminal
+    "footclient",         // Alternate ID
+    "foot-server",        // Foot Server — not user-facing
+    "foot",               // Foot — we have Terminal
+    "xfce4-terminal",     // Xfce Terminal — we have Terminal
+    "org.freedesktop.Xwayland", // Xwayland — not user-facing
+    "mpv",                    // mpv — we have Media Player built-in
+];
 
 /// Scan all XDG application directories for .desktop files.
 /// Returns built-in Yantrik apps first, then system apps sorted by name.
 pub fn scan() -> Vec<DesktopEntry> {
     let mut entries = builtin_apps();
     let mut seen_ids: std::collections::HashSet<String> = entries.iter().map(|e| e.app_id.clone()).collect();
+
+    // Pre-block hidden system app IDs
+    for id in HIDDEN_APP_IDS {
+        seen_ids.insert(id.to_string());
+    }
 
     // XDG dirs: user-local first (overrides system), then system
     let dirs = app_dirs();
@@ -382,11 +405,17 @@ fn strip_field_codes(exec: &str) -> String {
 /// Derive a single icon character from categories or app name.
 fn derive_icon_char(categories: &str, name: &str) -> String {
     let cats = categories.to_lowercase();
+    let name_lower = name.to_lowercase();
 
     if cats.contains("terminal") || cats.contains("system") {
         ">_".to_string()
     } else if cats.contains("webbrowser") || cats.contains("browser") {
-        "W".to_string()
+        // Distinguish browsers by name
+        if name_lower.contains("firefox") {
+            "\u{2740}".to_string() // ❀ flower for Firefox
+        } else {
+            "W".to_string()
+        }
     } else if cats.contains("filemanager") || cats.contains("filesystem") {
         "F".to_string()
     } else if cats.contains("texteditor") || cats.contains("editor") {

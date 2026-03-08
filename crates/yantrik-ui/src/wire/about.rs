@@ -27,14 +27,22 @@ fn populate_about_info(ui_weak: &slint::Weak<App>) {
         .unwrap_or_else(|| "unknown".to_string());
     ui.set_about_kernel(kernel.into());
 
-    // CPU model name from /proc/cpuinfo
+    // CPU model name from /proc/cpuinfo (trimmed for display)
     let cpu = std::fs::read_to_string("/proc/cpuinfo")
         .ok()
         .and_then(|c| {
             c.lines()
                 .find(|l| l.starts_with("model name"))
                 .and_then(|l| l.split(':').nth(1))
-                .map(|s| s.trim().to_string())
+                .map(|s| {
+                    s.trim()
+                        .replace("(R)", "")
+                        .replace("(TM)", "")
+                        .replace("  ", " ")
+                        .replace(" Processor", "")
+                        .trim()
+                        .to_string()
+                })
         })
         .unwrap_or_else(|| "unknown".to_string());
     ui.set_about_cpu(cpu.into());
@@ -56,10 +64,12 @@ fn populate_about_info(ui_weak: &slint::Weak<App>) {
     ui.set_about_ram(ram.into());
 
     // Disk info via df command
+    // Try GNU df first (--output), fall back to plain df -h (BusyBox/Alpine)
     let disk = std::process::Command::new("df")
         .args(["-h", "--output=size,avail", "/"])
         .output()
         .ok()
+        .filter(|out| out.status.success())
         .and_then(|out| {
             let s = String::from_utf8_lossy(&out.stdout);
             let line = s.lines().nth(1)?;
@@ -69,6 +79,24 @@ fn populate_about_info(ui_weak: &slint::Weak<App>) {
             } else {
                 None
             }
+        })
+        .or_else(|| {
+            // Fallback: plain `df -h /` — columns: Filesystem Size Used Avail Use% Mounted
+            std::process::Command::new("df")
+                .args(["-h", "/"])
+                .output()
+                .ok()
+                .and_then(|out| {
+                    let s = String::from_utf8_lossy(&out.stdout);
+                    let line = s.lines().nth(1)?;
+                    let parts: Vec<&str> = line.split_whitespace().collect();
+                    if parts.len() >= 4 {
+                        // parts[1]=Size, parts[3]=Avail
+                        Some(format!("{} free of {}", parts[3], parts[1]))
+                    } else {
+                        None
+                    }
+                })
         })
         .unwrap_or_else(|| "unknown".to_string());
     ui.set_about_disk(disk.into());

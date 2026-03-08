@@ -3,6 +3,14 @@
 
 import { Theme } from "theme.slint";
 
+export struct ComponentVersionData {
+    name: string,
+    current-version: string,
+    latest-version: string,
+    has-update: bool,
+    is-checking: bool,
+}
+
 export component AboutScreen inherits Rectangle {
     background: Theme.bg-deep;
 
@@ -16,7 +24,13 @@ export component AboutScreen inherits Rectangle {
     in property <string> version-text: "0.3.0";
     in property <string> build-date: "";
 
+    // Component versions
+    in property <[ComponentVersionData]> components: [];
+    in property <int> update-count: 0;
+    in property <string> update-status: "";
+
     callback back-pressed();
+    callback check-updates();
 
     VerticalLayout {
         width: 100%;
@@ -220,10 +234,10 @@ export component AboutScreen inherits Rectangle {
                                 Text {
                                     text: root.cpu-model;
                                     color: Theme.text-primary;
-                                    font-size: Theme.font-body;
+                                    font-size: Theme.font-small;
                                     vertical-alignment: center;
                                     overflow: elide;
-                                    max-width: 280px;
+                                    max-width: 500px;
                                 }
                             }
                         }
@@ -352,6 +366,137 @@ export component AboutScreen inherits Rectangle {
                             }
                         }
                     }
+                }
+
+                // ── COMPONENTS section header ──
+                HorizontalLayout {
+                    spacing: 8px;
+                    Rectangle {
+                        width: 3px; height: 14px;
+                        border-radius: 1.5px;
+                        background: Theme.holo-blue;
+                        drop-shadow-blur: 4px;
+                        drop-shadow-color: #1565c040;
+                    }
+                    Text {
+                        text: "COMPONENTS";
+                        color: Theme.text-dim;
+                        font-size: 11px;
+                        letter-spacing: 2px;
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                    }
+
+                    // Check for updates button
+                    Rectangle {
+                        width: update-btn-text.preferred-width + 20px;
+                        height: 28px;
+                        border-radius: 14px;
+                        background: update-ta.has-hover ? Theme.hover-fill-strong : Theme.hover-fill;
+                        border-width: 1px;
+                        border-color: root.update-count > 0 ? Theme.holo-blue : Theme.border-subtle;
+
+                        update-btn-text := Text {
+                            text: root.update-count > 0
+                                ? root.update-count + " update(s)"
+                                : "Check Updates";
+                            font-size: 11px;
+                            color: root.update-count > 0 ? Theme.holo-blue : Theme.text-secondary;
+                            font-weight: 500;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+
+                        update-ta := TouchArea {
+                            clicked => { root.check-updates(); }
+                        }
+                    }
+                }
+
+                // ── Components card ──
+                Rectangle {
+                    background: Theme.bg-card;
+                    border-radius: Theme.radius-card;
+                    border-width: 1px;
+                    border-color: #ffffff08;
+                    height: comp-col.preferred-height;
+
+                    comp-col := VerticalLayout {
+                        padding: 16px;
+                        spacing: 0px;
+
+                        for comp[idx] in root.components : VerticalLayout {
+                            spacing: 0px;
+
+                            Rectangle {
+                                height: 48px;
+
+                                HorizontalLayout {
+                                    padding-left: 4px;
+                                    padding-right: 4px;
+                                    spacing: 8px;
+
+                                    // Component name
+                                    Text {
+                                        text: comp.name;
+                                        color: Theme.text-primary;
+                                        font-size: Theme.font-body;
+                                        font-weight: 500;
+                                        vertical-alignment: center;
+                                        horizontal-stretch: 1;
+                                    }
+
+                                    // Current version
+                                    Text {
+                                        text: comp.current-version;
+                                        color: Theme.text-secondary;
+                                        font-size: Theme.font-small;
+                                        vertical-alignment: center;
+                                    }
+
+                                    // Update indicator
+                                    if comp.has-update : Rectangle {
+                                        width: upd-text.preferred-width + 12px;
+                                        height: 20px;
+                                        border-radius: 10px;
+                                        background: #1565c020;
+                                        border-width: 1px;
+                                        border-color: #1565c040;
+
+                                        upd-text := Text {
+                                            text: comp.latest-version;
+                                            font-size: 10px;
+                                            color: Theme.holo-blue;
+                                            font-weight: 600;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+
+                                    if comp.is-checking : Text {
+                                        text: "...";
+                                        font-size: Theme.font-small;
+                                        color: Theme.text-dim;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                            }
+
+                            // Separator between items (not after last)
+                            if idx < root.components.length - 1 : Rectangle {
+                                height: 1px;
+                                background: #ffffff06;
+                            }
+                        }
+                    }
+                }
+
+                // Update status text
+                if root.update-status != "" : Text {
+                    text: root.update-status;
+                    font-size: Theme.font-small;
+                    color: root.update-count > 0 ? Theme.holo-blue : Theme.text-dim;
+                    horizontal-alignment: center;
                 }
 
                 // Bottom spacer

@@ -108,6 +108,7 @@ export component DesktopScreen inherits Rectangle {
     in-out property <bool> app-grid-open: false;
     in property <[AppGridItem]> grid-apps: [];
     callback grid-launch-app(string);
+    callback grid-search-apps(string);
 
     // Window switcher
     in-out property <bool> window-switcher-open: false;
@@ -572,6 +573,7 @@ export component DesktopScreen inherits Rectangle {
         apps: root.grid-apps;
         launch-app(app-id) => { root.grid-launch-app(app-id); }
         close => { root.app-grid-open = false; }
+        search-changed(query) => { root.grid-search-apps(query); }
     }
 
     // ── Layer 2.54: Window switcher overlay ──

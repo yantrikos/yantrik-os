@@ -25,7 +25,7 @@ import { TextEditorScreen } from "text_editor.slint";
 import { MediaPlayer } from "media_player.slint";
 import { TerminalScreen, TerminalTabData } from "terminal.slint";
 import { NotesEditor, NoteEntry } from "notes_editor.slint";
-import { AboutScreen } from "about.slint";
+import { AboutScreen, ComponentVersionData } from "about.slint";
 import { EmailClient, EmailFolderData, EmailListItem, EmailDetailData } from "email.slint";
 import { CalendarScreen, CalendarDay, CalendarEvent } from "calendar.slint";
 import { PackageManager, PackageData, PendingAction } from "package_manager.slint";
@@ -50,7 +50,7 @@ import { DockItem, AppDock } from "components/app_dock.slint";
 import { WindowFrame } from "components/window_frame.slint";
 import { Tr } from "translations.slint";
 
-export { Tr, ThemeMode, ThemeOverrides, AccentPreset, ContentBlock, MessageData, UrgeCardData, BondData, OpinionData, SharedRefData, MemoryItem, LensResult, WhisperCardItem, FileEntry, BreadcrumbSegment, FileDetailData, NotificationData, ProcessData, ClipboardEntryData, AppGridItem, WindowItem, DockItem, NoteEntry, ToastData, TerminalTabData, EmailFolderData, EmailListItem, EmailDetailData, CalendarDay, CalendarEvent, PackageData, PendingAction, WifiNetwork, EthernetInterface, BluetoothDevice, VpnConnection, FirewallRule, CpuCoreData, DiskData, NetworkInterfaceData, MonitorProcessData, WeatherCurrent, WeatherHourly, WeatherDaily, MusicTrackData, DownloadItem, SnippetData, TagChip, ContainerData, ImageData, VolumeData, UsbDeviceData, PciDeviceData, InputDeviceData, StorageDeviceData, DisplayDeviceData, UserData, GroupData, PermFileData }
+export { Tr, ThemeMode, ThemeOverrides, AccentPreset, ContentBlock, MessageData, UrgeCardData, BondData, OpinionData, SharedRefData, MemoryItem, LensResult, WhisperCardItem, FileEntry, BreadcrumbSegment, FileDetailData, NotificationData, ProcessData, ClipboardEntryData, AppGridItem, WindowItem, DockItem, NoteEntry, ToastData, TerminalTabData, EmailFolderData, EmailListItem, EmailDetailData, CalendarDay, CalendarEvent, PackageData, PendingAction, WifiNetwork, EthernetInterface, BluetoothDevice, VpnConnection, FirewallRule, CpuCoreData, DiskData, NetworkInterfaceData, MonitorProcessData, WeatherCurrent, WeatherHourly, WeatherDaily, MusicTrackData, DownloadItem, SnippetData, TagChip, ContainerData, ImageData, VolumeData, UsbDeviceData, PciDeviceData, InputDeviceData, StorageDeviceData, DisplayDeviceData, UserData, GroupData, PermFileData, ComponentVersionData }
 
 export component App inherits Window {
     title: "Yantrik OS";
@@ -151,6 +151,7 @@ export component App inherits Window {
     in-out property <bool> app-grid-open: false;
     in property <[AppGridItem]> grid-apps: [];
     callback grid-launch-app(string);
+    callback grid-search-apps(string);
 
     // Window switcher state
     in-out property <bool> window-switcher-open: false;
@@ -407,6 +408,10 @@ export component App inherits Window {
     in property <string> about-uptime: "";
     in property <string> about-version: "0.3.0";
     in property <string> about-build-date: "";
+    in property <[ComponentVersionData]> about-components: [];
+    in property <int> about-update-count: 0;
+    in property <string> about-update-status: "";
+    callback about-check-updates();
 
     // Email Client state (screen 17)
     in property <[EmailFolderData]> email-folders: [];
@@ -846,6 +851,7 @@ export component App inherits Window {
             app-grid-open <=> root.app-grid-open;
             grid-apps: root.grid-apps;
             grid-launch-app(app-id) => { root.grid-launch-app(app-id); }
+            grid-search-apps(query) => { root.grid-search-apps(query); }
             // Window switcher
             window-switcher-open <=> root.window-switcher-open;
             window-list: root.window-list;
@@ -1400,6 +1406,10 @@ export component App inherits Window {
                 uptime-text: root.about-uptime;
                 version-text: root.about-version;
                 build-date: root.about-build-date;
+                components: root.about-components;
+                update-count: root.about-update-count;
+                update-status: root.about-update-status;
+                check-updates => { root.about-check-updates(); }
                 back-pressed => {
                     root.current-screen = 7;
                     root.navigate(7);

@@ -170,6 +170,33 @@ pub fn wire(ui: &App, ctx: &AppContext) {
             ui.set_battery_level(snap.battery_level as i32);
             ui.set_battery_charging(snap.battery_charging);
             ui.set_wifi_connected(snap.network_connected);
+            if snap.network_connected {
+                if let Some(ssid) = &snap.network_ssid {
+                    ui.set_sys_wifi_ssid(slint::SharedString::from(ssid.as_str()));
+                }
+                // Populate IP address for Settings > Network (only if empty)
+                if ui.get_settings_ip_address().is_empty() {
+                    let ip = std::process::Command::new("ip")
+                        .args(["-4", "addr", "show", "scope", "global"])
+                        .output()
+                        .ok()
+                        .and_then(|o| if o.status.success() {
+                            String::from_utf8(o.stdout).ok()
+                        } else { None })
+                        .and_then(|out| {
+                            out.lines()
+                                .find(|l| l.contains("inet "))
+                                .and_then(|l| l.split_whitespace()
+                                    .nth(1)
+                                    .and_then(|cidr| cidr.split('/').next())
+                                    .map(|s| s.to_string()))
+                        })
+                        .unwrap_or_default();
+                    ui.set_settings_ip_address(slint::SharedString::from(ip.as_str()));
+                }
+            } else {
+                ui.set_settings_ip_address(slint::SharedString::default());
+            }
 
             // Ambient Intelligence: push sentiment, cognitive load, time-of-day
             let (sentiment, cognitive_load) = bridge.ambient_state();

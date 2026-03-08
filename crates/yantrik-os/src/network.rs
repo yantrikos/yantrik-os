@@ -39,7 +39,8 @@ pub fn run_network_monitor(tx: Sender<SystemEvent>) {
         .any(|n| n.as_str() == "org.freedesktop.NetworkManager");
 
     if !has_nm {
-        tracing::info!("NetworkManager not available — network monitor disabled");
+        tracing::info!("NetworkManager not available — using /sys/class/net fallback");
+        run_fallback_monitor(tx);
         return;
     }
 
@@ -51,6 +52,47 @@ pub fn run_network_monitor(tx: Sender<SystemEvent>) {
         }
         std::thread::sleep(std::time::Duration::from_secs(15));
     }
+}
+
+/// Fallback network monitor for systems without NetworkManager.
+/// Checks /sys/class/net for carrier state.
+fn run_fallback_monitor(tx: Sender<SystemEvent>) {
+    // Send initial state immediately
+    let mut last_connected = is_any_interface_up();
+    let _ = tx.send(SystemEvent::NetworkChanged {
+        connected: last_connected,
+        ssid: None,
+        signal: None,
+    });
+    loop {
+        std::thread::sleep(std::time::Duration::from_secs(15));
+        let connected = is_any_interface_up();
+        if connected != last_connected {
+            let _ = tx.send(SystemEvent::NetworkChanged {
+                connected,
+                ssid: None,
+                signal: None,
+            });
+            last_connected = connected;
+        }
+    }
+}
+
+/// Check if any non-loopback interface is up with a carrier.
+fn is_any_interface_up() -> bool {
+    let Ok(entries) = std::fs::read_dir("/sys/class/net") else { return false };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name == "lo" { continue; }
+        let operstate = entry.path().join("operstate");
+        if let Ok(state) = std::fs::read_to_string(&operstate) {
+            if state.trim() == "up" {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// Read network state from NetworkManager via D-Bus.

@@ -1,9 +1,8 @@
 // App Grid — full-screen app launcher overlay.
-// Shows all installed apps in a scrollable grid.
+// Shows all installed apps in a scrollable grid with search.
 // Triggered by Super+A or dock gesture.
 
 import { Theme } from "../theme.slint";
-import { ListView } from "std-widgets.slint";
 
 export struct AppGridItem {
     app-id: string,
@@ -17,9 +16,14 @@ export component AppGrid inherits Rectangle {
 
     callback launch-app(string);
     callback close();
+    callback search-changed(string);
 
     width: 100%;
     height: 100%;
+
+    property <int> columns: 4;
+    property <length> cell-size: 140px;
+    property <length> grid-width: root.columns * root.cell-size + (root.columns - 1) * 16px + 48px;
 
     // Backdrop (click to close)
     if root.is-open : TouchArea {
@@ -36,10 +40,11 @@ export component AppGrid inherits Rectangle {
 
     // Centered panel
     if root.is-open : Rectangle {
-        x: (parent.width - 720px) / 2;
+        x: (parent.width - root.grid-width) / 2;
         y: (parent.height - panel-height) / 2;
-        property <length> panel-height: min(root.apps.length * 52px + 120px, parent.height - 80px);
-        width: 720px;
+        property <int> rows: (root.apps.length + root.columns - 1) / root.columns;
+        property <length> panel-height: min(self.rows * (root.cell-size + 12px) + 190px, parent.height - 80px);
+        width: root.grid-width;
         height: panel-height;
         background: Theme.bg-elevated;
         border-radius: 16px;
@@ -65,52 +70,114 @@ export component AppGrid inherits Rectangle {
                 horizontal-alignment: center;
             }
 
-            Text {
-                text: root.apps.length + " apps installed";
-                color: Theme.text-dim;
-                font-size: Theme.font-small;
-                horizontal-alignment: center;
+            // Search bar
+            Rectangle {
+                height: 40px;
+                background: Theme.bg-deep;
+                border-radius: 12px;
+                border-width: 1px;
+                border-color: search-input.has-focus ? Theme.cyan-dim : Theme.border-subtle;
+
+                HorizontalLayout {
+                    padding-left: 14px;
+                    padding-right: 14px;
+                    spacing: 10px;
+
+                    // Search icon
+                    Text {
+                        text: "\u{2315}";
+                        color: Theme.text-dim;
+                        font-size: 16px;
+                        vertical-alignment: center;
+                    }
+
+                    search-input := TextInput {
+                        vertical-alignment: center;
+                        font-size: Theme.font-body;
+                        color: Theme.text-primary;
+                        horizontal-stretch: 1;
+
+                        edited => {
+                            root.search-changed(self.text);
+                        }
+
+                        // Clear on close
+                    }
+
+                    // Result count
+                    Text {
+                        text: root.apps.length + " apps";
+                        color: Theme.text-dim;
+                        font-size: 11px;
+                        vertical-alignment: center;
+                    }
+                }
             }
 
             Rectangle { height: 1px; background: Theme.separator; }
 
-            // Scrollable app list
-            ListView {
+            // Empty state
+            if root.apps.length == 0 : VerticalLayout {
                 vertical-stretch: 1;
+                alignment: center;
+                spacing: 8px;
+
+                Text {
+                    text: "No apps found";
+                    color: Theme.text-dim;
+                    font-size: Theme.font-body;
+                    horizontal-alignment: center;
+                }
+                Text {
+                    text: "Try a different search term";
+                    color: Theme.text-dim;
+                    font-size: Theme.font-small;
+                    horizontal-alignment: center;
+                }
+            }
+
+            // Scrollable app grid
+            if root.apps.length > 0 : Flickable {
+                vertical-stretch: 1;
+                viewport-height: ((root.apps.length + root.columns - 1) / root.columns) * (root.cell-size + 12px);
 
                 for app[idx] in root.apps : TouchArea {
-                    height: 52px;
+                    x: Math.mod(idx, root.columns) * (root.cell-size + 16px) + 4px;
+                    y: Math.floor(idx / root.columns) * (root.cell-size + 12px);
+                    width: root.cell-size;
+                    height: root.cell-size;
+
                     clicked => {
                         root.launch-app(app.app-id);
                         root.is-open = false;
                         root.close();
                     }
 
-                    Rectangle {
+                    cell := Rectangle {
                         width: 100%;
                         height: 100%;
-                        border-radius: 10px;
+                        border-radius: 14px;
                         background: parent.has-hover ? Theme.hover-fill : transparent;
+                        property <bool> hovered: parent.has-hover;
 
-                        HorizontalLayout {
-                            padding-left: 14px;
-                            padding-right: 14px;
-                            spacing: 14px;
+                        VerticalLayout {
+                            alignment: center;
+                            spacing: 10px;
+                            padding: 12px;
 
                             // Icon badge
                             Rectangle {
-                                width: 36px;
-                                height: 36px;
-                                y: (parent.height - 36px) / 2;
-                                border-radius: 10px;
+                                width: 52px;
+                                height: 52px;
+                                border-radius: 14px;
                                 background: Theme.bg-card;
                                 border-width: 1px;
-                                border-color: Theme.border-subtle;
+                                border-color: cell.hovered ? Theme.cyan-dim : Theme.border-subtle;
 
                                 Text {
                                     text: app.icon-char;
                                     color: Theme.cyan;
-                                    font-size: 16px;
+                                    font-size: 20px;
                                     font-weight: 700;
                                     horizontal-alignment: center;
                                     vertical-alignment: center;
@@ -121,10 +188,11 @@ export component AppGrid inherits Rectangle {
                             Text {
                                 text: app.name;
                                 color: Theme.text-primary;
-                                font-size: Theme.font-body;
-                                vertical-alignment: center;
-                                horizontal-stretch: 1;
+                                font-size: 12px;
+                                font-weight: 500;
+                                horizontal-alignment: center;
                                 overflow: elide;
+                                max-width: root.cell-size - 24px;
                             }
                         }
                     }
