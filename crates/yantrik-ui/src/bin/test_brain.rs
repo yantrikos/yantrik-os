@@ -53,7 +53,7 @@ fn main() {
     ok();
 
     // ── Load LLM ──
-    let llm: Box<dyn LLMBackend> = if config.llm.is_api_backend() {
+    let llm: std::sync::Arc<dyn LLMBackend> = if config.llm.is_api_backend() {
         let base_url = config.llm.resolve_api_base_url()
             .expect("api_base_url required for API backend");
         let model = config.llm.api_model.as_deref()
@@ -62,7 +62,7 @@ fn main() {
         let llm = ApiLLM::new(base_url, config.llm.api_key.clone(), model);
         println!("  backend: {}", llm.backend_name());
         ok();
-        Box::new(llm)
+        std::sync::Arc::new(llm)
     } else {
         print_step("Loading Candle LLM");
         let t = Instant::now();
@@ -74,7 +74,7 @@ fn main() {
         };
         println!("  loaded in {:.1}s", t.elapsed().as_secs_f64());
         ok();
-        Box::new(llm)
+        std::sync::Arc::new(llm)
     };
 
     // ── Create YantrikDB (use temp copy to avoid corrupting real DB) ──

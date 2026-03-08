@@ -29,6 +29,12 @@ pub fn build_router(service: CompanionService) -> Router {
         start_time,
     });
 
+    build_router_from_state(state)
+}
+
+/// Build the axum router from a pre-existing shared state.
+/// Use this when you need to share AppState with other threads (e.g. background cognition).
+pub fn build_router_from_state(state: std::sync::Arc<AppState>) -> Router {
     Router::new()
         .merge(routes::routes())
         .layer(CorsLayer::permissive())

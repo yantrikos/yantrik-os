@@ -83,12 +83,16 @@ impl Instinct for CuriosityInstinct {
 
         // The EXECUTE prefix triggers handle_message_streaming with tool access
         let execute_msg = format!(
-            "EXECUTE Use recall_preferences with category \"{}\" to check what {} is interested in. \
-             Then use web_search to find one recent interesting development related to those interests. \
-             If you find something genuinely noteworthy, share it naturally in 1-2 sentences \
-             as a proactive message. If nothing interesting turns up, just say so briefly. \
+            "EXECUTE STEP 1: Call date_calc to get today's date and current time.\n\
+             STEP 2: Use recall_preferences with category \"{}\" to check what {} is interested in.\n\
+             STEP 3: Call recall with query \"{} curiosity finding\" to check what you already \
+             shared recently. Do NOT share the same finding again.\n\
+             STEP 4: Use web_search to find one recent interesting development related to those interests. \
+             If you find something genuinely noteworthy AND you haven't already shared it, \
+             share it naturally in 1-2 sentences as a proactive message. \
+             If nothing new or interesting turns up, just say so briefly. \
              After you're done, call browser_cleanup to free resources.",
-            category, user,
+            category, user, category,
         );
 
         vec![UrgeSpec::new(

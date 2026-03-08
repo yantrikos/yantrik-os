@@ -99,6 +99,7 @@ pub mod claude;
 pub mod vault;
 pub mod coder;
 pub mod plugin;
+pub mod spawn_agents;
 
 use crate::config::CompanionConfig;
 use yantrikdb_core::YantrikDB;
@@ -161,6 +162,19 @@ pub trait Tool: Send + Sync {
     fn execute(&self, ctx: &ToolContext, args: &serde_json::Value) -> String;
 }
 
+/// Context needed to spawn parallel sub-agents from a tool.
+#[derive(Clone)]
+pub struct AgentSpawnerContext {
+    pub llm: std::sync::Arc<dyn yantrik_ml::LLMBackend>,
+    pub db_path: String,
+    pub embedding_dim: usize,
+    pub max_steps: usize,
+    pub max_tokens: usize,
+    pub temperature: f64,
+    pub user_name: String,
+    pub config: crate::config::CompanionConfig,
+}
+
 /// Shared context passed to every tool at execution time.
 pub struct ToolContext<'a> {
     pub db: &'a YantrikDB,
@@ -172,6 +186,8 @@ pub struct ToolContext<'a> {
     pub task_manager: Option<&'a std::sync::Mutex<crate::task_manager::TaskManager>>,
     /// When true, tools that persist data should skip saving.
     pub incognito: bool,
+    /// Context for spawning parallel sub-agents.
+    pub agent_spawner: Option<&'a AgentSpawnerContext>,
 }
 
 /// Compact tool metadata for discovery (no full JSON schema).
@@ -478,6 +494,7 @@ pub fn build_registry(config: &CompanionConfig) -> ToolRegistry {
 
     // Load YAML plugins from ~/.config/yantrik/plugins/
     plugin::load_plugins(&mut reg);
+    spawn_agents::register(&mut reg);
 
     reg
 }

@@ -575,7 +575,7 @@ pub struct InstinctSettings {
 }
 
 fn default_check_in_hours() -> f64 {
-    6.0
+    2.0
 }
 fn default_follow_up_hours() -> f64 {
     4.0
@@ -614,10 +614,10 @@ fn default_identity_thread_interval() -> f64 { 168.0 } // ~weekly
 fn default_myth_buster_interval() -> f64 { 8.0 }
 fn default_cooking_companion_interval() -> f64 { 6.0 }
 fn default_second_brain_interval() -> f64 { 12.0 }
-fn default_health_pulse_interval() -> f64 { 8.0 }
+fn default_health_pulse_interval() -> f64 { 4.0 }
 fn default_money_mind_interval() -> f64 { 12.0 }
-fn default_relationship_radar_interval() -> f64 { 24.0 }
-fn default_goal_keeper_interval() -> f64 { 48.0 }
+fn default_relationship_radar_interval() -> f64 { 6.0 }
+fn default_goal_keeper_interval() -> f64 { 6.0 }
 fn default_decision_lab_interval() -> f64 { 8.0 }
 fn default_skill_forge_interval() -> f64 { 12.0 }
 fn default_time_capture_interval() -> f64 { 12.0 }

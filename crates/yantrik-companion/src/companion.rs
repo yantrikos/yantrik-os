@@ -66,8 +66,8 @@ pub const TOOL_CATEGORIES: &[(&str, &[&str], &[&str])] = &[
      &["telegram_send", "send_notification"]),
     ("life", &["recommend", "suggestion", "preference", "find me", "search for", "best", "top", "nearby", "restaurant", "hotel"],
      &["life_search", "recall_preferences", "save_user_fact", "search_sources", "extract_search_results", "rank_results"]),
-    ("memory", &["memory", "memories", "forget", "conflict", "review memory"],
-     &["memory_stats", "resolve_conflicts", "review_memories"]),
+    ("memory", &["memory", "memories", "forget", "conflict", "review memory", "stop talking", "don't bring up", "stop tracking", "drop topic"],
+     &["memory_stats", "resolve_conflicts", "review_memories", "forget_topic"]),
     ("tasks", &["task", "queue", "todo", "backlog"],
      &["queue_task", "list_tasks", "update_task", "complete_task"]),
     ("recipes", &["recipe", "automation", "workflow", "automate"],
@@ -76,8 +76,10 @@ pub const TOOL_CATEGORIES: &[(&str, &[&str], &[&str])] = &[
      &["get_weather"]),
     ("connectors", &["connect", "oauth", "google", "spotify", "sync service"],
      &["list_connections", "connect_service", "sync_service", "disconnect_service"]),
-    ("delegation", &["think hard", "complex", "analyze", "deep think", "claude"],
-     &["claude_think", "claude_code"]),
+    ("delegation", &["think hard", "complex", "analyze", "deep think", "claude",
+                      "parallel", "simultaneously", "at the same time", "agents", "multiple tasks",
+                      "spawn", "concurrent"],
+     &["claude_think", "claude_code", "spawn_agents"]),
     ("bond", &["bond", "relationship", "trust level"],
      &["check_bond"]),
     ("screenshot", &["screenshot", "capture screen", "screen"],
@@ -103,7 +105,7 @@ pub const CORE_TOOLS: &[&str] = &[
     "calculate", "screenshot",
     "email_check", "email_list", "email_read", "email_send", "email_reply", "email_search",
     "calendar_today", "calendar_list_events", "calendar_create_event", "calendar_update_event", "calendar_delete_event",
-    "memory_stats", "resolve_conflicts", "review_memories",
+    "memory_stats", "resolve_conflicts", "review_memories", "forget_topic",
     "queue_task", "list_tasks", "update_task", "complete_task",
     "create_recipe", "list_recipes", "run_recipe",
     "claude_think", "claude_code",
@@ -170,7 +172,7 @@ pub fn select_tools_for_query(query: &str, db: &YantrikDB, max_extra: usize) -> 
 /// The companion agent — memory + inference + instincts + bond + evolution in one struct.
 pub struct CompanionService {
     pub db: YantrikDB,
-    pub llm: Box<dyn LLMBackend>,
+    pub llm: std::sync::Arc<dyn LLMBackend>,
     pub config: CompanionConfig,
     pub urge_queue: UrgeQueue,
     instincts: Vec<Box<dyn Instinct>>,
@@ -269,7 +271,7 @@ pub struct CompanionService {
 
 impl CompanionService {
     /// Create a new companion from pre-built YantrikDB and LLM backend.
-    pub fn new(db: YantrikDB, llm: Box<dyn LLMBackend>, config: CompanionConfig) -> Self {
+    pub fn new(db: YantrikDB, llm: std::sync::Arc<dyn LLMBackend>, config: CompanionConfig) -> Self {
         // Ensure soul tables exist
         BondTracker::ensure_tables(db.conn());
         Evolution::ensure_tables(db.conn());
@@ -549,6 +551,7 @@ impl CompanionService {
             registry_metadata: None,
             task_manager: Some(&self.task_manager),
             incognito: self.incognito,
+            agent_spawner: None,
         };
         self.registry.execute(&ctx, tool_name, args)
     }
@@ -762,6 +765,18 @@ impl CompanionService {
         let mut is_offline = false;
         let mut agent_loop = AgentLoop::new(user_text, self.config.agent.max_nudges);
 
+        // Build AgentSpawnerContext for parallel sub-agent tool
+        let agent_spawner = Some(tools::AgentSpawnerContext {
+            llm: self.llm.clone(),
+            db_path: self.config.yantrikdb.db_path.clone(),
+            embedding_dim: self.config.yantrikdb.embedding_dim,
+            max_steps: 10,
+            max_tokens: self.config.llm.max_tokens,
+            temperature: self.config.llm.temperature,
+            user_name: self.config.user_name.clone(),
+            config: self.config.clone(),
+        });
+
         // Discovery rounds are limited; actual tool rounds reset the counter.
         let mut discovery_budget = self.config.tools.max_tool_rounds;
         let max_total_rounds = self.config.agent.max_steps.max(15);
@@ -854,6 +869,7 @@ impl CompanionService {
                 self.config.agent.error_recovery,
                 self.incognito,
                 self.cortex.as_mut(),
+                agent_spawner.as_ref(),
             );
 
             if !text_part.is_empty() {
@@ -1185,6 +1201,18 @@ impl CompanionService {
         let mut is_offline = false;
         let mut agent_loop = AgentLoop::new(user_text, self.config.agent.max_nudges);
 
+        // Build AgentSpawnerContext for parallel sub-agent tool
+        let agent_spawner = Some(tools::AgentSpawnerContext {
+            llm: self.llm.clone(),
+            db_path: self.config.yantrikdb.db_path.clone(),
+            embedding_dim: self.config.yantrikdb.embedding_dim,
+            max_steps: 10,
+            max_tokens: self.config.llm.max_tokens,
+            temperature: self.config.llm.temperature,
+            user_name: self.config.user_name.clone(),
+            config: self.config.clone(),
+        });
+
         // Round 1: streaming
         let mut streamed_text = String::new();
         // Compute tools_param in a temporary scope so it drops before any mutable borrow of native_tools
@@ -1269,6 +1297,7 @@ impl CompanionService {
                         self.config.agent.error_recovery,
                         self.incognito,
                         self.cortex.as_mut(),
+                        agent_spawner.as_ref(),
                     );
 
                     // Remaining rounds: discovery rounds are budget-limited,
@@ -1363,6 +1392,7 @@ impl CompanionService {
                                     self.config.agent.error_recovery,
                                     self.incognito,
                                     self.cortex.as_mut(),
+                                    agent_spawner.as_ref(),
                                 );
 
                                 if !round_text.is_empty() {
@@ -1986,6 +2016,7 @@ fn execute_tool_round(
         registry_metadata: None,
         task_manager: Some(task_manager),
         incognito,
+        agent_spawner: None,
     };
 
     for (idx, (name, args)) in tool_calls.iter().enumerate() {
@@ -2000,6 +2031,7 @@ fn execute_tool_round(
                 registry_metadata: Some(&metadata),
                 task_manager: Some(task_manager),
                 incognito,
+                agent_spawner: None,
             };
             registry.execute(&disc_ctx, name, args)
         } else {
@@ -2094,6 +2126,7 @@ fn execute_tool_round_tracked(
     error_recovery: bool,
     incognito: bool,
     mut cortex: Option<&mut crate::cortex::ContextCortex>,
+    agent_spawner: Option<&tools::AgentSpawnerContext>,
 ) {
     let ctx = ToolContext {
         db,
@@ -2101,6 +2134,7 @@ fn execute_tool_round_tracked(
         registry_metadata: None,
         task_manager: Some(task_manager),
         incognito,
+        agent_spawner,
     };
 
     for (idx, (name, args)) in tool_calls.iter().enumerate() {
@@ -2130,6 +2164,7 @@ fn execute_tool_round_tracked(
                 registry_metadata: Some(&metadata),
                 task_manager: Some(task_manager),
                 incognito,
+                agent_spawner,
             };
             registry.execute(&disc_ctx, name, args)
         } else {

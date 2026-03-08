@@ -79,14 +79,29 @@ GIT_HASH=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 BUILD_DATE=$(date +%Y-%m-%d)
 
 if [ "$CHANNEL" = "nightly" ]; then
-    # Nightly gets a suffix
     BUILD_NUM=$(date +%Y%m%d%H%M)
     FULL_VERSION="${VERSION}-nightly.${BUILD_NUM}"
 else
     FULL_VERSION="$VERSION"
 fi
 
+# ── Collect component versions ──
+read_cargo_version() {
+    grep '^version' "$1" 2>/dev/null | head -1 | sed 's/.*"\(.*\)"/\1/' || echo "0.0.0"
+}
+
+COMP_ML_VER=$(read_cargo_version crates/yantrik-ml/Cargo.toml)
+COMP_DB_VER=$(read_cargo_version crates/yantrikdb-core/Cargo.toml)
+COMP_COMPANION_VER=$(read_cargo_version crates/yantrik-companion/Cargo.toml)
+COMP_OS_VER=$(read_cargo_version crates/yantrik-os/Cargo.toml)
+COMP_UI_VER=$(read_cargo_version crates/yantrik-ui/Cargo.toml)
+
 step "Version: $FULL_VERSION ($GIT_HASH)"
+ok "yantrik-ml: $COMP_ML_VER"
+ok "yantrikdb: $COMP_DB_VER"
+ok "yantrik-companion: $COMP_COMPANION_VER"
+ok "yantrik-os: $COMP_OS_VER"
+ok "yantrik-ui: $COMP_UI_VER"
 
 # ═══════════════════════════════════════════════════════════════
 # STEP 1: Build (nightly only, unless --skip-build)
@@ -181,15 +196,23 @@ fi
 # ═══════════════════════════════════════════════════════════════
 step "Updating manifest..."
 
-# Read current manifest, update the target channel
+# Read current manifest, update the target channel with per-component versions
 ssh $SSH_OPTS root@$RELEASES_IP "python3 -c \"
 import json
 with open('/var/www/releases/manifest.json') as f:
     m = json.load(f)
-m['channels']['$CHANNEL']['version'] = '$FULL_VERSION'
-m['channels']['$CHANNEL']['date'] = '$BUILD_DATE'
-m['channels']['$CHANNEL']['git'] = '$GIT_HASH'
-m['channels']['$CHANNEL']['notes'] = 'Build $GIT_HASH ($BUILD_DATE)'
+ch = m.setdefault('channels', {}).setdefault('$CHANNEL', {})
+ch['version'] = '$FULL_VERSION'
+ch['date'] = '$BUILD_DATE'
+ch['git'] = '$GIT_HASH'
+ch['notes'] = 'Build $GIT_HASH ($BUILD_DATE)'
+ch['components'] = {
+    'yantrik-ml':        {'version': '$COMP_ML_VER',        'git': '$GIT_HASH'},
+    'yantrikdb':         {'version': '$COMP_DB_VER',        'git': '$GIT_HASH'},
+    'yantrik-companion': {'version': '$COMP_COMPANION_VER', 'git': '$GIT_HASH'},
+    'yantrik-os':        {'version': '$COMP_OS_VER',        'git': '$GIT_HASH'},
+    'yantrik-ui':        {'version': '$COMP_UI_VER',        'git': '$GIT_HASH'},
+}
 with open('/var/www/releases/manifest.json', 'w') as f:
     json.dump(m, f, indent=2)
 print('Manifest updated')

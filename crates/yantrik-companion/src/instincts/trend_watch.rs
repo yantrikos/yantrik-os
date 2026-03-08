@@ -76,12 +76,15 @@ impl Instinct for TrendWatchInstinct {
         };
 
         let execute_msg = format!(
-            "EXECUTE Use web_search to search for \"{search_query}\" to see what's trending on {source_name}. \
+            "EXECUTE STEP 1: Call date_calc to get today's date and current time.\n\
+             STEP 2: Call recall with query \"trending {source_name}\" to check what trends you \
+             already shared recently. Do NOT report the same trend again.\n\
+             STEP 3: Use web_search to search for \"{search_query}\" to see what's trending on {source_name}. \
              Then use browser_read on the most promising result to get details. \
              Analyze what you find and pick the ONE most interesting or developing story — \
-             something {user} would actually want to know about. \
+             something {user} would actually want to know about AND that you haven't already reported. \
              Present it in 2-3 sentences: what's happening, why it matters, and any emerging angle. \
-             If nothing is genuinely interesting, just say so briefly. \
+             If nothing is genuinely NEW or interesting, just say so briefly. \
              IMPORTANT: After you're done, call browser_cleanup to close the browser and free resources.",
         );
 

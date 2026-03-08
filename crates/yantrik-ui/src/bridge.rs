@@ -372,6 +372,9 @@ fn worker_loop(
     // Cooldown tracker for EXECUTE urges (key → last_fired_ts)
     let mut execute_cooldowns: std::collections::HashMap<String, f64> = std::collections::HashMap::new();
     const EXECUTE_COOLDOWN_SECS: f64 = 7200.0; // 2 hours between same EXECUTE urge
+    // Fairness tracker and category budgets for tier-based urge selector
+    let mut fairness = yantrik_companion::urge_selector::FairnessTracker::new();
+    let mut budgets = yantrik_companion::urge_selector::CategoryBudget::new();
 
     // Global cortex cooldown — prevents ANY cortex message within this window.
     // Individual cortex patterns use hash-based keys, but similar-but-different
@@ -1099,13 +1102,10 @@ fn worker_loop(
                     }
                 }
 
-                // Process EXECUTE urges through the LLM with tool access.
-                // Pick the highest-urgency one only — braiding EXECUTE urges
-                // strips tool-calling intent and causes the LLM to fabricate responses.
+                // Process EXECUTE urges through tier-based log-linear softmax selector.
                 let mut execute_produced_message = false;
 
                 // v4: Suppress EXECUTE urges when LLM is offline.
-                // Prevents "local mode" raw memory dumps from being sent to users.
                 if !execute_urges.is_empty() && !online.load(Ordering::Relaxed) {
                     tracing::info!(
                         count = execute_urges.len(),
@@ -1115,100 +1115,70 @@ fn worker_loop(
                 }
 
                 if !execute_urges.is_empty() {
-                    // ── Resonance Model: rescore urgencies ──────────────────
-                    // Replace raw urgency with resonance-weighted score that
-                    // accounts for phase alignment, novelty, fatigue, variety,
-                    // disclosure depth, and bond dynamics.
-                    for urge in &mut execute_urges {
-                        let r = companion.resonance.score(
-                            &urge.instinct_name,
-                            urge.urgency,
-                            &urge.reason,
-                            companion.last_sent_messages(10),
-                            companion.bond_level(),
-                            companion.bond_score(),
-                            now_ts,
+                    let recent_msgs = companion.last_sent_messages(10).to_vec();
+                    let bond = companion.bond_level();
+
+                    if let Some((exec_urge, serendipity)) = yantrik_companion::urge_selector::process_execute_urges(
+                        &execute_urges,
+                        &mut fairness,
+                        &mut budgets,
+                        &companion.resonance,
+                        &companion.user_model,
+                        &recent_msgs,
+                        bond,
+                        now_ts,
+                    ) {
+                        // Cooldown the picked urge
+                        execute_cooldowns.insert(exec_urge.cooldown_key.clone(), now_ts);
+
+                        tracing::info!(
+                            count = execute_urges.len(),
+                            picked = %exec_urge.instinct_name,
+                            urgency = exec_urge.urgency,
+                            serendipity = serendipity,
+                            tier = exec_urge.time_sensitivity.tier(),
+                            category = ?exec_urge.category,
+                            "Processing EXECUTE urge (tier-softmax selector)"
                         );
-                        if r.suppress {
-                            tracing::info!(
-                                instinct = %urge.instinct_name,
-                                reason = %r.suppress_reason,
-                                raw_urgency = urge.urgency,
-                                resonance = r.score,
-                                "Resonance Model suppressed urge"
-                            );
-                            urge.urgency = 0.0; // Will sort to bottom
-                        } else {
-                            // Apply adaptive user model multiplier (category, time, backoff, budget)
-                            let cat = yantrik_companion::resonance::InstinctCategory::from_instinct(&urge.instinct_name);
-                            let hour = (now_ts as i64 % 86400 / 3600) as u32;
-                            let user_mult = companion.user_model.urgency_multiplier(&format!("{:?}", cat), hour);
-                            urge.urgency = (r.score * user_mult).clamp(0.0, 1.0);
+
+                        let mut instruction = exec_urge.reason.trim_start_matches("EXECUTE ").to_string();
+                        let anti_rep = yantrik_companion::synthesis_gate::anti_repetition_instruction(
+                            companion.last_sent_messages(5),
+                            state.avg_user_msg_length,
+                        );
+                        instruction.push_str(&anti_rep);
+
+                        let instinct_name = exec_urge.instinct_name.clone();
+                        if instinct_name == "Cortex" || instinct_name == "CortexReasoner" {
+                            last_cortex_fire_ts = now_ts;
                         }
-                    }
-                    // Remove suppressed (urgency=0) urges
-                    execute_urges.retain(|u| u.urgency > 0.0);
-                    if execute_urges.is_empty() {
-                        // All urges suppressed by resonance — skip
-                        tracing::info!("All EXECUTE urges suppressed by Resonance Model");
-                    }
-                }
-                if !execute_urges.is_empty() {
-                    // Sort by resonance-weighted urgency descending
-                    execute_urges.sort_by(|a, b| b.urgency.partial_cmp(&a.urgency).unwrap_or(std::cmp::Ordering::Equal));
-                    let exec_urge = &execute_urges[0];
-
-                    // Record cooldowns for ALL urges (so skipped ones don't re-fire next cycle)
-                    for u in &execute_urges {
-                        execute_cooldowns.insert(u.cooldown_key.clone(), now_ts);
-                    }
-
-                    tracing::info!(
-                        count = execute_urges.len(),
-                        picked = %exec_urge.instinct_name,
-                        urgency = exec_urge.urgency,
-                        "Processing highest-urgency EXECUTE urge (skipping {} others)",
-                        execute_urges.len() - 1
-                    );
-
-                    let mut instruction = exec_urge.reason.trim_start_matches("EXECUTE ").to_string();
-                    // Anti-repetition: append recent messages as negative examples
-                    let anti_rep = yantrik_companion::synthesis_gate::anti_repetition_instruction(
-                        companion.last_sent_messages(5),
-                        state.avg_user_msg_length,
-                    );
-                    instruction.push_str(&anti_rep);
-
-                    let instinct_name = exec_urge.instinct_name.clone();
-                    // Update global cortex cooldown BEFORE LLM call
-                    // so concurrent think cycles don't queue more cortex urges
-                    if instinct_name == "Cortex" || instinct_name == "CortexReasoner" {
-                        last_cortex_fire_ts = now_ts;
-                    }
-                    tracing::info!(
-                        instinct = %instinct_name,
-                        instruction = %instruction,
-                        "Executing research urge"
-                    );
-                    let resp = companion.handle_message(&instruction);
-                    let response_text = resp.message.trim().to_string();
-                    if !response_text.is_empty() && !is_nothing_response(&response_text) {
-                        let msg = yantrik_companion::types::ProactiveMessage {
-                            text: response_text,
-                            urge_ids: vec![exec_urge.cooldown_key.clone()],
-                            generated_at: now_ts,
-                        };
-                        companion.set_proactive_message(msg);
-                        execute_produced_message = true;
                         tracing::info!(
                             instinct = %instinct_name,
-                            "EXECUTE urge produced proactive message"
+                            instruction = %instruction,
+                            "Executing research urge"
                         );
+                        let resp = companion.handle_message(&instruction);
+                        let response_text = resp.message.trim().to_string();
+                        if !response_text.is_empty() && !is_nothing_response(&response_text) {
+                            let msg = yantrik_companion::types::ProactiveMessage {
+                                text: response_text,
+                                urge_ids: vec![exec_urge.cooldown_key.clone()],
+                                generated_at: now_ts,
+                            };
+                            companion.set_proactive_message(msg);
+                            execute_produced_message = true;
+                            tracing::info!(
+                                instinct = %instinct_name,
+                                "EXECUTE urge produced proactive message"
+                            );
+                        } else {
+                            tracing::info!(
+                                instinct = %instinct_name,
+                                "EXECUTE urge returned no actionable content"
+                            );
+                        }
                     } else {
-                        tracing::info!(
-                            instinct = %instinct_name,
-                            "EXECUTE urge returned no actionable content"
-                        );
+                        tracing::info!("All EXECUTE urges filtered by tier-softmax selector");
                     }
                 }
 
@@ -1758,7 +1728,7 @@ fn build_companion(config: CompanionConfig) -> CompanionService {
     };
 
     // Load LLM — select backend based on config
-    let llm: Box<dyn LLMBackend> = if config.llm.is_claude_cli_backend() {
+    let llm: std::sync::Arc<dyn LLMBackend> = if config.llm.is_claude_cli_backend() {
         // Claude Code CLI backend — uses `claude -p` for inference
         let model = config.llm.api_model.clone();
         let max_tokens = config.llm.max_tokens;
@@ -1767,7 +1737,7 @@ fn build_companion(config: CompanionConfig) -> CompanionService {
             "Using Claude Code CLI backend"
         );
         #[cfg(feature = "claude-cli")]
-        { Box::new(ClaudeCliLLM::new(model, max_tokens)) }
+        { std::sync::Arc::new(ClaudeCliLLM::new(model, max_tokens)) }
         #[cfg(not(feature = "claude-cli"))]
         { panic!("claude-cli feature not enabled at compile time") }
     } else if config.llm.is_api_backend() {
@@ -1782,16 +1752,16 @@ fn build_companion(config: CompanionConfig) -> CompanionService {
             model,
             "Using API LLM backend"
         );
-        Box::new(ApiLLM::new(base_url, config.llm.api_key.clone(), model))
+        std::sync::Arc::new(ApiLLM::new(base_url, config.llm.api_key.clone(), model))
     } else if let Some(ref dir) = config.llm.model_dir {
         tracing::info!(dir, "Loading Candle LLM from directory");
-        Box::new(CandleLLM::from_dir(std::path::Path::new(dir))
+        std::sync::Arc::new(CandleLLM::from_dir(std::path::Path::new(dir))
             .expect("failed to load LLM from directory"))
     } else if let (Some(ref gguf), Some(ref tok)) =
         (&config.llm.gguf_path, &config.llm.tokenizer_path)
     {
         tracing::info!(gguf, tok, "Loading Candle LLM from explicit paths");
-        Box::new(CandleLLM::from_gguf(std::path::Path::new(gguf), std::path::Path::new(tok))
+        std::sync::Arc::new(CandleLLM::from_gguf(std::path::Path::new(gguf), std::path::Path::new(tok))
             .expect("failed to load LLM"))
     } else {
         tracing::info!(
@@ -1805,7 +1775,7 @@ fn build_companion(config: CompanionConfig) -> CompanionService {
             &config.llm.hub_tokenizer,
         )
         .expect("failed to download LLM");
-        Box::new(CandleLLM::from_gguf(&files.gguf, &files.tokenizer).expect("failed to load LLM"))
+        std::sync::Arc::new(CandleLLM::from_gguf(&files.gguf, &files.tokenizer).expect("failed to load LLM"))
     };
 
     // Create YantrikDB

@@ -4,6 +4,44 @@ use serde::{Deserialize, Serialize};
 
 pub use crate::bond::BondLevel;
 
+/// How time-sensitive an urge is. Determines selection tier.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum TimeSensitivity {
+    /// Tier 0: Must fire this cycle. Scheduled tasks, due reminders, fired automations.
+    Immediate = 0,
+    /// Tier 1: Should fire within the next hour. Morning brief, time-sensitive goals.
+    Today = 1,
+    /// Tier 2: Should fire sometime today. Health pulse, news, growth check-ins.
+    Soon = 2,
+    /// Tier 3: Background/ambient. Humor, wonder, deep dives, philosophy.
+    Ambient = 3,
+}
+
+impl TimeSensitivity {
+    pub fn tier(&self) -> u8 {
+        *self as u8
+    }
+}
+
+/// Functional category for fairness tracking and token budgets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum InstinctCategory {
+    /// GoalKeeper, Scheduler, Reminder, Automation, MorningBrief, EmailWatch, etc.
+    Anticipatory,
+    /// CheckIn, HealthPulse, EnergyMap, NightOwl, CognitiveLoad
+    Wellbeing,
+    /// Humor, RelationshipRadar, ConnectionWeaver, ConversationalCallback, etc.
+    Social,
+    /// SkillForge, MentorMatch, FutureSelf, GrowthMirror, DecisionLab, MoneyMind
+    Growth,
+    /// WorldSense, TrendWatch, LocalPulse, Curiosity, WeatherWatch, etc.
+    Awareness,
+    /// EmotionalAwareness, EveningReflection, DreamKeeper, FollowUp, etc.
+    Emotional,
+    /// PatternBreaker, DevilsAdvocate, PhilosophyCompanion, MemoryWeaver, Cortex, etc.
+    Meta,
+}
+
 /// An urge specification produced by an instinct.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UrgeSpec {
@@ -16,6 +54,10 @@ pub struct UrgeSpec {
     pub context: serde_json::Value,
     /// Used for deduplication — if a pending urge has the same key, boost instead.
     pub cooldown_key: String,
+    /// Selection tier: determines processing order and selection algorithm.
+    pub time_sensitivity: TimeSensitivity,
+    /// Functional category: determines fairness tracking and token budgets.
+    pub category: InstinctCategory,
 }
 
 impl UrgeSpec {
@@ -28,6 +70,8 @@ impl UrgeSpec {
             action: None,
             context: serde_json::json!({}),
             cooldown_key: String::new(),
+            time_sensitivity: crate::urge_selector::default_time_sensitivity(instinct_name),
+            category: crate::urge_selector::default_category(instinct_name),
         }
     }
 
@@ -43,6 +87,16 @@ impl UrgeSpec {
 
     pub fn with_message(mut self, msg: &str) -> Self {
         self.suggested_message = msg.to_string();
+        self
+    }
+
+    pub fn with_time_sensitivity(mut self, ts: TimeSensitivity) -> Self {
+        self.time_sensitivity = ts;
+        self
+    }
+
+    pub fn with_category(mut self, cat: InstinctCategory) -> Self {
+        self.category = cat;
         self
     }
 }

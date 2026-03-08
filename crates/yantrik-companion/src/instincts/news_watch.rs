@@ -136,11 +136,16 @@ impl Instinct for NewsWatchInstinct {
 
         let execute_msg = format!(
             "EXECUTE Current awareness lens: {lens_name}.\n\
-             Use web_search to search for \"{search_query}\".\n\
+             \nSTEP 1: Call date_calc to get today's date and current time.\n\
+             STEP 2: Call recall with query \"{lens_name} news update\" to check what you already \
+             reported recently. If you already shared a {lens_name} update today, respond with \
+             just \"No world update.\" — do NOT repeat the same news.\n\
+             STEP 3: Use web_search to search for \"{search_query}\".\n\
              {filter}\n\
              {interests}{location}\n\
              \nANALYSIS REQUIREMENTS:\n\
              - Do NOT just repeat headlines. THINK about what you found.\n\
+             - Compare with what you already reported — only share GENUINELY NEW developments.\n\
              - Explain second-order effects: how does this development ripple into {user}'s world?\n\
              - If the finding connects to their interests, explain the specific connection.\n\
              - If it affects their location, explain the local impact.\n\

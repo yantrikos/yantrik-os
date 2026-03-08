@@ -1,7 +1,8 @@
 //! Memory tools — remember, recall, relate, set_reminder, introspect,
-//! form_opinion, create_inside_joke, check_bond.
+//! form_opinion, create_inside_joke, check_bond, forget_topic.
 
 use super::{Tool, ToolContext, ToolRegistry, PermissionLevel};
+use rusqlite::params;
 
 pub fn register(reg: &mut ToolRegistry) {
     reg.register(Box::new(RememberTool));
@@ -13,6 +14,7 @@ pub fn register(reg: &mut ToolRegistry) {
     reg.register(Box::new(CreateInsideJokeTool));
     reg.register(Box::new(CheckBondTool));
     reg.register(Box::new(SaveUserFactTool));
+    reg.register(Box::new(ForgetTopicTool));
 }
 
 // ── Remember ──
@@ -479,5 +481,212 @@ impl Tool for SaveUserFactTool {
             Ok(rid) => format!("Fact saved: {fact} (domain: {domain}, id: {rid})"),
             Err(e) => format!("Failed to save fact: {e}"),
         }
+    }
+}
+
+// ── Forget Topic ──
+
+pub struct ForgetTopicTool;
+
+impl Tool for ForgetTopicTool {
+    fn name(&self) -> &'static str { "forget_topic" }
+    fn permission(&self) -> PermissionLevel { PermissionLevel::Standard }
+    fn category(&self) -> &'static str { "memory" }
+
+    fn definition(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "function",
+            "function": {
+                "name": "forget_topic",
+                "description": "Forget everything about a topic the user no longer wants you to track or discuss. Removes related memories, cortex entities, and scheduled tasks, then adds a suppression rule so you don't re-learn it. Use when the user says things like 'stop talking about X', 'forget about X', 'don't bring up X anymore'.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "topic": {
+                            "type": "string",
+                            "description": "The topic to forget (e.g. 'stock market', 'crypto', 'my ex')"
+                        },
+                        "keywords": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Additional keywords to match against memories and entities (e.g. ['SPG', 'VICI', 'ticker', 'watchlist'])"
+                        }
+                    },
+                    "required": ["topic"]
+                }
+            }
+        })
+    }
+
+    fn execute(&self, ctx: &ToolContext, args: &serde_json::Value) -> String {
+        let topic = args.get("topic").and_then(|v| v.as_str()).unwrap_or_default();
+        if topic.is_empty() {
+            return "Error: topic is required".to_string();
+        }
+
+        let keywords: Vec<String> = args.get("keywords")
+            .and_then(|v| v.as_array())
+            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+            .unwrap_or_default();
+
+        let conn = ctx.db.conn();
+        let topic_lower = topic.to_lowercase();
+        let like_pattern = format!("%{}%", topic_lower);
+
+        let mut tombstoned_memories = 0u32;
+        let mut deleted_entities = 0u32;
+        let mut cancelled_tasks = 0u32;
+
+        // ── 1. Tombstone memories matching the topic ──
+
+        // 1a. Semantic search — find memories related to the topic
+        let semantic_rids: Vec<String> = match ctx.db.recall_text(topic, 20) {
+            Ok(results) => results.iter()
+                .filter(|r| {
+                    let text_lower = r.text.to_lowercase();
+                    // Must actually be about the topic, not just vaguely similar
+                    text_lower.contains(&topic_lower)
+                        || keywords.iter().any(|kw| text_lower.contains(&kw.to_lowercase()))
+                })
+                .map(|r| r.rid.clone())
+                .collect(),
+            Err(_) => Vec::new(),
+        };
+
+        // 1b. Direct text search — catch anything semantic search missed
+        let mut text_rids: Vec<String> = Vec::new();
+        let mut patterns: Vec<String> = vec![like_pattern.clone()];
+        for kw in &keywords {
+            patterns.push(format!("%{}%", kw.to_lowercase()));
+        }
+
+        for pattern in &patterns {
+            if let Ok(mut stmt) = conn.prepare(
+                "SELECT rid FROM memories WHERE LOWER(text) LIKE ?1 AND consolidation_status = 'active'"
+            ) {
+                if let Ok(rows) = stmt.query_map(params![pattern], |row| row.get::<_, String>(0)) {
+                    for rid in rows.flatten() {
+                        if !text_rids.contains(&rid) {
+                            text_rids.push(rid);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Merge and deduplicate
+        let mut all_rids = semantic_rids;
+        for rid in text_rids {
+            if !all_rids.contains(&rid) {
+                all_rids.push(rid);
+            }
+        }
+
+        // Tombstone them
+        for rid in &all_rids {
+            let ts = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs_f64();
+            if let Ok(changes) = conn.execute(
+                "UPDATE memories SET consolidation_status = 'tombstoned', updated_at = ?1 WHERE rid = ?2 AND consolidation_status = 'active'",
+                params![ts, rid],
+            ) {
+                tombstoned_memories += changes as u32;
+            }
+        }
+
+        // ── 2. Delete cortex entities matching the topic ──
+
+        let mut entity_ids: Vec<String> = Vec::new();
+        for pattern in &patterns {
+            if let Ok(mut stmt) = conn.prepare(
+                "SELECT id FROM cortex_entities WHERE LOWER(display_name) LIKE ?1 OR LOWER(system_aliases) LIKE ?1"
+            ) {
+                if let Ok(rows) = stmt.query_map(params![pattern], |row| row.get::<_, String>(0)) {
+                    for id in rows.flatten() {
+                        if !entity_ids.contains(&id) {
+                            entity_ids.push(id);
+                        }
+                    }
+                }
+            }
+        }
+
+        for entity_id in &entity_ids {
+            // Cascade: remove relationships, pulse links, baselines, patterns
+            let _ = conn.execute(
+                "DELETE FROM cortex_relationships WHERE source_id = ?1 OR target_id = ?1",
+                params![entity_id],
+            );
+            let _ = conn.execute(
+                "DELETE FROM cortex_pulse_entities WHERE entity_id = ?1",
+                params![entity_id],
+            );
+            let _ = conn.execute(
+                "DELETE FROM cortex_baselines WHERE entity_id = ?1",
+                params![entity_id],
+            );
+            let _ = conn.execute(
+                "DELETE FROM cortex_patterns WHERE antecedent = ?1 OR consequent = ?1",
+                params![entity_id],
+            );
+            if let Ok(changes) = conn.execute(
+                "DELETE FROM cortex_entities WHERE id = ?1",
+                params![entity_id],
+            ) {
+                deleted_entities += changes as u32;
+            }
+        }
+
+        // ── 3. Cancel scheduled tasks matching the topic ──
+
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs_f64();
+
+        for pattern in &patterns {
+            if let Ok(changes) = conn.execute(
+                "UPDATE scheduled_tasks SET status = 'cancelled', updated_at = ?1 \
+                 WHERE (LOWER(label) LIKE ?2 OR LOWER(description) LIKE ?2) \
+                 AND status IN ('active', 'paused')",
+                params![ts, pattern],
+            ) {
+                cancelled_tasks += changes as u32;
+            }
+        }
+
+        // ── 4. Add suppression memory ──
+        // High-importance semantic memory that prevents re-learning
+
+        let suppression_text = format!(
+            "USER PREFERENCE: Do NOT discuss, track, monitor, or bring up '{}'. \
+             The user explicitly asked to forget this topic. \
+             Do not create memories, entities, or scheduled tasks about it. \
+             If this topic comes up in conversation, acknowledge you've been asked not to discuss it.",
+            topic
+        );
+
+        let _ = ctx.db.record_text(
+            &suppression_text,
+            "semantic",
+            0.95,          // very high importance — should surface in any related query
+            0.0,
+            7_776_000.0,   // 90-day half-life — long-lasting suppression
+            &serde_json::json!({"type": "topic_suppression", "suppressed_topic": topic}),
+            "default",
+            0.95,
+            "preference",
+            "companion",
+            None,
+        );
+
+        format!(
+            "Forgot topic '{topic}': tombstoned {tombstoned_memories} memories, \
+             deleted {deleted_entities} cortex entities, \
+             cancelled {cancelled_tasks} scheduled tasks. \
+             Added suppression rule — I won't bring this up again."
+        )
     }
 }

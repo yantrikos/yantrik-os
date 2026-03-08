@@ -9404,10 +9404,51 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
- "yantrikdb-companion",
+ "yantrik-companion",
+ "yantrik-ml",
  "yantrikdb-core",
- "yantrikdb-ml",
  "yantrikdb-server",
+]
+
+[[package]]
+name = "yantrik-companion"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "html2text",
+ "imap",
+ "lettre",
+ "mailparse",
+ "native-tls",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "tracing",
+ "tungstenite",
+ "ureq 2.12.1",
+ "url",
+ "uuid7",
+ "yantrik-ml",
+ "yantrikdb-core",
+]
+
+[[package]]
+name = "yantrik-ml"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "candle-core",
+ "candle-nn",
+ "candle-transformers",
+ "hf-hub",
+ "rand 0.8.5",
+ "serde",
+ "serde_json",
+ "tokenizers",
+ "tracing",
+ "tts",
+ "ureq 3.2.0",
 ]
 
 [[package]]
@@ -9448,33 +9489,10 @@ dependencies = [
  "tracing-subscriber",
  "ureq 2.12.1",
  "vt100",
+ "yantrik-companion",
+ "yantrik-ml",
  "yantrik-os",
- "yantrikdb-companion",
  "yantrikdb-core",
- "yantrikdb-ml",
-]
-
-[[package]]
-name = "yantrikdb-companion"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "html2text",
- "imap",
- "lettre",
- "mailparse",
- "native-tls",
- "rusqlite",
- "serde",
- "serde_json",
- "serde_yaml",
- "tracing",
- "tungstenite",
- "ureq 2.12.1",
- "url",
- "uuid7",
- "yantrikdb-core",
- "yantrikdb-ml",
 ]
 
 [[package]]
@@ -9492,26 +9510,8 @@ dependencies = [
  "thiserror 2.0.18",
  "tracing",
  "uuid7",
+ "yantrik-ml",
  "zstd",
-]
-
-[[package]]
-name = "yantrikdb-ml"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "candle-core",
- "candle-nn",
- "candle-transformers",
- "hf-hub",
- "rand 0.8.5",
- "serde",
- "serde_json",
- "tokenizers",
- "tracing",
- "tts",
- "ureq 3.2.0",
- "yantrikdb-core",
 ]
 
 [[package]]
@@ -9527,9 +9527,9 @@ dependencies = [
  "tokio-stream",
  "tower-http",
  "tracing",
- "yantrikdb-companion",
+ "yantrik-companion",
+ "yantrik-ml",
  "yantrikdb-core",
- "yantrikdb-ml",
 ]
 
 [[package]]

@@ -63,8 +63,8 @@ impl Instinct for HealthPulseInstinct {
             *last = now;
         }
 
-        // Gate: need conversation history to find health mentions
-        if state.conversation_turn_count <= 5 {
+        // Gate: need enough memories to find health mentions
+        if state.memory_count < 5 {
             return vec![];
         }
 
@@ -85,26 +85,35 @@ impl Instinct for HealthPulseInstinct {
         let user = &state.config_user_name;
 
         let execute_msg = format!(
-            "EXECUTE First, use recall with query \"health sleep tired energy exercise stress pain\" \
-             to find {user}'s health-related mentions and patterns over time.\n\
+            "EXECUTE STEP 1: Call date_calc to get today's date and current time.\n\
+             STEP 2: Use recall with query \"health sleep tired energy exercise stress pain \
+             hours night sore exhausted burnout not sleeping\" \
+             to find {user}'s health-related mentions and patterns.\n\
              \n\
-             Analyze what you find:\n\
-             - Are there recurring complaints (e.g., tiredness always on certain days)?\n\
-             - Any correlation between habits mentioned and symptoms?\n\
-             - What has {user} specifically reported recently?\n\
+             Analyze what you find WITH CONTEXT:\n\
+             - Has {user} reported specific numbers (e.g., \"5 hours of sleep\")?\n\
+             - Are there recurring complaints?\n\
+             - Is there a lifestyle pattern causing issues (overwork + training + poor sleep)?\n\
+             - Are their upcoming commitments at risk due to health (race, presentation, etc.)?\n\
              \n\
-             Then use web_search to research the underlying science behind ONE pattern you found.\n\
-             Look for the specific biological mechanism — name the enzyme, hormone, or neural \
-             pathway involved. Cite the mechanism, not just the symptom.\n\
+             BE ANTICIPATORY ABOUT HEALTH:\n\
+             - If they're sleeping 5 hours and have a race/presentation coming, warn them\n\
+             - If they're stressed AND training hard, suggest a recovery day\n\
+             - If they mentioned coffee intake + insomnia, connect the dots\n\
+             - Don't just cite science — give a SPECIFIC, ACTIONABLE suggestion\n\
              \n\
-             Deliver ONE specific insight in 2-3 sentences. Frame it as awareness, NOT medical \
-             advice. Connect their specific pattern to the science.\n\
+             EXAMPLES of good health anticipation:\n\
+             - \"You're sleeping 5 hours and your big presentation is tomorrow — your prefrontal \
+               cortex needs at least 7 hours to perform. Skip the morning ride, get to bed early?\"\n\
+             - \"3-4 cups of coffee plus 5 hours of sleep — the caffeine has a 6-hour half-life, \
+               so your 3pm cup is still in your system at 9pm. Maybe make the last one at noon?\"\n\
+             - \"Your legs are sore from the 30km ride and you're not sleeping enough for recovery. \
+               Muscle repair happens during deep sleep — consider a rest day.\"\n\
              \n\
-             Example tone: \"You've mentioned being tired 3 times this week, always after late \
-             nights. Sleep researchers found that each hour of delayed sleep reduces next-day \
-             cognitive performance by 25% — it's the adenosine buildup in your prefrontal cortex.\"\n\
+             Deliver ONE specific insight in 2-3 sentences. Be caring, not lecturing.\n\
+             Connect their SPECIFIC situation to actionable advice.\n\
              \n\
-             If no health patterns found in memory, respond with just \"No health pulse today.\"\n\
+             If no health patterns found, respond with just \"No health pulse today.\"\n\
              After you're done, call browser_cleanup to free resources.",
         );
 

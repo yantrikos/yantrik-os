@@ -63,43 +63,55 @@ impl Instinct for RelationshipRadarInstinct {
         }
 
         // Gate: need enough memories to have relationship context
-        if state.memory_count < 15 {
+        if state.memory_count < 5 {
             return vec![];
         }
 
         // Higher urgency in the morning (7-10 AM) — good time to reach out
         let urgency = if state.current_hour >= 7 && state.current_hour <= 10 {
-            0.45
+            0.55
         } else {
-            0.35
+            0.45
         };
 
         let user = &state.config_user_name;
 
         let execute_msg = format!(
-            "EXECUTE First, use recall with query \"friend family mentioned people names birthday anniversary\" \
-             to find people in {user}'s life and when they were last mentioned.\n\
+            "EXECUTE STEP 1: Call date_calc to get today's date, day of week, and current time.\n\
+             STEP 2: Use recall with query \"friend family people names birthday anniversary \
+             mom dad sister brother girlfriend boyfriend wife husband gift present\" \
+             to find people in {user}'s life.\n\
+             STEP 3: Use recall with query \"forgot birthday missed call should call need to visit\" \
+             to find relationship guilt or obligations.\n\
              \n\
-             Analyze the social graph:\n\
+             Analyze the social graph WITH TEMPORAL AWARENESS:\n\
              - Who are the important people in {user}'s life?\n\
-             - Has anyone not been mentioned in a while (2+ weeks)?\n\
-             - Are there any upcoming important dates (birthdays, anniversaries)?\n\
-             - What was the last context for each person (new job, health issue, trip)?\n\
+             - Did {user} forget or miss something for someone (birthday, call, visit)?\n\
+             - Are there upcoming important dates (birthdays, anniversaries) THIS WEEK?\n\
+             - Has anyone not been mentioned in 2+ weeks?\n\
+             - What was the last context for each person?\n\
              \n\
-             If you find someone who hasn't been mentioned recently, compose a gentle nudge.\n\
-             Include what was last discussed about them for context.\n\
+             PRIORITIZE: Missed obligations > upcoming dates > dormant relationships.\n\
+             \n\
+             BE ANTICIPATORY AND HELPFUL:\n\
+             - If {user} forgot someone's birthday: suggest gift ideas or ways to make it up\n\
+             - If a birthday is coming up: suggest getting a gift NOW, not last minute\n\
+             - If {user} promised to call someone: remind them warmly\n\
+             - If someone is going through something: suggest checking in\n\
+             \n\
+             EXAMPLES of good anticipation:\n\
+             - \"You mentioned feeling bad about missing your mom's birthday — have you thought \
+               about what to get her? A surprise visit this weekend might mean more than any gift.\"\n\
+             - \"Sarah's birthday is in 5 days — want me to help brainstorm gift ideas based on \
+               what she likes?\"\n\
+             - \"You promised to call your mom this Saturday — just a heads up, it's Friday.\"\n\
              \n\
              RULES:\n\
-             - NEVER be pushy or guilt-tripping\n\
-             - Frame it as an invitation, not an obligation\n\
-             - Include the last context so {user} has a natural conversation starter\n\
-             - If an important date is coming up, mention it with enough lead time\n\
+             - Be genuinely helpful, not just reminding — suggest ACTIONS\n\
+             - Never be pushy or guilt-tripping\n\
+             - Keep it to 1-2 sentences, warm and actionable\n\
              \n\
-             Example tone: \"You haven't mentioned Alex in about 3 weeks. Last time you \
-             talked about their new job — might be worth checking in.\"\n\
-             \n\
-             If nothing stands out — no one overdue for contact, no dates coming up — \
-             respond with just \"No relationship radar today.\"",
+             If nothing stands out, respond with just \"No relationship radar today.\"",
         );
 
         vec![UrgeSpec::new(self.name(), &execute_msg, urgency)

@@ -324,6 +324,7 @@ fn generate_proactive_message(
                     registry_metadata: None,
                     task_manager: Some(&service.task_manager),
                     incognito: service.incognito,
+                    agent_spawner: None,
                 };
                 for tc in &tool_calls {
                     tracing::info!(tool = %tc.name, "Auto-executing tool from automation");

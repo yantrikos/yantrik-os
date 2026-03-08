@@ -165,26 +165,29 @@ export component AppGrid inherits Rectangle {
                             spacing: 10px;
                             padding: 12px;
 
-                            // Icon badge
-                            Rectangle {
-                                width: 52px;
-                                height: 52px;
-                                border-radius: 14px;
-                                background: Theme.bg-card;
-                                border-width: 1px;
-                                border-color: cell.hovered ? Theme.cyan-dim : Theme.border-subtle;
+                            // Icon badge — centered via HorizontalLayout
+                            HorizontalLayout {
+                                alignment: center;
+                                Rectangle {
+                                    width: 52px;
+                                    height: 52px;
+                                    border-radius: 14px;
+                                    background: Theme.bg-card;
+                                    border-width: 1px;
+                                    border-color: cell.hovered ? Theme.cyan-dim : Theme.border-subtle;
 
-                                Text {
-                                    text: app.icon-char;
-                                    color: Theme.cyan;
-                                    font-size: 20px;
-                                    font-weight: 700;
-                                    horizontal-alignment: center;
-                                    vertical-alignment: center;
+                                    Text {
+                                        text: app.icon-char;
+                                        color: Theme.cyan;
+                                        font-size: 20px;
+                                        font-weight: 700;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
                                 }
                             }
 
-                            // App name
+                            // App name — full width so horizontal-alignment works
                             Text {
                                 text: app.name;
                                 color: Theme.text-primary;
@@ -192,7 +195,6 @@ export component AppGrid inherits Rectangle {
                                 font-weight: 500;
                                 horizontal-alignment: center;
                                 overflow: elide;
-                                max-width: root.cell-size - 24px;
                             }
                         }
                     }

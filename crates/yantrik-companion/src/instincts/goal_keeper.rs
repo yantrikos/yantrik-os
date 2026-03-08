@@ -65,35 +65,40 @@ impl Instinct for GoalKeeperInstinct {
         }
 
         // Gate: need enough memories to find stated intentions
-        if state.memory_count < 10 {
+        if state.memory_count < 5 {
             return vec![];
         }
 
         let user = &state.config_user_name;
 
         let execute_msg = format!(
-            "EXECUTE First, use recall with query \"want to goal plan going to should start\" \
-             to find {user}'s stated intentions, goals, and plans.\n\
+            "EXECUTE STEP 1: Call date_calc to get today's date, day of week, and current time.\n\
+             STEP 2: Use recall with query \"want to goal plan going to should start training \
+             race presentation deadline tomorrow next week\" to find {user}'s stated intentions, \
+             goals, plans, and upcoming events.\n\
              \n\
-             Analyze what you find:\n\
+             Analyze what you find WITH TEMPORAL AWARENESS:\n\
              - What goals or intentions has {user} stated?\n\
+             - What events are coming up SOON (today, tomorrow, this week)?\n\
+             - Is there a deadline, race, presentation, meeting, or event approaching?\n\
+             - Has {user} mentioned preparing for something — are they on track?\n\
              - Which ones seem unresolved (no follow-up mention of completion)?\n\
-             - Has {user} mentioned achieving any goals recently? If so, celebrate!\n\
-             - Which intention is most likely to benefit from a gentle check-in?\n\
+             - Has {user} achieved something recently? If so, celebrate!\n\
              \n\
-             Pick ONE goal or intention and compose a gentle accountability check.\n\
+             PRIORITIZE upcoming events and time-sensitive goals over old intentions.\n\
+             Pick ONE and compose a gentle, anticipatory message.\n\
+             \n\
+             ANTICIPATION EXAMPLES (what a real friend would say):\n\
+             - \"Your presentation is tomorrow — feeling ready? Want to do a quick run-through?\"\n\
+             - \"The race is in 3 weeks and you said you've been missing sessions — \
+               want to adjust the training plan?\"\n\
+             - \"Didn't you say you wanted to wake up at 6am? How's day 2 going?\"\n\
              \n\
              CRITICAL RULES:\n\
-             - MUST be invitational: \"You mentioned wanting to X — how's that going?\" \
-               NOT \"You still haven't done X.\"\n\
-             - Include the original context so {user} remembers what they said\n\
-             - If they achieved something, celebrate it genuinely\n\
-             - If they seem to have dropped a goal, that's perfectly fine — no judgment\n\
+             - Be ANTICIPATORY — bring up things BEFORE they become urgent\n\
+             - MUST be invitational, never naggy\n\
+             - Include specific details from memory (dates, names, numbers)\n\
              - Keep it to 1-2 sentences, warm and casual\n\
-             - Add \"No pressure\" or similar softener\n\
-             \n\
-             Example tone: \"A couple weeks ago you mentioned wanting to start running again. \
-             How's that going? No pressure — just remembered.\"\n\
              \n\
              If no stated intentions found in memory, respond with just \"No goal update today.\"",
         );

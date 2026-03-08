@@ -677,6 +677,20 @@ impl ResonanceEngine {
         }
     }
 
+    // ── Public Accessors for Urge Selector ────────────────────────────
+
+    /// Public wrapper for information novelty scoring.
+    /// Returns 0.0 (duplicate) to 1.0 (fully novel).
+    pub fn information_novelty_pub(&self, message: &str, recent: &[String]) -> f64 {
+        self.information_novelty(message, recent)
+    }
+
+    /// Returns true if the instinct's depth is appropriate for the bond level.
+    /// Returns false if the instinct is too deep (depth_appropriateness < 0.3).
+    pub fn depth_check(&self, instinct_name: &str, bond_level: BondLevel) -> bool {
+        self.depth_appropriateness(instinct_name, bond_level) >= 0.3
+    }
+
     // ── State Updates ───────────────────────────────────────────────────
 
     /// Record that a message was sent. Updates fatigue, phase, variety, frequency.
