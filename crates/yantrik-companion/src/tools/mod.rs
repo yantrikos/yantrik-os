@@ -103,6 +103,8 @@ pub mod spawn_agents;
 pub mod edit;
 pub mod grep;
 pub mod glob;
+pub mod mcp;
+pub mod whatsapp;
 
 use crate::config::CompanionConfig;
 use yantrikdb_core::YantrikDB;
@@ -470,6 +472,18 @@ pub fn build_registry(config: &CompanionConfig) -> ToolRegistry {
         }
     }
 
+    // Conditionally register WhatsApp tools
+    let wa = &config.whatsapp;
+    if wa.enabled {
+        if let (Some(phone_id), Some(token)) = (&wa.phone_number_id, &wa.access_token) {
+            let recipient = wa.recipient.as_deref().unwrap_or("");
+            whatsapp::register(&mut reg, phone_id, token, recipient);
+            tracing::info!("WhatsApp tool registered");
+        } else {
+            tracing::warn!("WhatsApp enabled but phone_number_id or access_token missing — skipping");
+        }
+    }
+
     // Conditionally register email tools
     if config.email.enabled && !config.email.accounts.is_empty() {
         email::register(&mut reg, config.email.accounts.clone());
@@ -501,6 +515,11 @@ pub fn build_registry(config: &CompanionConfig) -> ToolRegistry {
     edit::register(&mut reg);
     grep::register(&mut reg);
     glob::register(&mut reg);
+
+    // Connect MCP servers and register their tools
+    if !config.mcp_servers.is_empty() {
+        mcp::register_mcp_servers(&mut reg, &config.mcp_servers);
+    }
 
     reg
 }

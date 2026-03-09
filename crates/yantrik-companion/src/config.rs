@@ -947,6 +947,35 @@ impl Default for TelegramConfig {
     }
 }
 
+// ── WhatsApp Config ────────────────────────────────────────────────────────
+
+/// WhatsApp Business API configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WhatsAppConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    /// WhatsApp Business phone number ID (from Meta Business).
+    #[serde(default)]
+    pub phone_number_id: Option<String>,
+    /// Permanent access token (from Meta Business).
+    #[serde(default)]
+    pub access_token: Option<String>,
+    /// Default recipient phone number in international format.
+    #[serde(default)]
+    pub recipient: Option<String>,
+}
+
+impl Default for WhatsAppConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            phone_number_id: None,
+            access_token: None,
+            recipient: None,
+        }
+    }
+}
+
 // ── Memory Evolution Config ─────────────────────────────────────────────────
 
 /// Configuration for memory evolution features (V23).
@@ -1226,6 +1255,8 @@ pub struct CompanionConfig {
     #[serde(default)]
     pub telegram: TelegramConfig,
     #[serde(default)]
+    pub whatsapp: WhatsAppConfig,
+    #[serde(default)]
     pub memory_evolution: MemoryEvolutionConfig,
     #[serde(default)]
     pub agent: AgentConfig,
@@ -1237,6 +1268,10 @@ pub struct CompanionConfig {
     pub connectors: ConnectorsConfig,
     #[serde(default)]
     pub vault: VaultConfig,
+    /// MCP (Model Context Protocol) servers to connect to at startup.
+    /// Each server exposes tools that become available to the companion.
+    #[serde(default)]
+    pub mcp_servers: Vec<crate::tools::mcp::McpServerEntry>,
     /// Services the user actually uses. Only cortex rules and instincts for
     /// enabled services will fire. Examples: "email", "calendar", "git", "jira".
     /// If empty, defaults to a minimal personal set.
@@ -1355,12 +1390,14 @@ impl Default for CompanionConfig {
             home_assistant: HomeAssistantConfig::default(),
             proactive: ProactiveConfig::default(),
             telegram: TelegramConfig::default(),
+            whatsapp: WhatsAppConfig::default(),
             memory_evolution: MemoryEvolutionConfig::default(),
             agent: AgentConfig::default(),
             email: EmailConfig::default(),
             calendar: CalendarConfig::default(),
             connectors: ConnectorsConfig::default(),
             vault: VaultConfig::default(),
+            mcp_servers: Vec::new(),
             enabled_services: default_enabled_services(),
         }
     }

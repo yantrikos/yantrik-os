@@ -21,6 +21,8 @@ pub mod background;
 pub mod bond;
 pub mod companion;
 pub mod config;
+pub mod mcp_client;
+pub mod mcp_security;
 pub mod sub_agent;
 pub mod context;
 pub mod cron_mini;
@@ -55,6 +57,7 @@ pub mod urge_selector;
 pub mod urges;
 pub mod user_model;
 pub mod voice;
+pub mod whatsapp;
 
 pub use companion::CompanionService;
 pub use config::CompanionConfig;

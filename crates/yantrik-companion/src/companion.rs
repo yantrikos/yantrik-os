@@ -2227,12 +2227,44 @@ fn execute_tool_round_tracked(
 
         guard.check_tool_result(name, &result, db);
 
+        // MCP security: check if this tool call was potentially manipulated by
+        // a previous MCP server response (follow-up action blocking)
+        let last_mcp = tool_calls_made.iter().rev().skip(1)
+            .find(|t| t.starts_with("mcp__"))
+            .and_then(|t| t.strip_prefix("mcp__"))
+            .and_then(|t| t.split('_').next())
+            .map(|s| s.to_string());
+        if !name.starts_with("mcp__") {
+            if let Some(ref mcp_server) = last_mcp {
+                if let Ok(scanner) = tools::mcp::security_scanner().lock() {
+                    if let Some(block_msg) = scanner.scan_llm_follow_up(name, args, Some(mcp_server)) {
+                        tracing::warn!(
+                            tool = name,
+                            mcp_server = %mcp_server,
+                            "MCP follow-up action blocked"
+                        );
+                        let result = format!("Security: {}", block_msg);
+                        if use_native_tools {
+                            let call_id = api_tool_calls.get(idx)
+                                .map(|tc| tc.id.as_str())
+                                .unwrap_or("call_security");
+                            messages.push(ChatMessage::tool(call_id, name, &result));
+                        } else {
+                            messages.push(ChatMessage::user(&format!("[tool result: {}] {}", name, result)));
+                        }
+                        continue;
+                    }
+                }
+            }
+        }
+
         // Determine success/failure for agent loop tracking
         let is_error = result.starts_with("Error:")
             || result.starts_with("error:")
             || result.starts_with("Permission denied")
             || result.starts_with("Tool not found")
-            || result.starts_with("BLOCKED");
+            || result.starts_with("BLOCKED")
+            || result.starts_with("Security:");
 
         // Record step in agent loop
         agent_loop.record_step(name, args, &result, !is_error);
