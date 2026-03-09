@@ -41,8 +41,10 @@ pub const ALWAYS_TOOLS: &[&str] = &[
 /// Tool categories for keyword-based routing.
 /// Each entry: (category_name, keyword_patterns, tool_names).
 pub const TOOL_CATEGORIES: &[(&str, &[&str], &[&str])] = &[
-    ("files", &["file", "read", "write", "directory", "folder", "list files", "search file", "find file", "create file", "edit file", "delete file", "save"],
-     &["read_file", "write_file", "list_files", "search_files"]),
+    ("files", &["file", "read", "write", "directory", "folder", "list files", "search file", "find file",
+                "create file", "edit file", "delete file", "save", "grep", "glob", "pattern", "regex",
+                "replace", "modify file", "change file", "update file", "patch"],
+     &["read_file", "write_file", "list_files", "search_files", "edit_file", "grep", "glob"]),
     ("system", &["system", "process", "disk", "cpu", "memory usage", "uptime", "diagnose", "kill"],
      &["system_info", "disk_usage", "list_processes", "diagnose_process", "date_calc"]),
     ("browser", &["browse", "website", "click", "navigate", "open page", "web page", "url", "browser", "screenshot"],
@@ -925,12 +927,8 @@ impl CompanionService {
         self.conversation_history
             .push(ChatMessage::assistant(&response_text));
 
-        // Trim history to max turns
-        let max = self.config.conversation.max_history_turns * 2;
-        if self.conversation_history.len() > max {
-            let drain = self.conversation_history.len() - max;
-            self.conversation_history.drain(..drain);
-        }
+        // Compress conversation history when it grows too long
+        self.compress_history_if_needed();
 
         self.last_interaction_ts = now_ts();
         self.session_turn_count += 1;
@@ -1492,11 +1490,8 @@ impl CompanionService {
         self.conversation_history
             .push(ChatMessage::assistant(&response_text));
 
-        let max = self.config.conversation.max_history_turns * 2;
-        if self.conversation_history.len() > max {
-            let drain = self.conversation_history.len() - max;
-            self.conversation_history.drain(..drain);
-        }
+        // Compress conversation history when it grows too long
+        self.compress_history_if_needed();
 
         self.last_interaction_ts = now_ts();
         self.session_turn_count += 1;
@@ -1702,12 +1697,8 @@ impl CompanionService {
 
         // Add to conversation history so the LLM remembers what it said
         self.conversation_history.push(ChatMessage::assistant(text));
-        // Keep conversation history bounded
-        let max = 30;
-        if self.conversation_history.len() > max {
-            let drain = self.conversation_history.len() - max;
-            self.conversation_history.drain(..drain);
-        }
+        // Compress conversation history if needed
+        self.compress_history_if_needed();
 
         // Track daily count
         let now = now_ts();
@@ -1855,6 +1846,69 @@ impl CompanionService {
     /// Get conversation history.
     pub fn history(&self) -> &[ChatMessage] {
         &self.conversation_history
+    }
+
+    /// Compress conversation history when it exceeds the configured limit.
+    ///
+    /// Instead of simply dropping old messages, summarizes the older half
+    /// into a single context message using the LLM. This preserves key
+    /// information while freeing context window space.
+    fn compress_history_if_needed(&mut self) {
+        let max = self.config.conversation.max_history_turns * 2;
+        if self.conversation_history.len() <= max {
+            return;
+        }
+
+        // Split: older half gets compressed, recent half stays verbatim
+        let split = self.conversation_history.len() / 2;
+        // Round to even (user+assistant pairs)
+        let split = split - (split % 2);
+
+        if split < 4 {
+            // Too few messages to compress — just truncate
+            let drain = self.conversation_history.len() - max;
+            self.conversation_history.drain(..drain);
+            return;
+        }
+
+        let old_messages = &self.conversation_history[..split];
+
+        // Build summary text from old messages (without LLM call for speed)
+        let mut summary_parts = Vec::new();
+        for pair in old_messages.chunks(2) {
+            if pair.len() == 2 {
+                let user_text = &pair[0].content;
+                let asst_text = &pair[1].content;
+                // Truncate each turn to keep summary compact
+                let user_short = if user_text.len() > 150 {
+                    format!("{}...", &user_text[..user_text.floor_char_boundary(150)])
+                } else {
+                    user_text.clone()
+                };
+                let asst_short = if asst_text.len() > 200 {
+                    format!("{}...", &asst_text[..asst_text.floor_char_boundary(200)])
+                } else {
+                    asst_text.clone()
+                };
+                summary_parts.push(format!("User: {}\nAssistant: {}", user_short, asst_short));
+            }
+        }
+
+        let summary = format!(
+            "[Earlier conversation summary ({} turns compressed)]\n{}",
+            split / 2,
+            summary_parts.join("\n---\n")
+        );
+
+        // Replace old messages with a single summary message
+        self.conversation_history.drain(..split);
+        self.conversation_history.insert(0, ChatMessage::system(&summary));
+
+        tracing::debug!(
+            compressed = split / 2,
+            remaining = self.conversation_history.len(),
+            "Conversation history compressed"
+        );
     }
 
     /// Seconds since last interaction.

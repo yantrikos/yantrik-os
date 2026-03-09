@@ -241,11 +241,13 @@ impl Tool for ReadFileTool {
             "type": "function",
             "function": {
                 "name": "read_file",
-                "description": "Read the contents of a text file. Limited to first 2000 characters.",
+                "description": "Read the contents of a text file. Supports line ranges for large files. Returns lines with line numbers.",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "path": {"type": "string", "description": "File path to read"}
+                        "path": {"type": "string", "description": "File path to read"},
+                        "offset": {"type": "integer", "description": "Start reading from this line number (1-based, default: 1)"},
+                        "limit": {"type": "integer", "description": "Maximum number of lines to read (default: 200)"}
                     },
                     "required": ["path"]
                 }
@@ -255,6 +257,9 @@ impl Tool for ReadFileTool {
 
     fn execute(&self, _ctx: &ToolContext, args: &serde_json::Value) -> String {
         let path = args.get("path").and_then(|v| v.as_str()).unwrap_or_default();
+        let offset = args.get("offset").and_then(|v| v.as_u64()).unwrap_or(1).max(1) as usize;
+        let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(200) as usize;
+
         if path.is_empty() {
             return "Error: path is required".to_string();
         }
@@ -266,11 +271,29 @@ impl Tool for ReadFileTool {
 
         match std::fs::read_to_string(&expanded) {
             Ok(content) => {
-                if content.len() > 2000 {
-                    format!("{}\n... (truncated, {} total bytes)", &content[..content.floor_char_boundary(2000)], content.len())
-                } else {
-                    content
+                let lines: Vec<&str> = content.lines().collect();
+                let total_lines = lines.len();
+
+                if total_lines == 0 {
+                    return "(empty file)".to_string();
                 }
+
+                let start = (offset - 1).min(total_lines);
+                let end = (start + limit).min(total_lines);
+
+                let mut result = String::new();
+                for i in start..end {
+                    result.push_str(&format!("{:>4}\t{}\n", i + 1, lines[i]));
+                }
+
+                if end < total_lines {
+                    result.push_str(&format!(
+                        "\n... ({} more lines, {} total. Use offset={} to continue)",
+                        total_lines - end, total_lines, end + 1
+                    ));
+                }
+
+                result
             }
             Err(e) => format!("Error reading file: {e}"),
         }

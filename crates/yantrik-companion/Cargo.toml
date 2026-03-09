@@ -22,3 +22,4 @@ lettre = { version = "0.11", default-features = false, features = ["rustls-tls",
 html2text = "0.12"
 mailparse = "0.15"
 ureq = { version = "2", features = ["json"] }
+regex = "1"

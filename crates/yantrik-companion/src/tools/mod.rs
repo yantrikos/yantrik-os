@@ -100,6 +100,9 @@ pub mod vault;
 pub mod coder;
 pub mod plugin;
 pub mod spawn_agents;
+pub mod edit;
+pub mod grep;
+pub mod glob;
 
 use crate::config::CompanionConfig;
 use yantrikdb_core::YantrikDB;
@@ -495,6 +498,9 @@ pub fn build_registry(config: &CompanionConfig) -> ToolRegistry {
     // Load YAML plugins from ~/.config/yantrik/plugins/
     plugin::load_plugins(&mut reg);
     spawn_agents::register(&mut reg);
+    edit::register(&mut reg);
+    grep::register(&mut reg);
+    glob::register(&mut reg);
 
     reg
 }

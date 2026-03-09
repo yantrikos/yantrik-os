@@ -9420,6 +9420,7 @@ dependencies = [
  "lettre",
  "mailparse",
  "native-tls",
+ "regex",
  "rusqlite",
  "serde",
  "serde_json",
