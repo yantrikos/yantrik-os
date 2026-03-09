@@ -5,6 +5,7 @@ use super::{Tool, ToolContext, ToolRegistry, PermissionLevel, validate_path};
 
 /// Register network tools. `ollama_base` and `model` are optional —
 /// when provided, `web_fetch` uses LLM extraction for smart content processing.
+/// When both are empty, web_fetch falls back to claude-cli extraction if available.
 pub fn register(reg: &mut ToolRegistry, ollama_base: &str, model: &str) {
     reg.register(Box::new(DownloadFileTool));
     reg.register(Box::new(HttpFetchTool));
@@ -229,13 +230,20 @@ impl Tool for WebFetchTool {
             match llm_extract(&self.ollama_base, &self.model, &content, prompt, url) {
                 Ok(result) => return result,
                 Err(e) => {
-                    tracing::warn!("web_fetch LLM extraction failed: {e}, returning raw markdown");
-                    // Fall through to raw content
+                    tracing::warn!("web_fetch LLM extraction failed: {e}, trying claude-cli");
                 }
             }
         }
 
-        // Fallback: return clean markdown without AI processing
+        // Fallback: try claude-cli for extraction (works when backend is claude-cli)
+        match claude_cli_extract(&content, prompt, url) {
+            Ok(result) => return result,
+            Err(e) => {
+                tracing::debug!("web_fetch claude-cli extraction unavailable: {e}");
+            }
+        }
+
+        // Final fallback: return clean markdown without AI processing
         if content.len() > 6000 {
             let boundary = content.floor_char_boundary(6000);
             format!("Page: {url}\n\n{}\n\n[Truncated — AI extraction unavailable]", &content[..boundary])
@@ -342,6 +350,59 @@ fn llm_extract(ollama_base: &str, model: &str, content: &str, prompt: &str, url:
     }
 
     Ok(answer)
+}
+
+/// Use claude-cli for web content extraction (when Ollama is not available).
+fn claude_cli_extract(content: &str, prompt: &str, url: &str) -> Result<String, String> {
+    // Check if claude CLI is available
+    let which = std::process::Command::new("which")
+        .arg("claude")
+        .output();
+    match which {
+        Ok(o) if o.status.success() => {}
+        _ => return Err("claude CLI not available".to_string()),
+    }
+
+    // Truncate content to avoid overwhelming the CLI
+    let max_chars = 8000;
+    let content = if content.len() > max_chars {
+        &content[..content.floor_char_boundary(max_chars)]
+    } else {
+        content
+    };
+
+    let input = format!(
+        "Extract information from this web page. Page URL: {url}\n\n\
+         PAGE CONTENT:\n{content}\n\n---\n\n\
+         EXTRACT: {prompt}\n\n\
+         Be concise and direct. Answer based ONLY on the page content."
+    );
+
+    let output = std::process::Command::new("claude")
+        .args(["-p", "--output-format", "text"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .and_then(|mut child| {
+            if let Some(stdin) = child.stdin.as_mut() {
+                use std::io::Write;
+                let _ = stdin.write_all(input.as_bytes());
+            }
+            child.wait_with_output()
+        })
+        .map_err(|e| format!("claude-cli error: {e}"))?;
+
+    if !output.status.success() {
+        return Err("claude-cli returned non-zero".to_string());
+    }
+
+    let result = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if result.is_empty() {
+        return Err("Empty claude-cli response".to_string());
+    }
+
+    Ok(result)
 }
 
 /// Strip HTML tags from text. Simple approach: remove <...> sequences.
