@@ -387,6 +387,15 @@ pub struct CompanionService {
     /// Active Day Context — ambient awareness buffer (calendar, weather, email, etc.).
     /// Refreshed by stewardship loop, injected into system prompt per token budget.
     pub active_context: ActiveDayContext,
+
+    /// 3-axis trust model (action, personal, taste) — gates autonomous execution.
+    pub trust_state: crate::trust_model::TrustState,
+
+    /// Contextual policy engine — predicate-based permission decisions.
+    pub policy_engine: crate::policy_engine::PolicyEngine,
+
+    /// Silence policy — learns when to shut up from dismissal patterns.
+    pub silence_policy: crate::silence_policy::SilencePolicy,
 }
 
 impl CompanionService {
@@ -419,6 +428,12 @@ impl CompanionService {
 
         // World model tables (commitments, preferences, routines)
         crate::world_model::WorldModel::ensure_tables(db.conn());
+
+        // Trust model tables (3-axis trust + event log)
+        crate::trust_model::TrustModel::ensure_table(db.conn());
+
+        // Silence policy tables (intervention outcomes)
+        crate::silence_policy::SilencePolicy::ensure_table(db.conn());
 
         // Offline NLP + cognitive router tables
         crate::cognitive_router::ensure_tables(db.conn());
@@ -555,6 +570,11 @@ impl CompanionService {
         let user_interests = load_user_interests(db.conn());
         let user_location = load_user_location(db.conn());
 
+        // V25: Load trust state + silence policy history
+        let trust_state = crate::trust_model::TrustModel::get_state(db.conn());
+        let mut silence_policy = crate::silence_policy::SilencePolicy::new();
+        silence_policy.load_history(db.conn());
+
         Self {
             db,
             llm,
@@ -600,6 +620,9 @@ impl CompanionService {
             event_bus: None,
             capability_profile,
             active_context: ActiveDayContext::new(),
+            trust_state,
+            policy_engine: crate::policy_engine::PolicyEngine::new(),
+            silence_policy,
         }
     }
 
@@ -1117,6 +1140,8 @@ impl CompanionService {
                 agent_spawner.as_ref(),
                 self.event_bus.as_ref(),
                 msg_trace,
+                &self.policy_engine,
+                &self.trust_state,
             );
 
             if !text_part.is_empty() {
@@ -1676,6 +1701,8 @@ impl CompanionService {
                         agent_spawner.as_ref(),
                         self.event_bus.as_ref(),
                         msg_trace,
+                        &self.policy_engine,
+                        &self.trust_state,
                     );
 
                     // Remaining rounds: discovery rounds are budget-limited,
@@ -1775,6 +1802,8 @@ impl CompanionService {
                                     agent_spawner.as_ref(),
                                     self.event_bus.as_ref(),
                                     msg_trace,
+                                    &self.policy_engine,
+                                    &self.trust_state,
                                 );
 
                                 if !round_text.is_empty() {
@@ -2076,11 +2105,50 @@ impl CompanionService {
 
     /// Check proactive engine for messages to deliver. Called during think cycle.
     pub fn check_proactive(&mut self) {
+        // V25: Silence policy — skip if in quiet period (frustration cooldown)
+        if self.silence_policy.is_quiet_period() {
+            tracing::debug!("Silence policy: quiet period active, skipping proactive check");
+            return;
+        }
+
+        // V25: Taste trust gate — don't send proactive if suggestions aren't welcome
+        if !self.trust_state.suggestions_welcome() {
+            tracing::debug!(taste = self.trust_state.taste, "Taste trust too low, skipping proactive");
+            return;
+        }
+
         // Sync bond level so templates render with personality
         self.proactive_engine.set_bond_level(self.bond_level);
         if let Some(msg) = self.proactive_engine.check(&self.urge_queue, self.db.conn()) {
             self.set_proactive_message(msg);
         }
+    }
+
+    /// Record a proactive message outcome for the silence policy.
+    pub fn record_proactive_outcome(&mut self, source: &str, outcome: crate::silence_policy::InterventionOutcome) {
+        let is_positive = outcome.is_positive();
+        let is_negative = outcome.is_negative();
+        self.silence_policy.record_outcome(source, outcome, self.db.conn());
+
+        // Also update taste trust
+        let trust_event = if is_positive {
+            crate::trust_model::TrustEvent::SuggestionAccepted { source: source.to_string() }
+        } else if is_negative {
+            crate::trust_model::TrustEvent::SuggestionDismissed { source: source.to_string() }
+        } else {
+            return;
+        };
+        self.trust_state = crate::trust_model::TrustModel::apply_event(self.db.conn(), &trust_event);
+    }
+
+    /// Refresh trust state from DB (call periodically).
+    pub fn refresh_trust_state(&mut self) {
+        self.trust_state = crate::trust_model::TrustModel::get_state(self.db.conn());
+    }
+
+    /// Get silence policy dampening factor for a source.
+    pub fn silence_dampening_for(&self, source: &str) -> f64 {
+        self.silence_policy.dampening_for(source)
     }
 
     /// Take the pending proactive message (if any).
@@ -2615,6 +2683,8 @@ fn execute_tool_round_tracked(
     agent_spawner: Option<&tools::AgentSpawnerContext>,
     event_bus: Option<&yantrik_os::EventBus>,
     parent_trace: Option<yantrik_os::TraceId>,
+    policy_engine: &crate::policy_engine::PolicyEngine,
+    trust_state: &crate::trust_model::TrustState,
 ) {
     let ctx = ToolContext {
         db,
@@ -2669,6 +2739,27 @@ fn execute_tool_round_tracked(
         } else {
             None
         };
+
+        // V25: Policy engine gate — check if this action is allowed
+        let action_ctx = crate::policy_engine::ActionContext::from_tool(name);
+        let policy_decision = policy_engine.evaluate(&action_ctx, trust_state);
+        if let crate::policy_engine::PolicyDecision::Deny { ref reason } = policy_decision {
+            tracing::warn!(tool = %name, reason = %reason, "Policy engine denied tool execution");
+            let result = format!("BLOCKED by policy: {}", reason);
+            agent_loop.record_step(name, args, &result, false);
+            if use_native_tools {
+                let call_id = api_tool_calls.get(idx).map(|tc| tc.id.as_str()).unwrap_or("call_0");
+                messages.push(ChatMessage::tool(call_id, name, &result));
+            } else {
+                messages.push(ChatMessage::user(format!(
+                    "<data:tool_result name=\"{}\">{}", name, result
+                )));
+            }
+            continue;
+        }
+        if !policy_decision.is_allowed() {
+            tracing::info!(tool = %name, decision = %policy_decision.as_str(), "Policy engine flagged tool");
+        }
 
         let tool_start = std::time::Instant::now();
 
@@ -2763,6 +2854,21 @@ fn execute_tool_round_tracked(
             db.conn(), name, !is_error, tool_duration_ms,
             failure_reason.as_deref(),
         );
+
+        // V25: Update trust model based on tool outcome
+        {
+            let trust_event = if is_error {
+                crate::trust_model::TrustEvent::AutonomousMistake {
+                    action: name.to_string(),
+                    severity: 0.5,
+                }
+            } else {
+                crate::trust_model::TrustEvent::AutonomousSuccess {
+                    action: name.to_string(),
+                }
+            };
+            crate::trust_model::TrustModel::apply_event(db.conn(), &trust_event);
+        }
 
         // Record step in agent loop
         agent_loop.record_step(name, args, &result, !is_error);

@@ -526,7 +526,12 @@ fn worker_loop(
                         .as_secs_f64();
                     companion.resonance.record_user_interaction(now_r, 0.8);
                     // Adaptive User Model: record user message (checks for pending proactive response)
+                    let had_pending = companion.user_model.inner_pending_ts().is_some();
                     companion.user_model.on_user_message(now_r);
+                    // V25: If user responded to a proactive message, record as "accepted"
+                    if had_pending {
+                        companion.record_proactive_outcome("proactive", yantrik_companion::silence_policy::InterventionOutcome::Accepted);
+                    }
                 }
                 let start = std::time::Instant::now();
                 let mut token_count = 0u32;
@@ -1061,6 +1066,14 @@ fn worker_loop(
                 // Resonance Model: tick phase dynamics each think cycle
                 companion.resonance.tick_phase(companion.bond_level(), 60.0);
 
+                // V25: Refresh trust state + apply daily interaction + daily decay
+                companion.refresh_trust_state();
+                yantrik_companion::trust_model::TrustModel::apply_event(
+                    companion.db.conn(),
+                    &yantrik_companion::trust_model::TrustEvent::DailyInteraction,
+                );
+                yantrik_companion::trust_model::TrustModel::apply_daily_decay(companion.db.conn());
+
                 let state = companion.build_state();
                 let mut urge_specs = companion.evaluate_instincts(&state);
                 let now_ts = state.current_ts;
@@ -1433,6 +1446,8 @@ fn worker_loop(
                             "Suppressing proactive message (deep work mode)"
                         );
                         companion.record_suppressed_urge(&delivery_key, "deep work mode");
+                        // V25: Record suppression as "ignored" for silence policy learning
+                        companion.record_proactive_outcome(&delivery_key, yantrik_companion::silence_policy::InterventionOutcome::Ignored);
                         event_bus.emit(
                             yantrik_os::EventKind::ProactiveSuppressed {
                                 reason: "deep work mode".into(),
@@ -1531,6 +1546,8 @@ fn worker_loop(
                     if let Some(sent_ts) = m {
                         if now_ts - sent_ts > 2.0 * 3600.0 {
                             companion.user_model.on_proactive_ignored(now_ts);
+                            // V25: Record as "ignored" in silence policy
+                            companion.record_proactive_outcome("proactive", yantrik_companion::silence_policy::InterventionOutcome::Ignored);
                             tracing::info!("UserModel: proactive message expired (2h without response)");
                         }
                     }
