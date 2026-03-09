@@ -10,6 +10,7 @@ mod api;
 mod claude_cli;
 #[cfg(feature = "llamacpp")]
 mod llamacpp;
+mod fallback;
 
 #[cfg(feature = "candle-llm")]
 pub use self::candle::CandleLLM;
@@ -19,6 +20,7 @@ pub use self::api::ApiLLM;
 pub use self::claude_cli::ClaudeCliLLM;
 #[cfg(feature = "llamacpp")]
 pub use self::llamacpp::LlamaCppLLM;
+pub use self::fallback::{FallbackLLM, FallbackConfig};
 
 /// Backward-compatible alias for `CandleLLM`.
 #[cfg(feature = "candle-llm")]

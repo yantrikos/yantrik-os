@@ -37,6 +37,7 @@ pub enum FileClipOp {
 /// All shared state needed by wire modules.
 pub struct AppContext {
     pub bridge: Arc<CompanionBridge>,
+    pub event_bus: yantrik_os::EventBus,
     pub installed_apps: Arc<Vec<crate::apps::DesktopEntry>>,
     pub clip_history: clipboard::SharedHistory,
     pub browser_path: Rc<RefCell<String>>,
@@ -209,8 +210,26 @@ impl AppContext {
         let tg_config = config.telegram.clone();
         let enabled_services = config.enabled_services.clone();
 
+        // Create the cognitive event bus (+ persistent log)
+        let event_bus = yantrik_os::EventBus::new();
+        {
+            let home = std::env::var("HOME").unwrap_or_else(|_| "/root".to_string());
+            let log_dir = format!("{}/.config/yantrik", home);
+            let _ = std::fs::create_dir_all(&log_dir);
+            let log_path = format!("{}/event_log.db", log_dir);
+            match yantrik_os::EventLog::open(&log_path) {
+                Ok(log) => {
+                    event_bus.attach_log(log);
+                    tracing::info!(path = %log_path, "Event log attached to bus");
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "Failed to open event log — events will not persist");
+                }
+            }
+        }
+
         // Start companion bridge (spawns worker thread)
-        let bridge = Arc::new(CompanionBridge::start(config, ui.as_weak()));
+        let bridge = Arc::new(CompanionBridge::start(config, ui.as_weak(), event_bus.clone()));
 
         // Start Telegram poller if configured
         tracing::info!(
@@ -315,6 +334,7 @@ impl AppContext {
 
         Self {
             bridge,
+            event_bus,
             installed_apps,
             clip_history,
             browser_path: Rc::new(RefCell::new("~".to_string())),
@@ -349,24 +369,33 @@ impl AppContext {
     }
 }
 
-/// Get current time as HH:MM string.
-pub fn current_time_hhmm() -> String {
+/// Get local time components using libc::localtime_r (respects /etc/localtime).
+fn local_time() -> (u32, u32, u32, u32, u32, u32) {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
-        .as_secs();
-    let hours = (now / 3600) % 24;
-    let minutes = (now / 60) % 60;
+        .as_secs() as i64;
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    unsafe { libc::localtime_r(&now as *const i64, &mut tm) };
+    (
+        tm.tm_hour as u32,
+        tm.tm_min as u32,
+        tm.tm_sec as u32,
+        tm.tm_wday as u32,  // 0=Sun, 1=Mon, ..., 6=Sat
+        tm.tm_mon as u32,   // 0-11
+        tm.tm_mday as u32,  // 1-31
+    )
+}
+
+/// Get current time as HH:MM string (local timezone).
+pub fn current_time_hhmm() -> String {
+    let (hours, minutes, _, _, _, _) = local_time();
     format!("{:02}:{:02}", hours, minutes)
 }
 
-/// Generate a time-of-day greeting.
+/// Generate a time-of-day greeting (local timezone).
 pub fn time_of_day_greeting() -> String {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
-    let hour = (now / 3600) % 24;
+    let (hour, _, _, _, _, _) = local_time();
     match hour {
         5..=11 => "Good morning".to_string(),
         12..=17 => "Good afternoon".to_string(),
@@ -375,29 +404,20 @@ pub fn time_of_day_greeting() -> String {
     }
 }
 
-/// Get current date as a human-readable string, e.g. "Tuesday, March 4".
+/// Get current date as a human-readable string, e.g. "Tuesday, March 4" (local timezone).
 pub fn current_date_text() -> String {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
+    let (_, _, _, wday, mon, mday) = local_time();
 
-    let days_since_epoch = (now / 86400) as i64;
-
-    // Day of week: 0=Thu, 1=Fri, 2=Sat, 3=Sun, 4=Mon, 5=Tue, 6=Wed
-    let dow_index = ((days_since_epoch % 7 + 7) % 7) as usize;
-    let day_names = ["Thursday", "Friday", "Saturday", "Sunday", "Monday", "Tuesday", "Wednesday"];
-    let day_name = day_names[dow_index];
-
-    let (_year, month, day) = days_to_civil(days_since_epoch);
+    let day_names = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+    let day_name = day_names[wday as usize];
 
     let month_names = [
         "January", "February", "March", "April", "May", "June",
         "July", "August", "September", "October", "November", "December",
     ];
-    let month_name = month_names[(month - 1) as usize];
+    let month_name = month_names[mon as usize];
 
-    format!("{}, {} {}", day_name, month_name, day)
+    format!("{}, {} {}", day_name, month_name, mday)
 }
 
 /// Convert days since Unix epoch to (year, month, day).

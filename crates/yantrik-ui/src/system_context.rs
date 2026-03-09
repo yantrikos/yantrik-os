@@ -7,9 +7,11 @@ use std::path::PathBuf;
 pub fn format_system_context(snap: &yantrik_os::SystemSnapshot) -> String {
     let mut parts = Vec::new();
 
-    // Battery
-    let charge_str = if snap.battery_charging { " (charging)" } else { "" };
-    parts.push(format!("Battery: {}%{}", snap.battery_level, charge_str));
+    // Battery (only show if hardware is present)
+    if snap.battery_available {
+        let charge_str = if snap.battery_charging { " (charging)" } else { "" };
+        parts.push(format!("Battery: {}%{}", snap.battery_level, charge_str));
+    }
 
     // Network — sanitize SSID (WiFi names are attacker-controlled in public spaces)
     if snap.network_connected {

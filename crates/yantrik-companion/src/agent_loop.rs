@@ -22,6 +22,7 @@ pub struct AgentLoop {
     pub status: LoopStatus,
     pub nudge_count: usize,
     pub max_nudges: usize,
+    started_at: std::time::Instant,
 }
 
 /// Final outcome of the agent loop.
@@ -42,6 +43,7 @@ impl AgentLoop {
             status: LoopStatus::Running,
             nudge_count: 0,
             max_nudges,
+            started_at: std::time::Instant::now(),
         }
     }
 
@@ -147,6 +149,11 @@ impl AgentLoop {
     /// True if any step succeeded.
     pub fn any_success(&self) -> bool {
         self.steps.iter().any(|s| s.success)
+    }
+
+    /// Elapsed time since the loop started, in milliseconds.
+    pub fn elapsed_ms(&self) -> u64 {
+        self.started_at.elapsed().as_millis() as u64
     }
 
     /// Check if the same tool has been called too many times (runaway detection).

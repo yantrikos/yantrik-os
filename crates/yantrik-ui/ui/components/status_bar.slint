@@ -8,6 +8,7 @@ export component StatusBar inherits Rectangle {
     in property <string> clock-text: "00:00";
     in property <string> companion-status: "idle";
     in property <bool> companion-online: true;
+    in property <bool> battery-available: false;
     in property <int> battery-level: 100;
     in property <bool> battery-charging: false;
     in property <bool> wifi-connected: false;
@@ -385,8 +386,9 @@ export component StatusBar inherits Rectangle {
                         }
                     }
 
-                    // Battery — holographic bar
+                    // Battery — holographic bar (hidden when no battery hardware)
                     HorizontalLayout {
+                        visible: root.battery-available;
                         spacing: 3px;
 
                         Rectangle {

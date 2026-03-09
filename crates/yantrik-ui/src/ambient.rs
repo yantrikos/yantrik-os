@@ -109,7 +109,7 @@ fn analyze_sentiment(text: &str) -> f32 {
     }
 }
 
-// chrono is already a dependency — use its Local time
+// Local time via libc::localtime_r (respects /etc/localtime)
 mod chrono {
     pub struct Local;
     impl Local {
@@ -117,12 +117,13 @@ mod chrono {
             let ts = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
-                .as_secs();
-            // Simple UTC-based hour extraction (good enough for ambient effects)
-            let secs_in_day = (ts % 86400) as f32;
-            let hour = (secs_in_day / 3600.0).floor() as u32;
-            let minute = ((secs_in_day % 3600.0) / 60.0).floor() as u32;
-            DateTime { hour, minute }
+                .as_secs() as i64;
+            let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+            unsafe { libc::localtime_r(&ts as *const i64, &mut tm) };
+            DateTime {
+                hour: tm.tm_hour as u32,
+                minute: tm.tm_min as u32,
+            }
         }
     }
 

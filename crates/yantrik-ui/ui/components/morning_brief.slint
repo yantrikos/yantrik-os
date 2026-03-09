@@ -1,0 +1,203 @@
+// Morning Brief Card — expandable notification showing the day's context.
+// Displayed on desktop when the stewardship loop generates a morning brief.
+// Sections: weather, calendar, people, finance, interesting finds.
+// Each section is collapsible. Dismiss button clears the card.
+
+import { Theme } from "../theme.slint";
+
+// ── Section data ──────────────────────────────────────────────────
+
+export struct BriefSection {
+    icon: string,
+    label: string,
+    content: string,
+    expanded: bool,
+    action-id: string,
+}
+
+// ── Collapsible section ───────────────────────────────────────────
+
+component BriefSectionRow inherits Rectangle {
+    in property <string> icon;
+    in property <string> label;
+    in property <string> content;
+    in-out property <bool> expanded: true;
+    callback section-clicked(string);
+    in property <string> action-id: "";
+
+    height: expanded ? header.preferred-height + body.preferred-height + 8px : header.preferred-height;
+    animate height { duration: 200ms; easing: ease-out; }
+    clip: true;
+
+    VerticalLayout {
+        spacing: 4px;
+
+        // Section header (clickable to toggle)
+        header := HorizontalLayout {
+            height: 28px;
+            spacing: 8px;
+            padding-left: 12px;
+            padding-right: 12px;
+
+            Text {
+                text: icon;
+                font-size: 14px;
+                vertical-alignment: center;
+                width: 20px;
+            }
+
+            Text {
+                text: label;
+                color: Theme.text-primary;
+                font-size: 13px;
+                font-weight: 600;
+                vertical-alignment: center;
+                letter-spacing: 0.5px;
+            }
+
+            // Expand/collapse chevron
+            Text {
+                text: expanded ? "▾" : "▸";
+                color: Theme.text-dim;
+                font-size: 12px;
+                vertical-alignment: center;
+                horizontal-alignment: right;
+            }
+        }
+
+        // Section body (collapsible)
+        body := Rectangle {
+            height: expanded ? content-text.preferred-height + 8px : 0px;
+            opacity: expanded ? 1.0 : 0.0;
+            animate opacity { duration: 150ms; }
+
+            content-text := Text {
+                x: 16px;
+                width: parent.width - 32px;
+                text: content;
+                color: Theme.text-secondary;
+                font-size: 12px;
+                wrap: word-wrap;
+            }
+        }
+    }
+
+    // Toggle expand/collapse
+    TouchArea {
+        clicked => {
+            root.expanded = !root.expanded;
+            if action-id != "" {
+                root.section-clicked(action-id);
+            }
+        }
+    }
+}
+
+// ── Main morning brief card ───────────────────────────────────────
+
+export component MorningBriefCard inherits Rectangle {
+    in property <string> greeting: "Good morning!";
+    in property <[BriefSection]> sections: [];
+    in property <bool> show-card: false;
+    callback dismissed();
+    callback section-action(string);
+
+    width: 380px;
+    min-height: 0px;
+    preferred-height: show-card ? card-layout.preferred-height + 24px : 0px;
+    border-radius: 16px;
+    background: #0c0b10e0;
+    border-width: 1px;
+    border-color: Theme.cyan-glow;
+    opacity: show-card ? 1.0 : 0.0;
+    animate opacity { duration: 400ms; easing: ease-out; }
+    clip: true;
+
+    // Subtle glow border
+    Rectangle {
+        width: parent.width + 2px;
+        height: parent.height + 2px;
+        x: -1px;
+        y: -1px;
+        border-radius: 17px;
+        background: @radial-gradient(circle,
+            Theme.cyan-glow 0%, transparent 70%);
+        opacity: 0.3;
+    }
+
+    card-layout := VerticalLayout {
+        spacing: 4px;
+        padding: 16px;
+
+        // Header row: greeting + dismiss button
+        HorizontalLayout {
+            spacing: 8px;
+            height: 36px;
+
+            VerticalLayout {
+                alignment: center;
+                Text {
+                    text: greeting;
+                    color: Theme.cyan;
+                    font-size: 16px;
+                    font-weight: 500;
+                    letter-spacing: 1px;
+                }
+            }
+
+            // Spacer
+            Rectangle { horizontal-stretch: 1; }
+
+            // Dismiss X
+            TouchArea {
+                width: 28px;
+                height: 28px;
+                clicked => { root.dismissed(); }
+
+                Rectangle {
+                    width: 100%; height: 100%;
+                    border-radius: 14px;
+                    background: #ffffff08;
+
+                    Text {
+                        text: "✕";
+                        color: Theme.text-dim;
+                        font-size: 12px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+        }
+
+        // Divider
+        Rectangle {
+            height: 1px;
+            background: #ffffff10;
+        }
+
+        // Sections
+        for section[idx] in sections: BriefSectionRow {
+            icon: section.icon;
+            label: section.label;
+            content: section.content;
+            expanded: section.expanded;
+            action-id: section.action-id;
+            section-clicked(id) => { root.section-action(id); }
+        }
+
+        // Footer
+        HorizontalLayout {
+            height: 24px;
+            padding-left: 12px;
+
+            Text {
+                text: "Have a great day.";
+                color: Theme.text-dim;
+                font-size: 11px;
+                vertical-alignment: center;
+                letter-spacing: 0.5px;
+            }
+        }
+    }
+}

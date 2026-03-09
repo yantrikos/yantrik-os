@@ -560,8 +560,8 @@ pub fn build_context_suggestions(
         _ => {}
     }
 
-    // 2. Battery warning
-    if snapshot.battery_level <= 20 && !snapshot.battery_charging {
+    // 2. Battery warning (skip if no battery hardware)
+    if snapshot.battery_available && snapshot.battery_level <= 20 && !snapshot.battery_charging {
         let msg = format!("Battery {}% — plug in soon", snapshot.battery_level);
         results.push(lr("context", msg, "Low power warning", "🔋", "system:status"));
     }
@@ -707,6 +707,9 @@ pub fn instant_answer(query: &str, snapshot: &yantrik_os::SystemSnapshot) -> Opt
 
     // Battery
     if lower == "battery" || lower == "battery level" || lower == "power" {
+        if !snapshot.battery_available {
+            return Some(answer_result("Battery", "No battery detected (VM/desktop)", "🔌", "system:status"));
+        }
         let charging = if snapshot.battery_charging { " (charging)" } else { "" };
         let val = format!("{}%{}", snapshot.battery_level, charging);
         return Some(answer_result("Battery", &val, "🔋", "system:status"));

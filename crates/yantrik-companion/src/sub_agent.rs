@@ -115,18 +115,40 @@ impl SubAgent {
                 None
             };
 
-            let llm_response = match self.llm.chat(&messages, &gen_config, tools_param) {
-                Ok(r) => r,
-                Err(e) => {
-                    tracing::warn!(agent = %self.agent_id, "Sub-agent LLM error: {e}");
-                    return SubAgentResult {
-                        agent_id: self.agent_id,
-                        task: self.task,
-                        response: format!("Error: {e}"),
-                        tool_calls_made,
-                        success: false,
-                        elapsed_ms: start.elapsed().as_millis() as u64,
-                    };
+            // LLM call with retry (up to 2 retries with backoff)
+            let llm_response = {
+                let mut last_err = String::new();
+                let mut result = None;
+                for attempt in 0..3 {
+                    match self.llm.chat(&messages, &gen_config, tools_param) {
+                        Ok(r) => { result = Some(r); break; }
+                        Err(e) => {
+                            last_err = e.to_string();
+                            tracing::warn!(
+                                agent = %self.agent_id,
+                                attempt = attempt + 1,
+                                "Sub-agent LLM error (retrying): {e}"
+                            );
+                            if attempt < 2 {
+                                std::thread::sleep(std::time::Duration::from_millis(
+                                    500 * (attempt as u64 + 1)
+                                ));
+                            }
+                        }
+                    }
+                }
+                match result {
+                    Some(r) => r,
+                    None => {
+                        return SubAgentResult {
+                            agent_id: self.agent_id,
+                            task: self.task,
+                            response: format!("Error after 3 attempts: {last_err}"),
+                            tool_calls_made,
+                            success: false,
+                            elapsed_ms: start.elapsed().as_millis() as u64,
+                        };
+                    }
                 }
             };
 

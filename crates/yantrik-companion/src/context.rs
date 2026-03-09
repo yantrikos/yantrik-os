@@ -30,6 +30,53 @@ pub struct ContextSignals<'a> {
     pub recall_hint: Option<&'a str>,
 }
 
+/// Build a minimal message array for degraded/fallback LLM (tiny model).
+/// Strips personality, bond nuance, opinions, patterns — keeps only essential context.
+pub fn build_messages_lightweight(
+    user_text: &str,
+    config: &CompanionConfig,
+    memories: &[yantrikdb_core::types::RecallResult],
+    conversation_history: &[ChatMessage],
+) -> Vec<ChatMessage> {
+    let name = &config.personality.name;
+    let user = &config.user_name;
+
+    let mut prompt = String::with_capacity(512);
+    prompt.push_str("/no_think\n");
+    prompt.push_str(&format!("You are {name}, {user}'s assistant. Be concise.\n"));
+
+    // Time
+    let now = chrono::Local::now();
+    prompt.push_str(&format!("Time: {}\n", now.format("%a %b %d %I:%M%p")));
+
+    // Top 3 memories only, truncated
+    if !memories.is_empty() {
+        prompt.push_str("Memories:\n");
+        for mem in memories.iter().take(3) {
+            let text = if mem.text.len() > 120 {
+                &mem.text[..mem.text.char_indices().take_while(|&(i, _)| i < 120).last().map(|(i, c)| i + c.len_utf8()).unwrap_or(120)]
+            } else {
+                &mem.text
+            };
+            prompt.push_str(&format!("- {}\n", sanitize::escape_for_prompt(text)));
+        }
+    }
+
+    // Minimal tool instructions
+    prompt.push_str("Call tools when needed. Be brief. Answer directly.\n");
+
+    let mut messages = vec![ChatMessage::system(prompt)];
+
+    // Last 3 turns max
+    let history: Vec<&ChatMessage> = conversation_history.iter().rev().take(3)
+        .collect::<Vec<_>>().into_iter().rev().collect();
+    for msg in history {
+        messages.push(msg.clone());
+    }
+    messages.push(ChatMessage::user(user_text));
+    messages
+}
+
 /// Build the full message array for LLM chat.
 pub fn build_messages(
     user_text: &str,
@@ -431,7 +478,14 @@ fn tool_chaining_instructions(use_native_tools: bool) -> String {
          19. VAULT SECURITY: The vault stores passwords encrypted with AES-256-GCM. When a PIN \
          is set, vault_get requires the PIN — ask the user for it, NEVER guess. vault_list is \
          always safe (shows service names only, no passwords). Use vault_generate_password to \
-         create strong passwords, then vault_store to save them.\n\n"
+         create strong passwords, then vault_store to save them.\n\
+         20. ASK BEFORE GUESSING: When you don't have enough information to act correctly, \
+         ASK the user a follow-up question instead of guessing. Examples:\n\
+         - User says 'send email to John' → ask 'Which John? What should the email say?'\n\
+         - User says 'change the timezone' → ask 'What timezone? (e.g., US/Eastern, Asia/Kolkata)'\n\
+         - User says 'set up the project' → ask 'Which project? What language/framework?'\n\
+         - Ambiguous pronouns, missing parameters, unclear intent → ALWAYS clarify first.\n\
+         Getting it right matters more than being fast. One question saves a wrong action.\n\n"
     )
 }
 

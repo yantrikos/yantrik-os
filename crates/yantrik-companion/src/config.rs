@@ -83,6 +83,63 @@ pub struct LLMConfig {
     pub temperature: f64,
     #[serde(default = "default_max_context_tokens")]
     pub max_context_tokens: usize,
+
+    /// Fallback model configuration — used when primary LLM is unavailable.
+    #[serde(default)]
+    pub fallback: Option<FallbackModelConfig>,
+}
+
+/// Configuration for the fallback (offline) LLM model.
+///
+/// When the primary LLM fails, Yantrik falls back to a local model
+/// for basic intelligence. Two modes:
+///
+/// **API mode** — runs llama-server locally and connects via OpenAI API:
+/// ```yaml
+/// fallback:
+///   backend: "api"
+///   api_base_url: "http://localhost:8341/v1"
+///   api_model: "qwen3.5-0.8b"
+/// ```
+///
+/// **llamacpp mode** — embedded llama.cpp (requires `llamacpp` feature):
+/// ```yaml
+/// fallback:
+///   backend: "llamacpp"
+///   model_path: "/path/to/model.gguf"
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FallbackModelConfig {
+    /// Fallback backend: "api" (local llama-server) or "llamacpp" (embedded).
+    #[serde(default = "default_fallback_backend")]
+    pub backend: String,
+    /// Path to the GGUF model file (for llamacpp backend).
+    #[serde(default)]
+    pub model_path: Option<String>,
+    /// API base URL (for api backend, e.g. "http://localhost:8341/v1").
+    #[serde(default)]
+    pub api_base_url: Option<String>,
+    /// Model name for API backend.
+    #[serde(default)]
+    pub api_model: Option<String>,
+    /// Number of layers to offload to GPU (llamacpp only). 99 = all, 0 = CPU only.
+    #[serde(default = "default_fallback_gpu_layers")]
+    pub n_gpu_layers: u32,
+    /// Context window size for the fallback model.
+    #[serde(default = "default_fallback_context_size")]
+    pub context_size: u32,
+}
+
+fn default_fallback_backend() -> String {
+    "api".to_string()
+}
+
+fn default_fallback_gpu_layers() -> u32 {
+    99
+}
+
+fn default_fallback_context_size() -> u32 {
+    4096
 }
 
 fn default_backend() -> String {
@@ -98,13 +155,13 @@ fn default_hub_tokenizer() -> String {
     "Qwen/Qwen2.5-0.5B-Instruct".to_string()
 }
 fn default_max_tokens() -> usize {
-    256
+    2048
 }
 fn default_temperature() -> f64 {
     0.7
 }
 fn default_max_context_tokens() -> usize {
-    1024
+    4096
 }
 
 impl Default for LLMConfig {
@@ -123,6 +180,7 @@ impl Default for LLMConfig {
             max_tokens: default_max_tokens(),
             temperature: default_temperature(),
             max_context_tokens: default_max_context_tokens(),
+            fallback: None,
         }
     }
 }

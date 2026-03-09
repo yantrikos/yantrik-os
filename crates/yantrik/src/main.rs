@@ -20,8 +20,11 @@ use clap::{Parser, Subcommand};
 use yantrik_companion::{CompanionConfig, CompanionService};
 use yantrik_ml::{CandleEmbedder, CandleLLM, GGUFFiles, LLMBackend};
 use yantrik_ml::ApiLLM;
+use yantrik_ml::{FallbackLLM, FallbackConfig};
 #[cfg(feature = "claude-cli")]
 use yantrik_ml::ClaudeCliLLM;
+#[cfg(feature = "llamacpp")]
+use yantrik_ml::LlamaCppLLM;
 
 #[derive(Parser)]
 #[command(name = "yantrik", about = "Personal AI companion — single binary")]
@@ -122,7 +125,7 @@ fn build_companion(config: CompanionConfig) -> CompanionService {
     };
 
     // Load LLM — select backend based on config
-    let llm: std::sync::Arc<dyn LLMBackend> = if config.llm.is_claude_cli_backend() {
+    let primary_llm: std::sync::Arc<dyn LLMBackend> = if config.llm.is_claude_cli_backend() {
         let model = config.llm.api_model.clone();
         let max_tokens = config.llm.max_tokens;
         tracing::info!(model = ?model, "Using Claude Code CLI backend");
@@ -142,6 +145,20 @@ fn build_companion(config: CompanionConfig) -> CompanionService {
             "Using API LLM backend"
         );
         std::sync::Arc::new(ApiLLM::new(base_url, config.llm.api_key.clone(), model))
+    } else if config.llm.backend == "llamacpp" {
+        let gguf = config.llm.gguf_path.as_deref()
+            .expect("gguf_path required for llamacpp backend");
+        let gpu_layers = config.llm.fallback.as_ref()
+            .map(|f| f.n_gpu_layers).unwrap_or(99);
+        let ctx_size = config.llm.fallback.as_ref()
+            .map(|f| f.context_size).unwrap_or(4096);
+        tracing::info!(gguf, gpu_layers, ctx_size, "Using llama.cpp backend");
+        #[cfg(feature = "llamacpp")]
+        { std::sync::Arc::new(LlamaCppLLM::from_gguf(
+            std::path::Path::new(gguf), gpu_layers, ctx_size,
+        ).expect("failed to load llama.cpp model")) }
+        #[cfg(not(feature = "llamacpp"))]
+        { panic!("llamacpp feature not enabled at compile time") }
     } else if let Some(ref dir) = config.llm.model_dir {
         tracing::info!(dir, "Loading LLM from directory");
         std::sync::Arc::new(CandleLLM::from_dir(std::path::Path::new(dir))
@@ -167,6 +184,35 @@ fn build_companion(config: CompanionConfig) -> CompanionService {
         .expect("failed to download LLM");
         std::sync::Arc::new(CandleLLM::from_gguf(&files.gguf, &files.tokenizer)
             .expect("failed to load LLM"))
+    };
+
+    // Wrap with fallback if configured
+    let llm: std::sync::Arc<dyn LLMBackend> = if let Some(ref fb_config) = config.llm.fallback {
+        let fallback_cfg = match fb_config.backend.as_str() {
+            "llamacpp" => {
+                let path = fb_config.model_path.as_deref()
+                    .expect("model_path required for llamacpp fallback");
+                tracing::info!(model = path, gpu_layers = fb_config.n_gpu_layers, "Fallback: llama.cpp");
+                FallbackConfig::LlamaCpp {
+                    model_path: std::path::PathBuf::from(path),
+                    n_gpu_layers: fb_config.n_gpu_layers,
+                    context_size: fb_config.context_size,
+                }
+            }
+            _ => {
+                let url = fb_config.api_base_url.as_deref()
+                    .expect("api_base_url required for API fallback");
+                let model = fb_config.api_model.as_deref().unwrap_or("default");
+                tracing::info!(url, model, "Fallback: API");
+                FallbackConfig::Api {
+                    base_url: url.to_string(),
+                    model: model.to_string(),
+                }
+            }
+        };
+        std::sync::Arc::new(FallbackLLM::new(primary_llm, Some(fallback_cfg)))
+    } else {
+        primary_llm
     };
 
     // Create YantrikDB
@@ -678,7 +724,7 @@ fn cmd_ask(config_path: Option<PathBuf>, message: &str, json_output: bool) {
         // Structured output for programmatic use
         let meta = serde_json::json!({
             "message": message,
-            "response": full_response.trim(),
+            "response": response.message.trim(),
             "memories_recalled": response.memories_recalled,
             "tool_calls_made": response.tool_calls_made,
             "urges_delivered": response.urges_delivered,

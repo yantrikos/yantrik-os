@@ -287,18 +287,20 @@ fn top_processes(ctx: &FeatureContext, count: usize) -> Vec<(String, f32)> {
         .collect()
 }
 
-/// Convert minutes-from-now to a wall-clock time string like "3:47 PM".
+/// Convert minutes-from-now to a wall-clock time string like "3:47 PM" (local timezone).
 fn mins_to_clock_time(mins: u32) -> String {
     let now_secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
-    let target = now_secs + (mins as u64) * 60;
-    let target_hour = ((target / 3600) % 24) as u32;
-    let target_min = ((target / 60) % 60) as u32;
-    let period = if target_hour < 12 { "AM" } else { "PM" };
-    let display_hour = if target_hour == 0 { 12 } else if target_hour > 12 { target_hour - 12 } else { target_hour };
-    format!("{}:{:02} {}", display_hour, target_min, period)
+    let target = (now_secs + (mins as u64) * 60) as i64;
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    unsafe { libc::localtime_r(&target as *const i64, &mut tm) };
+    let hour = tm.tm_hour as u32;
+    let minute = tm.tm_min as u32;
+    let period = if hour < 12 { "AM" } else { "PM" };
+    let display_hour = if hour == 0 { 12 } else if hour > 12 { hour - 12 } else { hour };
+    format!("{}:{:02} {}", display_hour, minute, period)
 }
 
 #[cfg(test)]

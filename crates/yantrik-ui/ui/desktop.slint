@@ -34,6 +34,7 @@ import { ClipboardPanel, ClipboardEntryData } from "components/clipboard_panel.s
 import { PowerMenu } from "components/power_menu.slint";
 import { AppGrid, AppGridItem } from "components/app_grid.slint";
 import { WindowSwitcher, WindowItem } from "components/window_switcher.slint";
+import { MorningBriefCard, BriefSection } from "components/morning_brief.slint";
 import { Tr } from "translations.slint";
 
 export component DesktopScreen inherits Rectangle {
@@ -41,6 +42,7 @@ export component DesktopScreen inherits Rectangle {
     in property <string> clock-text: "00:00";
     in property <string> companion-status: "idle";
     in property <bool> companion-online: true;
+    in property <bool> battery-available: false;
     in property <int> battery-level: 100;
     in property <bool> battery-charging: false;
     in property <bool> wifi-connected: false;
@@ -84,6 +86,13 @@ export component DesktopScreen inherits Rectangle {
     callback whisper-card-dismissed(string);
     callback whisper-card-action(string);
     callback whisper-hint-clicked();
+
+    // Morning Brief card
+    in property <bool> morning-brief-visible: false;
+    in property <string> morning-brief-greeting: "Good morning!";
+    in property <[BriefSection]> morning-brief-sections: [];
+    callback morning-brief-dismissed();
+    callback morning-brief-section-action(string);
 
     // Quick Settings overlay
     in-out property <bool> quick-settings-open: false;
@@ -150,6 +159,7 @@ export component DesktopScreen inherits Rectangle {
         clock-text: root.clock-text;
         companion-status: root.companion-status;
         companion-online: root.companion-online;
+        battery-available: root.battery-available;
         battery-level: root.battery-level;
         battery-charging: root.battery-charging;
         wifi-connected: root.wifi-connected;
@@ -544,6 +554,7 @@ export component DesktopScreen inherits Rectangle {
         width: 100%;
         height: 100%;
         is-open <=> root.quick-settings-open;
+        battery-available: root.battery-available;
         battery-level: root.battery-level;
         battery-charging: root.battery-charging;
         wifi-connected: root.wifi-connected;
@@ -605,6 +616,17 @@ export component DesktopScreen inherits Rectangle {
         cards: root.whisper-cards;
         card-dismissed(id) => { root.whisper-card-dismissed(id); }
         card-action(id) => { root.whisper-card-action(id); }
+    }
+
+    // ── Layer 2.7: Morning Brief Card (floating, upper-left) ──
+    MorningBriefCard {
+        x: 24px;
+        y: Theme.status-bar-height + 16px;
+        show-card: root.morning-brief-visible;
+        greeting: root.morning-brief-greeting;
+        sections: root.morning-brief-sections;
+        dismissed => { root.morning-brief-dismissed(); }
+        section-action(id) => { root.morning-brief-section-action(id); }
     }
 
     // ── Layer 3: Intent Lens overlay ──

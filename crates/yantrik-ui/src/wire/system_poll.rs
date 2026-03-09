@@ -27,6 +27,7 @@ pub fn wire(ui: &App, ctx: &AppContext) {
     let accumulator = ctx.accumulator.clone();
     let card_mgr = ctx.card_manager.clone();
     let notification_store = ctx.notification_store.clone();
+    let event_bus = ctx.event_bus.clone();
 
     // Dedup cache: prevents recording the same system event to memory more than
     // once per 5 minutes. Key = event text, Value = last recorded time.
@@ -59,6 +60,11 @@ pub fn wire(ui: &App, ctx: &AppContext) {
                 }
             }
             return;
+        }
+
+        // 1a. Bridge system events into the cognitive event bus
+        for event in &events {
+            event_bus.emit_system_event(event.clone());
         }
 
         // 1b. Handle keybind events (UI actions, not features)
@@ -167,6 +173,7 @@ pub fn wire(ui: &App, ctx: &AppContext) {
         // 4. Update status bar from snapshot
         let snap = snapshot.borrow();
         if let Some(ui) = ui_weak.upgrade() {
+            ui.set_battery_available(snap.battery_available);
             ui.set_battery_level(snap.battery_level as i32);
             ui.set_battery_charging(snap.battery_charging);
             ui.set_wifi_connected(snap.network_connected);

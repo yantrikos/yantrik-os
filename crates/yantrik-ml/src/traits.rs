@@ -48,6 +48,15 @@ pub trait LLMBackend: Send + Sync {
 
     /// Human-readable backend name (e.g. "candle", "llama.cpp", "api").
     fn backend_name(&self) -> &str;
+
+    /// Whether this backend is currently operating in degraded/fallback mode.
+    /// Used by the companion to switch to a lightweight prompt strategy.
+    fn is_degraded(&self) -> bool { false }
+
+    /// The model identifier (e.g., "qwen3.5:27b-nothink", "claude-3-5-sonnet").
+    /// Used by ModelCapabilityProfile for auto-detecting model tier and strategy.
+    /// Returns "unknown" by default.
+    fn model_id(&self) -> &str { "unknown" }
 }
 
 // ── STT Backend ────────────────────────────────────────────────────────

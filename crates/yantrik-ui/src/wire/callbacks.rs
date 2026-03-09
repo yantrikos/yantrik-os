@@ -18,7 +18,7 @@ use crate::{
 /// Wire all miscellaneous callbacks.
 pub fn wire(ui: &App, ctx: &AppContext) {
     wire_lock(ui);
-    wire_onboarding(ui);
+    wire_onboarding(ui, ctx);
     wire_focus(ui);
     wire_file_browser(ui, ctx);
     wire_whisper_cards(ui, ctx);
@@ -61,7 +61,7 @@ fn wire_lock(ui: &App) {
 
 // ── Onboarding ──
 
-fn wire_onboarding(ui: &App) {
+fn wire_onboarding(ui: &App, ctx: &AppContext) {
     let ui_weak = ui.as_weak();
     ui.on_onboarding_ready(move || {
         onboarding::write_marker();
@@ -74,6 +74,55 @@ fn wire_onboarding(ui: &App) {
     ui.on_onboarding_skip(move || {
         onboarding::write_marker();
         tracing::info!("Onboarding skipped");
+    });
+
+    // Profile setup: interests, location, notification preference
+    let bridge = ctx.bridge.clone();
+    let config_path = ctx.config_path.clone();
+    ui.on_onboarding_set_profile(move |interests, home_location, notif_pref| {
+        let profile = onboarding::parse_profile(
+            &interests.to_string(),
+            &home_location.to_string(),
+            &notif_pref.to_string(),
+        );
+
+        tracing::info!(
+            interests = ?profile.interests,
+            location = %profile.home_location,
+            notif = %profile.notification_pref,
+            "Onboarding profile collected"
+        );
+
+        // Save to config file
+        if let Some(cfg_path) = &config_path {
+            onboarding::save_profile_to_config(
+                &profile,
+                &cfg_path.to_string_lossy(),
+            );
+        }
+
+        // Store interests as system events so they persist in companion memory
+        for interest in &profile.interests {
+            bridge.record_system_event(
+                format!("User is interested in: {}", interest),
+                "onboarding".to_string(),
+                0.9,
+            );
+        }
+
+        if !profile.home_location.is_empty() {
+            bridge.record_system_event(
+                format!("User is based in: {}", profile.home_location),
+                "onboarding".to_string(),
+                0.9,
+            );
+        }
+
+        bridge.record_system_event(
+            format!("Notification preference: {}", profile.notification_pref),
+            "onboarding".to_string(),
+            0.7,
+        );
     });
 }
 

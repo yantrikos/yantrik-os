@@ -34,6 +34,11 @@ impl ApiLLM {
         }
     }
 
+    /// Get the model name/identifier for capability profiling.
+    pub fn model_name(&self) -> &str {
+        &self.model
+    }
+
     /// Serialize a ChatMessage to JSON, including tool_calls/tool_call_id/name when present.
     fn serialize_message(m: &ChatMessage, ollama_compat: bool) -> serde_json::Value {
         let mut msg = serde_json::json!({ "role": m.role });
@@ -131,7 +136,7 @@ impl ApiLLM {
 
         let agent = ureq::Agent::new_with_config(
             ureq::config::Config::builder()
-                .timeout_global(Some(std::time::Duration::from_secs(120)))
+                .timeout_global(Some(std::time::Duration::from_secs(300)))
                 .build()
         );
 
@@ -280,6 +285,9 @@ impl ApiLLM {
             body["frequency_penalty"] = serde_json::json!((config.repeat_penalty - 1.0).clamp(-2.0, 2.0));
         }
 
+        // Disable thinking mode (Qwen3.5 etc.) — saves tokens and latency
+        body["think"] = serde_json::json!(false);
+
         if let Some(tools) = tools {
             if !tools.is_empty() {
                 body["tools"] = serde_json::json!(tools);
@@ -299,7 +307,7 @@ impl ApiLLM {
 
         let agent = ureq::Agent::new_with_config(
             ureq::config::Config::builder()
-                .timeout_global(Some(std::time::Duration::from_secs(120)))
+                .timeout_global(Some(std::time::Duration::from_secs(300)))
                 .build()
         );
 
@@ -513,5 +521,9 @@ impl LLMBackend for ApiLLM {
 
     fn backend_name(&self) -> &str {
         "api" // Both Ollama native and OpenAI support native tool calling
+    }
+
+    fn model_id(&self) -> &str {
+        &self.model
     }
 }

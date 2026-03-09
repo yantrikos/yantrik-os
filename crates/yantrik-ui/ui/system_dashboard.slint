@@ -27,6 +27,7 @@ export component SystemDashboard inherits Rectangle {
     in property <float> swap-usage: 0.0;
     in property <string> swap-text: "";
 
+    in property <bool> battery-available: false;
     in property <int> battery-level: 100;
     in property <bool> battery-charging: false;
     in property <bool> wifi-connected: false;
@@ -340,8 +341,9 @@ export component SystemDashboard inherits Rectangle {
                         padding: 14px;
                         spacing: 10px;
 
-                        // Battery
+                        // Battery (hidden when no hardware)
                         HorizontalLayout {
+                            visible: root.battery-available;
                             Text {
                                 text: "Battery";
                                 color: Theme.text-secondary;

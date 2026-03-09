@@ -8,6 +8,7 @@ description = "Yantrik OS system integration — D-Bus, inotify, sysinfo. Zero A
 crossbeam-channel = "0.5"
 tracing = "0.1"
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 
 # System monitoring (process list, CPU, memory, disk)
 sysinfo = "0.33"
@@ -17,3 +18,6 @@ zbus = "5"
 
 # File system monitoring (inotify on Linux)
 notify = "7"
+
+# Event log persistence (append-only, WAL mode) — version must match yantrik-companion
+rusqlite = { version = "0.32", features = ["bundled"] }

@@ -1,27 +1,213 @@
 // Onboarding — "Hey. I'm Yantrik."
-// First-boot experience. The AI introduces itself, then teaches the user
-// to use the Intent Lens through guided steps. No tutorial modals —
-// the AI is the teacher.
+// First-boot experience with interest discovery + profile setup.
+// Phases: orb kindle → greeting → name input → interest chips →
+//         location + notification pref → instruction → ready.
 
 import { Theme } from "theme.slint";
 import { Orb } from "components/orb.slint";
 import { ParticleField } from "components/particle_field.slint";
 
+// ── Interest chip (toggleable) ────────────────────────────────────
+
+component InterestChip inherits Rectangle {
+    in-out property <bool> selected: false;
+    in property <string> label;
+    callback toggled(bool);
+
+    width: chip-text.preferred-width + 28px;
+    height: 34px;
+    border-radius: 17px;
+    border-width: 1px;
+    border-color: selected ? Theme.cyan : #ffffff20;
+    background: selected ? Theme.cyan-glow : #ffffff08;
+    animate background { duration: 200ms; }
+    animate border-color { duration: 200ms; }
+
+    chip-text := Text {
+        text: label;
+        color: selected ? Theme.cyan-light : Theme.text-secondary;
+        font-size: 13px;
+        font-weight: selected ? 600 : 400;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        animate color { duration: 200ms; }
+    }
+
+    TouchArea {
+        clicked => {
+            root.selected = !root.selected;
+            root.toggled(root.selected);
+        }
+    }
+}
+
+// ── Pill button ───────────────────────────────────────────────────
+
+component PillButton inherits Rectangle {
+    in property <string> label;
+    in property <bool> enabled: true;
+    callback clicked();
+
+    width: 160px;
+    height: 42px;
+    border-radius: 21px;
+    background: enabled ? Theme.cyan-glow : #ffffff05;
+    border-width: 1px;
+    border-color: enabled ? Theme.cyan : #ffffff10;
+    opacity: enabled ? 1.0 : 0.4;
+    animate opacity { duration: 200ms; }
+
+    Text {
+        text: label;
+        color: enabled ? Theme.cyan : Theme.text-dim;
+        font-size: 14px;
+        font-weight: 600;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+
+    TouchArea {
+        enabled: root.enabled;
+        clicked => { root.clicked(); }
+    }
+}
+
+// ── Text field ────────────────────────────────────────────────────
+
+component OnboardField inherits Rectangle {
+    in property <string> placeholder;
+    in-out property <string> value;
+    in property <color> text-color: Theme.text-primary;
+
+    width: 280px;
+    height: 36px;
+    border-radius: 8px;
+    background: #ffffff0a;
+    border-width: 1px;
+    border-color: #ffffff18;
+
+    TextInput {
+        text <=> root.value;
+        color: root.text-color;
+        font-size: 15px;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}
+
+// ── Notification pref option ──────────────────────────────────────
+
+component NotifOption inherits Rectangle {
+    in property <string> label;
+    in property <string> desc;
+    in property <bool> active: false;
+    callback selected();
+
+    height: 52px;
+    border-radius: 10px;
+    border-width: 1px;
+    border-color: active ? Theme.cyan : #ffffff12;
+    background: active ? Theme.cyan-glow : #ffffff06;
+    animate background { duration: 200ms; }
+    animate border-color { duration: 200ms; }
+
+    HorizontalLayout {
+        padding-left: 16px;
+        padding-right: 16px;
+        alignment: start;
+        spacing: 12px;
+
+        // Radio dot
+        VerticalLayout {
+            alignment: center;
+            Rectangle {
+                width: 16px;
+                height: 16px;
+                border-radius: 8px;
+                border-width: 1.5px;
+                border-color: active ? Theme.cyan : #ffffff30;
+                Rectangle {
+                    x: 4px;
+                    y: 4px;
+                    width: 8px;
+                    height: 8px;
+                    border-radius: 4px;
+                    background: active ? Theme.cyan : transparent;
+                    animate background { duration: 200ms; }
+                }
+            }
+        }
+
+        VerticalLayout {
+            alignment: center;
+            spacing: 2px;
+            Text {
+                text: label;
+                color: active ? Theme.text-primary : Theme.text-secondary;
+                font-size: 13px;
+                font-weight: 500;
+            }
+            Text {
+                text: desc;
+                color: Theme.text-dim;
+                font-size: 11px;
+            }
+        }
+    }
+
+    TouchArea { clicked => { root.selected(); } }
+}
+
+// ── Main onboarding screen ───────────────────────────────────────
+
 export component OnboardingScreen inherits Rectangle {
     callback ready();   // User completed onboarding
     callback skip();    // User wants to skip onboarding
     callback set-names(string, string);  // (user_name, companion_name)
+    callback set-profile(/* interests */ string, /* home_loc */ string,
+                         /* notif_pref */ string);
 
     in-out property <string> companion-name: "Yantrik";
 
     background: Theme.bg-deep;
     clip: true;
 
-    // Phase tracking: 0=dim, 1=orb kindles, 2=greeting, 3=name-input, 4=instruction, 5=waiting
+    // Phase tracking:
+    // 0=dim, 1=orb kindles, 2=greeting, 3=name-input,
+    // 4=interests, 5=location+notif, 6=instruction, 7=ready
     property <int> phase: 0;
     property <float> timer-elapsed: 0;
     property <string> input-user-name: "";
     property <string> input-companion-name: "";
+    property <string> input-home-location: "";
+
+    // Interest state — 14 categories, tracked as booleans
+    property <bool> int-technology: false;
+    property <bool> int-finance: false;
+    property <bool> int-sports: false;
+    property <bool> int-music: false;
+    property <bool> int-politics: false;
+    property <bool> int-health: false;
+    property <bool> int-food: false;
+    property <bool> int-science: false;
+    property <bool> int-gaming: false;
+    property <bool> int-travel: false;
+    property <bool> int-fashion: false;
+    property <bool> int-business: false;
+    property <bool> int-entertainment: false;
+    property <bool> int-auto: false;
+
+    property <int> interest-count:
+        (int-technology ? 1 : 0) + (int-finance ? 1 : 0) +
+        (int-sports ? 1 : 0) + (int-music ? 1 : 0) +
+        (int-politics ? 1 : 0) + (int-health ? 1 : 0) +
+        (int-food ? 1 : 0) + (int-science ? 1 : 0) +
+        (int-gaming ? 1 : 0) + (int-travel ? 1 : 0) +
+        (int-fashion ? 1 : 0) + (int-business ? 1 : 0) +
+        (int-entertainment ? 1 : 0) + (int-auto ? 1 : 0);
+
+    // Notification preference: "morning_brief" | "realtime" | "minimal"
+    property <string> notif-pref: "morning_brief";
 
     Timer {
         interval: 16ms;
@@ -34,7 +220,8 @@ export component OnboardingScreen inherits Rectangle {
         }
     }
 
-    // Dim particle field backdrop
+    // ── Backdrop ──────────────────────────────────────────────────
+
     ParticleField {
         width: 100%; height: 100%;
         active: true;
@@ -42,171 +229,294 @@ export component OnboardingScreen inherits Rectangle {
         animate intensity { duration: 2000ms; }
     }
 
-    // Deep space gradient
     Rectangle {
         width: 100%; height: 100%;
         background: @radial-gradient(circle, #0a0a1800 0%, #06060e60 50%, #030306a0 100%);
     }
 
-    // Center content
-    VerticalLayout {
-        alignment: center;
-        spacing: 24px;
-        padding-left: 40px;
-        padding-right: 40px;
+    // ── Scrollable content ────────────────────────────────────────
 
-        // Orb (kindles at phase 1)
-        HorizontalLayout {
-            alignment: center;
+    Flickable {
+        width: 100%; height: 100%;
+        viewport-height: self.height;
 
-            Orb {
-                width: 120px; height: 120px;
-                size-px: 120;
-                opacity: phase >= 1 ? 1.0 : 0;
-                animate opacity { duration: 2000ms; easing: ease-out; }
-            }
-        }
-
-        // Greeting text
-        Text {
-            text: "Hey. I'm " + root.companion-name + ".";
-            color: Theme.cyan;
-            font-size: 28px;
-            font-weight: 300;
-            letter-spacing: 2px;
-            horizontal-alignment: center;
-            opacity: phase >= 2 ? 1.0 : 0;
-            animate opacity { duration: 1500ms; easing: ease-out; }
-        }
-
-        // Name input section (phase 3+)
         VerticalLayout {
-            spacing: 16px;
-            opacity: phase >= 3 ? 1.0 : 0;
-            animate opacity { duration: 800ms; easing: ease-out; }
-            horizontal-stretch: 0;
+            alignment: center;
+            spacing: 20px;
+            padding-left: 40px;
+            padding-right: 40px;
+            padding-top: 40px;
+            padding-bottom: 60px;
 
-            // "What should I call you?"
-            Text {
-                text: "What should I call you?";
-                color: Theme.text-secondary;
-                font-size: 14px;
-                horizontal-alignment: center;
-                letter-spacing: 1px;
-            }
+            // ── Orb (kindles at phase 1) ──────────────────────────
 
             HorizontalLayout {
                 alignment: center;
-                Rectangle {
-                    width: 260px;
-                    height: 36px;
-                    border-radius: 8px;
-                    background: #ffffff0a;
-                    border-width: 1px;
-                    border-color: #ffffff18;
+                Orb {
+                    width: phase >= 4 ? 60px : 120px;
+                    height: phase >= 4 ? 60px : 120px;
+                    size-px: phase >= 4 ? 60 : 120;
+                    opacity: phase >= 1 ? 1.0 : 0;
+                    animate opacity { duration: 2000ms; easing: ease-out; }
+                    animate width { duration: 600ms; easing: ease-out; }
+                    animate height { duration: 600ms; easing: ease-out; }
+                }
+            }
 
-                    TextInput {
-                        text <=> root.input-user-name;
-                        color: Theme.text-primary;
-                        font-size: 16px;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
+            // ── Greeting (phase 2+) ──────────────────────────────
+
+            Text {
+                text: phase < 4 ? "Hey. I'm " + root.companion-name + "."
+                    : phase == 4 ? "What are you into?"
+                    : phase == 5 ? "Almost there."
+                    : "You're all set.";
+                color: Theme.cyan;
+                font-size: phase < 4 ? 28px : 22px;
+                font-weight: 300;
+                letter-spacing: 2px;
+                horizontal-alignment: center;
+                opacity: phase >= 2 ? 1.0 : 0;
+                animate opacity { duration: 1500ms; easing: ease-out; }
+                animate font-size { duration: 400ms; }
+            }
+
+            // ── Phase 3: Name input ──────────────────────────────
+
+            if phase == 3: VerticalLayout {
+                spacing: 16px;
+                opacity: 1.0;
+                animate opacity { duration: 800ms; easing: ease-out; }
+
+                Text {
+                    text: "What should I call you?";
+                    color: Theme.text-secondary;
+                    font-size: 14px;
+                    horizontal-alignment: center;
+                    letter-spacing: 1px;
+                }
+
+                HorizontalLayout {
+                    alignment: center;
+                    OnboardField {
+                        value <=> root.input-user-name;
+                        placeholder: "Your name";
+                    }
+                }
+
+                Text {
+                    text: "And what would you like to call me?";
+                    color: Theme.text-secondary;
+                    font-size: 14px;
+                    horizontal-alignment: center;
+                    letter-spacing: 1px;
+                }
+
+                HorizontalLayout {
+                    alignment: center;
+                    OnboardField {
+                        value <=> root.input-companion-name;
+                        text-color: Theme.amber;
+                    }
+                }
+
+                HorizontalLayout {
+                    alignment: center;
+                    PillButton {
+                        label: "Next →";
+                        clicked => {
+                            root.set-names(root.input-user-name, root.input-companion-name);
+                            root.phase = 4;
+                        }
                     }
                 }
             }
 
-            // "And what would you like to call me?"
-            Text {
-                text: "And what would you like to call me?";
-                color: Theme.text-secondary;
-                font-size: 14px;
-                horizontal-alignment: center;
-                letter-spacing: 1px;
-            }
+            // ── Phase 4: Interest selection ──────────────────────
 
-            HorizontalLayout {
-                alignment: center;
-                Rectangle {
-                    width: 260px;
-                    height: 36px;
-                    border-radius: 8px;
-                    background: #ffffff0a;
-                    border-width: 1px;
-                    border-color: #ffffff18;
+            if phase == 4: VerticalLayout {
+                spacing: 16px;
+                animate opacity { duration: 600ms; easing: ease-out; }
 
-                    TextInput {
-                        text <=> root.input-companion-name;
-                        color: Theme.amber;
-                        font-size: 16px;
-                        font-weight: 500;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
+                Text {
+                    text: "Pick 3–10 topics you care about.";
+                    color: Theme.text-secondary;
+                    font-size: 13px;
+                    horizontal-alignment: center;
+                    letter-spacing: 0.5px;
+                }
+
+                Text {
+                    text: interest-count + " selected";
+                    color: interest-count >= 3 ? Theme.cyan : Theme.text-dim;
+                    font-size: 12px;
+                    horizontal-alignment: center;
+                }
+
+                // Row 1
+                HorizontalLayout {
+                    alignment: center;
+                    spacing: 8px;
+                    InterestChip { label: "Technology"; selected <=> root.int-technology; }
+                    InterestChip { label: "Finance"; selected <=> root.int-finance; }
+                    InterestChip { label: "Science"; selected <=> root.int-science; }
+                    InterestChip { label: "Business"; selected <=> root.int-business; }
+                }
+                // Row 2
+                HorizontalLayout {
+                    alignment: center;
+                    spacing: 8px;
+                    InterestChip { label: "Sports"; selected <=> root.int-sports; }
+                    InterestChip { label: "Music"; selected <=> root.int-music; }
+                    InterestChip { label: "Gaming"; selected <=> root.int-gaming; }
+                    InterestChip { label: "Entertainment"; selected <=> root.int-entertainment; }
+                }
+                // Row 3
+                HorizontalLayout {
+                    alignment: center;
+                    spacing: 8px;
+                    InterestChip { label: "Health & Fitness"; selected <=> root.int-health; }
+                    InterestChip { label: "Food & Cooking"; selected <=> root.int-food; }
+                    InterestChip { label: "Travel"; selected <=> root.int-travel; }
+                }
+                // Row 4
+                HorizontalLayout {
+                    alignment: center;
+                    spacing: 8px;
+                    InterestChip { label: "Politics"; selected <=> root.int-politics; }
+                    InterestChip { label: "Fashion"; selected <=> root.int-fashion; }
+                    InterestChip { label: "Cars & Auto"; selected <=> root.int-auto; }
+                }
+
+                HorizontalLayout {
+                    alignment: center;
+                    padding-top: 8px;
+                    PillButton {
+                        label: "Next →";
+                        enabled: interest-count >= 3;
+                        clicked => { root.phase = 5; }
                     }
                 }
             }
 
-            // Let's go button
-            HorizontalLayout {
-                alignment: center;
-                TouchArea {
-                    width: 140px;
-                    height: 40px;
-                    clicked => {
-                        root.set-names(root.input-user-name, root.input-companion-name);
-                        root.phase = 4;
-                    }
+            // ── Phase 5: Location + notification pref ────────────
 
-                    Rectangle {
-                        width: 100%;
-                        height: 100%;
-                        border-radius: 20px;
-                        background: Theme.cyan;
-                        opacity: 0.15;
-                    }
-                    Rectangle {
-                        width: 100%;
-                        height: 100%;
-                        border-radius: 20px;
-                        border-width: 1px;
-                        border-color: Theme.cyan;
+            if phase == 5: VerticalLayout {
+                spacing: 20px;
+                animate opacity { duration: 600ms; easing: ease-out; }
+
+                // Location
+                VerticalLayout {
+                    spacing: 10px;
+                    Text {
+                        text: "Where are you based?";
+                        color: Theme.text-secondary;
+                        font-size: 14px;
+                        horizontal-alignment: center;
+                        letter-spacing: 1px;
                     }
                     Text {
-                        text: "Let's go →";
-                        color: Theme.cyan;
-                        font-size: 14px;
-                        font-weight: 600;
+                        text: "City or region — for weather, events, and local context.";
+                        color: Theme.text-dim;
+                        font-size: 11px;
                         horizontal-alignment: center;
-                        vertical-alignment: center;
+                    }
+                    HorizontalLayout {
+                        alignment: center;
+                        OnboardField {
+                            value <=> root.input-home-location;
+                            placeholder: "e.g. Bangalore, New York";
+                        }
+                    }
+                }
+
+                // Notification preference
+                VerticalLayout {
+                    spacing: 10px;
+                    Text {
+                        text: "How should I reach out?";
+                        color: Theme.text-secondary;
+                        font-size: 14px;
+                        horizontal-alignment: center;
+                        letter-spacing: 1px;
+                    }
+
+                    HorizontalLayout {
+                        alignment: center;
+                        VerticalLayout {
+                            width: 320px;
+                            spacing: 8px;
+
+                            NotifOption {
+                                label: "Morning Brief";
+                                desc: "Daily summary of your day + notable updates";
+                                active: root.notif-pref == "morning_brief";
+                                selected => { root.notif-pref = "morning_brief"; }
+                            }
+
+                            NotifOption {
+                                label: "Real-time";
+                                desc: "Nudges as things happen (events, weather, news)";
+                                active: root.notif-pref == "realtime";
+                                selected => { root.notif-pref = "realtime"; }
+                            }
+
+                            NotifOption {
+                                label: "Minimal";
+                                desc: "Only urgent items — I'll stay quiet otherwise";
+                                active: root.notif-pref == "minimal";
+                                selected => { root.notif-pref = "minimal"; }
+                            }
+                        }
+                    }
+                }
+
+                HorizontalLayout {
+                    alignment: center;
+                    padding-top: 4px;
+                    PillButton {
+                        label: "Finish →";
+                        clicked => {
+                            // Build interest string: comma-separated selected interests
+                            root.set-profile(
+                                root.build-interests(),
+                                root.input-home-location,
+                                root.notif-pref,
+                            );
+                            root.phase = 6;
+                        }
                     }
                 }
             }
-        }
 
-        // Post-name instruction (phase 4+)
-        Text {
-            text: "Press Super to talk to me about anything.";
-            color: Theme.text-dim;
-            font-size: 14px;
-            letter-spacing: 1px;
-            horizontal-alignment: center;
-            opacity: phase >= 4 ? 0.7 : 0;
-            animate opacity { duration: 1200ms; easing: ease-out; }
-        }
+            // ── Phase 6: Instruction + ready ─────────────────────
 
-        // Subtle hint
-        Text {
-            text: "or tap the orb";
-            color: Theme.text-dim;
-            font-size: 11px;
-            letter-spacing: 2px;
-            horizontal-alignment: center;
-            opacity: phase >= 4 ? 0.4 : 0;
-            animate opacity { duration: 800ms; easing: ease-out; }
+            if phase >= 6: VerticalLayout {
+                spacing: 12px;
+                animate opacity { duration: 1200ms; easing: ease-out; }
+
+                Text {
+                    text: "Press Super to talk to me about anything.";
+                    color: Theme.text-dim;
+                    font-size: 14px;
+                    letter-spacing: 1px;
+                    horizontal-alignment: center;
+                    opacity: 0.7;
+                }
+
+                Text {
+                    text: "or tap the orb";
+                    color: Theme.text-dim;
+                    font-size: 11px;
+                    letter-spacing: 2px;
+                    horizontal-alignment: center;
+                    opacity: 0.4;
+                }
+            }
         }
     }
 
-    // Ready orb tap area (only after names set)
-    if phase >= 4: TouchArea {
+    // Ready orb tap area (only after profile set)
+    if phase >= 6: TouchArea {
         width: 100%;
         height: 100%;
         clicked => { root.ready(); }
@@ -229,5 +539,26 @@ export component OnboardingScreen inherits Rectangle {
             opacity: phase >= 3 ? 0.4 : 0;
             animate opacity { duration: 600ms; }
         }
+    }
+
+    // ── Helper: build comma-separated interest string ─────────────
+
+    pure function build-interests() -> string {
+        // Slint doesn't have string concat loops, so we build manually
+        // Each interest name matches the PWG Interest node convention
+        (int-technology ? "technology," : "") +
+        (int-finance ? "finance," : "") +
+        (int-sports ? "sports," : "") +
+        (int-music ? "music," : "") +
+        (int-politics ? "politics," : "") +
+        (int-health ? "health," : "") +
+        (int-food ? "food," : "") +
+        (int-science ? "science," : "") +
+        (int-gaming ? "gaming," : "") +
+        (int-travel ? "travel," : "") +
+        (int-fashion ? "fashion," : "") +
+        (int-business ? "business," : "") +
+        (int-entertainment ? "entertainment," : "") +
+        (int-auto ? "automotive," : "")
     }
 }

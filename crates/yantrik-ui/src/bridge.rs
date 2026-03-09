@@ -13,6 +13,9 @@ use yantrik_companion::bond::{BondLevel, BondTracker};
 use yantrik_companion::evolution::Evolution;
 use yantrik_ml::{CandleEmbedder, CandleLLM, GGUFFiles, LLMBackend};
 use yantrik_ml::ApiLLM;
+use yantrik_ml::{FallbackLLM, FallbackConfig};
+#[cfg(feature = "llamacpp")]
+use yantrik_ml::LlamaCppLLM;
 #[cfg(feature = "claude-cli")]
 use yantrik_ml::ClaudeCliLLM;
 
@@ -94,6 +97,10 @@ pub enum CompanionCommand {
     RenameUser { name: String },
     /// Rename the companion (persists to config).
     RenameCompanion { name: String },
+    /// Request a structured morning brief for the desktop card.
+    GetMorningBrief {
+        reply_tx: Sender<MorningBriefSnapshot>,
+    },
     /// Shut down the worker.
     Shutdown,
 }
@@ -165,6 +172,23 @@ pub struct UrgeSnapshot {
     pub created_at: f64,
 }
 
+/// Structured morning brief data for the desktop card.
+#[derive(Debug, Clone)]
+pub struct MorningBriefSnapshot {
+    pub greeting: String,
+    pub sections: Vec<MorningBriefSectionData>,
+}
+
+/// A single section of the morning brief card.
+#[derive(Debug, Clone)]
+pub struct MorningBriefSectionData {
+    pub icon: String,
+    pub label: String,
+    pub content: String,
+    pub expanded: bool,
+    pub action_id: String,
+}
+
 /// The bridge between Slint UI and the companion worker thread.
 pub struct CompanionBridge {
     cmd_tx: Sender<CompanionCommand>,
@@ -175,11 +199,13 @@ pub struct CompanionBridge {
     cached_bond_level: Arc<std::sync::atomic::AtomicU8>,
     /// Ambient intelligence state — sentiment, cognitive load.
     ambient: AmbientState,
+    /// Cognitive event bus — shared with the entire system.
+    event_bus: yantrik_os::EventBus,
 }
 
 impl CompanionBridge {
     /// Start the companion worker thread.
-    pub fn start(config: CompanionConfig, ui_weak: slint::Weak<App>) -> Self {
+    pub fn start(config: CompanionConfig, ui_weak: slint::Weak<App>, event_bus: yantrik_os::EventBus) -> Self {
         let (cmd_tx, cmd_rx) = crossbeam_channel::unbounded();
         let online = Arc::new(AtomicBool::new(true));
         let online_w = online.clone();
@@ -187,10 +213,11 @@ impl CompanionBridge {
         let bond_w = cached_bond_level.clone();
         let ambient = AmbientState::new();
         let ambient_w = ambient.clone();
+        let bus_w = event_bus.clone();
 
         let self_tx = cmd_tx.clone();
         let worker_handle = std::thread::spawn(move || {
-            worker_loop(config, cmd_rx, self_tx, ui_weak, online_w, bond_w, ambient_w);
+            worker_loop(config, cmd_rx, self_tx, ui_weak, online_w, bond_w, ambient_w, bus_w);
         });
 
         Self {
@@ -199,7 +226,13 @@ impl CompanionBridge {
             online,
             cached_bond_level,
             ambient,
+            event_bus,
         }
+    }
+
+    /// Access the cognitive event bus.
+    pub fn event_bus(&self) -> &yantrik_os::EventBus {
+        &self.event_bus
     }
 
     /// Whether the LLM backend is reachable.
@@ -256,6 +289,13 @@ impl CompanionBridge {
     pub fn request_pending_urges(&self) -> Receiver<Vec<UrgeSnapshot>> {
         let (reply_tx, reply_rx) = crossbeam_channel::unbounded();
         let _ = self.cmd_tx.send(CompanionCommand::GetPendingUrges { reply_tx });
+        reply_rx
+    }
+
+    /// Request a structured morning brief for the desktop card.
+    pub fn request_morning_brief(&self) -> Receiver<MorningBriefSnapshot> {
+        let (reply_tx, reply_rx) = crossbeam_channel::unbounded();
+        let _ = self.cmd_tx.send(CompanionCommand::GetMorningBrief { reply_tx });
         reply_rx
     }
 
@@ -341,6 +381,7 @@ fn worker_loop(
     online: Arc<AtomicBool>,
     cached_bond: Arc<std::sync::atomic::AtomicU8>,
     ambient: AmbientState,
+    event_bus: yantrik_os::EventBus,
 ) {
     // Save config services before moving config into build_companion
     let config_services = config.enabled_services.clone();
@@ -366,6 +407,9 @@ fn worker_loop(
         );
         companion.apply_skill_snapshot(&snapshot);
     }
+
+    // Attach cognitive event bus for tool execution tracing
+    companion.set_event_bus(event_bus.clone());
 
     tracing::info!("Companion worker started");
 
@@ -433,6 +477,47 @@ fn worker_loop(
                 };
 
                 tracing::info!(text = %text, "Processing message");
+                // Emit user message event
+                let msg_trace = if !is_system_generated {
+                    event_bus.emit(
+                        yantrik_os::EventKind::UserMessage {
+                            text: text.chars().take(200).collect(),
+                            source: "chat".into(),
+                        },
+                        yantrik_os::EventSource::UserInterface,
+                    )
+                } else {
+                    yantrik_os::TraceId::new() // no-op trace for system messages
+                };
+
+                // V18: Extract commitments from user messages
+                if !is_system_generated {
+                    let source = yantrik_companion::world_model::CommitmentSource::Conversation {
+                        turn_id: Some(msg_trace.as_u64().to_string()),
+                    };
+                    let extracted = yantrik_companion::commitment_extractor::extract_commitments(
+                        &text,
+                        &companion.config.user_name,
+                        &source,
+                    );
+                    if !extracted.is_empty() {
+                        let wm_commits = yantrik_companion::commitment_extractor::to_world_model_commitments(
+                            &extracted,
+                            &companion.config.user_name,
+                            source,
+                        );
+                        for c in &wm_commits {
+                            yantrik_companion::world_model::WorldModel::insert_commitment(
+                                companion.db.conn(), c,
+                            );
+                        }
+                        tracing::info!(
+                            count = wm_commits.len(),
+                            "Extracted commitments from user message"
+                        );
+                    }
+                }
+
                 // Resonance Model: record user interaction (positive quality for now)
                 {
                     let now_r = std::time::SystemTime::now()
@@ -497,6 +582,17 @@ fn worker_loop(
                             };
                             companion.record_event(&event_desc);
                         }
+
+                        // Emit companion response event
+                        event_bus.emit_with_parent(
+                            yantrik_os::EventKind::CompanionResponse {
+                                text_length: response.message.len(),
+                                tool_calls_count: response.tool_calls_made.len(),
+                                total_ms: start.elapsed().as_millis() as u64,
+                            },
+                            yantrik_os::EventSource::Companion,
+                            msg_trace,
+                        );
 
                         tracing::info!(
                             elapsed_ms = start.elapsed().as_millis(),
@@ -873,6 +969,59 @@ fn worker_loop(
                         tracing::info!(count = due_tasks.len(), "Scheduler: advanced due tasks");
                     }
 
+                    // V18: Commitment Tracker — check for approaching/overdue commitments
+                    {
+                        let overdue = yantrik_companion::world_model::WorldModel::check_overdue(companion.db.conn());
+                        for c in &overdue {
+                            triggers.push(serde_json::json!({
+                                "trigger_type": "commitment_overdue",
+                                "commitment_id": c.id,
+                                "action": c.action,
+                                "promisor": c.promisor,
+                                "promisee": c.promisee,
+                                "urgency": 0.8,
+                            }));
+                            // Emit event
+                            event_bus.emit(
+                                yantrik_os::EventKind::CommitmentAlert {
+                                    commitment_id: c.id.to_string(),
+                                    description: c.action.clone(),
+                                    alert_type: yantrik_os::CommitmentAlertType::Overdue,
+                                },
+                                yantrik_os::EventSource::Companion,
+                            );
+                        }
+
+                        let approaching = yantrik_companion::world_model::WorldModel::approaching_deadlines(companion.db.conn(), 24.0);
+                        for c in &approaching {
+                            triggers.push(serde_json::json!({
+                                "trigger_type": "commitment_approaching",
+                                "commitment_id": c.id,
+                                "action": c.action,
+                                "promisor": c.promisor,
+                                "promisee": c.promisee,
+                                "deadline": c.deadline,
+                                "urgency": 0.6,
+                            }));
+                            event_bus.emit(
+                                yantrik_os::EventKind::CommitmentAlert {
+                                    commitment_id: c.id.to_string(),
+                                    description: c.action.clone(),
+                                    alert_type: yantrik_os::CommitmentAlertType::Approaching,
+                                },
+                                yantrik_os::EventSource::Companion,
+                            );
+                        }
+
+                        if !overdue.is_empty() || !approaching.is_empty() {
+                            tracing::info!(
+                                overdue = overdue.len(),
+                                approaching = approaching.len(),
+                                "Commitment tracker: found deadline alerts"
+                            );
+                        }
+                    }
+
                     // V15: Serendipity — surface a random older memory as a connection trigger
                     if companion.bond_level() >= yantrik_companion::types::BondLevel::Friend {
                         if let Some(memory) = pick_serendipity_memory(&companion.db) {
@@ -1049,6 +1198,21 @@ fn worker_loop(
                 }
 
                 let idle_hrs = (state.current_ts - state.last_interaction_ts) / 3600.0;
+
+                // Emit instinct evaluation events for significant firings
+                for spec in &urge_specs {
+                    if spec.urgency >= 0.5 {
+                        event_bus.emit(
+                            yantrik_os::EventKind::InstinctFired {
+                                instinct_name: spec.instinct_name.clone(),
+                                urge_count: 1,
+                                max_urgency: spec.urgency,
+                            },
+                            yantrik_os::EventSource::ProactiveEngine,
+                        );
+                    }
+                }
+
                 tracing::info!(
                     urge_count = urge_specs.len(),
                     triggers = state.pending_triggers.len(),
@@ -1237,8 +1401,22 @@ fn worker_loop(
                             "Proactive message on per-key cooldown, skipping"
                         );
                         companion.record_suppressed_urge(&delivery_key, "per-key cooldown");
+                        event_bus.emit(
+                            yantrik_os::EventKind::ProactiveSuppressed {
+                                reason: "per-key cooldown".into(),
+                                urge_ids: msg.urge_ids.clone(),
+                            },
+                            yantrik_os::EventSource::ProactiveEngine,
+                        );
                     } else if gate_suppressed {
                         // Already logged above
+                        event_bus.emit(
+                            yantrik_os::EventKind::ProactiveSuppressed {
+                                reason: "synthesis gate".into(),
+                                urge_ids: msg.urge_ids.clone(),
+                            },
+                            yantrik_os::EventSource::ProactiveEngine,
+                        );
                     } else if interruptibility < 0.5 {
                         tracing::info!(
                             interruptibility,
@@ -1246,6 +1424,13 @@ fn worker_loop(
                             "Suppressing proactive message (deep work mode)"
                         );
                         companion.record_suppressed_urge(&delivery_key, "deep work mode");
+                        event_bus.emit(
+                            yantrik_os::EventKind::ProactiveSuppressed {
+                                reason: "deep work mode".into(),
+                                urge_ids: msg.urge_ids.clone(),
+                            },
+                            yantrik_os::EventSource::ProactiveEngine,
+                        );
                     } else {
                         tracing::info!(
                             text = msg.text,
@@ -1307,6 +1492,16 @@ fn worker_loop(
                                 tracing::warn!(error = %e, "Failed to forward proactive to Telegram");
                             }
                         }
+
+                        // Emit proactive delivered event
+                        event_bus.emit(
+                            yantrik_os::EventKind::ProactiveDelivered {
+                                urge_ids: msg.urge_ids.clone(),
+                                text_preview: msg.text.chars().take(100).collect(),
+                                delivery_channel: "chat".into(),
+                            },
+                            yantrik_os::EventSource::ProactiveEngine,
+                        );
 
                         // Record per-key cooldown after delivery
                         if !delivery_key.is_empty() {
@@ -1596,6 +1791,65 @@ fn worker_loop(
                     }
                 }
             }
+            Ok(CompanionCommand::GetMorningBrief { reply_tx }) => {
+                // Build structured brief from active day context sections
+                let user_name = &companion.config.user_name;
+                let greeting = format!("Good morning, {}!", user_name);
+                let sections: Vec<MorningBriefSectionData> = companion
+                    .active_context
+                    .sections_by_priority()
+                    .into_iter()
+                    .filter(|s| s.id != "time") // Skip raw time — not useful in card
+                    .map(|s| {
+                        let icon = match s.id.as_str() {
+                            "weather" => "🌤",
+                            "calendar" | "next_event" => "📅",
+                            "email" => "📧",
+                            "alert" => "⚠",
+                            "people" | "relationship" => "💬",
+                            "finance" => "💰",
+                            "news" => "📰",
+                            "health" => "🫀",
+                            _ => "✦",
+                        };
+                        let expanded = matches!(
+                            s.priority,
+                            yantrik_companion::active_context::ContextPriority::Critical
+                            | yantrik_companion::active_context::ContextPriority::High
+                        );
+                        let action_id = match s.id.as_str() {
+                            "weather" => "navigate:weather".to_string(),
+                            "calendar" | "next_event" => "navigate:calendar".to_string(),
+                            "email" => "navigate:email".to_string(),
+                            _ => String::new(),
+                        };
+                        MorningBriefSectionData {
+                            icon: icon.to_string(),
+                            label: s.label.clone(),
+                            content: s.content.clone(),
+                            expanded,
+                            action_id,
+                        }
+                    })
+                    .collect();
+
+                let snapshot = if sections.is_empty() {
+                    MorningBriefSnapshot {
+                        greeting,
+                        sections: vec![MorningBriefSectionData {
+                            icon: "☀".into(),
+                            label: "Today".into(),
+                            content: "Looks like a quiet day ahead. Enjoy it!".into(),
+                            expanded: true,
+                            action_id: String::new(),
+                        }],
+                    }
+                } else {
+                    MorningBriefSnapshot { greeting, sections }
+                };
+
+                let _ = reply_tx.send(snapshot);
+            }
             Ok(CompanionCommand::RenameUser { name }) => {
                 companion.config.user_name = name.clone();
                 tracing::info!(user_name = %name, "User renamed at runtime");
@@ -1728,7 +1982,7 @@ fn build_companion(config: CompanionConfig) -> CompanionService {
     };
 
     // Load LLM — select backend based on config
-    let llm: std::sync::Arc<dyn LLMBackend> = if config.llm.is_claude_cli_backend() {
+    let primary_llm: std::sync::Arc<dyn LLMBackend> = if config.llm.is_claude_cli_backend() {
         // Claude Code CLI backend — uses `claude -p` for inference
         let model = config.llm.api_model.clone();
         let max_tokens = config.llm.max_tokens;
@@ -1753,6 +2007,20 @@ fn build_companion(config: CompanionConfig) -> CompanionService {
             "Using API LLM backend"
         );
         std::sync::Arc::new(ApiLLM::new(base_url, config.llm.api_key.clone(), model))
+    } else if config.llm.backend == "llamacpp" {
+        let gguf = config.llm.gguf_path.as_deref()
+            .expect("gguf_path required for llamacpp backend");
+        let gpu_layers = config.llm.fallback.as_ref()
+            .map(|f| f.n_gpu_layers).unwrap_or(99);
+        let ctx_size = config.llm.fallback.as_ref()
+            .map(|f| f.context_size).unwrap_or(4096);
+        tracing::info!(gguf, gpu_layers, ctx_size, "Using llama.cpp backend");
+        #[cfg(feature = "llamacpp")]
+        { std::sync::Arc::new(LlamaCppLLM::from_gguf(
+            std::path::Path::new(gguf), gpu_layers, ctx_size,
+        ).expect("failed to load llama.cpp model")) }
+        #[cfg(not(feature = "llamacpp"))]
+        { panic!("llamacpp feature not enabled at compile time") }
     } else if let Some(ref dir) = config.llm.model_dir {
         tracing::info!(dir, "Loading Candle LLM from directory");
         std::sync::Arc::new(CandleLLM::from_dir(std::path::Path::new(dir))
@@ -1776,6 +2044,35 @@ fn build_companion(config: CompanionConfig) -> CompanionService {
         )
         .expect("failed to download LLM");
         std::sync::Arc::new(CandleLLM::from_gguf(&files.gguf, &files.tokenizer).expect("failed to load LLM"))
+    };
+
+    // Wrap with fallback if configured
+    let llm: std::sync::Arc<dyn LLMBackend> = if let Some(ref fb_config) = config.llm.fallback {
+        let fallback_cfg = match fb_config.backend.as_str() {
+            "llamacpp" => {
+                let path = fb_config.model_path.as_deref()
+                    .expect("model_path required for llamacpp fallback");
+                tracing::info!(model = path, gpu_layers = fb_config.n_gpu_layers, "Fallback: llama.cpp");
+                FallbackConfig::LlamaCpp {
+                    model_path: std::path::PathBuf::from(path),
+                    n_gpu_layers: fb_config.n_gpu_layers,
+                    context_size: fb_config.context_size,
+                }
+            }
+            _ => {
+                let url = fb_config.api_base_url.as_deref()
+                    .expect("api_base_url required for API fallback");
+                let model = fb_config.api_model.as_deref().unwrap_or("default");
+                tracing::info!(url, model, "Fallback: API");
+                FallbackConfig::Api {
+                    base_url: url.to_string(),
+                    model: model.to_string(),
+                }
+            }
+        };
+        std::sync::Arc::new(FallbackLLM::new(primary_llm, Some(fallback_cfg)))
+    } else {
+        primary_llm
     };
 
     // Create YantrikDB

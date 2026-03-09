@@ -108,6 +108,7 @@ pub enum FileChangeKind {
 #[derive(Debug, Clone, Default)]
 pub struct SystemSnapshot {
     // Power
+    pub battery_available: bool,
     pub battery_level: u8,
     pub battery_charging: bool,
     pub battery_time_to_empty_mins: Option<u32>,
@@ -151,6 +152,7 @@ impl SystemSnapshot {
     pub fn apply(&mut self, event: &SystemEvent) {
         match event {
             SystemEvent::BatteryChanged { level, charging, time_to_empty_mins } => {
+                self.battery_available = true;
                 self.battery_level = *level;
                 self.battery_charging = *charging;
                 self.battery_time_to_empty_mins = *time_to_empty_mins;

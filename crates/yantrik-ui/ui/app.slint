@@ -43,6 +43,7 @@ import { ContentBlock, MessageData } from "components/message_bubble.slint";
 import { UrgeCardData } from "components/glance_card.slint";
 import { LensResult } from "components/intent_lens.slint";
 import { WhisperCardItem } from "components/whisper_card.slint";
+import { BriefSection } from "components/morning_brief.slint";
 import { ClipboardEntryData } from "components/clipboard_panel.slint";
 import { AppGridItem } from "components/app_grid.slint";
 import { WindowItem } from "components/window_switcher.slint";
@@ -50,7 +51,7 @@ import { DockItem, AppDock } from "components/app_dock.slint";
 import { WindowFrame } from "components/window_frame.slint";
 import { Tr } from "translations.slint";
 
-export { Tr, ThemeMode, ThemeOverrides, AccentPreset, ContentBlock, MessageData, UrgeCardData, BondData, OpinionData, SharedRefData, MemoryItem, LensResult, WhisperCardItem, FileEntry, BreadcrumbSegment, FileDetailData, NotificationData, ProcessData, ClipboardEntryData, AppGridItem, WindowItem, DockItem, NoteEntry, ToastData, TerminalTabData, EmailFolderData, EmailListItem, EmailDetailData, CalendarDay, CalendarEvent, PackageData, PendingAction, WifiNetwork, EthernetInterface, BluetoothDevice, VpnConnection, FirewallRule, CpuCoreData, DiskData, NetworkInterfaceData, MonitorProcessData, WeatherCurrent, WeatherHourly, WeatherDaily, MusicTrackData, DownloadItem, SnippetData, TagChip, ContainerData, ImageData, VolumeData, UsbDeviceData, PciDeviceData, InputDeviceData, StorageDeviceData, DisplayDeviceData, UserData, GroupData, PermFileData, ComponentVersionData }
+export { Tr, ThemeMode, ThemeOverrides, AccentPreset, ContentBlock, MessageData, UrgeCardData, BondData, OpinionData, SharedRefData, MemoryItem, LensResult, WhisperCardItem, FileEntry, BreadcrumbSegment, FileDetailData, NotificationData, ProcessData, ClipboardEntryData, AppGridItem, WindowItem, DockItem, NoteEntry, ToastData, TerminalTabData, EmailFolderData, EmailListItem, EmailDetailData, CalendarDay, CalendarEvent, PackageData, PendingAction, WifiNetwork, EthernetInterface, BluetoothDevice, VpnConnection, FirewallRule, CpuCoreData, DiskData, NetworkInterfaceData, MonitorProcessData, WeatherCurrent, WeatherHourly, WeatherDaily, MusicTrackData, DownloadItem, SnippetData, TagChip, ContainerData, ImageData, VolumeData, UsbDeviceData, PciDeviceData, InputDeviceData, StorageDeviceData, DisplayDeviceData, UserData, GroupData, PermFileData, ComponentVersionData, BriefSection }
 
 export component App inherits Window {
     title: "Yantrik OS";
@@ -89,6 +90,7 @@ export component App inherits Window {
     in property <[UrgeCardData]> urges: [];
     in property <string> clock-text: "00:00";
     in property <string> companion-status: "idle";
+    in property <bool> battery-available: false;
     in property <int> battery-level: 100;
     in property <bool> battery-charging: false;
     in property <bool> wifi-connected: false;
@@ -135,6 +137,13 @@ export component App inherits Window {
     // Whisper Cards (floating notifications)
     in property <[WhisperCardItem]> whisper-cards: [];
     in property <int> whisper-hint-count: 0;
+
+    // Morning Brief card
+    in property <bool> morning-brief-visible: false;
+    in property <string> morning-brief-greeting: "Good morning!";
+    in property <[BriefSection]> morning-brief-sections: [];
+    callback morning-brief-dismissed();
+    callback morning-brief-section-action(string);
 
     // Clipboard panel state
     in-out property <bool> clip-panel-open: false;
@@ -718,6 +727,8 @@ export component App inherits Window {
     in-out property <int> onboarding-step: 0;
     callback onboarding-ready();
     callback onboarding-skip();
+    callback onboarding-set-profile(/* interests */ string, /* home_location */ string,
+                                     /* notif_pref */ string);
 
     // Callbacks to Rust
     callback send-message(string);
@@ -770,6 +781,9 @@ export component App inherits Window {
                     root.settings-companion-name = comp-name;
                 }
             }
+            set-profile(interests, home-loc, notif-pref) => {
+                root.onboarding-set-profile(interests, home-loc, notif-pref);
+            }
             ready => {
                 root.current-screen = 1;
                 root.navigate(1);
@@ -799,6 +813,7 @@ export component App inherits Window {
             clock-text: root.clock-text;
             companion-status: root.companion-status;
             companion-online: root.companion-online;
+            battery-available: root.battery-available;
             battery-level: root.battery-level;
             battery-charging: root.battery-charging;
             wifi-connected: root.wifi-connected;
@@ -838,6 +853,12 @@ export component App inherits Window {
             whisper-card-dismissed(id) => { root.whisper-card-dismissed(id); }
             whisper-card-action(id) => { root.whisper-card-action(id); }
             whisper-hint-clicked => { root.whisper-hint-clicked(); }
+            // Morning Brief
+            morning-brief-visible: root.morning-brief-visible;
+            morning-brief-greeting: root.morning-brief-greeting;
+            morning-brief-sections: root.morning-brief-sections;
+            morning-brief-dismissed => { root.morning-brief-dismissed(); }
+            morning-brief-section-action(id) => { root.morning-brief-section-action(id); }
             // Clipboard panel
             clip-panel-open <=> root.clip-panel-open;
             clip-panel-entries: root.clip-panel-entries;
@@ -1167,6 +1188,7 @@ export component App inherits Window {
                 cpu-usage: root.sys-cpu-usage;
                 memory-usage: root.sys-memory-usage;
                 memory-text: root.sys-memory-text;
+                battery-available: root.battery-available;
                 battery-level: root.battery-level;
                 battery-charging: root.battery-charging;
                 wifi-connected: root.wifi-connected;

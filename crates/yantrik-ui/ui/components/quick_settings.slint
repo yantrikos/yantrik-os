@@ -5,6 +5,7 @@ import { Theme } from "../theme.slint";
 
 export component QuickSettings inherits Rectangle {
     in-out property <bool> is-open: false;
+    in property <bool> battery-available: false;
     in property <int> battery-level: 100;
     in property <bool> battery-charging: false;
     in property <bool> wifi-connected: false;
@@ -308,8 +309,9 @@ export component QuickSettings inherits Rectangle {
 
             Rectangle { height: 1px; background: #ffffff08; }
 
-            // -- Battery info — holographic --
+            // -- Battery info — holographic (hidden when no battery) --
             HorizontalLayout {
+                visible: root.battery-available;
                 spacing: 10px;
 
                 // Battery icon with glow fill

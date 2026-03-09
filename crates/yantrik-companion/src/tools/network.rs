@@ -141,11 +141,13 @@ impl Tool for HttpFetchTool {
                 let processed = if extract == "json" {
                     body.to_string()
                 } else {
-                    strip_html(&body)
+                    // Use html2text for clean readable output
+                    html2text::from_read(body.as_bytes(), 100)
                 };
 
-                if processed.len() > 3000 {
-                    format!("{}\n... (truncated, {} total chars)", &processed[..3000], processed.len())
+                if processed.len() > 6000 {
+                    let boundary = processed.floor_char_boundary(6000);
+                    format!("{}\n... (truncated, {} total chars)", &processed[..boundary], processed.len())
                 } else {
                     processed
                 }

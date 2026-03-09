@@ -42,6 +42,7 @@ pub mod container_manager;
 pub mod device_dashboard;
 pub mod permission_dashboard;
 pub mod version;
+mod morning_brief;
 mod window_switcher;
 
 use crate::app_context::AppContext;
@@ -85,5 +86,6 @@ pub fn wire_all(ui: &App, ctx: &AppContext) {
     permission_dashboard::wire(ui, ctx);
     about::wire(ui, ctx);
     version::wire(ui, ctx);
+    morning_brief::wire(ui, ctx);
     callbacks::wire(ui, ctx);
 }

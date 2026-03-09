@@ -14,6 +14,7 @@
 // Shared types and traits (always compiled, backend-agnostic)
 pub mod types;
 pub mod traits;
+pub mod capability;
 
 // Chat template formatting (always compiled — used by candle + llamacpp backends)
 mod chat_template;
@@ -44,6 +45,7 @@ pub use model_loader::{GGUFFiles, ModelFiles};
 
 pub use types::{ApiToolCall, ApiToolCallFunction, ChatMessage, GenerationConfig, LLMResponse, ToolCall, TranscribeResult, VoiceParams};
 pub use traits::{LLMBackend, STTBackend, Embedder};
+pub use capability::{ModelCapabilityProfile, ModelTier, ToolCallMode, SlotMode, ToolFamily};
 
 // ── Chat template exports ────────────────────────────────────────────
 
@@ -61,6 +63,7 @@ pub use llm::ApiLLM;
 pub use llm::ClaudeCliLLM;
 #[cfg(feature = "llamacpp")]
 pub use llm::LlamaCppLLM;
+pub use llm::{FallbackLLM, FallbackConfig};
 
 // ── Voice exports ────────────────────────────────────────────────────
 

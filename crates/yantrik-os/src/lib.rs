@@ -7,6 +7,7 @@
 //! memory databases, or companions. It just watches the machine.
 
 pub mod events;
+pub mod event_bus;
 pub mod observer;
 pub mod screenshot;
 pub mod dbus_notif;
@@ -20,4 +21,8 @@ mod notifications;
 mod processes;
 
 pub use events::{FileChangeKind, ProcessInfo, SystemEvent, SystemSnapshot};
+pub use event_bus::{
+    CardAction, CommitmentAlertType, EventBus, EventKind, EventLog, EventLogEntry,
+    EventSource, EventStats, ToolOutcome, TraceId, YantrikEvent,
+};
 pub use observer::{SystemObserver, SystemObserverConfig};

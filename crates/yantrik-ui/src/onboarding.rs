@@ -1,4 +1,10 @@
-//! First-boot onboarding — marker file + guided Lens results.
+//! First-boot onboarding — marker file, guided Lens results, and profile setup.
+//!
+//! During onboarding, the user selects interests, sets their location,
+//! and picks a notification preference. These are stored as:
+//! - User interests → companion `user_interests` field + PWG Interest nodes
+//! - Location → companion `user_location` + config
+//! - Notification preference → config `proactive.mode`
 
 use std::path::PathBuf;
 
@@ -54,5 +60,82 @@ pub fn guide_result(step: i32) -> LensResult {
             is_loading: false,
             inline_value: SharedString::default(),
         },
+    }
+}
+
+/// Parsed onboarding profile data from the UI.
+#[derive(Debug, Clone)]
+pub struct OnboardingProfile {
+    /// Selected interest categories.
+    pub interests: Vec<String>,
+    /// Home location string (city/region).
+    pub home_location: String,
+    /// Notification preference: "morning_brief", "realtime", "minimal".
+    pub notification_pref: String,
+}
+
+/// Parse the interest string from the UI (comma-separated, trailing comma).
+pub fn parse_profile(interests_csv: &str, home_location: &str, notif_pref: &str) -> OnboardingProfile {
+    let interests: Vec<String> = interests_csv
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    OnboardingProfile {
+        interests,
+        home_location: home_location.trim().to_string(),
+        notification_pref: notif_pref.trim().to_string(),
+    }
+}
+
+/// Save the onboarding profile to the config file on disk.
+/// Appends/updates interest, location, and notification sections.
+pub fn save_profile_to_config(profile: &OnboardingProfile, config_path: &str) {
+    // Read existing config
+    let content = std::fs::read_to_string(config_path).unwrap_or_default();
+
+    // Build the profile section
+    let mut additions = String::new();
+
+    // Add interests
+    if !profile.interests.is_empty() {
+        // Check if user_interests already exists
+        if !content.contains("user_interests:") {
+            additions.push_str("\n# User interests (from onboarding)\nuser_interests:\n");
+            for interest in &profile.interests {
+                additions.push_str(&format!("  - \"{}\"\n", interest));
+            }
+        }
+    }
+
+    // Add location
+    if !profile.home_location.is_empty() && !content.contains("user_location:") {
+        additions.push_str(&format!(
+            "\n# User location (from onboarding)\nuser_location: \"{}\"\n",
+            profile.home_location,
+        ));
+    }
+
+    // Add notification preference
+    if !content.contains("notification_mode:") {
+        additions.push_str(&format!(
+            "\n# Notification preference (from onboarding)\nnotification_mode: \"{}\"\n",
+            profile.notification_pref,
+        ));
+    }
+
+    if !additions.is_empty() {
+        let updated = format!("{}{}", content, additions);
+        if let Err(e) = std::fs::write(config_path, updated) {
+            tracing::warn!("Failed to save onboarding profile to config: {e}");
+        } else {
+            tracing::info!(
+                interests = profile.interests.len(),
+                location = %profile.home_location,
+                notif = %profile.notification_pref,
+                "Onboarding profile saved to config"
+            );
+        }
     }
 }

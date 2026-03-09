@@ -312,4 +312,8 @@ impl LLMBackend for ClaudeCliLLM {
     fn backend_name(&self) -> &str {
         "api" // Return "api" so companion.rs enables native tool calling path
     }
+
+    fn model_id(&self) -> &str {
+        self.model.as_deref().unwrap_or("claude-sonnet")
+    }
 }

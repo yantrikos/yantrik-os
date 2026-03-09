@@ -27,6 +27,7 @@ ctrlc = "3"
 [features]
 default = ["claude-cli"]
 claude-cli = ["yantrik-ml/claude-cli"]
+llamacpp = ["yantrik-ml/llamacpp"]
 cuda = ["yantrik-ml/cuda"]
 metal = ["yantrik-ml/metal"]
 accelerate = ["yantrik-ml/accelerate"]

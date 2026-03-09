@@ -32,7 +32,7 @@ fn build_companion() -> CompanionService {
         ..Default::default()
     };
 
-    CompanionService::new(db, llm, config)
+    CompanionService::new(db, std::sync::Arc::new(llm), config)
 }
 
 #[test]

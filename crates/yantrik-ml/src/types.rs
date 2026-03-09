@@ -143,7 +143,7 @@ pub struct GenerationConfig {
 impl Default for GenerationConfig {
     fn default() -> Self {
         Self {
-            max_tokens: 512,
+            max_tokens: 2048,
             temperature: 0.7,
             top_p: Some(0.9),
             top_k: None,
