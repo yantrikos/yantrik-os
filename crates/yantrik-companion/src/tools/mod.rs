@@ -105,6 +105,7 @@ pub mod grep;
 pub mod glob;
 pub mod mcp;
 pub mod whatsapp;
+pub mod github;
 
 use crate::config::CompanionConfig;
 use yantrikdb_core::YantrikDB;
@@ -508,6 +509,9 @@ pub fn build_registry(config: &CompanionConfig) -> ToolRegistry {
         browser::register_vision(&mut reg, &ollama_base, model);
         tracing::info!(base = %ollama_base, model, "Vision & Canvas tools registered");
     }
+
+    // GitHub API tools (works without auth for public repos)
+    github::register(&mut reg, config.connectors.github_token.as_deref());
 
     // Load YAML plugins from ~/.config/yantrik/plugins/
     plugin::load_plugins(&mut reg);

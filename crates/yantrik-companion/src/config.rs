@@ -1304,6 +1304,9 @@ pub struct ConnectorsConfig {
     /// Set facebook_app_id to enable both.
     #[serde(default)]
     pub instagram_app_id: Option<String>,
+    /// GitHub personal access token (optional — increases API rate limit from 60 to 5000/hr).
+    #[serde(default)]
+    pub github_token: Option<String>,
     /// Background sync interval in minutes (default: 30).
     #[serde(default = "default_connector_sync_interval")]
     pub sync_interval_minutes: u32,
@@ -1351,6 +1354,7 @@ impl Default for ConnectorsConfig {
             facebook_app_id: None,
             facebook_app_secret: None,
             instagram_app_id: None,
+            github_token: None,
             sync_interval_minutes: default_connector_sync_interval(),
         }
     }
