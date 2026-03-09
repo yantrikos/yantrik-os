@@ -309,7 +309,7 @@ impl LLMBackend for FallbackLLM {
     }
 
     fn backend_name(&self) -> &str {
-        "fallback"
+        self.primary.backend_name()
     }
 
     fn is_degraded(&self) -> bool {

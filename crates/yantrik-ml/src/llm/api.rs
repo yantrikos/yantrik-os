@@ -134,6 +134,9 @@ impl ApiLLM {
         let url = format!("{}/api/chat", self.ollama_base_url());
         let body_str = serde_json::to_string(body)?;
 
+        let tool_count = body.get("tools").and_then(|t| t.as_array()).map(|a| a.len()).unwrap_or(0);
+        tracing::debug!(body_bytes = body_str.len(), tools = tool_count, url = %url, "Ollama request");
+
         let agent = ureq::Agent::new_with_config(
             ureq::config::Config::builder()
                 .timeout_global(Some(std::time::Duration::from_secs(300)))
@@ -143,6 +146,10 @@ impl ApiLLM {
         let resp = agent.post(&url)
             .header("Content-Type", "application/json")
             .send(body_str.as_bytes())
+            .map_err(|e| {
+                tracing::error!(error = %e, body_bytes = body_str.len(), tools = tool_count, "Ollama API request failed");
+                e
+            })
             .context("Ollama API request failed")?;
 
         Ok(resp.into_body())
