@@ -147,6 +147,13 @@ pub struct CompanionState {
     /// User's location (city/region) for local relevance.
     /// Examples: "Austin, TX", "London, UK"
     pub user_location: String,
+    // Open Loops Guardian
+    /// Number of open life threads (open, stalled, overdue).
+    pub open_loops_count: i64,
+    /// Number of overdue commitments.
+    pub overdue_commitment_count: usize,
+    /// Number of pending attention items across all channels.
+    pub pending_attention_count: i64,
 }
 
 /// Response from handle_message().

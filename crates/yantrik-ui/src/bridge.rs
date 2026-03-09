@@ -969,9 +969,16 @@ fn worker_loop(
                         tracing::info!(count = due_tasks.len(), "Scheduler: advanced due tasks");
                     }
 
-                    // V18: Commitment Tracker — check for approaching/overdue commitments
+                    // V24: Open Loops Monitor — scan commitments + attention items
                     {
-                        let overdue = yantrik_companion::world_model::WorldModel::check_overdue(companion.db.conn());
+                        let monitor_config = yantrik_companion::open_loops_monitor::MonitorConfig::default();
+                        let scan_result = yantrik_companion::open_loops_monitor::scan(
+                            companion.db.conn(),
+                            &monitor_config,
+                        );
+
+                        // Inject commitment triggers for instinct evaluation
+                        let overdue = yantrik_companion::world_model::WorldModel::overdue_commitments(companion.db.conn());
                         for c in &overdue {
                             triggers.push(serde_json::json!({
                                 "trigger_type": "commitment_overdue",
@@ -981,7 +988,6 @@ fn worker_loop(
                                 "promisee": c.promisee,
                                 "urgency": 0.8,
                             }));
-                            // Emit event
                             event_bus.emit(
                                 yantrik_os::EventKind::CommitmentAlert {
                                     commitment_id: c.id.to_string(),
@@ -1013,11 +1019,14 @@ fn worker_loop(
                             );
                         }
 
-                        if !overdue.is_empty() || !approaching.is_empty() {
+                        if scan_result.overdue_threads > 0 || scan_result.approaching_threads > 0
+                            || scan_result.attention_threads > 0
+                        {
                             tracing::info!(
-                                overdue = overdue.len(),
-                                approaching = approaching.len(),
-                                "Commitment tracker: found deadline alerts"
+                                overdue = scan_result.overdue_threads,
+                                approaching = scan_result.approaching_threads,
+                                attention = scan_result.attention_threads,
+                                "Open loops monitor: scan complete"
                             );
                         }
                     }

@@ -106,6 +106,7 @@ pub mod glob;
 pub mod mcp;
 pub mod whatsapp;
 pub mod github;
+pub mod open_loops;
 
 use crate::config::CompanionConfig;
 use yantrikdb_core::YantrikDB;
@@ -519,6 +520,7 @@ pub fn build_registry(config: &CompanionConfig) -> ToolRegistry {
     edit::register(&mut reg);
     grep::register(&mut reg);
     glob::register(&mut reg);
+    open_loops::register(&mut reg);
 
     // Connect MCP servers and register their tools
     if !config.mcp_servers.is_empty() {

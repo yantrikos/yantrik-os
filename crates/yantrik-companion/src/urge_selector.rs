@@ -47,7 +47,8 @@ const W_DIM_RETURNS: f64 = 1.0;
 pub fn default_category(instinct_name: &str) -> InstinctCategory {
     match instinct_name {
         "scheduler" | "Reminder" | "Automation" | "morning_brief" | "GoalKeeper"
-        | "PredictiveWorkflow" | "SmartUpdates" | "EmailWatch" | "OpportunityScout" => {
+        | "PredictiveWorkflow" | "SmartUpdates" | "EmailWatch" | "OpportunityScout"
+        | "open_loops_guardian" => {
             InstinctCategory::Anticipatory
         }
         "check_in" | "CheckIn" | "HealthPulse" | "EnergyMap" | "NightOwl" | "CognitiveLoad" => {
@@ -77,7 +78,8 @@ pub fn default_time_sensitivity(instinct_name: &str) -> TimeSensitivity {
         "morning_brief" | "GoalKeeper" | "NightOwl" | "EmailWatch"
         | "EmotionalAwareness" | "Aftermath" | "EveningReflection"
         | "BondMilestone" | "CognitiveLoad" | "PredictiveWorkflow"
-        | "weather_watch" | "WeatherWatch" | "ConflictAlerting" | "Cortex" => TimeSensitivity::Today,
+        | "weather_watch" | "WeatherWatch" | "ConflictAlerting" | "Cortex"
+        | "open_loops_guardian" => TimeSensitivity::Today,
         // Tier 2: Soon
         "HealthPulse" | "check_in" | "CheckIn" | "GrowthMirror" | "DecisionLab"
         | "MoneyMind" | "DealWatch" | "WorldSense" | "RelationshipRadar"

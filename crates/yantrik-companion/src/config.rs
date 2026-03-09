@@ -630,6 +630,9 @@ pub struct InstinctSettings {
     /// Hours between opportunity scout searches.
     #[serde(default = "default_opportunity_scout_interval")]
     pub opportunity_scout_interval_hours: f64,
+    /// Threshold for open loops count before Guardian instinct fires.
+    #[serde(default)]
+    pub open_loops_threshold: Option<i64>,
 }
 
 fn default_check_in_hours() -> f64 {
@@ -786,6 +789,7 @@ impl Default for InstinctSettings {
             pattern_breaker_interval_hours: default_pattern_breaker_interval(),
             opportunity_scout_enabled: true,
             opportunity_scout_interval_hours: default_opportunity_scout_interval(),
+            open_loops_threshold: None,
         }
     }
 }

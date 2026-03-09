@@ -103,6 +103,10 @@ pub const TOOL_CATEGORIES: &[(&str, &[&str], &[&str])] = &[
      &["check_bond"]),
     ("screenshot", &["screenshot", "capture screen", "screen"],
      &["screenshot"]),
+    ("life_management", &["open loops", "commitments", "pending", "unanswered", "overdue",
+                           "what's waiting", "what am I forgetting", "unresolved", "snooze",
+                           "resolve", "attention", "follow up"],
+     &["show_open_loops", "resolve_loop", "snooze_loop"]),
 ];
 
 /// Flat list of ALL tools that were formerly in CORE_TOOLS (for backwards compat).
@@ -2053,6 +2057,11 @@ impl CompanionService {
             // Interest intelligence
             user_interests: self.user_interests.clone(),
             user_location: self.user_location.clone(),
+            // Open Loops Guardian
+            open_loops_count: crate::world_model::count_open_threads(self.db.conn()),
+            overdue_commitment_count: crate::world_model::WorldModel::overdue_commitments(self.db.conn()).len(),
+            pending_attention_count: crate::world_model::attention_summary(self.db.conn())
+                .iter().map(|(_, c)| c).sum(),
         }
     }
 

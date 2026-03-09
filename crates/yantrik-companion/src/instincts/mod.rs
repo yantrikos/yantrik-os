@@ -66,6 +66,7 @@ mod dream_keeper;
 mod cultural_radar;
 mod pattern_breaker;
 mod opportunity_scout;
+mod open_loops_guardian;
 
 use crate::config::InstinctSettings;
 use crate::types::{CompanionState, UrgeSpec};
@@ -133,6 +134,7 @@ pub use dream_keeper::DreamKeeperInstinct;
 pub use cultural_radar::CulturalRadarInstinct;
 pub use pattern_breaker::PatternBreakerInstinct;
 pub use opportunity_scout::OpportunityScoutInstinct;
+pub use open_loops_guardian::OpenLoopsGuardianInstinct;
 
 /// Trait for companion instincts.
 pub trait Instinct: Send + Sync {
@@ -405,6 +407,11 @@ pub fn load_instincts(settings: &InstinctSettings) -> Vec<Box<dyn Instinct>> {
             settings.opportunity_scout_interval_hours,
         )));
     }
+
+    // Open Loops Guardian (always on — monitors commitments and attention items)
+    instincts.push(Box::new(OpenLoopsGuardianInstinct::new(
+        settings.open_loops_threshold.unwrap_or(5),
+    )));
 
     // Natural Communication instincts (always loaded — bond-gated internally)
     instincts.push(Box::new(AftermathInstinct));

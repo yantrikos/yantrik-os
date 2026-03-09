@@ -265,6 +265,539 @@ impl RoutineTrigger {
     }
 }
 
+// ── Life Thread ─────────────────────────────────────────────────────
+
+/// The category of a life thread.
+///
+/// Covers any communication channel or tracked item type.
+/// The `life_threads` table is the unified attention table —
+/// any source (email, WhatsApp, call, text, file, etc.) can
+/// create threads here for the companion to track.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ThreadType {
+    Email,
+    Commitment,
+    File,
+    Person,
+    Task,
+    /// WhatsApp message needing reply.
+    WhatsApp,
+    /// Phone call — missed or needing callback.
+    Call,
+    /// SMS / text message needing reply.
+    Text,
+    /// Telegram message needing reply.
+    Telegram,
+    /// Calendar event needing action (RSVP, prepare, etc.).
+    Calendar,
+    /// Generic / extensible type via string tag.
+    Custom(String),
+}
+
+impl ThreadType {
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Email => "email",
+            Self::Commitment => "commitment",
+            Self::File => "file",
+            Self::Person => "person",
+            Self::Task => "task",
+            Self::WhatsApp => "whatsapp",
+            Self::Call => "call",
+            Self::Text => "text",
+            Self::Telegram => "telegram",
+            Self::Calendar => "calendar",
+            Self::Custom(s) => s.as_str(),
+        }
+    }
+
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "email" => Self::Email,
+            "commitment" => Self::Commitment,
+            "file" => Self::File,
+            "person" => Self::Person,
+            "task" => Self::Task,
+            "whatsapp" => Self::WhatsApp,
+            "call" => Self::Call,
+            "text" => Self::Text,
+            "telegram" => Self::Telegram,
+            "calendar" => Self::Calendar,
+            other => Self::Custom(other.to_string()),
+        }
+    }
+
+    /// Human-readable label for display.
+    pub fn label(&self) -> &str {
+        match self {
+            Self::Email => "email",
+            Self::Commitment => "commitment",
+            Self::File => "file",
+            Self::Person => "person",
+            Self::Task => "task",
+            Self::WhatsApp => "whatsapp",
+            Self::Call => "call",
+            Self::Text => "text",
+            Self::Telegram => "telegram",
+            Self::Calendar => "calendar",
+            Self::Custom(s) => s.as_str(),
+        }
+    }
+}
+
+impl std::fmt::Display for ThreadType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Lifecycle status of a life thread.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ThreadStatus {
+    Open,
+    Stalled,
+    Overdue,
+    Resolved,
+    Snoozed,
+    Archived,
+}
+
+impl ThreadStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Open => "open",
+            Self::Stalled => "stalled",
+            Self::Overdue => "overdue",
+            Self::Resolved => "resolved",
+            Self::Snoozed => "snoozed",
+            Self::Archived => "archived",
+        }
+    }
+
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "open" => Self::Open,
+            "stalled" => Self::Stalled,
+            "overdue" => Self::Overdue,
+            "resolved" => Self::Resolved,
+            "snoozed" => Self::Snoozed,
+            "archived" => Self::Archived,
+            _ => Self::Open,
+        }
+    }
+
+    /// Whether this status is terminal (no further transitions expected).
+    pub fn is_terminal(&self) -> bool {
+        matches!(self, Self::Resolved | Self::Archived)
+    }
+}
+
+impl std::fmt::Display for ThreadStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// A tracked thread of activity spanning emails, commitments, people, files, or tasks.
+#[derive(Debug, Clone)]
+pub struct LifeThread {
+    pub id: i64,
+    pub thread_type: ThreadType,
+    pub entity_id: String,
+    pub label: String,
+    pub deadline_ts: f64,
+    pub status: ThreadStatus,
+    pub importance: f64,
+    pub days_open: i64,
+    pub last_action_ts: f64,
+    pub snooze_until: f64,
+    pub source: String,
+    pub context_json: String,
+    pub created_at: f64,
+    pub updated_at: f64,
+}
+
+// ── Life Thread CRUD (standalone functions) ─────────────────────────
+
+/// Upsert a life thread — INSERT or REPLACE keyed on (thread_type, entity_id).
+pub fn upsert_life_thread(
+    conn: &Connection,
+    thread_type: &ThreadType,
+    entity_id: &str,
+    label: &str,
+    deadline_ts: f64,
+    importance: f64,
+    source: &str,
+    context_json: &str,
+) -> i64 {
+    let now = now_ts();
+    // Try to find existing to preserve created_at
+    let existing_created: Option<f64> = conn
+        .query_row(
+            "SELECT created_at FROM life_threads WHERE thread_type = ?1 AND entity_id = ?2",
+            params![thread_type.as_str(), entity_id],
+            |row| row.get(0),
+        )
+        .ok();
+    let created = existing_created.unwrap_or(now);
+
+    conn.execute(
+        "INSERT INTO life_threads
+         (thread_type, entity_id, label, deadline_ts, status, importance,
+          days_open, last_action_ts, snooze_until, source, context_json,
+          created_at, updated_at)
+         VALUES (?1,?2,?3,?4,'open',?5,0,?6,0,?7,?8,?9,?10)
+         ON CONFLICT(thread_type, entity_id) DO UPDATE SET
+           label = excluded.label,
+           deadline_ts = excluded.deadline_ts,
+           importance = excluded.importance,
+           last_action_ts = excluded.last_action_ts,
+           source = excluded.source,
+           context_json = excluded.context_json,
+           updated_at = excluded.updated_at",
+        params![
+            thread_type.as_str(),
+            entity_id,
+            label,
+            deadline_ts,
+            importance,
+            now,
+            source,
+            context_json,
+            created,
+            now,
+        ],
+    )
+    .expect("failed to upsert life thread");
+    conn.last_insert_rowid()
+}
+
+/// Update the status of a life thread.
+pub fn update_thread_status(
+    conn: &Connection,
+    thread_type: &ThreadType,
+    entity_id: &str,
+    new_status: &ThreadStatus,
+) {
+    let now = now_ts();
+    let _ = conn.execute(
+        "UPDATE life_threads SET status = ?1, updated_at = ?2
+         WHERE thread_type = ?3 AND entity_id = ?4",
+        params![new_status.as_str(), now, thread_type.as_str(), entity_id],
+    );
+}
+
+/// Resolve a life thread, storing evidence in context_json.
+pub fn resolve_thread(
+    conn: &Connection,
+    thread_type: &ThreadType,
+    entity_id: &str,
+    evidence: &str,
+) {
+    let now = now_ts();
+    // Merge evidence into existing context_json
+    let existing_ctx: String = conn
+        .query_row(
+            "SELECT context_json FROM life_threads WHERE thread_type = ?1 AND entity_id = ?2",
+            params![thread_type.as_str(), entity_id],
+            |row| row.get(0),
+        )
+        .unwrap_or_else(|_| "{}".into());
+
+    let new_ctx = if let Ok(mut map) =
+        serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&existing_ctx)
+    {
+        map.insert(
+            "resolution_evidence".into(),
+            serde_json::Value::String(evidence.into()),
+        );
+        serde_json::to_string(&map).unwrap_or_else(|_| existing_ctx.clone())
+    } else {
+        format!("{{\"resolution_evidence\":{}}}", serde_json::json!(evidence))
+    };
+
+    let _ = conn.execute(
+        "UPDATE life_threads SET status = 'resolved', context_json = ?1, updated_at = ?2
+         WHERE thread_type = ?3 AND entity_id = ?4",
+        params![new_ctx, now, thread_type.as_str(), entity_id],
+    );
+}
+
+/// Snooze a life thread until a given timestamp.
+pub fn snooze_thread(
+    conn: &Connection,
+    thread_type: &ThreadType,
+    entity_id: &str,
+    until_ts: f64,
+) {
+    let now = now_ts();
+    let _ = conn.execute(
+        "UPDATE life_threads SET status = 'snoozed', snooze_until = ?1, updated_at = ?2
+         WHERE thread_type = ?3 AND entity_id = ?4",
+        params![until_ts, now, thread_type.as_str(), entity_id],
+    );
+}
+
+/// Archive a life thread.
+pub fn archive_thread(conn: &Connection, thread_type: &ThreadType, entity_id: &str) {
+    let now = now_ts();
+    let _ = conn.execute(
+        "UPDATE life_threads SET status = 'archived', updated_at = ?1
+         WHERE thread_type = ?2 AND entity_id = ?3",
+        params![now, thread_type.as_str(), entity_id],
+    );
+}
+
+/// Query open threads (open, stalled, overdue) that are not snoozed.
+/// Ordered by importance DESC, then deadline ASC.
+pub fn query_open_threads(conn: &Connection, limit: usize) -> Vec<LifeThread> {
+    let now = now_ts();
+    conn.prepare(
+        "SELECT id, thread_type, entity_id, label, deadline_ts, status,
+                importance, days_open, last_action_ts, snooze_until,
+                source, context_json, created_at, updated_at
+         FROM life_threads
+         WHERE status IN ('open','stalled','overdue')
+           AND (snooze_until = 0 OR snooze_until < ?1)
+         ORDER BY importance DESC, deadline_ts ASC
+         LIMIT ?2",
+    )
+    .and_then(|mut stmt| {
+        stmt.query_map(params![now, limit as i64], |row| row_to_life_thread(row))
+            .map(|rows| rows.filter_map(|r| r.ok()).collect())
+    })
+    .unwrap_or_default()
+}
+
+/// Query threads filtered by type.
+pub fn query_threads_by_type(
+    conn: &Connection,
+    thread_type: &ThreadType,
+    limit: usize,
+) -> Vec<LifeThread> {
+    conn.prepare(
+        "SELECT id, thread_type, entity_id, label, deadline_ts, status,
+                importance, days_open, last_action_ts, snooze_until,
+                source, context_json, created_at, updated_at
+         FROM life_threads
+         WHERE thread_type = ?1
+         ORDER BY importance DESC, updated_at DESC
+         LIMIT ?2",
+    )
+    .and_then(|mut stmt| {
+        stmt.query_map(params![thread_type.as_str(), limit as i64], |row| {
+            row_to_life_thread(row)
+        })
+        .map(|rows| rows.filter_map(|r| r.ok()).collect())
+    })
+    .unwrap_or_default()
+}
+
+/// Quick count of open threads (open, stalled, overdue) for dashboard display.
+pub fn count_open_threads(conn: &Connection) -> i64 {
+    conn.query_row(
+        "SELECT COUNT(*) FROM life_threads WHERE status IN ('open','stalled','overdue')",
+        [],
+        |row| row.get(0),
+    )
+    .unwrap_or(0)
+}
+
+/// Refresh `days_open` for all non-terminal threads.
+pub fn refresh_days_open(conn: &Connection) {
+    let now = now_ts();
+    let _ = conn.execute(
+        "UPDATE life_threads
+         SET days_open = CAST((?1 - created_at) / 86400.0 AS INTEGER)
+         WHERE status NOT IN ('resolved', 'archived')",
+        params![now],
+    );
+}
+
+/// Transition threads with expired deadlines to 'overdue'. Returns count transitioned.
+pub fn transition_overdue(conn: &Connection) -> usize {
+    let now = now_ts();
+    conn.execute(
+        "UPDATE life_threads SET status = 'overdue', updated_at = ?1
+         WHERE deadline_ts > 0 AND deadline_ts < ?2
+         AND status IN ('open', 'stalled')",
+        params![now, now],
+    )
+    .unwrap_or(0)
+}
+
+/// Map a row to a LifeThread struct.
+fn row_to_life_thread(row: &rusqlite::Row) -> rusqlite::Result<LifeThread> {
+    Ok(LifeThread {
+        id: row.get(0)?,
+        thread_type: ThreadType::from_str(&row.get::<_, String>(1).unwrap_or_default()),
+        entity_id: row.get(2)?,
+        label: row.get(3)?,
+        deadline_ts: row.get(4)?,
+        status: ThreadStatus::from_str(&row.get::<_, String>(5).unwrap_or_default()),
+        importance: row.get(6)?,
+        days_open: row.get(7)?,
+        last_action_ts: row.get(8)?,
+        snooze_until: row.get(9)?,
+        source: row.get(10)?,
+        context_json: row.get(11)?,
+        created_at: row.get(12)?,
+        updated_at: row.get(13)?,
+    })
+}
+
+// ── Attention Items (unified inbound communication tracking) ────────
+
+/// A communication item needing the user's attention.
+///
+/// Any channel (email, WhatsApp, SMS, Telegram, missed calls, etc.)
+/// writes items here. The open loops monitor scans for unhandled items
+/// and promotes them to life threads when they've been waiting too long.
+#[derive(Debug, Clone)]
+pub struct AttentionItem {
+    pub id: i64,
+    /// Channel identifier: "email", "whatsapp", "telegram", "call", "text", etc.
+    pub channel: String,
+    /// Channel-specific ID (email message_id, WhatsApp message ID, etc.).
+    pub external_id: String,
+    pub sender: String,
+    pub sender_name: String,
+    pub subject: String,
+    pub preview: String,
+    pub received_ts: f64,
+    /// "low", "normal", "high", "urgent"
+    pub importance: String,
+    /// Whether this item expects a user reply.
+    pub needs_reply: bool,
+    /// Whether the user has replied.
+    pub replied: bool,
+    /// Whether the monitor has processed this into a life thread.
+    pub handled: bool,
+    pub context_json: String,
+    pub created_at: f64,
+    pub updated_at: f64,
+}
+
+/// Upsert an attention item (idempotent per channel + external_id).
+pub fn upsert_attention_item(
+    conn: &Connection,
+    channel: &str,
+    external_id: &str,
+    sender: &str,
+    sender_name: &str,
+    subject: &str,
+    preview: &str,
+    received_ts: f64,
+    importance: &str,
+    needs_reply: bool,
+    context_json: &str,
+) -> i64 {
+    let now = now_ts();
+    conn.execute(
+        "INSERT INTO attention_items
+         (channel, external_id, sender, sender_name, subject, preview,
+          received_ts, importance, needs_reply, replied, handled,
+          context_json, created_at, updated_at)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,0,0,?10,?11,?12)
+         ON CONFLICT(channel, external_id) DO UPDATE SET
+           sender_name = excluded.sender_name,
+           subject = excluded.subject,
+           importance = excluded.importance,
+           context_json = excluded.context_json,
+           updated_at = excluded.updated_at",
+        params![
+            channel, external_id, sender, sender_name, subject, preview,
+            received_ts, importance, needs_reply as i32,
+            context_json, now, now,
+        ],
+    )
+    .expect("failed to upsert attention item");
+    conn.last_insert_rowid()
+}
+
+/// Mark an attention item as replied.
+pub fn mark_attention_replied(conn: &Connection, channel: &str, external_id: &str) {
+    let now = now_ts();
+    let _ = conn.execute(
+        "UPDATE attention_items SET replied = 1, updated_at = ?1
+         WHERE channel = ?2 AND external_id = ?3",
+        params![now, channel, external_id],
+    );
+}
+
+/// Mark an attention item as handled (promoted to life thread).
+pub fn mark_attention_handled(conn: &Connection, id: i64) {
+    let now = now_ts();
+    let _ = conn.execute(
+        "UPDATE attention_items SET handled = 1, updated_at = ?1 WHERE id = ?2",
+        params![now, id],
+    );
+}
+
+/// Query unhandled attention items that need reply and are older than `min_age_secs`.
+pub fn query_pending_attention(
+    conn: &Connection,
+    min_age_secs: f64,
+    limit: usize,
+) -> Vec<AttentionItem> {
+    let cutoff = now_ts() - min_age_secs;
+    let max_lookback = now_ts() - 14.0 * 86400.0; // don't go back more than 14 days
+    conn.prepare(
+        "SELECT id, channel, external_id, sender, sender_name, subject, preview,
+                received_ts, importance, needs_reply, replied, handled,
+                context_json, created_at, updated_at
+         FROM attention_items
+         WHERE needs_reply = 1 AND replied = 0 AND handled = 0
+           AND received_ts < ?1 AND received_ts > ?2
+         ORDER BY
+           CASE importance
+             WHEN 'urgent' THEN 0
+             WHEN 'high' THEN 1
+             WHEN 'normal' THEN 2
+             ELSE 3
+           END,
+           received_ts ASC
+         LIMIT ?3",
+    )
+    .and_then(|mut stmt| {
+        stmt.query_map(params![cutoff, max_lookback, limit as i64], |row| {
+            Ok(AttentionItem {
+                id: row.get(0)?,
+                channel: row.get(1)?,
+                external_id: row.get(2)?,
+                sender: row.get(3)?,
+                sender_name: row.get(4)?,
+                subject: row.get(5)?,
+                preview: row.get(6)?,
+                received_ts: row.get(7)?,
+                importance: row.get(8)?,
+                needs_reply: row.get::<_, i32>(9)? != 0,
+                replied: row.get::<_, i32>(10)? != 0,
+                handled: row.get::<_, i32>(11)? != 0,
+                context_json: row.get(12)?,
+                created_at: row.get(13)?,
+                updated_at: row.get(14)?,
+            })
+        })
+        .map(|rows| rows.filter_map(|r| r.ok()).collect())
+    })
+    .unwrap_or_default()
+}
+
+/// Count pending attention items per channel.
+pub fn attention_summary(conn: &Connection) -> Vec<(String, i64)> {
+    conn.prepare(
+        "SELECT channel, COUNT(*) FROM attention_items
+         WHERE needs_reply = 1 AND replied = 0 AND handled = 0
+         GROUP BY channel ORDER BY COUNT(*) DESC",
+    )
+    .and_then(|mut stmt| {
+        stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .map(|rows| rows.filter_map(|r| r.ok()).collect())
+    })
+    .unwrap_or_default()
+}
+
 // ── WorldModel (persistence + queries) ──────────────────────────────
 
 /// Manages world model persistence and queries.
@@ -322,7 +855,48 @@ impl WorldModel {
                 last_observed_at  REAL NOT NULL,
                 active            INTEGER NOT NULL DEFAULT 1
             );
-            CREATE INDEX IF NOT EXISTS idx_wm_routine_active ON wm_routines(active);",
+            CREATE INDEX IF NOT EXISTS idx_wm_routine_active ON wm_routines(active);
+
+            CREATE TABLE IF NOT EXISTS life_threads (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                thread_type     TEXT NOT NULL,
+                entity_id       TEXT NOT NULL,
+                label           TEXT NOT NULL,
+                deadline_ts     REAL DEFAULT 0,
+                status          TEXT NOT NULL DEFAULT 'open',
+                importance      REAL DEFAULT 0.5,
+                days_open       INTEGER DEFAULT 0,
+                last_action_ts  REAL DEFAULT 0,
+                snooze_until    REAL DEFAULT 0,
+                source          TEXT DEFAULT '',
+                context_json    TEXT DEFAULT '{}',
+                created_at      REAL NOT NULL,
+                updated_at      REAL NOT NULL,
+                UNIQUE(thread_type, entity_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_life_threads_status ON life_threads(status);
+            CREATE INDEX IF NOT EXISTS idx_life_threads_type ON life_threads(thread_type, status);
+
+            CREATE TABLE IF NOT EXISTS attention_items (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                channel         TEXT NOT NULL,
+                external_id     TEXT NOT NULL,
+                sender          TEXT NOT NULL DEFAULT '',
+                sender_name     TEXT NOT NULL DEFAULT '',
+                subject         TEXT NOT NULL DEFAULT '',
+                preview         TEXT NOT NULL DEFAULT '',
+                received_ts     REAL NOT NULL,
+                importance      TEXT NOT NULL DEFAULT 'normal',
+                needs_reply     INTEGER NOT NULL DEFAULT 1,
+                replied         INTEGER NOT NULL DEFAULT 0,
+                handled         INTEGER NOT NULL DEFAULT 0,
+                context_json    TEXT NOT NULL DEFAULT '{}',
+                created_at      REAL NOT NULL,
+                updated_at      REAL NOT NULL,
+                UNIQUE(channel, external_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_attention_channel ON attention_items(channel, handled);
+            CREATE INDEX IF NOT EXISTS idx_attention_needs_reply ON attention_items(needs_reply, replied, received_ts);",
         )
         .expect("failed to create world model tables");
     }
@@ -1057,5 +1631,281 @@ mod tests {
         assert!(summary.contains("World Model"));
         assert!(summary.contains("Review PR #42"));
         assert!(summary.contains("async-first"));
+    }
+
+    // ── Life Thread tests ──
+
+    #[test]
+    fn life_thread_upsert_creates_new() {
+        let conn = setup();
+        let id = upsert_life_thread(
+            &conn,
+            &ThreadType::Email,
+            "msg-abc",
+            "Re: Quarterly report",
+            0.0,
+            0.7,
+            "email_scan",
+            "{}",
+        );
+        assert!(id > 0);
+
+        let threads = query_open_threads(&conn, 10);
+        assert_eq!(threads.len(), 1);
+        assert_eq!(threads[0].label, "Re: Quarterly report");
+        assert_eq!(threads[0].thread_type, ThreadType::Email);
+        assert_eq!(threads[0].entity_id, "msg-abc");
+        assert_eq!(threads[0].importance, 0.7);
+    }
+
+    #[test]
+    fn life_thread_upsert_updates_existing() {
+        let conn = setup();
+
+        // First insert
+        upsert_life_thread(
+            &conn,
+            &ThreadType::Email,
+            "msg-abc",
+            "Old label",
+            0.0,
+            0.5,
+            "email_scan",
+            "{}",
+        );
+
+        // Upsert same (type, entity_id) with new data
+        upsert_life_thread(
+            &conn,
+            &ThreadType::Email,
+            "msg-abc",
+            "Updated label",
+            0.0,
+            0.9,
+            "email_scan",
+            "{\"sender\":\"boss@co.com\"}",
+        );
+
+        let threads = query_open_threads(&conn, 10);
+        assert_eq!(threads.len(), 1, "should still be one thread (dedup)");
+        assert_eq!(threads[0].label, "Updated label");
+        assert_eq!(threads[0].importance, 0.9);
+    }
+
+    #[test]
+    fn life_thread_status_transitions() {
+        let conn = setup();
+        upsert_life_thread(
+            &conn,
+            &ThreadType::Task,
+            "task-1",
+            "Write docs",
+            0.0,
+            0.5,
+            "cortex",
+            "{}",
+        );
+
+        // Transition to stalled
+        update_thread_status(&conn, &ThreadType::Task, "task-1", &ThreadStatus::Stalled);
+        let threads = query_open_threads(&conn, 10);
+        assert_eq!(threads[0].status, ThreadStatus::Stalled);
+
+        // Transition to archived (terminal)
+        archive_thread(&conn, &ThreadType::Task, "task-1");
+        let threads2 = query_open_threads(&conn, 10);
+        assert!(threads2.is_empty(), "archived thread should not appear in open query");
+    }
+
+    #[test]
+    fn life_thread_resolve_stores_evidence() {
+        let conn = setup();
+        upsert_life_thread(
+            &conn,
+            &ThreadType::Commitment,
+            "commit-7",
+            "Send invoice",
+            0.0,
+            0.8,
+            "commitment_extract",
+            "{\"to\":\"client\"}",
+        );
+
+        resolve_thread(
+            &conn,
+            &ThreadType::Commitment,
+            "commit-7",
+            "Invoice #42 sent via email",
+        );
+
+        // Should not appear in open threads
+        let open = query_open_threads(&conn, 10);
+        assert!(open.is_empty());
+
+        // Verify evidence stored in context_json
+        let ctx: String = conn
+            .query_row(
+                "SELECT context_json FROM life_threads WHERE entity_id = 'commit-7'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(ctx.contains("Invoice #42 sent via email"));
+        assert!(ctx.contains("resolution_evidence"));
+        // Original context should be preserved
+        assert!(ctx.contains("client"));
+    }
+
+    #[test]
+    fn life_thread_snooze_hides_until_time() {
+        let conn = setup();
+        let now = now_ts();
+
+        upsert_life_thread(
+            &conn,
+            &ThreadType::Email,
+            "msg-snooze",
+            "Non-urgent email",
+            0.0,
+            0.3,
+            "email_scan",
+            "{}",
+        );
+
+        // Snooze into the far future
+        snooze_thread(&conn, &ThreadType::Email, "msg-snooze", now + 999999.0);
+
+        let open = query_open_threads(&conn, 10);
+        assert!(open.is_empty(), "snoozed thread should be hidden");
+
+        // Snooze into the past (simulates time passing)
+        snooze_thread(&conn, &ThreadType::Email, "msg-snooze", now - 1.0);
+        // Need to set status back to open for it to reappear
+        update_thread_status(&conn, &ThreadType::Email, "msg-snooze", &ThreadStatus::Open);
+        // Also reset snooze_until for the query
+        let _ = conn.execute(
+            "UPDATE life_threads SET snooze_until = ?1 WHERE entity_id = 'msg-snooze'",
+            params![now - 1.0],
+        );
+
+        let open2 = query_open_threads(&conn, 10);
+        assert_eq!(open2.len(), 1, "un-snoozed thread should reappear");
+    }
+
+    #[test]
+    fn life_thread_query_open_respects_limit_and_order() {
+        let conn = setup();
+
+        // Insert threads with varying importance
+        for (i, imp) in [(1, 0.3), (2, 0.9), (3, 0.6)] {
+            upsert_life_thread(
+                &conn,
+                &ThreadType::Task,
+                &format!("task-{i}"),
+                &format!("Task {i}"),
+                0.0,
+                imp,
+                "cortex",
+                "{}",
+            );
+        }
+
+        // Limit 2
+        let threads = query_open_threads(&conn, 2);
+        assert_eq!(threads.len(), 2);
+        // Should be ordered by importance DESC
+        assert_eq!(threads[0].importance, 0.9);
+        assert_eq!(threads[1].importance, 0.6);
+
+        // Limit 100 gets all 3
+        let all = query_open_threads(&conn, 100);
+        assert_eq!(all.len(), 3);
+    }
+
+    #[test]
+    fn life_thread_transition_overdue() {
+        let conn = setup();
+        let now = now_ts();
+
+        // Thread with expired deadline
+        upsert_life_thread(
+            &conn,
+            &ThreadType::Task,
+            "task-overdue",
+            "Past-due task",
+            now - 3600.0, // 1 hour ago
+            0.8,
+            "cortex",
+            "{}",
+        );
+
+        // Thread with future deadline
+        upsert_life_thread(
+            &conn,
+            &ThreadType::Task,
+            "task-future",
+            "Future task",
+            now + 86400.0, // 1 day from now
+            0.5,
+            "cortex",
+            "{}",
+        );
+
+        // Thread with no deadline
+        upsert_life_thread(
+            &conn,
+            &ThreadType::Email,
+            "msg-nodeadline",
+            "No deadline email",
+            0.0,
+            0.4,
+            "email_scan",
+            "{}",
+        );
+
+        let count = transition_overdue(&conn);
+        assert_eq!(count, 1, "only the expired-deadline thread should transition");
+
+        let open = query_open_threads(&conn, 10);
+        // The overdue thread should still show (status=overdue is in the query)
+        let overdue_thread = open.iter().find(|t| t.entity_id == "task-overdue");
+        assert!(overdue_thread.is_some());
+        assert_eq!(overdue_thread.unwrap().status, ThreadStatus::Overdue);
+
+        // Future task should still be open
+        let future = open.iter().find(|t| t.entity_id == "task-future");
+        assert_eq!(future.unwrap().status, ThreadStatus::Open);
+    }
+
+    #[test]
+    fn life_thread_count_open_matches() {
+        let conn = setup();
+
+        // 3 open threads
+        for i in 0..3 {
+            upsert_life_thread(
+                &conn,
+                &ThreadType::Task,
+                &format!("t-{i}"),
+                &format!("Task {i}"),
+                0.0,
+                0.5,
+                "test",
+                "{}",
+            );
+        }
+        assert_eq!(count_open_threads(&conn), 3);
+
+        // Resolve one
+        resolve_thread(&conn, &ThreadType::Task, "t-0", "done");
+        assert_eq!(count_open_threads(&conn), 2);
+
+        // Archive one
+        archive_thread(&conn, &ThreadType::Task, "t-1");
+        assert_eq!(count_open_threads(&conn), 1);
+
+        // Mark one overdue (still counts as open)
+        update_thread_status(&conn, &ThreadType::Task, "t-2", &ThreadStatus::Overdue);
+        assert_eq!(count_open_threads(&conn), 1);
     }
 }
