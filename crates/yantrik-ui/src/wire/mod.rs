@@ -41,9 +41,18 @@ pub mod snippet_manager;
 pub mod container_manager;
 pub mod device_dashboard;
 pub mod permission_dashboard;
+pub mod spreadsheet;
+pub mod document_editor;
+pub mod presentation;
 pub mod version;
+pub mod ai_assist;
 mod morning_brief;
 mod window_switcher;
+pub mod entity_bridge;
+pub mod app_framework;
+pub mod cross_app;
+pub mod universal_actions;
+pub mod command_palette;
 
 use crate::app_context::AppContext;
 use crate::App;
@@ -84,8 +93,13 @@ pub fn wire_all(ui: &App, ctx: &AppContext) {
     container_manager::wire(ui, ctx);
     device_dashboard::wire(ui, ctx);
     permission_dashboard::wire(ui, ctx);
+    spreadsheet::wire(ui, ctx);
+    document_editor::wire(ui, ctx);
+    presentation::wire(ui, ctx);
     about::wire(ui, ctx);
     version::wire(ui, ctx);
     morning_brief::wire(ui, ctx);
+    command_palette::wire(ui, ctx);
+    cross_app::wire(ui, ctx);
     callbacks::wire(ui, ctx);
 }

@@ -262,7 +262,7 @@ impl ToolMetrics {
                 s.avg_duration_ms,
             ));
             if let Some(ref reason) = s.last_failure_reason {
-                let short = if reason.len() > 80 { &reason[..80] } else { reason };
+                let short: String = reason.chars().take(80).collect();
                 summary.push_str(&format!(" — last error: {}", short));
             }
             summary.push('\n');

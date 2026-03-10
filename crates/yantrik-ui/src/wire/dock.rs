@@ -223,6 +223,27 @@ pub fn wire(ui: &App, ctx: &AppContext) {
                 }
                 return;
             }
+            "spreadsheet" => {
+                if let Some(ui) = ui_weak.upgrade() {
+                    ui.set_current_screen(29);
+                    ui.invoke_navigate(29);
+                }
+                return;
+            }
+            "documents" | "document_editor" => {
+                if let Some(ui) = ui_weak.upgrade() {
+                    ui.set_current_screen(30);
+                    ui.invoke_navigate(30);
+                }
+                return;
+            }
+            "presentation" | "slides" => {
+                if let Some(ui) = ui_weak.upgrade() {
+                    ui.set_current_screen(31);
+                    ui.invoke_navigate(31);
+                }
+                return;
+            }
             "launchpad" => {
                 if let Some(ui) = ui_weak.upgrade() {
                     ui.set_current_screen(1);

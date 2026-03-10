@@ -1,0 +1,1420 @@
+// Document Editor (yDoc) — screen 30
+// Full-featured document editor with comments, track changes, version history,
+// tables, templates, advanced formatting, outline sidebar, find/replace.
+// Wrapped in WindowFrame by app.slint.
+
+import { Theme } from "theme.slint";
+import { ListView, LineEdit, TextEdit, ScrollView } from "std-widgets.slint";
+
+export struct DocHeadingEntry {
+    title: string,
+    level: int,
+    block-index: int,
+}
+
+export struct DocCommentEntry {
+    id: int,
+    text: string,
+    line-hint: int,
+    resolved: bool,
+    timestamp: string,
+}
+
+export struct DocChangeEntry {
+    id: int,
+    change-type: string,   // "insert", "delete", "modify"
+    old-text: string,
+    new-text: string,
+    line-hint: int,
+    timestamp: string,
+}
+
+export struct DocVersionEntry {
+    label: string,
+    timestamp: string,
+    index: int,
+}
+
+// ── Toolbar button — increased hit targets (36x32) ──
+component ToolbarButton inherits Rectangle {
+    in property <string> label;
+    in property <bool> is-active: false;
+    in property <string> tooltip-text: "";
+    callback clicked();
+
+    width: 36px;
+    height: 32px;
+    border-radius: 5px;
+    background: ta.has-hover ? Theme.hover-fill-strong
+        : (is-active ? Theme.accent.transparentize(0.75) : transparent);
+
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+
+    Text {
+        text: root.label;
+        color: root.is-active ? Theme.accent : Theme.text-primary;
+        font-size: 13px;
+        font-weight: root.is-active ? 700 : 500;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}
+
+// ── Wide toolbar button — increased hit targets ──
+component ToolbarButtonWide inherits Rectangle {
+    in property <string> label;
+    in property <bool> is-active: false;
+    callback clicked();
+
+    width: 56px;
+    height: 32px;
+    border-radius: 5px;
+    background: ta.has-hover ? Theme.hover-fill-strong
+        : (is-active ? Theme.accent.transparentize(0.75) : transparent);
+
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+
+    Text {
+        text: root.label;
+        color: root.is-active ? Theme.accent : Theme.text-secondary;
+        font-size: 11px;
+        font-weight: root.is-active ? 600 : 500;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}
+
+// ── File action button — distinct from formatting controls ──
+component FileActionButton inherits Rectangle {
+    in property <string> label;
+    callback clicked();
+
+    width: 52px;
+    height: 30px;
+    border-radius: 5px;
+    border-width: 1px;
+    border-color: ta.has-hover ? Theme.accent.transparentize(0.5) : Theme.border-subtle;
+    background: ta.has-hover ? Theme.accent.transparentize(0.85) : Theme.bg-elevated;
+
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+
+    Text {
+        text: root.label;
+        color: ta.has-hover ? Theme.accent : Theme.text-primary;
+        font-size: 11px;
+        font-weight: 600;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}
+
+// ── Toolbar group separator — thin vertical line ──
+component ToolbarSeparator inherits Rectangle {
+    width: 1px;
+    height: 20px;
+    background: Theme.separator;
+}
+
+// ── Group label above toolbar section ──
+component ToolbarGroupLabel inherits Rectangle {
+    in property <string> label;
+    height: 32px;
+
+    Text {
+        text: root.label;
+        color: Theme.text-dim;
+        font-size: 9px;
+        font-weight: 600;
+        letter-spacing: 0.5px;
+        vertical-alignment: center;
+        horizontal-alignment: center;
+    }
+}
+
+export component DocumentEditorScreen inherits Rectangle {
+    background: transparent;
+
+    // Document state
+    in-out property <string> doc-title: "Untitled";
+    in-out property <string> doc-content: "";
+    in property <string> doc-file-path: "";
+    in property <int> doc-word-count: 0;
+    in property <int> doc-char-count: 0;
+    in property <int> doc-page-estimate: 0;
+    in property <int> doc-reading-time: 0;
+    in property <int> doc-sentence-count: 0;
+    in property <int> doc-paragraph-count: 0;
+    in property <[DocHeadingEntry]> doc-headings: [];
+    in property <bool> doc-is-modified: false;
+    in property <string> doc-save-status: "";
+    in-out property <bool> doc-show-find: false;
+    in-out property <string> doc-find-query: "";
+    in property <int> doc-find-count: 0;
+    in-out property <string> doc-replace-text: "";
+
+    // Comments
+    in property <[DocCommentEntry]> doc-comments: [];
+    in-out property <bool> doc-show-comments: false;
+    in-out property <string> doc-comment-input: "";
+
+    // Track changes
+    in property <[DocChangeEntry]> doc-changes: [];
+    in property <bool> doc-track-changes-on: false;
+    in-out property <bool> doc-show-changes: false;
+
+    // Version history
+    in property <[DocVersionEntry]> doc-versions: [];
+    in-out property <bool> doc-show-versions: false;
+
+    // Active sidebar: 0=outline, 1=comments, 2=changes, 3=versions
+    in-out property <int> doc-sidebar-mode: 0;
+
+    // Callbacks — existing
+    callback doc-save();
+    callback doc-open();
+    callback doc-new();
+    callback doc-export-pdf();
+    callback doc-format-bold();
+    callback doc-format-italic();
+    callback doc-format-underline();
+    callback doc-format-heading(int);
+    callback doc-format-bullet();
+    callback doc-format-checklist();
+    callback doc-format-quote();
+    callback doc-format-code();
+    callback doc-format-divider();
+    callback doc-undo();
+    callback doc-redo();
+    callback doc-find-next();
+    callback doc-find-prev();
+    callback doc-replace-one();
+    callback doc-replace-all();
+    callback doc-heading-clicked(int);
+    callback doc-import-md();
+    callback doc-export-md();
+    callback doc-content-changed(string);
+
+    // Callbacks — new: Comments
+    callback doc-add-comment(string);
+    callback doc-delete-comment(int);
+    callback doc-resolve-comment(int);
+
+    // Callbacks — new: Track changes
+    callback doc-toggle-track-changes();
+    callback doc-accept-change(int);
+    callback doc-reject-change(int);
+    callback doc-accept-all-changes();
+    callback doc-reject-all-changes();
+
+    // Callbacks — new: Versions
+    callback doc-save-version(string);
+    callback doc-list-versions();
+    callback doc-restore-version(int);
+
+    // Callbacks — new: Tables
+    callback doc-insert-table(int, int);
+    callback doc-add-table-row();
+    callback doc-add-table-col();
+
+    // Callbacks — new: Formatting
+    callback doc-format-strikethrough();
+    callback doc-format-highlight();
+    callback doc-format-link(string);
+    callback doc-format-inline-code();
+    callback doc-insert-toc();
+    callback doc-insert-footnote();
+
+    // Callbacks — new: Export
+    callback doc-export-html();
+
+    // Callbacks — new: Templates
+    callback doc-use-template(int);
+
+    // Callbacks — new: Image
+    callback doc-insert-image(string);
+
+    // Page layout
+    in-out property <bool> doc-page-layout-visible: false;
+    in-out property <string> doc-page-size: "A4";
+    in property <int> doc-margin-top: 25;
+    in property <int> doc-margin-bottom: 25;
+    in property <string> doc-export-status: "";
+
+    callback doc-set-page-layout(string);
+    callback doc-print-preview();
+
+    // AI Assist
+    in-out property <bool> show-ai-panel: false;
+    in property <bool> doc-ai-working: false;
+    in property <string> doc-ai-response: "";
+    in-out property <string> doc-ai-prompt: "";
+    callback doc-ai-submit(string);
+    callback doc-ai-apply();
+    callback doc-ai-dismiss();
+    callback doc-ai-draft(string);
+    callback doc-ai-summarize();
+    callback doc-ai-improve();
+    callback doc-ai-translate(string);
+    callback doc-ai-insights();
+
+    VerticalLayout {
+        // ── Top Toolbar — grouped with labels ──
+        Rectangle {
+            height: 48px;
+            background: Theme.bg-surface;
+            border-width: 0px;
+
+            HorizontalLayout {
+                padding-left: 10px;
+                padding-right: 10px;
+                spacing: 3px;
+                alignment: start;
+
+                // ── File actions — visually distinct ──
+                FileActionButton { label: "New"; clicked => { root.doc-new(); } }
+                FileActionButton { label: "Open"; clicked => { root.doc-open(); } }
+                FileActionButton { label: "Save"; clicked => { root.doc-save(); } }
+
+                // Breathing room after file actions
+                Rectangle { width: 8px; }
+                ToolbarSeparator {}
+                Rectangle { width: 4px; }
+
+                // ── Write group: headings, lists, formatting ──
+                ToolbarGroupLabel { label: "WRITE"; width: 36px; }
+                ToolbarButton { label: "H1"; clicked => { root.doc-format-heading(1); } }
+                ToolbarButton { label: "H2"; clicked => { root.doc-format-heading(2); } }
+                ToolbarButton { label: "H3"; clicked => { root.doc-format-heading(3); } }
+                ToolbarButton { label: "B"; clicked => { root.doc-format-bold(); } }
+                ToolbarButton { label: "I"; clicked => { root.doc-format-italic(); } }
+                ToolbarButton { label: "U"; clicked => { root.doc-format-underline(); } }
+                ToolbarButton { label: "S"; clicked => { root.doc-format-strikethrough(); } }
+                ToolbarButton { label: "=="; clicked => { root.doc-format-highlight(); } }
+                ToolbarButton { label: "•"; clicked => { root.doc-format-bullet(); } }
+                ToolbarButton { label: "☑"; clicked => { root.doc-format-checklist(); } }
+                ToolbarButton { label: "Q"; clicked => { root.doc-format-quote(); } }
+                ToolbarButton { label: "🔗"; clicked => { root.doc-format-link(""); } }
+
+                Rectangle { width: 2px; }
+                ToolbarSeparator {}
+                Rectangle { width: 2px; }
+
+                // ── Insert group ──
+                ToolbarGroupLabel { label: "INSERT"; width: 42px; }
+                ToolbarButtonWide { label: "Table"; clicked => { root.doc-insert-table(3, 3); } }
+                ToolbarButton { label: "< >"; clicked => { root.doc-format-code(); } }
+                ToolbarButton { label: "‹›"; clicked => { root.doc-format-inline-code(); } }
+                ToolbarButtonWide { label: "TOC"; clicked => { root.doc-insert-toc(); } }
+                ToolbarButton { label: "—"; clicked => { root.doc-format-divider(); } }
+
+                Rectangle { width: 2px; }
+                ToolbarSeparator {}
+                Rectangle { width: 2px; }
+
+                // ── Review group ──
+                ToolbarGroupLabel { label: "REVIEW"; width: 44px; }
+                ToolbarButtonWide {
+                    label: "Track";
+                    is-active: root.doc-track-changes-on;
+                    clicked => { root.doc-toggle-track-changes(); }
+                }
+                ToolbarButton {
+                    label: "🔍";
+                    is-active: root.doc-show-find;
+                    clicked => { root.doc-show-find = !root.doc-show-find; }
+                }
+                ToolbarButton { label: "↶"; clicked => { root.doc-undo(); } }
+                ToolbarButton { label: "↷"; clicked => { root.doc-redo(); } }
+
+                Rectangle { width: 2px; }
+                ToolbarSeparator {}
+                Rectangle { width: 2px; }
+
+                // ── Export group ──
+                ToolbarGroupLabel { label: "EXPORT"; width: 44px; }
+                ToolbarButtonWide { label: "MD↑"; clicked => { root.doc-import-md(); } }
+                ToolbarButtonWide { label: "MD↓"; clicked => { root.doc-export-md(); } }
+                ToolbarButtonWide { label: "HTML"; clicked => { root.doc-export-html(); } }
+                ToolbarButtonWide { label: "PDF"; clicked => { root.doc-export-pdf(); } }
+                ToolbarButtonWide {
+                    label: "Page";
+                    is-active: root.doc-page-layout-visible;
+                    clicked => { root.doc-page-layout-visible = !root.doc-page-layout-visible; }
+                }
+
+                Rectangle { width: 2px; }
+                ToolbarSeparator {}
+                Rectangle { width: 4px; }
+
+                // AI Assist toggle
+                ToolbarButtonWide {
+                    label: "AI";
+                    is-active: root.show-ai-panel;
+                    clicked => { root.show-ai-panel = !root.show-ai-panel; }
+                }
+            }
+
+            // Bottom border
+            Rectangle {
+                y: parent.height - 1px;
+                height: 1px;
+                background: Theme.separator;
+            }
+        }
+
+        // ── Export status ──
+        Rectangle {
+            height: root.doc-export-status != "" ? 28px : 0px;
+            visible: root.doc-export-status != "";
+            background: #2ecc7120;
+
+            HorizontalLayout {
+                padding-left: 12px;
+                spacing: 6px;
+                alignment: start;
+
+                Text {
+                    text: root.doc-export-status;
+                    color: #2ecc71;
+                    font-size: 11px;
+                    font-weight: 500;
+                    vertical-alignment: center;
+                }
+            }
+        }
+
+        // ── Page layout panel ──
+        Rectangle {
+            height: root.doc-page-layout-visible ? 64px : 0px;
+            visible: root.doc-page-layout-visible;
+            background: #ffffff08;
+            border-width: 1px;
+            border-color: #ffffff10;
+
+            HorizontalLayout {
+                padding-left: 16px;
+                padding-right: 16px;
+                spacing: 16px;
+                alignment: start;
+
+                // Page size selector
+                VerticalLayout {
+                    spacing: 2px;
+                    alignment: center;
+
+                    Text { text: "Page Size"; color: Theme.text-dim; font-size: 10px; font-weight: 600; }
+                    HorizontalLayout {
+                        spacing: 4px;
+
+                        Rectangle {
+                            width: 44px; height: 26px; border-radius: 4px;
+                            background: root.doc-page-size == "A4" ? Theme.accent.transparentize(0.7) : Theme.bg-card;
+                            border-width: root.doc-page-size == "A4" ? 1px : 0px;
+                            border-color: Theme.accent.transparentize(0.5);
+                            TouchArea { clicked => { root.doc-set-page-layout("A4"); } }
+                            Text { text: "A4"; color: root.doc-page-size == "A4" ? Theme.accent : Theme.text-secondary; font-size: 11px; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; }
+                        }
+                        Rectangle {
+                            width: 54px; height: 26px; border-radius: 4px;
+                            background: root.doc-page-size == "Letter" ? Theme.accent.transparentize(0.7) : Theme.bg-card;
+                            border-width: root.doc-page-size == "Letter" ? 1px : 0px;
+                            border-color: Theme.accent.transparentize(0.5);
+                            TouchArea { clicked => { root.doc-set-page-layout("Letter"); } }
+                            Text { text: "Letter"; color: root.doc-page-size == "Letter" ? Theme.accent : Theme.text-secondary; font-size: 11px; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; }
+                        }
+                        Rectangle {
+                            width: 50px; height: 26px; border-radius: 4px;
+                            background: root.doc-page-size == "Legal" ? Theme.accent.transparentize(0.7) : Theme.bg-card;
+                            border-width: root.doc-page-size == "Legal" ? 1px : 0px;
+                            border-color: Theme.accent.transparentize(0.5);
+                            TouchArea { clicked => { root.doc-set-page-layout("Legal"); } }
+                            Text { text: "Legal"; color: root.doc-page-size == "Legal" ? Theme.accent : Theme.text-secondary; font-size: 11px; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; }
+                        }
+                    }
+                }
+
+                // Margins display
+                VerticalLayout {
+                    spacing: 2px;
+                    alignment: center;
+
+                    Text { text: "Margins"; color: Theme.text-dim; font-size: 10px; font-weight: 600; }
+                    Text {
+                        text: "Top: \{root.doc-margin-top}mm  Bottom: \{root.doc-margin-bottom}mm";
+                        color: Theme.text-secondary;
+                        font-size: 11px;
+                    }
+                }
+            }
+
+            Rectangle { y: parent.height - 1px; height: 1px; background: Theme.separator; }
+        }
+
+        // ── Find/Replace bar ──
+        Rectangle {
+            height: root.doc-show-find ? 40px : 0px;
+            visible: root.doc-show-find;
+            background: Theme.bg-card;
+            border-width: 0px;
+
+            HorizontalLayout {
+                padding-left: 12px;
+                padding-right: 12px;
+                spacing: 8px;
+                alignment: start;
+
+                Text {
+                    text: "Find:";
+                    color: Theme.text-secondary;
+                    font-size: Theme.font-small;
+                    vertical-alignment: center;
+                }
+
+                find-input := LineEdit {
+                    width: 180px;
+                    text <=> root.doc-find-query;
+                    placeholder-text: "Search...";
+                    accepted => { root.doc-find-next(); }
+                }
+
+                Text {
+                    text: root.doc-find-count >= 0 ? root.doc-find-count + " matches" : "";
+                    color: Theme.text-secondary;
+                    font-size: Theme.font-small;
+                    vertical-alignment: center;
+                }
+
+                ToolbarButton { label: "↑"; clicked => { root.doc-find-prev(); } }
+                ToolbarButton { label: "↓"; clicked => { root.doc-find-next(); } }
+
+                ToolbarSeparator {}
+
+                Text {
+                    text: "Replace:";
+                    color: Theme.text-secondary;
+                    font-size: Theme.font-small;
+                    vertical-alignment: center;
+                }
+
+                replace-input := LineEdit {
+                    width: 160px;
+                    text <=> root.doc-replace-text;
+                    placeholder-text: "Replace with...";
+                    accepted => { root.doc-replace-one(); }
+                }
+
+                ToolbarButton { label: "One"; clicked => { root.doc-replace-one(); } }
+                ToolbarButton { label: "All"; clicked => { root.doc-replace-all(); } }
+            }
+
+            // Bottom border
+            Rectangle {
+                y: parent.height - 1px;
+                height: 1px;
+                background: Theme.separator;
+            }
+        }
+
+        // ── Main content area (sidebar + page + right panel) ──
+        HorizontalLayout {
+            // ── Left sidebar: Outline / Comments / Changes / Versions ──
+            Rectangle {
+                width: 220px;
+                background: Theme.bg-surface;
+
+                VerticalLayout {
+                    // Sidebar tab selector — improved visibility
+                    Rectangle {
+                        height: 38px;
+                        background: Theme.bg-elevated;
+
+                        HorizontalLayout {
+                            spacing: 2px;
+                            padding-left: 4px;
+                            padding-right: 4px;
+                            padding-top: 4px;
+                            padding-bottom: 4px;
+
+                            // Outline tab
+                            Rectangle {
+                                height: 30px;
+                                border-radius: 5px;
+                                background: root.doc-sidebar-mode == 0
+                                    ? Theme.accent.transparentize(0.82) : transparent;
+                                border-width: root.doc-sidebar-mode == 0 ? 1px : 0px;
+                                border-color: root.doc-sidebar-mode == 0
+                                    ? Theme.accent.transparentize(0.6) : transparent;
+
+                                TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => { root.doc-sidebar-mode = 0; }
+                                }
+
+                                Text {
+                                    text: "Outline";
+                                    color: root.doc-sidebar-mode == 0
+                                        ? Theme.accent : Theme.text-secondary;
+                                    font-size: 11px;
+                                    font-weight: root.doc-sidebar-mode == 0 ? 700 : 500;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                            }
+
+                            // Comments tab — with count badge
+                            Rectangle {
+                                height: 30px;
+                                border-radius: 5px;
+                                background: root.doc-sidebar-mode == 1
+                                    ? Theme.accent.transparentize(0.82) : transparent;
+                                border-width: root.doc-sidebar-mode == 1 ? 1px : 0px;
+                                border-color: root.doc-sidebar-mode == 1
+                                    ? Theme.accent.transparentize(0.6) : transparent;
+
+                                TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => { root.doc-sidebar-mode = 1; }
+                                }
+
+                                HorizontalLayout {
+                                    spacing: 3px;
+                                    alignment: center;
+
+                                    Text {
+                                        text: "Notes";
+                                        color: root.doc-sidebar-mode == 1
+                                            ? Theme.accent : Theme.text-secondary;
+                                        font-size: 11px;
+                                        font-weight: root.doc-sidebar-mode == 1 ? 700 : 500;
+                                        vertical-alignment: center;
+                                    }
+
+                                    // Count badge
+                                    Rectangle {
+                                        visible: root.doc-comments.length > 0;
+                                        width: 18px;
+                                        height: 16px;
+                                        border-radius: 8px;
+                                        background: root.doc-sidebar-mode == 1
+                                            ? Theme.accent : Theme.text-dim;
+
+                                        Text {
+                                            text: root.doc-comments.length;
+                                            color: #000000;
+                                            font-size: 9px;
+                                            font-weight: 700;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Changes tab — with count badge
+                            Rectangle {
+                                height: 30px;
+                                border-radius: 5px;
+                                background: root.doc-sidebar-mode == 2
+                                    ? Theme.accent.transparentize(0.82) : transparent;
+                                border-width: root.doc-sidebar-mode == 2 ? 1px : 0px;
+                                border-color: root.doc-sidebar-mode == 2
+                                    ? Theme.accent.transparentize(0.6) : transparent;
+
+                                TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => { root.doc-sidebar-mode = 2; }
+                                }
+
+                                HorizontalLayout {
+                                    spacing: 3px;
+                                    alignment: center;
+
+                                    Text {
+                                        text: "Changes";
+                                        color: root.doc-sidebar-mode == 2
+                                            ? Theme.accent : Theme.text-secondary;
+                                        font-size: 11px;
+                                        font-weight: root.doc-sidebar-mode == 2 ? 700 : 500;
+                                        vertical-alignment: center;
+                                    }
+
+                                    // Count badge
+                                    Rectangle {
+                                        visible: root.doc-changes.length > 0;
+                                        width: 18px;
+                                        height: 16px;
+                                        border-radius: 8px;
+                                        background: root.doc-sidebar-mode == 2
+                                            ? Theme.accent : Theme.text-dim;
+
+                                        Text {
+                                            text: root.doc-changes.length;
+                                            color: #000000;
+                                            font-size: 9px;
+                                            font-weight: 700;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Versions tab
+                            Rectangle {
+                                height: 30px;
+                                border-radius: 5px;
+                                background: root.doc-sidebar-mode == 3
+                                    ? Theme.accent.transparentize(0.82) : transparent;
+                                border-width: root.doc-sidebar-mode == 3 ? 1px : 0px;
+                                border-color: root.doc-sidebar-mode == 3
+                                    ? Theme.accent.transparentize(0.6) : transparent;
+
+                                TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => { root.doc-sidebar-mode = 3; root.doc-list-versions(); }
+                                }
+
+                                Text {
+                                    text: "History";
+                                    color: root.doc-sidebar-mode == 3
+                                        ? Theme.accent : Theme.text-secondary;
+                                    font-size: 11px;
+                                    font-weight: root.doc-sidebar-mode == 3 ? 700 : 500;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+                    }
+
+                    Rectangle { height: 1px; background: Theme.separator; }
+
+                    // ── Outline panel ──
+                    Rectangle {
+                        visible: root.doc-sidebar-mode == 0;
+
+                        VerticalLayout {
+                            padding: 8px;
+                            spacing: 4px;
+
+                            ListView {
+                                for heading[idx] in root.doc-headings : Rectangle {
+                                    height: 28px;
+                                    background: heading-ta.has-hover ? Theme.hover-fill : transparent;
+                                    border-radius: 4px;
+
+                                    heading-ta := TouchArea {
+                                        mouse-cursor: pointer;
+                                        clicked => { root.doc-heading-clicked(heading.block-index); }
+                                    }
+
+                                    HorizontalLayout {
+                                        padding-left: heading.level == 1 ? 8px : (heading.level == 2 ? 20px : 32px);
+                                        spacing: 4px;
+
+                                        Text {
+                                            text: heading.level == 1 ? "H1" : (heading.level == 2 ? "H2" : "H3");
+                                            color: Theme.accent;
+                                            font-size: 10px;
+                                            font-weight: 700;
+                                            vertical-alignment: center;
+                                            width: 20px;
+                                        }
+
+                                        Text {
+                                            text: heading.title;
+                                            color: Theme.text-primary;
+                                            font-size: heading.level == 1 ? 13px : (heading.level == 2 ? 12px : 11px);
+                                            font-weight: heading.level == 1 ? 600 : 400;
+                                            vertical-alignment: center;
+                                            overflow: elide;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // ── Comments panel ──
+                    Rectangle {
+                        visible: root.doc-sidebar-mode == 1;
+
+                        VerticalLayout {
+                            padding: 8px;
+                            spacing: 6px;
+
+                            // Add comment input
+                            Rectangle {
+                                height: 60px;
+                                background: Theme.bg-input;
+                                border-radius: 6px;
+                                border-width: 1px;
+                                border-color: Theme.border-subtle;
+
+                                comment-ti := TextInput {
+                                    x: 8px;
+                                    y: 4px;
+                                    width: parent.width - 16px;
+                                    height: parent.height - 8px;
+                                    text <=> root.doc-comment-input;
+                                    color: Theme.text-primary;
+                                    font-size: 12px;
+                                    wrap: word-wrap;
+                                    vertical-alignment: top;
+                                }
+                            }
+
+                            Rectangle {
+                                height: 28px;
+                                border-radius: 4px;
+                                background: add-cmt.has-hover ? Theme.accent : Theme.accent.transparentize(0.2);
+
+                                add-cmt := TouchArea {
+                                    clicked => {
+                                        root.doc-add-comment(root.doc-comment-input);
+                                        root.doc-comment-input = "";
+                                    }
+                                }
+
+                                Text {
+                                    text: "Add Comment";
+                                    color: white;
+                                    font-size: 12px;
+                                    font-weight: 600;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                            }
+
+                            Rectangle { height: 1px; background: Theme.separator; }
+
+                            // Comments list
+                            ListView {
+                                for comment[idx] in root.doc-comments : Rectangle {
+                                    height: 72px;
+                                    background: Theme.bg-card;
+                                    border-radius: 6px;
+                                    border-width: 1px;
+                                    border-color: comment.resolved ? #2ecc7140 : Theme.border-subtle;
+
+                                    VerticalLayout {
+                                        padding: 8px;
+                                        spacing: 4px;
+
+                                        HorizontalLayout {
+                                            spacing: 4px;
+
+                                            Text {
+                                                text: "L" + comment.line-hint;
+                                                color: Theme.accent;
+                                                font-size: 10px;
+                                                font-weight: 600;
+                                                vertical-alignment: center;
+                                            }
+
+                                            Text {
+                                                text: comment.timestamp;
+                                                color: Theme.text-secondary;
+                                                font-size: 9px;
+                                                vertical-alignment: center;
+                                            }
+
+                                            Rectangle {}
+
+                                            // Resolve button
+                                            Rectangle {
+                                                visible: !comment.resolved;
+                                                width: 16px;
+                                                height: 16px;
+                                                border-radius: 3px;
+                                                background: resolve-ta.has-hover ? #2ecc71 : transparent;
+                                                border-width: 1px;
+                                                border-color: #2ecc71;
+
+                                                resolve-ta := TouchArea { clicked => { root.doc-resolve-comment(comment.id); } }
+                                                Text { text: "✓"; font-size: 10px; color: #2ecc71; horizontal-alignment: center; vertical-alignment: center; }
+                                            }
+
+                                            // Delete button
+                                            Rectangle {
+                                                width: 16px;
+                                                height: 16px;
+                                                border-radius: 3px;
+                                                background: del-c-ta.has-hover ? #e74c3c : transparent;
+                                                border-width: 1px;
+                                                border-color: #e74c3c;
+
+                                                del-c-ta := TouchArea { clicked => { root.doc-delete-comment(comment.id); } }
+                                                Text { text: "×"; font-size: 10px; color: #e74c3c; horizontal-alignment: center; vertical-alignment: center; }
+                                            }
+                                        }
+
+                                        Text {
+                                            text: comment.text;
+                                            color: comment.resolved ? Theme.text-secondary : Theme.text-primary;
+                                            font-size: 12px;
+                                            wrap: word-wrap;
+                                            overflow: elide;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // ── Changes panel ──
+                    Rectangle {
+                        visible: root.doc-sidebar-mode == 2;
+
+                        VerticalLayout {
+                            padding: 8px;
+                            spacing: 6px;
+
+                            // Track changes toggle + bulk actions
+                            HorizontalLayout {
+                                spacing: 4px;
+
+                                Rectangle {
+                                    height: 24px;
+                                    border-radius: 4px;
+                                    background: root.doc-track-changes-on ? #2ecc71 : Theme.bg-card;
+
+                                    TouchArea { clicked => { root.doc-toggle-track-changes(); } }
+
+                                    Text {
+                                        text: root.doc-track-changes-on ? "Tracking ON" : "Tracking OFF";
+                                        color: root.doc-track-changes-on ? white : Theme.text-secondary;
+                                        font-size: 10px;
+                                        font-weight: 600;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+                                }
+
+                                Rectangle {
+                                    height: 24px;
+                                    width: 40px;
+                                    border-radius: 4px;
+                                    background: accept-all-ta.has-hover ? #2ecc71 : transparent;
+                                    border-width: 1px;
+                                    border-color: #2ecc71;
+
+                                    accept-all-ta := TouchArea { clicked => { root.doc-accept-all-changes(); } }
+                                    Text { text: "✓All"; font-size: 9px; color: #2ecc71; horizontal-alignment: center; vertical-alignment: center; }
+                                }
+
+                                Rectangle {
+                                    height: 24px;
+                                    width: 40px;
+                                    border-radius: 4px;
+                                    background: reject-all-ta.has-hover ? #e74c3c : transparent;
+                                    border-width: 1px;
+                                    border-color: #e74c3c;
+
+                                    reject-all-ta := TouchArea { clicked => { root.doc-reject-all-changes(); } }
+                                    Text { text: "×All"; font-size: 9px; color: #e74c3c; horizontal-alignment: center; vertical-alignment: center; }
+                                }
+                            }
+
+                            Rectangle { height: 1px; background: Theme.separator; }
+
+                            // Changes list
+                            ListView {
+                                for change[idx] in root.doc-changes : Rectangle {
+                                    height: 64px;
+                                    background: Theme.bg-card;
+                                    border-radius: 6px;
+                                    border-width: 1px;
+                                    border-color: change.change-type == "insert" ? #2ecc7140
+                                        : change.change-type == "delete" ? #e74c3c40
+                                        : #f39c1240;
+
+                                    VerticalLayout {
+                                        padding: 6px;
+                                        spacing: 2px;
+
+                                        HorizontalLayout {
+                                            spacing: 4px;
+
+                                            Text {
+                                                text: change.change-type == "insert" ? "+" : change.change-type == "delete" ? "-" : "~";
+                                                color: change.change-type == "insert" ? #2ecc71
+                                                    : change.change-type == "delete" ? #e74c3c : #f39c12;
+                                                font-size: 12px;
+                                                font-weight: 700;
+                                                vertical-alignment: center;
+                                            }
+
+                                            Text {
+                                                text: "L" + change.line-hint + " " + change.timestamp;
+                                                color: Theme.text-secondary;
+                                                font-size: 9px;
+                                                vertical-alignment: center;
+                                            }
+
+                                            Rectangle {}
+
+                                            Rectangle {
+                                                width: 20px; height: 20px; border-radius: 3px;
+                                                background: acc-ta.has-hover ? #2ecc71 : transparent;
+                                                acc-ta := TouchArea { clicked => { root.doc-accept-change(change.id); } }
+                                                Text { text: "✓"; font-size: 12px; color: #2ecc71; horizontal-alignment: center; vertical-alignment: center; }
+                                            }
+
+                                            Rectangle {
+                                                width: 20px; height: 20px; border-radius: 3px;
+                                                background: rej-ta.has-hover ? #e74c3c : transparent;
+                                                rej-ta := TouchArea { clicked => { root.doc-reject-change(change.id); } }
+                                                Text { text: "×"; font-size: 12px; color: #e74c3c; horizontal-alignment: center; vertical-alignment: center; }
+                                            }
+                                        }
+
+                                        Text {
+                                            text: change.new-text != "" ? change.new-text : change.old-text;
+                                            color: Theme.text-secondary;
+                                            font-size: 11px;
+                                            overflow: elide;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // ── Versions panel ──
+                    Rectangle {
+                        visible: root.doc-sidebar-mode == 3;
+
+                        VerticalLayout {
+                            padding: 8px;
+                            spacing: 6px;
+
+                            // Save version button
+                            Rectangle {
+                                height: 28px;
+                                border-radius: 4px;
+                                background: save-ver-ta.has-hover ? Theme.accent : Theme.accent.transparentize(0.2);
+
+                                save-ver-ta := TouchArea {
+                                    clicked => {
+                                        root.doc-save-version("Manual snapshot");
+                                    }
+                                }
+
+                                Text {
+                                    text: "Save Version";
+                                    color: white;
+                                    font-size: 12px;
+                                    font-weight: 600;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                            }
+
+                            Rectangle { height: 1px; background: Theme.separator; }
+
+                            // Versions list
+                            ListView {
+                                for ver[idx] in root.doc-versions : Rectangle {
+                                    height: 44px;
+                                    background: ver-item-ta.has-hover ? Theme.hover-fill : Theme.bg-card;
+                                    border-radius: 6px;
+                                    border-width: 1px;
+                                    border-color: Theme.border-subtle;
+
+                                    ver-item-ta := TouchArea {
+                                        clicked => { root.doc-restore-version(ver.index); }
+                                    }
+
+                                    VerticalLayout {
+                                        padding: 8px;
+                                        spacing: 2px;
+
+                                        Text {
+                                            text: ver.label;
+                                            color: Theme.text-primary;
+                                            font-size: 12px;
+                                            font-weight: 500;
+                                            overflow: elide;
+                                        }
+
+                                        Text {
+                                            text: ver.timestamp;
+                                            color: Theme.text-secondary;
+                                            font-size: 10px;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Right border
+                Rectangle {
+                    x: parent.width - 1px;
+                    width: 1px;
+                    height: 100%;
+                    background: Theme.separator;
+                }
+            }
+
+            // ── Center: Page editing area — editorial canvas ──
+            Rectangle {
+                background: #12111a;
+
+                ScrollView {
+                    width: 100%;
+                    height: 100%;
+
+                    VerticalLayout {
+                        padding-top: 56px;
+                        padding-bottom: 56px;
+                        padding-left: 48px;
+                        padding-right: 48px;
+                        alignment: start;
+
+                        // Page container — A4-like, subtle elevation, editorial feel
+                        Rectangle {
+                            width: 620px;
+                            min-height: 842px;
+                            background: #f8f8fa;
+                            border-radius: 3px;
+                            drop-shadow-blur: 24px;
+                            drop-shadow-color: #00000028;
+                            drop-shadow-offset-y: 6px;
+
+                            VerticalLayout {
+                                padding-left: 72px;
+                                padding-right: 72px;
+                                padding-top: 64px;
+                                padding-bottom: 48px;
+                                spacing: 0px;
+
+                                // Document title — typographic, not form-based
+                                // Using TextInput for editability but styled to look editorial
+                                Rectangle {
+                                    height: 52px;
+
+                                    title-input := TextInput {
+                                        x: 0px;
+                                        y: 0px;
+                                        width: parent.width;
+                                        height: parent.height;
+                                        text <=> root.doc-title;
+                                        color: #1a1a2e;
+                                        font-size: 28px;
+                                        font-weight: 700;
+                                        vertical-alignment: bottom;
+                                        horizontal-alignment: left;
+                                        accepted => {
+                                            root.doc-content-changed(root.doc-content);
+                                        }
+                                    }
+                                }
+
+                                // Subtle title rule — editorial separator
+                                Rectangle {
+                                    height: 20px;
+
+                                    Rectangle {
+                                        y: 10px;
+                                        height: 1px;
+                                        width: 64px;
+                                        background: #c0c0c8;
+                                    }
+                                }
+
+                                // Main content editor — generous line spacing
+                                content-edit := TextEdit {
+                                    text <=> root.doc-content;
+                                    font-size: 15px;
+                                    edited => {
+                                        root.doc-content-changed(self.text);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── Bottom status bar ──
+        Rectangle {
+            height: 28px;
+            background: Theme.bg-surface;
+
+            // Top border
+            Rectangle {
+                height: 1px;
+                background: Theme.separator;
+            }
+
+            HorizontalLayout {
+                padding-left: 12px;
+                padding-right: 12px;
+                spacing: 16px;
+                alignment: start;
+
+                Text {
+                    text: root.doc-word-count + " words";
+                    color: Theme.text-secondary;
+                    font-size: Theme.font-small;
+                    vertical-alignment: center;
+                }
+
+                Text {
+                    text: root.doc-char-count + " chars";
+                    color: Theme.text-secondary;
+                    font-size: Theme.font-small;
+                    vertical-alignment: center;
+                }
+
+                Text {
+                    text: root.doc-sentence-count + " sentences";
+                    color: Theme.text-secondary;
+                    font-size: Theme.font-small;
+                    vertical-alignment: center;
+                }
+
+                Text {
+                    text: "~" + root.doc-page-estimate + " pages";
+                    color: Theme.text-secondary;
+                    font-size: Theme.font-small;
+                    vertical-alignment: center;
+                }
+
+                Text {
+                    text: root.doc-reading-time + " min read";
+                    color: Theme.text-secondary;
+                    font-size: Theme.font-small;
+                    vertical-alignment: center;
+                }
+
+                // Track changes indicator
+                Rectangle {
+                    visible: root.doc-track-changes-on;
+                    width: 80px;
+                    height: 18px;
+                    border-radius: 3px;
+                    background: #2ecc7130;
+
+                    Text {
+                        text: "Tracking";
+                        font-size: 9px;
+                        color: #2ecc71;
+                        font-weight: 600;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+
+                Rectangle {}
+
+                Text {
+                    text: root.doc-save-status;
+                    color: root.doc-is-modified ? #e8a838 : Theme.text-secondary;
+                    font-size: Theme.font-small;
+                    vertical-alignment: center;
+                }
+
+                Text {
+                    text: root.doc-file-path != "" ? root.doc-file-path : "No file";
+                    color: Theme.text-secondary;
+                    font-size: Theme.font-small;
+                    vertical-alignment: center;
+                    overflow: elide;
+                    max-width: 250px;
+                }
+            }
+        }
+    }
+
+    // AI Assist Panel (right sidebar)
+    Rectangle {
+        visible: root.show-ai-panel;
+        x: parent.width - 280px;
+        y: 36px;
+        width: 280px;
+        height: parent.height - 36px - 24px;
+        background: Theme.bg-card;
+        border-width: 1px;
+        border-color: Theme.separator;
+
+        VerticalLayout {
+            padding: 10px;
+            spacing: 8px;
+
+            HorizontalLayout {
+                spacing: 6px;
+                height: 28px;
+
+                Text {
+                    text: "AI Assistant";
+                    color: Theme.accent;
+                    font-size: 13px;
+                    font-weight: 600;
+                    vertical-alignment: center;
+                }
+                Rectangle { }
+                Rectangle {
+                    width: 24px; height: 24px; border-radius: 4px;
+                    background: close-ai-ta.has-hover ? Theme.hover-fill : transparent;
+                    close-ai-ta := TouchArea { clicked => { root.show-ai-panel = false; } }
+                    Text { text: "x"; color: Theme.text-secondary; font-size: 14px; horizontal-alignment: center; vertical-alignment: center; }
+                }
+            }
+
+            Rectangle { height: 1px; background: Theme.separator; }
+
+            Text { text: "Quick Actions"; color: Theme.text-secondary; font-size: 10px; }
+
+            HorizontalLayout {
+                spacing: 4px;
+
+                Rectangle {
+                    height: 28px;
+                    border-radius: 4px;
+                    background: draft-ta.has-hover ? Theme.accent.transparentize(0.8) : Theme.bg-elevated;
+                    border-width: 1px;
+                    border-color: Theme.accent.transparentize(0.6);
+                    draft-ta := TouchArea { clicked => { root.doc-ai-draft(root.doc-ai-prompt); } }
+                    Text { text: "Draft"; color: Theme.accent; font-size: 10px; horizontal-alignment: center; vertical-alignment: center; }
+                }
+
+                Rectangle {
+                    height: 28px;
+                    border-radius: 4px;
+                    background: summarize-ta.has-hover ? Theme.accent.transparentize(0.8) : Theme.bg-elevated;
+                    border-width: 1px;
+                    border-color: Theme.accent.transparentize(0.6);
+                    summarize-ta := TouchArea { clicked => { root.doc-ai-summarize(); } }
+                    Text { text: "Summarize"; color: Theme.accent; font-size: 10px; horizontal-alignment: center; vertical-alignment: center; }
+                }
+            }
+
+            HorizontalLayout {
+                spacing: 4px;
+
+                Rectangle {
+                    height: 28px;
+                    border-radius: 4px;
+                    background: improve-ta.has-hover ? Theme.accent.transparentize(0.8) : Theme.bg-elevated;
+                    border-width: 1px;
+                    border-color: Theme.accent.transparentize(0.6);
+                    improve-ta := TouchArea { clicked => { root.doc-ai-improve(); } }
+                    Text { text: "Improve"; color: Theme.accent; font-size: 10px; horizontal-alignment: center; vertical-alignment: center; }
+                }
+
+                Rectangle {
+                    height: 28px;
+                    border-radius: 4px;
+                    background: translate-ta.has-hover ? Theme.accent.transparentize(0.8) : Theme.bg-elevated;
+                    border-width: 1px;
+                    border-color: Theme.accent.transparentize(0.6);
+                    translate-ta := TouchArea { clicked => { root.doc-ai-translate("Spanish"); } }
+                    Text { text: "Translate"; color: Theme.accent; font-size: 10px; horizontal-alignment: center; vertical-alignment: center; }
+                }
+            }
+
+            Rectangle {
+                height: 28px;
+                border-radius: 4px;
+                background: doc-insights-ta.has-hover ? #9b59b6cc : #9b59b680;
+                border-width: 1px;
+                border-color: #9b59b6;
+
+                doc-insights-ta := TouchArea { clicked => { root.doc-ai-insights(); } }
+                Text { text: "Contextual Insights"; color: #d2b4de; font-size: 10px; horizontal-alignment: center; vertical-alignment: center; }
+            }
+
+            Rectangle { height: 1px; background: Theme.separator; }
+
+            Text { text: "Ask AI"; color: Theme.text-secondary; font-size: 10px; }
+
+            Rectangle {
+                height: 60px;
+                border-radius: 6px;
+                background: Theme.bg-elevated;
+                border-width: 1px;
+                border-color: Theme.separator;
+
+                doc-ai-input := TextInput {
+                    x: 8px; y: 6px;
+                    width: parent.width - 16px;
+                    height: parent.height - 12px;
+                    color: Theme.text-primary;
+                    font-size: 11px;
+                    text: root.doc-ai-prompt;
+                    edited => { root.doc-ai-prompt = self.text; }
+                    accepted => { root.doc-ai-submit(self.text); }
+                }
+            }
+
+            Rectangle {
+                height: 28px;
+                border-radius: 4px;
+                background: root.doc-ai-working ? Theme.text-dim : (submit-doc-ai-ta.has-hover ? Theme.accent : Theme.accent.transparentize(0.2));
+                submit-doc-ai-ta := TouchArea {
+                    enabled: !root.doc-ai-working;
+                    clicked => { root.doc-ai-submit(root.doc-ai-prompt); }
+                }
+                Text {
+                    text: root.doc-ai-working ? "Thinking..." : "Ask";
+                    color: white;
+                    font-size: 11px;
+                    font-weight: 600;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+
+            Rectangle { height: 1px; background: Theme.separator; }
+
+            ScrollView {
+                Rectangle {
+                    background: transparent;
+                    Text {
+                        text: root.doc-ai-response;
+                        color: Theme.text-primary;
+                        font-size: 11px;
+                        wrap: word-wrap;
+                        width: parent.width;
+                    }
+                }
+            }
+
+            HorizontalLayout {
+                visible: root.doc-ai-response != "";
+                spacing: 6px;
+                height: 28px;
+
+                Rectangle {
+                    border-radius: 4px;
+                    background: doc-apply-ta.has-hover ? #2ecc71 : #2ecc71cc;
+                    doc-apply-ta := TouchArea { clicked => { root.doc-ai-apply(); } }
+                    Text { text: "Apply"; color: white; font-size: 11px; horizontal-alignment: center; vertical-alignment: center; }
+                }
+                Rectangle {
+                    border-radius: 4px;
+                    background: doc-dismiss-ta.has-hover ? #e74c3c : #e74c3ccc;
+                    doc-dismiss-ta := TouchArea { clicked => { root.doc-ai-dismiss(); } }
+                    Text { text: "Dismiss"; color: white; font-size: 11px; horizontal-alignment: center; vertical-alignment: center; }
+                }
+            }
+        }
+    }
+
+    // ── Template picker overlay ──
+    // (could be triggered by a menu, but for now we add templates to toolbar)
+}

@@ -52,6 +52,13 @@ pub fn wire(ui: &App, ctx: &AppContext) {
     let active_tab = ctx.terminal_active.clone();
     let bridge = ctx.bridge.clone();
 
+    // Split pane state: the optional second terminal handle
+    let split_handle: Rc<RefCell<Option<TerminalHandle>>> = Rc::new(RefCell::new(None));
+    // Which pane is active: 0 = primary, 1 = split
+    let active_pane: Rc<RefCell<i32>> = Rc::new(RefCell::new(0));
+    // Current profile name
+    let profile_name: Rc<RefCell<String>> = Rc::new(RefCell::new("Default".into()));
+
     // ── Key press handler ──
     // Intercepts Ctrl+T (new tab), Ctrl+W (close tab), Ctrl+Tab (next),
     // Ctrl+Shift+Tab (prev) before forwarding to PTY.
@@ -330,6 +337,57 @@ pub fn wire(ui: &App, ctx: &AppContext) {
         }
     });
 
+    // ── Search query changed ──
+    let term_search = terminals.clone();
+    let active_search = active_tab.clone();
+    let ui_weak_search = ui.as_weak();
+    ui.on_terminal_search_query_changed(move |query| {
+        let query = query.to_string();
+        if let Some(ui) = ui_weak_search.upgrade() {
+            if query.is_empty() {
+                ui.set_terminal_search_match_count(0);
+                ui.set_terminal_search_current_match(0);
+                return;
+            }
+            let guard = term_search.borrow();
+            let idx = *active_search.borrow();
+            if let Some(th) = guard.get(idx) {
+                let text = th.get_full_text();
+                let lower_text = text.to_lowercase();
+                let lower_query = query.to_lowercase();
+                let count = lower_text.matches(&lower_query).count() as i32;
+                ui.set_terminal_search_match_count(count);
+                ui.set_terminal_search_current_match(if count > 0 { 1 } else { 0 });
+            }
+        }
+    });
+
+    // ── Search next ──
+    let ui_weak_snext = ui.as_weak();
+    ui.on_terminal_search_next(move || {
+        if let Some(ui) = ui_weak_snext.upgrade() {
+            let count = ui.get_terminal_search_match_count();
+            let current = ui.get_terminal_search_current_match();
+            if count > 0 {
+                let next = if current >= count { 1 } else { current + 1 };
+                ui.set_terminal_search_current_match(next);
+            }
+        }
+    });
+
+    // ── Search prev ──
+    let ui_weak_sprev = ui.as_weak();
+    ui.on_terminal_search_prev(move || {
+        if let Some(ui) = ui_weak_sprev.upgrade() {
+            let count = ui.get_terminal_search_match_count();
+            let current = ui.get_terminal_search_current_match();
+            if count > 0 {
+                let prev = if current <= 1 { count } else { current - 1 };
+                ui.set_terminal_search_current_match(prev);
+            }
+        }
+    });
+
     // ── Dismiss suggestion ──
     let ui_weak_dismiss = ui.as_weak();
     ui.on_terminal_dismiss_suggestion(move || {
@@ -369,11 +427,75 @@ pub fn wire(ui: &App, ctx: &AppContext) {
             }
         }
     });
+
+    // ── Split pane toggle ──
+    let split_h = split_handle.clone();
+    let ui_weak_split = ui.as_weak();
+    ui.on_terminal_split_toggle(move || {
+        let mut sh = split_h.borrow_mut();
+        if sh.is_some() {
+            // Close split
+            *sh = None;
+            if let Some(ui) = ui_weak_split.upgrade() {
+                ui.set_terminal_split_active(false);
+                ui.set_terminal_split_output("".into());
+            }
+            tracing::info!("Terminal split pane closed");
+        } else {
+            // Open split — spawn a new PTY
+            match TerminalHandle::spawn(24, 80) {
+                Ok(th) => {
+                    *sh = Some(th);
+                    if let Some(ui) = ui_weak_split.upgrade() {
+                        ui.set_terminal_split_active(true);
+                    }
+                    tracing::info!("Terminal split pane opened");
+                }
+                Err(e) => {
+                    tracing::error!(error = %e, "Failed to spawn split terminal");
+                }
+            }
+        }
+    });
+
+    // ── Switch active pane ──
+    let pane = active_pane.clone();
+    ui.on_terminal_switch_pane(move |idx| {
+        *pane.borrow_mut() = idx;
+    });
+
+    // ── Split pane input (key text forwarded from split FocusScope) ──
+    let split_h_input = split_handle.clone();
+    ui.on_terminal_split_input(move |text| {
+        let guard = split_h_input.borrow();
+        if let Some(th) = guard.as_ref() {
+            let key_text = text.to_string();
+            if let Some(bytes) = terminal::key_to_pty_bytes(&key_text, false, false, th.application_cursor_mode()) {
+                th.write_bytes(&bytes);
+            }
+        }
+    });
+
+    // ── Set profile ──
+    let prof = profile_name.clone();
+    let ui_weak_prof = ui.as_weak();
+    ui.on_terminal_set_profile(move |name| {
+        let name_str = name.to_string();
+        *prof.borrow_mut() = name_str.clone();
+        if let Some(ui) = ui_weak_prof.upgrade() {
+            ui.set_terminal_profile_name(name.clone());
+        }
+        tracing::info!(profile = %name_str, "Terminal profile set");
+    });
+
+    // Store split handle in context for poll timer access
+    *ctx.terminal_split_handle.borrow_mut() = Some(split_handle.clone());
 }
 
 /// Start the terminal output polling timer.
 /// Called from navigate.rs when entering screen 14.
 /// Polls the active tab's PTY for output and updates the UI.
+/// Also polls the split pane if active.
 pub fn start_poll_timer(
     ui: &App,
     terminals: &Rc<RefCell<Vec<TerminalHandle>>>,
@@ -441,6 +563,32 @@ pub fn start_poll_timer(
                         *error_cooldown.borrow_mut() = now + 10.0;
                     }
                 }
+            }
+        }
+    });
+    *timer_slot.borrow_mut() = Some(timer);
+}
+
+/// Start polling the split pane terminal output.
+/// Called alongside the main poll timer.
+pub fn start_split_poll_timer(
+    ui: &App,
+    split_handle: &Rc<RefCell<Option<TerminalHandle>>>,
+    timer_slot: &Rc<RefCell<Option<Timer>>>,
+) {
+    let sh = split_handle.clone();
+    let ui_weak = ui.as_weak();
+
+    let timer = Timer::default();
+    timer.start(TimerMode::Repeated, Duration::from_millis(33), move || {
+        let guard = sh.borrow();
+        if let Some(th) = guard.as_ref() {
+            if let Some(ui) = ui_weak.upgrade() {
+                let text = th.get_full_text();
+                ui.set_terminal_split_output(text.into());
+                let (row, col) = th.cursor_position();
+                ui.set_terminal_split_cursor_row(row as i32);
+                ui.set_terminal_split_cursor_col(col as i32);
             }
         }
     });

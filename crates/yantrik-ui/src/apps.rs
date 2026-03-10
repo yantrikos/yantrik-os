@@ -143,6 +143,21 @@ pub fn builtin_apps() -> Vec<DesktopEntry> {
             categories: "System;Security;".into(), comment: "File & system permissions".into(),
             app_id: "permissions".into(), icon_char: "\u{2318}".into(),
         },
+        DesktopEntry {
+            name: "yDoc".into(), exec: "__builtin__".into(), icon: String::new(),
+            categories: "Office;WordProcessor;".into(), comment: "Document editor with markdown support".into(),
+            app_id: "documents".into(), icon_char: "YD".into(),
+        },
+        DesktopEntry {
+            name: "ySlides".into(), exec: "__builtin__".into(), icon: String::new(),
+            categories: "Office;Presentation;".into(), comment: "Presentation slide editor".into(),
+            app_id: "presentation".into(), icon_char: "YP".into(),
+        },
+        DesktopEntry {
+            name: "ySheets".into(), exec: "__builtin__".into(), icon: String::new(),
+            categories: "Office;Spreadsheet;".into(), comment: "Spreadsheet with formulas".into(),
+            app_id: "spreadsheet".into(), icon_char: "YS".into(),
+        },
     ]
 }
 

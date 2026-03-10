@@ -31,6 +31,17 @@ struct DownloadState {
     status: DlStatus,
     eta: String,
     output_path: PathBuf,
+    is_selected: bool,
+    // Checksum
+    checksum_expected: String,  // user-supplied expected hash
+    checksum_status: ChecksumStatus,
+    // Per-download save location
+    save_dir: String,
+    // Detail fields
+    start_time: String,
+    end_time: String,
+    file_hash: String,          // computed SHA-256 after download
+    file_type: String,          // MIME type
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -54,6 +65,36 @@ impl DlStatus {
             DlStatus::Cancelled => "cancelled",
         }
     }
+
+    fn sort_order(&self) -> i32 {
+        match self {
+            DlStatus::Downloading => 0,
+            DlStatus::Queued => 1,
+            DlStatus::Paused => 2,
+            DlStatus::Failed(_) => 3,
+            DlStatus::Completed => 4,
+            DlStatus::Cancelled => 5,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+enum ChecksumStatus {
+    None,
+    Verifying,
+    Pass,
+    Fail,
+}
+
+impl ChecksumStatus {
+    fn as_str(&self) -> &str {
+        match self {
+            ChecksumStatus::None => "none",
+            ChecksumStatus::Verifying => "verifying",
+            ChecksumStatus::Pass => "pass",
+            ChecksumStatus::Fail => "fail",
+        }
+    }
 }
 
 /// Shared state between threads.
@@ -66,10 +107,12 @@ type ProcessMap = Arc<Mutex<HashMap<i32, u32>>>;  // id -> pid
 static NEXT_ID: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(1);
 
 /// Wire download manager callbacks.
-pub fn wire(ui: &App, _ctx: &AppContext) {
+pub fn wire(ui: &App, ctx: &AppContext) {
     let state: SharedState = Arc::new(Mutex::new(Vec::new()));
     let process_map: ProcessMap = Arc::new(Mutex::new(HashMap::new()));
     let filter: Rc<RefCell<i32>> = Rc::new(RefCell::new(0));
+    let search_query: Rc<RefCell<String>> = Rc::new(RefCell::new(String::new()));
+    let sort_mode: Rc<RefCell<i32>> = Rc::new(RefCell::new(0));
 
     // Load persisted history on startup
     if let Ok(history) = load_history() {
@@ -86,19 +129,35 @@ pub fn wire(ui: &App, _ctx: &AppContext) {
         let process_map = process_map.clone();
         let ui_weak = ui.as_weak();
         let filter = filter.clone();
-        ui.on_dl_add(move |url| {
+        let search_query = search_query.clone();
+        let sort_mode = sort_mode.clone();
+        ui.on_dl_add(move |url, checksum, save_dir| {
             let url_str = url.to_string().trim().to_string();
             if url_str.is_empty() {
                 return;
             }
 
+            let checksum_str = checksum.to_string().trim().to_string();
+            let save_dir_str = save_dir.to_string().trim().to_string();
+
             let id = NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             let filename = extract_filename(&url_str);
-            let download_dir = download_dir();
+
+            // Use custom save dir or default
+            let download_dir = if save_dir_str.is_empty() {
+                download_dir()
+            } else {
+                PathBuf::from(&save_dir_str)
+            };
             let output_path = download_dir.join(&filename);
 
             // Ensure download directory exists
             let _ = std::fs::create_dir_all(&download_dir);
+
+            let now = format_timestamp();
+
+            // Guess file type from extension
+            let file_type = guess_file_type(&filename);
 
             let dl = DownloadState {
                 id,
@@ -111,6 +170,14 @@ pub fn wire(ui: &App, _ctx: &AppContext) {
                 status: DlStatus::Downloading,
                 eta: String::new(),
                 output_path: output_path.clone(),
+                is_selected: false,
+                checksum_expected: checksum_str,
+                checksum_status: ChecksumStatus::None,
+                save_dir: save_dir_str,
+                start_time: now,
+                end_time: String::new(),
+                file_hash: String::new(),
+                file_type,
             };
 
             {
@@ -123,7 +190,7 @@ pub fn wire(ui: &App, _ctx: &AppContext) {
 
             // Immediately refresh UI
             if let Some(ui) = ui_weak.upgrade() {
-                update_ui(&ui, &state, *filter.borrow());
+                update_ui(&ui, &state, *filter.borrow(), &search_query.borrow(), *sort_mode.borrow());
             }
         });
     }
@@ -198,6 +265,10 @@ pub fn wire(ui: &App, _ctx: &AppContext) {
                     dl.speed = String::new();
                     dl.eta = String::new();
                     dl.downloaded = 0;
+                    dl.start_time = format_timestamp();
+                    dl.end_time = String::new();
+                    dl.file_hash = String::new();
+                    dl.checksum_status = ChecksumStatus::None;
                     (dl.url.clone(), dl.output_path.clone())
                 } else {
                     return;
@@ -241,17 +312,150 @@ pub fn wire(ui: &App, _ctx: &AppContext) {
         });
     }
 
+    // ── Verify Checksum callback ──
+    {
+        let state = state.clone();
+        let ui_weak = ui.as_weak();
+        ui.on_dl_verify_checksum(move |id| {
+            let (output_path, expected) = {
+                let mut s = state.lock().unwrap();
+                if let Some(dl) = s.iter_mut().find(|d| d.id == id) {
+                    if dl.status != DlStatus::Completed {
+                        return;
+                    }
+                    dl.checksum_status = ChecksumStatus::Verifying;
+                    (dl.output_path.clone(), dl.checksum_expected.clone())
+                } else {
+                    return;
+                }
+            };
+
+            let state = state.clone();
+            let ui_weak = ui_weak.clone();
+            std::thread::spawn(move || {
+                let hash = compute_sha256(&output_path);
+                let mut s = state.lock().unwrap();
+                if let Some(dl) = s.iter_mut().find(|d| d.id == id) {
+                    match hash {
+                        Some(h) => {
+                            dl.file_hash = h.clone();
+                            if expected.is_empty() {
+                                // No expected checksum — just show the computed hash
+                                dl.checksum_status = ChecksumStatus::Pass;
+                                let hash_display = h.clone();
+                                let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+                                    ui.set_dl_checksum_result(hash_display.into());
+                                });
+                            } else {
+                                // Compare case-insensitively
+                                if h.to_lowercase() == expected.to_lowercase() {
+                                    dl.checksum_status = ChecksumStatus::Pass;
+                                } else {
+                                    dl.checksum_status = ChecksumStatus::Fail;
+                                }
+                            }
+                        }
+                        None => {
+                            dl.checksum_status = ChecksumStatus::Fail;
+                        }
+                    }
+                }
+            });
+        });
+    }
+
+    // ── Toggle Select callback ──
+    {
+        let state = state.clone();
+        ui.on_dl_toggle_select(move |id| {
+            let mut s = state.lock().unwrap();
+            if let Some(dl) = s.iter_mut().find(|d| d.id == id) {
+                dl.is_selected = !dl.is_selected;
+            }
+        });
+    }
+
+    // ── Select All callback ──
+    {
+        let state = state.clone();
+        ui.on_dl_select_all(move |val| {
+            let mut s = state.lock().unwrap();
+            for dl in s.iter_mut() {
+                dl.is_selected = val;
+            }
+        });
+    }
+
+    // ── Pause All callback ──
+    {
+        let state = state.clone();
+        let process_map = process_map.clone();
+        ui.on_dl_pause_all(move || {
+            let mut s = state.lock().unwrap();
+            let mut pmap = process_map.lock().unwrap();
+            for dl in s.iter_mut() {
+                if dl.status == DlStatus::Downloading {
+                    if let Some(pid) = pmap.remove(&dl.id) {
+                        kill_process(pid);
+                    }
+                    dl.status = DlStatus::Paused;
+                    dl.speed = String::new();
+                    dl.eta = String::new();
+                }
+            }
+        });
+    }
+
+    // ── Resume All callback ──
+    {
+        let state = state.clone();
+        let process_map = process_map.clone();
+        ui.on_dl_resume_all(move || {
+            let ids_to_resume: Vec<(i32, String, PathBuf)> = {
+                let mut s = state.lock().unwrap();
+                s.iter_mut()
+                    .filter(|d| d.status == DlStatus::Paused)
+                    .map(|d| {
+                        d.status = DlStatus::Downloading;
+                        (d.id, d.url.clone(), d.output_path.clone())
+                    })
+                    .collect()
+            };
+            for (id, url, output_path) in ids_to_resume {
+                start_download(id, url, output_path, state.clone(), process_map.clone());
+            }
+        });
+    }
+
+    // ── Search callback ──
+    {
+        let search_query = search_query.clone();
+        ui.on_dl_search(move |query| {
+            *search_query.borrow_mut() = query.to_string();
+        });
+    }
+
+    // ── Sort callback ──
+    {
+        let sort_mode = sort_mode.clone();
+        ui.on_dl_sort(move |mode| {
+            *sort_mode.borrow_mut() = mode;
+        });
+    }
+
     // ── 500ms progress poll timer ──
     {
         let ui_weak = ui.as_weak();
         let state = state.clone();
         let filter = filter.clone();
+        let search_query = search_query.clone();
+        let sort_mode = sort_mode.clone();
 
         let timer = Timer::default();
         timer.start(TimerMode::Repeated, Duration::from_millis(500), move || {
             if let Some(ui) = ui_weak.upgrade() {
                 if ui.get_current_screen() == 24 {
-                    update_ui(&ui, &state, *filter.borrow());
+                    update_ui(&ui, &state, *filter.borrow(), &search_query.borrow(), *sort_mode.borrow());
                 }
             }
             // Save history periodically
@@ -261,6 +465,49 @@ pub fn wire(ui: &App, _ctx: &AppContext) {
         });
         std::mem::forget(timer);
     }
+
+    // ── AI Explain callback ──
+    let bridge = ctx.bridge.clone();
+    let ai_state = super::ai_assist::AiAssistState::new();
+    let ui_weak = ui.as_weak();
+    let ai_st = ai_state.clone();
+    ui.on_dl_ai_explain(move || {
+        let Some(ui) = ui_weak.upgrade() else { return };
+
+        let active = ui.get_dl_active_count();
+        let speed = ui.get_dl_total_speed().to_string();
+        let completed = ui.get_dl_completed_today();
+        let error = ui.get_dl_error_text().to_string();
+
+        let context = format!(
+            "Active downloads: {}\nTotal speed: {}\nCompleted today: {}\nErrors: {}",
+            active,
+            if speed.is_empty() { "none" } else { &speed },
+            completed,
+            if error.is_empty() { "none" } else { &error }
+        );
+        let prompt = super::ai_assist::download_analysis_prompt(&context);
+
+        super::ai_assist::ai_request(
+            &ui.as_weak(),
+            &bridge,
+            &ai_st,
+            super::ai_assist::AiAssistRequest {
+                prompt,
+                timeout_secs: 30,
+                set_working: Box::new(|ui, v| ui.set_dl_ai_is_working(v)),
+                set_response: Box::new(|ui, s| ui.set_dl_ai_response(s.into())),
+                get_response: Box::new(|ui| ui.get_dl_ai_response().to_string()),
+            },
+        );
+    });
+
+    let ui_weak = ui.as_weak();
+    ui.on_dl_ai_dismiss(move || {
+        if let Some(ui) = ui_weak.upgrade() {
+            ui.set_dl_ai_panel_open(false);
+        }
+    });
 }
 
 /// Start a curl download in a background thread.
@@ -297,6 +544,7 @@ fn start_download(
                 let mut s = state.lock().unwrap();
                 if let Some(dl) = s.iter_mut().find(|d| d.id == id) {
                     dl.status = DlStatus::Failed(format!("Failed to start curl: {}", e));
+                    dl.end_time = format_timestamp();
                 }
                 return;
             }
@@ -362,15 +610,44 @@ fn start_download(
                         dl.progress = 1.0;
                         dl.speed = String::new();
                         dl.eta = String::new();
+                        dl.end_time = format_timestamp();
                         // Update final file size
                         if let Ok(meta) = std::fs::metadata(&dl.output_path) {
                             dl.downloaded = meta.len();
                             dl.total = meta.len();
                         }
+                        // Compute file hash in background after completion
+                        let output_path = dl.output_path.clone();
+                        let state_clone = state.clone();
+                        let dl_id = dl.id;
+                        // Auto-verify if checksum expected is set
+                        let has_expected = !dl.checksum_expected.is_empty();
+                        let expected = dl.checksum_expected.clone();
+                        if has_expected {
+                            dl.checksum_status = ChecksumStatus::Verifying;
+                        }
+                        drop(s); // release lock before spawning
+                        std::thread::spawn(move || {
+                            if let Some(hash) = compute_sha256(&output_path) {
+                                let mut s2 = state_clone.lock().unwrap();
+                                if let Some(dl2) = s2.iter_mut().find(|d| d.id == dl_id) {
+                                    dl2.file_hash = hash.clone();
+                                    if has_expected {
+                                        if hash.to_lowercase() == expected.to_lowercase() {
+                                            dl2.checksum_status = ChecksumStatus::Pass;
+                                        } else {
+                                            dl2.checksum_status = ChecksumStatus::Fail;
+                                        }
+                                    }
+                                }
+                            }
+                        });
+                        return; // already dropped s
                     }
                     Ok(status) => {
                         // Exit code 33 means range request not supported (resume failed), not necessarily an error
                         let code = status.code().unwrap_or(-1);
+                        dl.end_time = format_timestamp();
                         if code == 33 {
                             // Try without resume
                             dl.status = DlStatus::Failed("Resume not supported. Try again.".to_string());
@@ -382,6 +659,7 @@ fn start_download(
                     Err(e) => {
                         dl.status = DlStatus::Failed(format!("Process error: {}", e));
                         dl.speed = String::new();
+                        dl.end_time = format_timestamp();
                     }
                 }
             }
@@ -390,7 +668,7 @@ fn start_download(
 }
 
 /// Update the Slint UI from shared state.
-fn update_ui(ui: &App, state: &SharedState, filter: i32) {
+fn update_ui(ui: &App, state: &SharedState, filter: i32, search_query: &str, sort_mode: i32) {
     let s = state.lock().unwrap();
 
     // Compute stats
@@ -416,15 +694,52 @@ fn update_ui(ui: &App, state: &SharedState, filter: i32) {
         "0 B/s".to_string()
     };
 
-    // Apply filter
-    let filtered: Vec<&DownloadState> = match filter {
+    // Apply status filter
+    let status_filtered: Vec<&DownloadState> = match filter {
         1 => s.iter().filter(|d| d.status == DlStatus::Downloading || d.status == DlStatus::Paused || d.status == DlStatus::Queued).collect(),
         2 => s.iter().filter(|d| d.status == DlStatus::Completed).collect(),
         3 => s.iter().filter(|d| matches!(d.status, DlStatus::Failed(_))).collect(),
         _ => s.iter().collect(),
     };
 
-    let items: Vec<DownloadItem> = filtered
+    // Apply search filter
+    let search_lower = search_query.to_lowercase();
+    let filtered: Vec<&DownloadState> = if search_lower.is_empty() {
+        status_filtered
+    } else {
+        status_filtered
+            .into_iter()
+            .filter(|d| {
+                d.filename.to_lowercase().contains(&search_lower)
+                    || d.url.to_lowercase().contains(&search_lower)
+            })
+            .collect()
+    };
+
+    let match_count = filtered.len() as i32;
+
+    // Apply sort
+    let mut sorted: Vec<&DownloadState> = filtered;
+    match sort_mode {
+        1 => {
+            // Sort by name
+            sorted.sort_by(|a, b| a.filename.to_lowercase().cmp(&b.filename.to_lowercase()));
+        }
+        2 => {
+            // Sort by size (largest first)
+            sorted.sort_by(|a, b| b.total.cmp(&a.total));
+        }
+        3 => {
+            // Sort by status
+            sorted.sort_by(|a, b| a.status.sort_order().cmp(&b.status.sort_order()));
+        }
+        _ => {
+            // Sort by date (newest first) — higher ID = newer
+            sorted.sort_by(|a, b| b.id.cmp(&a.id));
+        }
+    }
+
+    let items: Vec<DownloadItem> = sorted
         .iter()
         .map(|d| DownloadItem {
             id: d.id,
@@ -435,7 +750,14 @@ fn update_ui(ui: &App, state: &SharedState, filter: i32) {
             size_text: format_size_text(d.downloaded, d.total).into(),
             status: d.status.as_str().into(),
             eta_text: d.eta.clone().into(),
-            is_selected: false,
+            is_selected: d.is_selected,
+            checksum_expected: d.checksum_expected.clone().into(),
+            checksum_status: d.checksum_status.as_str().into(),
+            save_dir: d.save_dir.clone().into(),
+            start_time: d.start_time.clone().into(),
+            end_time: d.end_time.clone().into(),
+            file_hash: d.file_hash.clone().into(),
+            file_type: d.file_type.clone().into(),
         })
         .collect();
 
@@ -443,6 +765,7 @@ fn update_ui(ui: &App, state: &SharedState, filter: i32) {
     ui.set_dl_active_count(active_count as i32);
     ui.set_dl_total_speed(total_speed.into());
     ui.set_dl_completed_today(completed_today as i32);
+    ui.set_dl_search_match_count(match_count);
 }
 
 /// Extract filename from URL.
@@ -585,6 +908,93 @@ fn download_dir() -> PathBuf {
     }
 }
 
+/// Format current timestamp as "YYYY-MM-DD HH:MM:SS".
+fn format_timestamp() -> String {
+    // Use std::process to call date for a simple timestamp (no chrono dependency)
+    if let Ok(output) = Command::new("date")
+        .args(["+%Y-%m-%d %H:%M:%S"])
+        .output()
+    {
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    } else {
+        String::new()
+    }
+}
+
+/// Compute SHA-256 hash of a file using sha256sum command.
+fn compute_sha256(path: &PathBuf) -> Option<String> {
+    let output = Command::new("sha256sum")
+        .arg(path.to_str()?)
+        .output()
+        .ok()?;
+
+    if output.status.success() {
+        let out = String::from_utf8_lossy(&output.stdout);
+        // sha256sum output: "hash  filename"
+        out.split_whitespace().next().map(|s| s.to_string())
+    } else {
+        None
+    }
+}
+
+/// Guess MIME type from file extension.
+fn guess_file_type(filename: &str) -> String {
+    let ext = filename.rsplit('.').next().unwrap_or("").to_lowercase();
+    match ext.as_str() {
+        "zip" => "application/zip",
+        "gz" | "tgz" => "application/gzip",
+        "tar" => "application/x-tar",
+        "xz" => "application/x-xz",
+        "bz2" => "application/x-bzip2",
+        "7z" => "application/x-7z-compressed",
+        "rar" => "application/x-rar-compressed",
+        "deb" => "application/x-debian-package",
+        "rpm" => "application/x-rpm",
+        "apk" => "application/vnd.android.package-archive",
+        "dmg" => "application/x-apple-diskimage",
+        "iso" => "application/x-iso9660-image",
+        "exe" | "msi" => "application/x-executable",
+        "pdf" => "application/pdf",
+        "doc" | "docx" => "application/msword",
+        "xls" | "xlsx" => "application/vnd.ms-excel",
+        "ppt" | "pptx" => "application/vnd.ms-powerpoint",
+        "jpg" | "jpeg" => "image/jpeg",
+        "png" => "image/png",
+        "gif" => "image/gif",
+        "svg" => "image/svg+xml",
+        "webp" => "image/webp",
+        "mp3" => "audio/mpeg",
+        "wav" => "audio/wav",
+        "ogg" => "audio/ogg",
+        "flac" => "audio/flac",
+        "mp4" => "video/mp4",
+        "mkv" => "video/x-matroska",
+        "avi" => "video/x-msvideo",
+        "webm" => "video/webm",
+        "mov" => "video/quicktime",
+        "txt" => "text/plain",
+        "html" | "htm" => "text/html",
+        "css" => "text/css",
+        "js" => "application/javascript",
+        "json" => "application/json",
+        "xml" => "application/xml",
+        "csv" => "text/csv",
+        "md" => "text/markdown",
+        "sh" => "application/x-sh",
+        "py" => "text/x-python",
+        "rs" => "text/x-rust",
+        "c" | "h" => "text/x-c",
+        "cpp" | "hpp" => "text/x-c++",
+        "java" => "text/x-java",
+        "go" => "text/x-go",
+        "wasm" => "application/wasm",
+        "ttf" | "otf" => "font/opentype",
+        "woff" | "woff2" => "font/woff2",
+        _ => "application/octet-stream",
+    }
+    .to_string()
+}
+
 /// History file path.
 fn history_path() -> PathBuf {
     if let Ok(home) = std::env::var("HOME") {
@@ -608,6 +1018,20 @@ struct HistoryEntry {
     downloaded: u64,
     total: u64,
     output_path: String,
+    #[serde(default)]
+    checksum_expected: String,
+    #[serde(default)]
+    checksum_status: String,
+    #[serde(default)]
+    save_dir: String,
+    #[serde(default)]
+    start_time: String,
+    #[serde(default)]
+    end_time: String,
+    #[serde(default)]
+    file_hash: String,
+    #[serde(default)]
+    file_type: String,
 }
 
 /// Save download history to JSON file.
@@ -630,6 +1054,13 @@ fn save_history(downloads: &[DownloadState]) -> std::io::Result<()> {
             downloaded: d.downloaded,
             total: d.total,
             output_path: d.output_path.to_string_lossy().to_string(),
+            checksum_expected: d.checksum_expected.clone(),
+            checksum_status: d.checksum_status.as_str().to_string(),
+            save_dir: d.save_dir.clone(),
+            start_time: d.start_time.clone(),
+            end_time: d.end_time.clone(),
+            file_hash: d.file_hash.clone(),
+            file_type: d.file_type.clone(),
         })
         .collect();
 
@@ -651,21 +1082,37 @@ fn load_history() -> std::io::Result<Vec<DownloadState>> {
 
     Ok(entries
         .into_iter()
-        .map(|e| DownloadState {
-            id: e.id,
-            filename: e.filename,
-            url: e.url,
-            progress: e.progress,
-            speed: String::new(),
-            downloaded: e.downloaded,
-            total: e.total,
-            status: match e.status.as_str() {
-                "completed" => DlStatus::Completed,
-                "failed" => DlStatus::Failed(String::new()),
-                _ => DlStatus::Completed,
-            },
-            eta: String::new(),
-            output_path: PathBuf::from(e.output_path),
+        .map(|e| {
+            let checksum_status = match e.checksum_status.as_str() {
+                "pass" => ChecksumStatus::Pass,
+                "fail" => ChecksumStatus::Fail,
+                "verifying" => ChecksumStatus::None, // reset on reload
+                _ => ChecksumStatus::None,
+            };
+            DownloadState {
+                id: e.id,
+                filename: e.filename,
+                url: e.url,
+                progress: e.progress,
+                speed: String::new(),
+                downloaded: e.downloaded,
+                total: e.total,
+                status: match e.status.as_str() {
+                    "completed" => DlStatus::Completed,
+                    "failed" => DlStatus::Failed(String::new()),
+                    _ => DlStatus::Completed,
+                },
+                eta: String::new(),
+                output_path: PathBuf::from(e.output_path),
+                is_selected: false,
+                checksum_expected: e.checksum_expected,
+                checksum_status,
+                save_dir: e.save_dir,
+                start_time: e.start_time,
+                end_time: e.end_time,
+                file_hash: e.file_hash,
+                file_type: e.file_type,
+            }
         })
         .collect())
 }

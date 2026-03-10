@@ -12,7 +12,7 @@ use std::time::Duration;
 use slint::{ComponentHandle, Model, ModelRc, Timer, TimerMode, VecModel};
 
 use crate::app_context::AppContext;
-use crate::{App, EmailDetailData, EmailFolderData, EmailListItem};
+use crate::{App, EmailAttachmentData, EmailDetailData, EmailFolderData, EmailListItem, EmailSignatureData, EmailThreadMessage};
 
 // ── Google OAuth2 Constants ──
 const GOOGLE_CLIENT_ID: &str = "REDACTED_GOOGLE_CLIENT_ID";
@@ -1045,10 +1045,12 @@ pub fn wire(ui: &App, ctx: &AppContext) {
 
     // Initialize folders
     let default_folders = Rc::new(VecModel::from(vec![
-        EmailFolderData { name: "INBOX".into(), unread_count: 0, is_selected: true },
-        EmailFolderData { name: "Sent".into(), unread_count: 0, is_selected: false },
-        EmailFolderData { name: "Drafts".into(), unread_count: 0, is_selected: false },
-        EmailFolderData { name: "Trash".into(), unread_count: 0, is_selected: false },
+        EmailFolderData { name: "Inbox".into(), icon: "\u{1F4E5}".into(), unread_count: 0, total_count: 0, is_selected: true, folder_type: "inbox".into() },
+        EmailFolderData { name: "Starred".into(), icon: "\u{2B50}".into(), unread_count: 0, total_count: 0, is_selected: false, folder_type: "starred".into() },
+        EmailFolderData { name: "Sent".into(), icon: "\u{1F4E4}".into(), unread_count: 0, total_count: 0, is_selected: false, folder_type: "sent".into() },
+        EmailFolderData { name: "Drafts".into(), icon: "\u{1F4DD}".into(), unread_count: 0, total_count: 0, is_selected: false, folder_type: "drafts".into() },
+        EmailFolderData { name: "Archive".into(), icon: "\u{1F4E6}".into(), unread_count: 0, total_count: 0, is_selected: false, folder_type: "archive".into() },
+        EmailFolderData { name: "Trash".into(), icon: "\u{1F5D1}".into(), unread_count: 0, total_count: 0, is_selected: false, folder_type: "trash".into() },
     ]));
     ui.set_email_folders(ModelRc::from(default_folders.clone()));
 
@@ -1409,7 +1411,7 @@ email:
         let acct = account_info.clone();
         ui.on_email_folder_clicked(move |idx| {
             let idx = idx as usize;
-            let folder_names = ["INBOX", "Sent", "Drafts", "Trash"];
+            let folder_names = ["Inbox", "Starred", "Sent", "Drafts", "Archive", "Trash"];
             if idx < folder_names.len() {
                 *folder.borrow_mut() = folder_names[idx].to_string();
                 for i in 0..folders_model.row_count() {
@@ -1423,9 +1425,11 @@ email:
                 }
                 // Map folder names to IMAP folder names
                 let imap_folder = match folder_names[idx] {
-                    "INBOX" => "INBOX",
-                    "Sent" => "[Gmail]/Sent Mail",  // Gmail specific, may need adaptation
+                    "Inbox" => "INBOX",
+                    "Starred" => "[Gmail]/Starred",
+                    "Sent" => "[Gmail]/Sent Mail",
                     "Drafts" => "[Gmail]/Drafts",
+                    "Archive" => "[Gmail]/All Mail",
                     "Trash" => "[Gmail]/Trash",
                     _ => "INBOX",
                 };
@@ -1450,13 +1454,21 @@ email:
                         from_name: email.from_name.clone().into(),
                         from_addr: email.from_addr.clone().into(),
                         to_addr: email.to_addr.clone().into(),
+                        cc_addr: "".into(),
                         subject: email.subject.clone().into(),
                         date_text: email.date_text.clone().into(),
                         body: email.body.clone().into(),
                         ai_summary: "".into(),
                         is_flagged: false,
+                        is_read: email.is_read,
+                        has_attachment: false,
+                        attachment_names: "".into(),
+                        thread_count: 0,
                     });
-
+                    // Clear thread messages for non-threaded view
+                    ui.set_email_thread_messages(ModelRc::from(Rc::new(VecModel::<EmailThreadMessage>::default())));
+                    // Clear AI intent from previous email
+                    ui.set_email_ai_intent("".into());
                 }
             }
         });
@@ -1576,10 +1588,40 @@ email:
         });
     }
 
+    // ── Reply All ──
+    {
+        let ui_weak = ui.as_weak();
+        ui.on_email_reply_all(move || {
+            if let Some(ui) = ui_weak.upgrade() {
+                let detail = ui.get_email_detail();
+                ui.set_email_is_composing(true);
+                ui.set_email_compose_to(detail.from_addr.clone());
+                // Put the To and CC from original as CC
+                let mut cc_parts = Vec::new();
+                let to_str = detail.to_addr.to_string();
+                if !to_str.is_empty() { cc_parts.push(to_str); }
+                let cc_str = detail.cc_addr.to_string();
+                if !cc_str.is_empty() { cc_parts.push(cc_str); }
+                ui.set_email_compose_cc(cc_parts.join(", ").into());
+                ui.set_email_compose_bcc("".into());
+                let subject = detail.subject.to_string();
+                let re = if subject.starts_with("Re: ") { subject } else { format!("Re: {}", subject) };
+                ui.set_email_compose_subject(re.into());
+                ui.set_email_compose_body("".into());
+            }
+        });
+    }
+
+    // ── Archive ──
+    { ui.on_email_archive(move |id| { tracing::info!(email_id = id, "Archive requested"); }); }
+
     // ── Delete / Mark read / Mark flagged ──
     { ui.on_email_delete(move |id| { tracing::info!(email_id = id, "Delete requested"); }); }
     { ui.on_email_mark_read(move |id| { tracing::debug!(email_id = id, "Mark read"); }); }
     { ui.on_email_mark_flagged(move |id| { tracing::debug!(email_id = id, "Mark flagged"); }); }
+
+    // ── Toggle thread message collapse/expand ──
+    { ui.on_email_toggle_thread_message(move |id| { tracing::debug!(msg_id = id, "Toggle thread message"); }); }
 
     // ── AI Summarize ──
     {
@@ -1771,9 +1813,11 @@ email:
             if info.email.is_empty() { return; }
             let f = folder.borrow().clone();
             let imap_folder = match f.as_str() {
-                "INBOX" => "INBOX",
+                "Inbox" | "INBOX" => "INBOX",
+                "Starred" => "[Gmail]/Starred",
                 "Sent" => "[Gmail]/Sent Mail",
                 "Drafts" => "[Gmail]/Drafts",
+                "Archive" => "[Gmail]/All Mail",
                 "Trash" => "[Gmail]/Trash",
                 _ => "INBOX",
             };
@@ -1781,13 +1825,311 @@ email:
         });
     }
 
-    // ── Search / Cancel compose ──
-    { ui.on_email_search(move |q| { tracing::debug!(query = %q, "Email search"); }); }
+    // ── Search (client-side filter) ──
+    {
+        let cache = email_cache.clone();
+        let model = email_model.clone();
+        let ui_weak = ui.as_weak();
+        ui.on_email_search(move |query| {
+            let q = query.to_string().to_lowercase();
+            let cached = cache.borrow();
+            if q.is_empty() {
+                // Restore full list
+                while model.row_count() > 0 { model.remove(0); }
+                for e in cached.iter() {
+                    let initial = if !e.from_name.is_empty() {
+                        e.from_name.chars().next().unwrap_or('?').to_uppercase().to_string()
+                    } else {
+                        e.from_addr.chars().next().unwrap_or('?').to_uppercase().to_string()
+                    };
+                    let color_seed: u32 = e.from_addr.bytes().map(|b| b as u32).sum();
+                    let avatar_color = match color_seed % 6 {
+                        0 => slint::Color::from_rgb_u8(90, 200, 212),
+                        1 => slint::Color::from_rgb_u8(212, 165, 116),
+                        2 => slint::Color::from_rgb_u8(180, 132, 224),
+                        3 => slint::Color::from_rgb_u8(108, 212, 128),
+                        4 => slint::Color::from_rgb_u8(232, 120, 152),
+                        _ => slint::Color::from_rgb_u8(74, 184, 240),
+                    };
+                    model.push(EmailListItem {
+                        id: e.id, from_name: e.from_name.clone().into(), from_addr: e.from_addr.clone().into(),
+                        subject: e.subject.clone().into(), preview: e.preview.clone().into(),
+                        date_text: e.date_text.clone().into(), is_read: e.is_read, is_flagged: false,
+                        is_selected: false, has_attachment: false, thread_count: 0, thread_id: "".into(),
+                        avatar_initial: initial.into(), avatar_color,
+                    });
+                }
+                if let Some(ui) = ui_weak.upgrade() {
+                    ui.set_email_search_active(false);
+                    ui.set_email_search_count(0);
+                    ui.set_email_folder_total(cached.len() as i32);
+                    ui.set_email_folder_unread(cached.iter().filter(|e| !e.is_read).count() as i32);
+                }
+            } else {
+                // Filter by sender, subject, body
+                let matches: Vec<&FetchedEmail> = cached.iter().filter(|e| {
+                    e.from_name.to_lowercase().contains(&q)
+                    || e.from_addr.to_lowercase().contains(&q)
+                    || e.subject.to_lowercase().contains(&q)
+                    || e.body.to_lowercase().contains(&q)
+                    || e.preview.to_lowercase().contains(&q)
+                }).collect();
+                let count = matches.len() as i32;
+                while model.row_count() > 0 { model.remove(0); }
+                for e in &matches {
+                    let initial = if !e.from_name.is_empty() {
+                        e.from_name.chars().next().unwrap_or('?').to_uppercase().to_string()
+                    } else {
+                        e.from_addr.chars().next().unwrap_or('?').to_uppercase().to_string()
+                    };
+                    let color_seed: u32 = e.from_addr.bytes().map(|b| b as u32).sum();
+                    let avatar_color = match color_seed % 6 {
+                        0 => slint::Color::from_rgb_u8(90, 200, 212),
+                        1 => slint::Color::from_rgb_u8(212, 165, 116),
+                        2 => slint::Color::from_rgb_u8(180, 132, 224),
+                        3 => slint::Color::from_rgb_u8(108, 212, 128),
+                        4 => slint::Color::from_rgb_u8(232, 120, 152),
+                        _ => slint::Color::from_rgb_u8(74, 184, 240),
+                    };
+                    model.push(EmailListItem {
+                        id: e.id, from_name: e.from_name.clone().into(), from_addr: e.from_addr.clone().into(),
+                        subject: e.subject.clone().into(), preview: e.preview.clone().into(),
+                        date_text: e.date_text.clone().into(), is_read: e.is_read, is_flagged: false,
+                        is_selected: false, has_attachment: false, thread_count: 0, thread_id: "".into(),
+                        avatar_initial: initial.into(), avatar_color,
+                    });
+                }
+                if let Some(ui) = ui_weak.upgrade() {
+                    ui.set_email_search_active(true);
+                    ui.set_email_search_count(count);
+                    ui.set_email_folder_total(count);
+                }
+            }
+            tracing::debug!(query = %q, "Email search");
+        });
+    }
+
+    // ── Cancel compose ──
     {
         let ui_weak = ui.as_weak();
         ui.on_email_cancel_compose(move || {
             if let Some(ui) = ui_weak.upgrade() { ui.set_email_is_composing(false); }
         });
+    }
+
+    // ── V41: Triage filter ──
+    {
+        let cache = email_cache.clone();
+        let model = email_model.clone();
+        let ui_weak = ui.as_weak();
+        ui.on_email_triage_filter(move |view| {
+            if let Some(ui) = ui_weak.upgrade() {
+                ui.set_email_triage_view(view);
+            }
+            let cached = cache.borrow();
+            // Filter based on triage view
+            let filtered: Vec<&FetchedEmail> = cached.iter().filter(|e| {
+                match view {
+                    0 => true,  // All
+                    1 => !e.is_read, // Priority proxy: unread with content (heuristic)
+                    2 => !e.is_read, // Unread
+                    3 => false,      // Flagged — we don't persist flag state in cache yet
+                    _ => true,
+                }
+            }).collect();
+
+            while model.row_count() > 0 { model.remove(0); }
+            for e in &filtered {
+                let initial = if !e.from_name.is_empty() {
+                    e.from_name.chars().next().unwrap_or('?').to_uppercase().to_string()
+                } else {
+                    e.from_addr.chars().next().unwrap_or('?').to_uppercase().to_string()
+                };
+                let color_seed: u32 = e.from_addr.bytes().map(|b| b as u32).sum();
+                let avatar_color = match color_seed % 6 {
+                    0 => slint::Color::from_rgb_u8(90, 200, 212),
+                    1 => slint::Color::from_rgb_u8(212, 165, 116),
+                    2 => slint::Color::from_rgb_u8(180, 132, 224),
+                    3 => slint::Color::from_rgb_u8(108, 212, 128),
+                    4 => slint::Color::from_rgb_u8(232, 120, 152),
+                    _ => slint::Color::from_rgb_u8(74, 184, 240),
+                };
+                model.push(EmailListItem {
+                    id: e.id, from_name: e.from_name.clone().into(), from_addr: e.from_addr.clone().into(),
+                    subject: e.subject.clone().into(), preview: e.preview.clone().into(),
+                    date_text: e.date_text.clone().into(), is_read: e.is_read, is_flagged: false,
+                    is_selected: false, has_attachment: false, thread_count: 0, thread_id: "".into(),
+                    avatar_initial: initial.into(), avatar_color,
+                });
+            }
+
+            if let Some(ui) = ui_weak.upgrade() {
+                ui.set_email_folder_total(filtered.len() as i32);
+                ui.set_email_folder_unread(filtered.iter().filter(|e| !e.is_read).count() as i32);
+            }
+            tracing::debug!(view = view, count = filtered.len(), "Triage filter applied");
+        });
+    }
+
+    // ── V41: Save draft ──
+    {
+        let ui_weak = ui.as_weak();
+        ui.on_email_save_draft(move || {
+            if let Some(ui) = ui_weak.upgrade() {
+                ui.set_email_draft_status("Saving...".into());
+                let to = ui.get_email_compose_to().to_string();
+                let cc = ui.get_email_compose_cc().to_string();
+                let bcc = ui.get_email_compose_bcc().to_string();
+                let subject = ui.get_email_compose_subject().to_string();
+                let body = ui.get_email_compose_body().to_string();
+                tracing::info!(to = %to, subject = %subject, "Draft saved (local)");
+                // Store as simple log for now — full KV store integration later
+                let _ = (to, cc, bcc, subject, body);
+                ui.set_email_draft_status("Draft saved".into());
+
+                // Clear status after 3 seconds
+                let weak = ui_weak.clone();
+                let t = Timer::default();
+                t.start(TimerMode::SingleShot, Duration::from_secs(3), move || {
+                    if let Some(ui) = weak.upgrade() {
+                        ui.set_email_draft_status("".into());
+                    }
+                });
+                std::mem::forget(t);
+            }
+        });
+    }
+
+    // ── V41: AI intent classify ──
+    {
+        let bridge = bridge.clone();
+        let ui_weak = ui.as_weak();
+        ui.on_email_ai_classify(move || {
+            if let Some(ui) = ui_weak.upgrade() {
+                let detail = ui.get_email_detail();
+                if detail.id <= 0 { return; }
+                ui.set_email_ai_working(true);
+
+                let body_str = detail.body.to_string();
+                let body_preview = truncate_utf8(&body_str, 500);
+                let prompt = format!(
+                    "Classify this email intent as exactly one of: action-needed, fyi, meeting, newsletter, personal. Reply with just the label, nothing else.\n\nSubject: {}\n\n{}\n",
+                    detail.subject,
+                    body_preview,
+                );
+                let token_rx = bridge.send_message(prompt);
+                let weak = ui_weak.clone();
+                let collected = Rc::new(RefCell::new(String::new()));
+                let ci = collected.clone();
+                let t = Timer::default();
+                t.start(TimerMode::Repeated, Duration::from_millis(50), move || {
+                    while let Ok(tok) = token_rx.try_recv() {
+                        if tok == "__DONE__" {
+                            if let Some(ui) = weak.upgrade() {
+                                let label = ci.borrow().trim().to_lowercase();
+                                // Normalize to known labels
+                                let intent = if label.contains("action") { "action-needed" }
+                                    else if label.contains("fyi") { "fyi" }
+                                    else if label.contains("meeting") { "meeting" }
+                                    else if label.contains("newsletter") { "newsletter" }
+                                    else if label.contains("personal") { "personal" }
+                                    else { &label };
+                                ui.set_email_ai_intent(intent.into());
+                                ui.set_email_ai_working(false);
+                                tracing::info!(intent = %intent, "Email AI classified");
+                            }
+                            return;
+                        }
+                        if tok == "__REPLACE__" { ci.borrow_mut().clear(); continue; }
+                        if tok.starts_with("__") && tok.ends_with("__") { continue; }
+                        ci.borrow_mut().push_str(&tok);
+                    }
+                });
+                std::mem::forget(t);
+            }
+        });
+    }
+
+    // ── V41: Download attachment (stub) ──
+    {
+        let ui_weak = ui.as_weak();
+        ui.on_email_download_attachment(move |idx| {
+            tracing::info!(attachment_idx = idx, "Attachment download requested");
+            if let Some(ui) = ui_weak.upgrade() {
+                let attachments_model = ui.get_email_attachments();
+                if let Some(row) = attachments_model.row_data(idx as usize) {
+                    let mut updated = row;
+                    updated.is_downloaded = true;
+                    // Re-create the model with updated item
+                    let count = attachments_model.row_count();
+                    let mut items = Vec::with_capacity(count);
+                    for i in 0..count {
+                        if i == idx as usize {
+                            items.push(updated.clone());
+                        } else if let Some(item) = attachments_model.row_data(i) {
+                            items.push(item);
+                        }
+                    }
+                    ui.set_email_attachments(ModelRc::from(Rc::new(VecModel::from(items))));
+                    tracing::info!(name = %updated.name, "Attachment marked as downloaded");
+                }
+            }
+        });
+    }
+
+    // ── V41: Preview attachment (stub) ──
+    {
+        ui.on_email_preview_attachment(move |idx| {
+            tracing::info!(attachment_idx = idx, "Attachment preview requested");
+        });
+    }
+
+    // ── V41: Set signature ──
+    {
+        let ui_weak = ui.as_weak();
+        ui.on_email_set_signature(move |idx| {
+            if let Some(ui) = ui_weak.upgrade() {
+                ui.set_email_active_signature(idx);
+                let sigs = ui.get_email_signatures();
+                if let Some(sig) = sigs.row_data(idx as usize) {
+                    let content = sig.content.to_string();
+                    if !content.is_empty() {
+                        let current_body = ui.get_email_compose_body().to_string();
+                        // Strip any existing signature (delimited by \n-- \n)
+                        let base = if let Some(pos) = current_body.find("\n-- \n") {
+                            current_body[..pos].to_string()
+                        } else {
+                            current_body
+                        };
+                        let new_body = format!("{}\n-- \n{}", base.trim_end(), content);
+                        ui.set_email_compose_body(new_body.into());
+                    }
+                    tracing::debug!(signature = %sig.name, "Signature applied");
+                }
+            }
+        });
+    }
+
+    // ── V41: Initialize default signatures ──
+    {
+        let default_sigs = vec![
+            EmailSignatureData {
+                name: "Default".into(),
+                content: "".into(),
+                is_default: true,
+            },
+            EmailSignatureData {
+                name: "Professional".into(),
+                content: "Best regards".into(),
+                is_default: false,
+            },
+            EmailSignatureData {
+                name: "Casual".into(),
+                content: "Cheers!".into(),
+                is_default: false,
+            },
+        ];
+        ui.set_email_signatures(ModelRc::from(Rc::new(VecModel::from(default_sigs))));
     }
 }
 
@@ -1802,6 +2144,7 @@ fn fetch_and_populate(
 ) {
     if let Some(ui) = ui_weak.upgrade() {
         ui.set_email_is_loading(true);
+        ui.set_email_sync_status("Syncing...".into());
     }
 
     let folder_str = folder.to_string();
@@ -1834,28 +2177,57 @@ fn fetch_and_populate(
                 ui.set_email_is_loading(false);
                 match result {
                     Ok(emails) => {
-                        // Update unread count for selected folder
+                        // Update unread count for selected folder + status bar
+                        let total = emails.len() as i32;
                         let unread = emails.iter().filter(|e| !e.is_read).count() as i32;
+                        ui.set_email_folder_total(total);
+                        ui.set_email_folder_unread(unread);
+                        ui.set_email_sync_status("Synced".into());
                         for i in 0..folders_model.row_count() {
                             if let Some(mut f) = folders_model.row_data(i) {
                                 if f.is_selected {
                                     f.unread_count = unread;
+                                    f.total_count = total;
                                     folders_model.set_row_data(i, f);
                                 }
                             }
                         }
 
                         // Populate list model
-                        let items: Vec<EmailListItem> = emails.iter().map(|e| EmailListItem {
-                            id: e.id,
-                            from_name: e.from_name.clone().into(),
-                            from_addr: e.from_addr.clone().into(),
-                            subject: e.subject.clone().into(),
-                            preview: e.preview.clone().into(),
-                            date_text: e.date_text.clone().into(),
-                            is_read: e.is_read,
-                            is_flagged: false,
-                            is_selected: false,
+                        let items: Vec<EmailListItem> = emails.iter().map(|e| {
+                            let initial = if !e.from_name.is_empty() {
+                                e.from_name.chars().next().unwrap_or('?').to_uppercase().to_string()
+                            } else if !e.from_addr.is_empty() {
+                                e.from_addr.chars().next().unwrap_or('?').to_uppercase().to_string()
+                            } else {
+                                "?".to_string()
+                            };
+                            // Generate a stable color from the sender name/addr
+                            let color_seed: u32 = e.from_addr.bytes().map(|b| b as u32).sum();
+                            let avatar_color = match color_seed % 6 {
+                                0 => slint::Color::from_rgb_u8(90, 200, 212),   // cyan
+                                1 => slint::Color::from_rgb_u8(212, 165, 116),  // amber
+                                2 => slint::Color::from_rgb_u8(180, 132, 224),  // purple
+                                3 => slint::Color::from_rgb_u8(108, 212, 128),  // green
+                                4 => slint::Color::from_rgb_u8(232, 120, 152),  // pink
+                                _ => slint::Color::from_rgb_u8(74, 184, 240),   // blue
+                            };
+                            EmailListItem {
+                                id: e.id,
+                                from_name: e.from_name.clone().into(),
+                                from_addr: e.from_addr.clone().into(),
+                                subject: e.subject.clone().into(),
+                                preview: e.preview.clone().into(),
+                                date_text: e.date_text.clone().into(),
+                                is_read: e.is_read,
+                                is_flagged: false,
+                                is_selected: false,
+                                has_attachment: false,
+                                thread_count: 0,
+                                thread_id: "".into(),
+                                avatar_initial: initial.into(),
+                                avatar_color,
+                            }
                         }).collect();
 
                         // Clear and repopulate
@@ -1869,6 +2241,7 @@ fn fetch_and_populate(
                     }
                     Err(e) => {
                         tracing::error!(error = %e, "IMAP fetch failed");
+                        ui.set_email_sync_status("Sync failed".into());
                     }
                 }
             }

@@ -89,6 +89,15 @@ fn main() {
     // Wire all callbacks
     wire::wire_all(&ui, &ctx);
 
+    // Debug: navigate to specific screen on startup via env var
+    if let Ok(screen_str) = std::env::var("YANTRIK_START_SCREEN") {
+        if let Ok(screen) = screen_str.parse::<i32>() {
+            tracing::info!(screen, "Debug: navigating to startup screen");
+            ui.set_current_screen(screen);
+            ui.invoke_navigate(screen);
+        }
+    }
+
     // Run
     tracing::info!("Starting Yantrik OS desktop shell");
     ui.run().unwrap();

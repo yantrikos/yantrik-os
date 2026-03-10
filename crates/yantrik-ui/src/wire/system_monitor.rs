@@ -8,19 +8,100 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::time::Duration;
 
-use slint::{ComponentHandle, ModelRc, Timer, TimerMode, VecModel};
+use slint::{ComponentHandle, Model, ModelRc, SharedString, Timer, TimerMode, VecModel};
 
 use crate::app_context::AppContext;
 use crate::{App, CpuCoreData, DiskData, MonitorProcessData, NetworkInterfaceData};
 
 /// Wire the System Monitor timer and sort callback.
-pub fn wire(ui: &App, _ctx: &AppContext) {
+pub fn wire(ui: &App, ctx: &AppContext) {
     // Sort column callback
     let ui_weak = ui.as_weak();
     ui.on_sort_by_column(move |col| {
         if let Some(ui) = ui_weak.upgrade() {
             ui.set_mon_sort_column(col);
         }
+    });
+
+    // ── AI Explain callback ──
+    let bridge = ctx.bridge.clone();
+    let ai_state = super::ai_assist::AiAssistState::new();
+    let ui_weak_ai = ui.as_weak();
+    let ai_st = ai_state.clone();
+    ui.on_mon_ai_explain(move || {
+        let Some(ui) = ui_weak_ai.upgrade() else { return };
+
+        // Gather current system snapshot for AI analysis
+        let cpu = ui.get_mon_cpu_usage();
+        let mem = ui.get_mon_memory_usage();
+        let mem_used = ui.get_mon_memory_used_text().to_string();
+        let mem_total = ui.get_mon_memory_total_text().to_string();
+        let load1 = ui.get_mon_load_avg_1().to_string();
+        let load5 = ui.get_mon_load_avg_5().to_string();
+        let uptime = ui.get_mon_uptime_text().to_string();
+
+        // Top processes
+        let procs = ui.get_mon_processes();
+        let mut proc_lines = String::new();
+        for i in 0..procs.row_count().min(5) {
+            let p = procs.row_data(i).unwrap();
+            proc_lines.push_str(&format!(
+                "  {} (PID {}) — CPU: {:.1}%, MEM: {:.1}%\n",
+                p.name, p.pid, p.cpu_percent, p.mem_percent
+            ));
+        }
+
+        let context = format!(
+            "CPU: {:.1}%, Memory: {:.1}% ({}/{}), Load: {} {} {}, Uptime: {}\nTop processes:\n{}",
+            cpu, mem, mem_used, mem_total, load1, load5, uptime, uptime, proc_lines
+        );
+        let prompt = super::ai_assist::system_analysis_prompt(
+            &context,
+            "Give a brief health assessment of this system. Is anything unusual?"
+        );
+
+        super::ai_assist::ai_request(
+            &ui.as_weak(),
+            &bridge,
+            &ai_st,
+            super::ai_assist::AiAssistRequest {
+                prompt,
+                timeout_secs: 30,
+                set_working: Box::new(|ui, v| ui.set_mon_ai_is_working(v)),
+                set_response: Box::new(|ui, s| ui.set_mon_ai_response(s.into())),
+                get_response: Box::new(|ui| ui.get_mon_ai_response().to_string()),
+            },
+        );
+    });
+
+    let ui_weak_dismiss = ui.as_weak();
+    ui.on_mon_ai_dismiss(move || {
+        if let Some(ui) = ui_weak_dismiss.upgrade() {
+            ui.set_mon_ai_panel_open(false);
+        }
+    });
+
+    // ── Process search callback ──
+    let search_query: std::rc::Rc<RefCell<String>> = std::rc::Rc::new(RefCell::new(String::new()));
+    let sq = search_query.clone();
+    ui.on_mon_process_search_changed(move |query: SharedString| {
+        *sq.borrow_mut() = query.to_string();
+    });
+
+    // ── Kill process callback ──
+    ui.on_mon_kill_process(move |pid: i32| {
+        tracing::info!("System Monitor: sending SIGTERM to PID {}", pid);
+        let _ = std::process::Command::new("kill")
+            .arg(pid.to_string())
+            .output();
+    });
+
+    // ── Force kill process callback ──
+    ui.on_mon_force_kill_process(move |pid: i32| {
+        tracing::info!("System Monitor: sending SIGKILL to PID {}", pid);
+        let _ = std::process::Command::new("kill")
+            .args(["-9", &pid.to_string()])
+            .output();
     });
 
     // 1-second poll timer
@@ -137,8 +218,11 @@ pub fn wire(ui: &App, _ctx: &AppContext) {
         let sort_col = ui.get_mon_sort_column();
         let total_mem = total; // from meminfo above
         let procs = read_processes(total_mem, sort_col);
+        let filter = search_query.borrow().clone();
+        let filter_lower = filter.to_lowercase();
         let proc_data: Vec<MonitorProcessData> = procs
             .into_iter()
+            .filter(|p| filter_lower.is_empty() || p.name.to_lowercase().contains(&filter_lower))
             .take(15)
             .map(|p| MonitorProcessData {
                 pid: p.pid as i32,
@@ -152,6 +236,63 @@ pub fn wire(ui: &App, _ctx: &AppContext) {
 
         // ── Uptime ──
         ui.set_mon_uptime_text(read_uptime().into());
+
+        // ── Health Score ──
+        let mut score = 100.0f32;
+        let mut issues: Vec<&str> = Vec::new();
+
+        // CPU pressure
+        if overall_cpu > 90.0 {
+            score -= 30.0;
+            issues.push("CPU critical");
+        } else if overall_cpu > 70.0 {
+            score -= 15.0;
+            issues.push("CPU high");
+        }
+
+        // Memory pressure
+        if mem_pct > 90.0 {
+            score -= 30.0;
+            issues.push("Memory critical");
+        } else if mem_pct > 75.0 {
+            score -= 15.0;
+            issues.push("Memory high");
+        }
+
+        // Swap pressure
+        if swap_pct > 50.0 {
+            score -= 15.0;
+            issues.push("Swap pressure");
+        }
+
+        // Disk pressure (any disk > 90%)
+        let disk_model = ui.get_mon_disks();
+        for i in 0..disk_model.row_count() {
+            if let Some(d) = disk_model.row_data(i) {
+                if d.usage_percent > 90.0 {
+                    score -= 15.0;
+                    issues.push("Disk critical");
+                    break;
+                }
+            }
+        }
+
+        let status = if score >= 80.0 {
+            "Healthy"
+        } else if score >= 50.0 {
+            "Degraded"
+        } else {
+            "Critical"
+        };
+        let summary = if issues.is_empty() {
+            "All systems nominal".to_string()
+        } else {
+            issues.join(" \u{00b7} ")
+        };
+
+        ui.set_mon_health_status(status.into());
+        ui.set_mon_health_score(score.max(0.0));
+        ui.set_mon_health_summary(summary.into());
     });
 
     std::mem::forget(timer);

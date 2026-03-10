@@ -7,10 +7,10 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
-use slint::{ComponentHandle, ModelRc, Timer, TimerMode, VecModel};
+use slint::{ComponentHandle, Model, ModelRc, Timer, TimerMode, VecModel};
 
 use crate::app_context::AppContext;
-use crate::{App, CalendarDay, CalendarEvent};
+use crate::{App, CalendarAttendee, CalendarDay, CalendarEvent, CalendarTemplate, CalendarTimeEvent};
 use yantrik_companion::calendar;
 use yantrik_companion::config::{CompanionConfig, EmailAccountConfig};
 use yantrik_companion::email;
@@ -154,6 +154,107 @@ impl CalState {
             .collect()
     }
 
+    /// Build week-day-labels for the week containing `selected_day`.
+    /// Returns (labels, week_start_day, week_start_month, week_start_year).
+    fn week_info(&self) -> (Vec<String>, Vec<(i32, u32, u32)>) {
+        let dow = day_of_week(self.year, self.month, self.selected_day);
+        // dow: 0=Sun, 1=Mon, ... 6=Sat. Week starts on Sunday.
+        let day_names = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+        let mut labels = Vec::with_capacity(7);
+        let mut dates = Vec::with_capacity(7);
+
+        for i in 0..7u32 {
+            let offset = i as i32 - dow as i32;
+            let (y, m, d) = offset_date(self.year, self.month, self.selected_day, offset);
+            labels.push(format!("{} {}", day_names[i as usize], d));
+            dates.push((y, m, d));
+        }
+
+        (labels, dates)
+    }
+
+    /// Build CalendarTimeEvent list for the week containing `selected_day`.
+    fn week_time_events(&self) -> Vec<CalendarTimeEvent> {
+        let colors = [
+            slint::Color::from_argb_u8(255, 90, 200, 212),
+            slint::Color::from_argb_u8(255, 212, 165, 116),
+            slint::Color::from_argb_u8(255, 160, 120, 200),
+            slint::Color::from_argb_u8(255, 120, 200, 140),
+        ];
+
+        let (_, dates) = self.week_info();
+        let mut result = Vec::new();
+        let mut color_idx = 0;
+
+        for (day_index, &(y, m, d)) in dates.iter().enumerate() {
+            for e in &self.events {
+                if e.year == y && e.month == m && e.day == d {
+                    let (start_hour, start_min, duration) = parse_time_range(&e.time_text, e.is_all_day);
+                    result.push(CalendarTimeEvent {
+                        title: e.title.clone().into(),
+                        start_hour,
+                        start_min,
+                        duration_min: duration,
+                        day_index: day_index as i32,
+                        color: colors[color_idx % colors.len()],
+                    });
+                    color_idx += 1;
+                }
+            }
+        }
+        result
+    }
+
+    /// Build CalendarTimeEvent list for a single selected day.
+    fn day_time_events(&self) -> Vec<CalendarTimeEvent> {
+        let colors = [
+            slint::Color::from_argb_u8(255, 90, 200, 212),
+            slint::Color::from_argb_u8(255, 212, 165, 116),
+            slint::Color::from_argb_u8(255, 160, 120, 200),
+            slint::Color::from_argb_u8(255, 120, 200, 140),
+        ];
+
+        self.events
+            .iter()
+            .filter(|e| e.year == self.year && e.month == self.month && e.day == self.selected_day)
+            .enumerate()
+            .map(|(i, e)| {
+                let (start_hour, start_min, duration) = parse_time_range(&e.time_text, e.is_all_day);
+                CalendarTimeEvent {
+                    title: e.title.clone().into(),
+                    start_hour,
+                    start_min,
+                    duration_min: duration,
+                    day_index: 0,
+                    color: colors[i % colors.len()],
+                }
+            })
+            .collect()
+    }
+
+    /// Day view title like "Monday, March 9".
+    fn day_view_title(&self) -> String {
+        let dow = day_of_week(self.year, self.month, self.selected_day);
+        let day_name = match dow {
+            0 => "Sunday",
+            1 => "Monday",
+            2 => "Tuesday",
+            3 => "Wednesday",
+            4 => "Thursday",
+            5 => "Friday",
+            6 => "Saturday",
+            _ => "?",
+        };
+        let month_name = match self.month {
+            1 => "January", 2 => "February", 3 => "March", 4 => "April",
+            5 => "May", 6 => "June", 7 => "July", 8 => "August",
+            9 => "September", 10 => "October", 11 => "November", 12 => "December",
+            _ => "?",
+        };
+        format!("{}, {} {}", day_name, month_name, self.selected_day)
+    }
+
     /// Replace all events with Google Calendar data for the current month.
     fn load_google_events(&mut self, events: Vec<calendar::CalEvent>) {
         // Remove existing Google Calendar events for this month
@@ -284,6 +385,77 @@ fn days_in_month(year: i32, month: u32) -> u32 {
     }
 }
 
+/// Offset a date by `offset` days (can be negative).
+fn offset_date(year: i32, month: u32, day: u32, offset: i32) -> (i32, u32, u32) {
+    let mut d = day as i32 + offset;
+    let mut m = month as i32;
+    let mut y = year;
+
+    while d < 1 {
+        m -= 1;
+        if m < 1 {
+            m = 12;
+            y -= 1;
+        }
+        d += days_in_month(y, m as u32) as i32;
+    }
+
+    loop {
+        let dim = days_in_month(y, m as u32) as i32;
+        if d <= dim {
+            break;
+        }
+        d -= dim;
+        m += 1;
+        if m > 12 {
+            m = 1;
+            y += 1;
+        }
+    }
+
+    (y, m as u32, d as u32)
+}
+
+/// Parse a time range string like "14:00 - 15:00" into (start_hour, start_min, duration_min).
+/// For all-day events, returns (0, 0, 60) as a 1-hour block at midnight.
+fn parse_time_range(time_text: &str, is_all_day: bool) -> (i32, i32, i32) {
+    if is_all_day || time_text.is_empty() {
+        return (0, 0, 60);
+    }
+
+    let parts: Vec<&str> = time_text.split(" - ").collect();
+    let start = parts.first().unwrap_or(&"09:00");
+    let end = parts.get(1).unwrap_or(&"10:00");
+
+    let (sh, sm) = parse_hhmm(start);
+    let (eh, em) = parse_hhmm(end);
+
+    let start_mins = sh * 60 + sm;
+    let end_mins = eh * 60 + em;
+    let duration = if end_mins > start_mins { end_mins - start_mins } else { 60 };
+
+    (sh, sm, duration)
+}
+
+/// Parse "HH:MM" into (hour, minute).
+fn parse_hhmm(s: &str) -> (i32, i32) {
+    let parts: Vec<&str> = s.trim().split(':').collect();
+    let h = parts.first().and_then(|p| p.parse::<i32>().ok()).unwrap_or(0);
+    let m = parts.get(1).and_then(|p| p.parse::<i32>().ok()).unwrap_or(0);
+    (h.clamp(0, 23), m.clamp(0, 59))
+}
+
+/// Get current hour (0-23) from system time.
+fn current_hour() -> i32 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+    // This gives UTC hour; good enough for now
+    ((secs % 86400) / 3600) as i32
+}
+
 fn update_ui(ui: &App, state: &CalState) {
     ui.set_cal_month_title(state.month_title().into());
     let days = state.build_days();
@@ -292,6 +464,30 @@ fn update_ui(ui: &App, state: &CalState) {
 
     let events = state.events_for_day(state.selected_day);
     ui.set_cal_events_today(ModelRc::new(VecModel::from(events)));
+
+    // Update current hour
+    ui.set_cal_current_hour(current_hour());
+
+    // Update view-mode-specific data
+    update_view_data(ui, state);
+}
+
+fn update_view_data(ui: &App, state: &CalState) {
+    let mode = ui.get_cal_view_mode();
+
+    if mode == 1 {
+        // Week view
+        let (labels, _) = state.week_info();
+        let labels_shared: Vec<slint::SharedString> = labels.into_iter().map(|s| s.into()).collect();
+        ui.set_cal_week_day_labels(ModelRc::new(VecModel::from(labels_shared)));
+        let week_evts = state.week_time_events();
+        ui.set_cal_week_events(ModelRc::new(VecModel::from(week_evts)));
+    } else if mode == 2 {
+        // Day view
+        let day_evts = state.day_time_events();
+        ui.set_cal_day_events(ModelRc::new(VecModel::from(day_evts)));
+        ui.set_cal_day_view_title(state.day_view_title().into());
+    }
 }
 
 /// Try to load config and find an OAuth2 email account for Google Calendar.
@@ -366,6 +562,13 @@ fn fetch_month_events(
                     let selected_day = s.selected_day;
                     let events_for_day = s.events_for_day(selected_day);
 
+                    // Also capture view-mode data
+                    let week_labels: Vec<slint::SharedString> = s.week_info().0.into_iter().map(|l| l.into()).collect();
+                    let week_evts = s.week_time_events();
+                    let day_evts = s.day_time_events();
+                    let day_title: slint::SharedString = s.day_view_title().into();
+                    let cur_hour = current_hour();
+
                     let _ = slint::invoke_from_event_loop(move || {
                         if let Some(ui) = ui_weak.upgrade() {
                             ui.set_cal_month_title(month_title);
@@ -373,6 +576,11 @@ fn fetch_month_events(
                             ui.set_cal_selected_day(selected_day as i32);
                             ui.set_cal_events_today(ModelRc::new(VecModel::from(events_for_day)));
                             ui.set_cal_is_loading(false);
+                            ui.set_cal_current_hour(cur_hour);
+                            ui.set_cal_week_day_labels(ModelRc::new(VecModel::from(week_labels)));
+                            ui.set_cal_week_events(ModelRc::new(VecModel::from(week_evts)));
+                            ui.set_cal_day_events(ModelRc::new(VecModel::from(day_evts)));
+                            ui.set_cal_day_view_title(day_title);
                         }
                     });
                 }
@@ -512,6 +720,21 @@ pub fn wire(ui: &App, ctx: &AppContext) {
                             );
                         }
                     }
+                }
+            }
+        });
+    }
+
+    // ── Switch view mode ──
+    {
+        let st = state.clone();
+        let ui_weak = ui.as_weak();
+        ui.on_cal_switch_view(move |mode| {
+            if let Some(ui) = ui_weak.upgrade() {
+                ui.set_cal_view_mode(mode);
+                ui.set_cal_current_hour(current_hour());
+                if let Ok(s) = st.try_lock() {
+                    update_view_data(&ui, &s);
                 }
             }
         });
@@ -682,6 +905,122 @@ pub fn wire(ui: &App, ctx: &AppContext) {
         });
     }
 
+    // ── Template panel toggle ──
+    {
+        let ui_weak = ui.as_weak();
+        ui.on_cal_toggle_template_panel(move || {
+            if let Some(ui) = ui_weak.upgrade() {
+                let open = ui.get_cal_template_panel_open();
+                ui.set_cal_template_panel_open(!open);
+            }
+        });
+    }
+
+    // ── Use template ──
+    {
+        let st = state.clone();
+        let ui_weak = ui.as_weak();
+        ui.on_cal_use_template(move |idx| {
+            if let Some(ui) = ui_weak.upgrade() {
+                let templates = ui.get_cal_templates();
+                if let Some(tpl) = templates.row_data(idx as usize) {
+                    ui.set_cal_event_title(tpl.title_template.clone());
+
+                    // Compute end time from duration
+                    if let Ok(s) = st.try_lock() {
+                        let date_str = format!("{:04}-{:02}-{:02}", s.year, s.month, s.selected_day);
+                        ui.set_cal_event_date(date_str.into());
+                    }
+
+                    // Set a default start time and compute end from duration
+                    let duration = tpl.duration_min;
+                    let start_hour = 9; // default 9:00 AM
+                    let end_total = start_hour * 60 + duration;
+                    let end_hour = (end_total / 60).min(23);
+                    let end_min = end_total % 60;
+                    let time_str = format!(
+                        "{:02}:{:02} - {:02}:{:02}",
+                        start_hour, 0, end_hour, end_min
+                    );
+                    ui.set_cal_event_time(time_str.into());
+                    ui.set_cal_event_notes("".into());
+                    ui.set_cal_show_event_form(true);
+                    ui.set_cal_template_panel_open(false);
+                }
+            }
+        });
+    }
+
+    // ── Attendee management ──
+    let attendees: Rc<RefCell<Vec<(String, String, String)>>> = Rc::new(RefCell::new(Vec::new()));
+
+    {
+        let ui_weak = ui.as_weak();
+        let attendees = attendees.clone();
+        ui.on_cal_add_attendee(move |name, email_addr| {
+            let name_str = name.to_string();
+            let email_str = email_addr.to_string();
+            if email_str.is_empty() {
+                return;
+            }
+            attendees.borrow_mut().push((name_str, email_str, "pending".to_string()));
+            if let Some(ui) = ui_weak.upgrade() {
+                let model: Vec<CalendarAttendee> = attendees
+                    .borrow()
+                    .iter()
+                    .map(|(n, e, r)| CalendarAttendee {
+                        name: n.clone().into(),
+                        email: e.clone().into(),
+                        rsvp_status: r.clone().into(),
+                    })
+                    .collect();
+                ui.set_cal_event_attendees(ModelRc::new(VecModel::from(model)));
+            }
+        });
+    }
+
+    {
+        let ui_weak = ui.as_weak();
+        let attendees = attendees.clone();
+        ui.on_cal_remove_attendee(move |idx| {
+            let idx = idx as usize;
+            let mut list = attendees.borrow_mut();
+            if idx < list.len() {
+                list.remove(idx);
+            }
+            if let Some(ui) = ui_weak.upgrade() {
+                let model: Vec<CalendarAttendee> = list
+                    .iter()
+                    .map(|(n, e, r)| CalendarAttendee {
+                        name: n.clone().into(),
+                        email: e.clone().into(),
+                        rsvp_status: r.clone().into(),
+                    })
+                    .collect();
+                ui.set_cal_event_attendees(ModelRc::new(VecModel::from(model)));
+            }
+        });
+    }
+
+    // ── Reminder ──
+    {
+        let ui_weak = ui.as_weak();
+        let reminder_mins: Rc<RefCell<i32>> = Rc::new(RefCell::new(15));
+        ui.on_cal_set_reminder(move |mins| {
+            *reminder_mins.borrow_mut() = mins;
+            if let Some(ui) = ui_weak.upgrade() {
+                ui.set_cal_reminder_minutes(mins);
+            }
+        });
+    }
+
+    // Set timezone display
+    {
+        // Try to detect timezone from system
+        let tz_display = detect_timezone();
+        ui.set_cal_timezone_display(tz_display.into());
+    }
+
     // ── Periodic sync timer (every 10 minutes) ──
     if let Some((account, config_path)) = cal_account {
         let sync_timer = Timer::default();
@@ -701,4 +1040,80 @@ pub fn wire(ui: &App, ctx: &AppContext) {
         // Keep timer alive — leak it since it's a long-lived app
         std::mem::forget(sync_timer);
     }
+
+    // ── AI Insights callback ──
+    let bridge = ctx.bridge.clone();
+    let ai_state = super::ai_assist::AiAssistState::new();
+    let ui_weak = ui.as_weak();
+    let ai_st = ai_state.clone();
+    ui.on_cal_ai_explain(move || {
+        let Some(ui) = ui_weak.upgrade() else { return };
+
+        let month = ui.get_cal_month_title().to_string();
+        let events = ui.get_cal_events_today();
+        let selected = ui.get_cal_selected_day();
+
+        let mut context = format!("Month: {}, Selected day: {}\n", month, selected);
+        if events.row_count() > 0 {
+            context.push_str("Today's events:\n");
+            for i in 0..events.row_count().min(10) {
+                if let Some(e) = events.row_data(i) {
+                    context.push_str(&format!("  - {} ({})\n", e.title, e.time_text));
+                }
+            }
+        } else {
+            context.push_str("No events for selected day.\n");
+        }
+
+        let prompt = super::ai_assist::calendar_insights_prompt(&context);
+
+        super::ai_assist::ai_request(
+            &ui.as_weak(),
+            &bridge,
+            &ai_st,
+            super::ai_assist::AiAssistRequest {
+                prompt,
+                timeout_secs: 30,
+                set_working: Box::new(|ui, v| ui.set_cal_ai_is_working(v)),
+                set_response: Box::new(|ui, s| ui.set_cal_ai_response(s.into())),
+                get_response: Box::new(|ui| ui.get_cal_ai_response().to_string()),
+            },
+        );
+    });
+
+    let ui_weak = ui.as_weak();
+    ui.on_cal_ai_dismiss(move || {
+        if let Some(ui) = ui_weak.upgrade() {
+            ui.set_cal_ai_panel_open(false);
+        }
+    });
+}
+
+/// Detect system timezone for display.
+fn detect_timezone() -> String {
+    // Try TZ env var first
+    if let Ok(tz) = std::env::var("TZ") {
+        if !tz.is_empty() {
+            return tz;
+        }
+    }
+
+    // On Linux, read /etc/timezone
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(tz) = std::fs::read_to_string("/etc/timezone") {
+            let tz = tz.trim().to_string();
+            if !tz.is_empty() {
+                return tz;
+            }
+        }
+    }
+
+    // Fallback: compute UTC offset
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let _secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    "UTC".to_string()
 }

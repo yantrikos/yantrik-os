@@ -3,7 +3,8 @@
 //   6=memory, 7=settings, 8=files, 9=notifications, 10=system,
 //   11=image_viewer, 12=text_editor, 13=media_player, 14=terminal, 15=notes, 16=about,
 //   17=email, 18=calendar, 19=weather, 20=music_player, 21=package_manager, 22=network_manager, 23=system_monitor,
-//   24=download_manager, 25=snippet_manager, 26=container_manager, 27=device_dashboard, 28=permission_dashboard.
+//   24=download_manager, 25=snippet_manager, 26=container_manager, 27=device_dashboard, 28=permission_dashboard,
+//   29=spreadsheet, 30=document_editor, 31=presentation.
 // The AI IS the shell — Intent Lens is the primary interaction.
 
 import { Theme, ThemeMode, ThemeOverrides, AccentPreset } from "theme.slint";
@@ -16,29 +17,33 @@ import { LockScreen } from "lock.slint";
 import { SettingsScreen } from "settings.slint";
 import { SkillData } from "skill_store.slint";
 import { MemoryBrowser, MemoryItem } from "memory_browser.slint";
-import { FileBrowser, FileEntry, BreadcrumbSegment, FileDetailData } from "file_browser.slint";
+import { FileBrowser, FileEntry, BreadcrumbSegment, FileDetailData, FileTabData, FileOpItem } from "file_browser.slint";
 import { NotificationCenter, NotificationData } from "notification_center.slint";
 import { SystemDashboard, ProcessData } from "system_dashboard.slint";
 import { VoiceOverlay } from "voice_overlay.slint";
 import { ImageViewer } from "image_viewer.slint";
-import { TextEditorScreen } from "text_editor.slint";
+import { TextEditorScreen, EditorTabData } from "text_editor.slint";
 import { MediaPlayer } from "media_player.slint";
 import { TerminalScreen, TerminalTabData } from "terminal.slint";
-import { NotesEditor, NoteEntry } from "notes_editor.slint";
+import { NotesEditor, NoteEntry, NoteVersionEntry, NoteBacklink } from "notes_editor.slint";
 import { AboutScreen, ComponentVersionData } from "about.slint";
-import { EmailClient, EmailFolderData, EmailListItem, EmailDetailData } from "email.slint";
-import { CalendarScreen, CalendarDay, CalendarEvent } from "calendar.slint";
+import { EmailClient, EmailFolderData, EmailListItem, EmailDetailData, EmailThreadMessage, EmailAttachmentData, EmailSignatureData } from "email.slint";
+import { CalendarScreen, CalendarDay, CalendarEvent, CalendarTimeEvent, CalendarAttendee, CalendarTemplate } from "calendar.slint";
 import { PackageManager, PackageData, PendingAction } from "package_manager.slint";
-import { NetworkManager, WifiNetwork, EthernetInterface, BluetoothDevice, VpnConnection, FirewallRule } from "network_manager.slint";
+import { NetworkManager, WifiNetwork, EthernetInterface, BluetoothDevice, VpnConnection, FirewallRule, DiagTestResult, ConnectionEvent } from "network_manager.slint";
 import { SystemMonitor, CpuCoreData, DiskData, NetworkInterfaceData, MonitorProcessData } from "system_monitor.slint";
-import { WeatherDashboard, WeatherCurrent, WeatherHourly, WeatherDaily } from "weather.slint";
-import { MusicPlayerScreen, MusicTrackData } from "music_player.slint";
+import { WeatherDashboard, WeatherCurrent, WeatherHourly, WeatherDaily, WeatherSavedLocation, WeatherAlert } from "weather.slint";
+import { MusicPlayerScreen, MusicTrackData, MusicPlaylistData, MusicAlbumData, MusicArtistData, MusicGenreData, MusicScanFolderData } from "music_player.slint";
 import { DownloadManagerScreen, DownloadItem } from "download_manager.slint";
-import { SnippetManagerScreen, SnippetData, TagChip } from "snippet_manager.slint";
+import { SnippetManagerScreen, SnippetData, TagChip, CollectionData, LanguageOption } from "snippet_manager.slint";
 import { ContainerManagerScreen, ContainerData, ImageData, VolumeData } from "container_manager.slint";
 import { DeviceDashboardScreen, UsbDeviceData, PciDeviceData, InputDeviceData, StorageDeviceData, DisplayDeviceData } from "device_dashboard.slint";
 import { PermissionDashboardScreen, UserData, GroupData, PermFileData } from "permission_dashboard.slint";
+import { SpreadsheetScreen, SpreadsheetCell, SheetTab } from "spreadsheet.slint";
+import { DocumentEditorScreen, DocHeadingEntry, DocCommentEntry, DocChangeEntry, DocVersionEntry } from "document_editor.slint";
+import { PresentationScreen, SlideData, PresentTheme } from "presentation.slint";
 import { ToastBanner, ToastData } from "components/toast_banner.slint";
+import { CommandPalette, CommandItem } from "components/command_palette.slint";
 import { ContentBlock, MessageData } from "components/message_bubble.slint";
 import { UrgeCardData } from "components/glance_card.slint";
 import { LensResult } from "components/intent_lens.slint";
@@ -51,7 +56,7 @@ import { DockItem, AppDock } from "components/app_dock.slint";
 import { WindowFrame } from "components/window_frame.slint";
 import { Tr } from "translations.slint";
 
-export { Tr, ThemeMode, ThemeOverrides, AccentPreset, ContentBlock, MessageData, UrgeCardData, BondData, OpinionData, SharedRefData, MemoryItem, LensResult, WhisperCardItem, FileEntry, BreadcrumbSegment, FileDetailData, NotificationData, ProcessData, ClipboardEntryData, AppGridItem, WindowItem, DockItem, NoteEntry, ToastData, TerminalTabData, EmailFolderData, EmailListItem, EmailDetailData, CalendarDay, CalendarEvent, PackageData, PendingAction, WifiNetwork, EthernetInterface, BluetoothDevice, VpnConnection, FirewallRule, CpuCoreData, DiskData, NetworkInterfaceData, MonitorProcessData, WeatherCurrent, WeatherHourly, WeatherDaily, MusicTrackData, DownloadItem, SnippetData, TagChip, ContainerData, ImageData, VolumeData, UsbDeviceData, PciDeviceData, InputDeviceData, StorageDeviceData, DisplayDeviceData, UserData, GroupData, PermFileData, ComponentVersionData, BriefSection }
+export { Tr, ThemeMode, ThemeOverrides, AccentPreset, ContentBlock, MessageData, UrgeCardData, BondData, OpinionData, SharedRefData, MemoryItem, LensResult, WhisperCardItem, FileEntry, BreadcrumbSegment, FileDetailData, NotificationData, ProcessData, ClipboardEntryData, AppGridItem, WindowItem, DockItem, NoteEntry, ToastData, TerminalTabData, EmailFolderData, EmailListItem, EmailDetailData, EmailAttachmentData, EmailSignatureData, CalendarDay, CalendarEvent, CalendarAttendee, CalendarTemplate, PackageData, PendingAction, WifiNetwork, EthernetInterface, BluetoothDevice, VpnConnection, FirewallRule, CpuCoreData, DiskData, NetworkInterfaceData, MonitorProcessData, WeatherCurrent, WeatherHourly, WeatherDaily, WeatherSavedLocation, WeatherAlert, MusicTrackData, MusicPlaylistData, MusicAlbumData, MusicArtistData, MusicGenreData, MusicScanFolderData, DownloadItem, SnippetData, TagChip, CollectionData, LanguageOption, ContainerData, ImageData, VolumeData, UsbDeviceData, PciDeviceData, InputDeviceData, StorageDeviceData, DisplayDeviceData, UserData, GroupData, PermFileData, ComponentVersionData, BriefSection, SpreadsheetCell, SheetTab, DocHeadingEntry, SlideData, PresentTheme, CommandItem }
 
 export component App inherits Window {
     title: "Yantrik OS";
@@ -178,6 +183,25 @@ export component App inherits Window {
     callback brightness-changed(int);
     callback volume-changed(int);
 
+    // Command Palette state (Ctrl+Shift+P)
+    in-out property <bool> command-palette-open: false;
+    in property <[CommandItem]> command-palette-filtered: [];
+    callback command-palette-search(string);
+    callback command-palette-selected(string);
+    callback open-command-palette();
+
+    // Cross-App Workflow data transfer
+    callback cross-app-action(string, string);  // (action_type, data_json)
+
+    // Pre-fill properties for cross-app data transfer
+    in-out property <string> cal-prefill-title: "";
+    in-out property <string> cal-prefill-notes: "";
+    in-out property <string> notes-prefill-title: "";
+    in-out property <string> notes-prefill-content: "";
+    in-out property <string> pres-prefill-title: "";
+    in-out property <string> pres-prefill-content: "";
+    in-out property <string> editor-open-path: "";
+
     // Notification toast (legacy — kept for backward compatibility)
     in property <string> notification-text: "";
     in-out property <bool> show-notification: false;
@@ -294,6 +318,43 @@ export component App inherits Window {
     in property <string> file-dir-type-badge: "";
     callback file-request-summarize();
     callback file-request-ask-ai();
+    // File browser enterprise features
+    callback file-create-file(string);
+    callback file-multi-select-clicked(int, bool, bool);
+    callback file-select-all();
+    callback file-clear-selection();
+    callback file-delete-selected();
+    callback file-copy-selected();
+    callback file-cut-selected();
+    callback file-context-copy-path(string);
+    callback file-context-open-terminal();
+    callback file-context-compress(string);
+    in-out property <int> file-selection-count: 0;
+    in property <string> file-selection-size-text: "";
+    in-out property <bool> file-detail-panel-visible: false;
+    in-out property <int> file-selected-index: -1;
+    // File browser V44 — tabs, ops queue, batch rename, quick look, trash
+    in property <[FileTabData]> file-tabs: [];
+    in property <int> file-active-tab: 0;
+    callback file-new-tab();
+    callback file-close-tab(int);
+    callback file-switch-tab(int);
+    in property <[FileOpItem]> file-op-queue: [];
+    in-out property <bool> file-op-queue-visible: false;
+    in-out property <bool> file-batch-rename-open: false;
+    in-out property <string> file-batch-rename-pattern: "";
+    in-out property <string> file-batch-rename-replace: "";
+    callback file-batch-rename-execute();
+    in-out property <bool> file-quick-look-open: false;
+    in property <string> file-quick-look-content: "";
+    in property <string> file-quick-look-name: "";
+    callback file-quick-look(int);
+    callback file-close-quick-look();
+    in-out property <bool> file-trash-mode: false;
+    in property <int> file-trash-count: 0;
+    callback file-toggle-trash();
+    callback file-empty-trash();
+    callback file-restore-from-trash(int);
 
     // Notification Center state (screen 9)
     in property <[NotificationData]> notification-list: [];
@@ -331,12 +392,79 @@ export component App inherits Window {
     callback viewer-nav-prev();
     callback viewer-nav-next();
     callback viewer-toggle-fit();
+    // Image Viewer AI
+    in property <bool> viewer-ai-is-working: false;
+    in property <string> viewer-ai-response: "";
+    in-out property <bool> viewer-ai-panel-open: false;
+    callback viewer-ai-describe();
+    callback viewer-ai-dismiss();
+    // Image Viewer — Rotate / Flip
+    in-out property <int> viewer-rotation: 0;
+    in-out property <bool> viewer-flip-h: false;
+    in-out property <bool> viewer-flip-v: false;
+    callback viewer-rotate-left();
+    callback viewer-rotate-right();
+    callback viewer-flip-horizontal();
+    callback viewer-flip-vertical();
+    // Image Viewer — EXIF Info Panel
+    in-out property <bool> viewer-info-open: false;
+    in property <string> viewer-exif-dimensions: "";
+    in property <string> viewer-exif-file-size: "";
+    in property <string> viewer-exif-format: "";
+    in property <string> viewer-exif-camera: "";
+    in property <string> viewer-exif-focal-length: "";
+    in property <string> viewer-exif-iso: "";
+    in property <string> viewer-exif-exposure: "";
+    in property <string> viewer-exif-date-taken: "";
+    in property <string> viewer-exif-gps: "";
+    callback viewer-toggle-info();
+    // Image Viewer — Slideshow
+    in-out property <bool> viewer-slideshow-active: false;
+    in-out property <bool> viewer-slideshow-paused: false;
+    in-out property <float> viewer-slideshow-progress: 0.0;
+    callback viewer-slideshow-toggle();
+    callback viewer-slideshow-stop();
+    // Image Viewer — Crop
+    in-out property <bool> viewer-crop-mode: false;
+    callback viewer-start-crop();
+    callback viewer-apply-crop();
+    callback viewer-cancel-crop();
+    // Image Viewer — Batch operations
+    in property <string> viewer-batch-status: "";
+    in property <int> viewer-batch-total: 0;
+    in property <int> viewer-batch-done: 0;
+    in-out property <bool> viewer-batch-panel-open: false;
+    callback viewer-batch-rotate-all(int);
+    callback viewer-batch-resize(int, int);
 
     // Text Editor state (screen 12)
     in property <string> editor-file-name: "untitled";
     in-out property <string> editor-file-content: "";
     in property <bool> editor-is-modified: false;
     in property <bool> editor-is-readonly: false;
+    // Editor tabs
+    in property <[EditorTabData]> editor-tabs: [];
+    in property <int> editor-tab-count: 0;
+    in property <int> editor-active-tab: 0;
+    callback editor-switch-tab(int);
+    callback editor-new-tab();
+    callback editor-close-tab(int);
+    // Editor line/column info
+    in property <int> editor-cursor-line: 1;
+    in property <int> editor-cursor-col: 1;
+    in property <int> editor-total-lines: 1;
+    in property <string> editor-encoding: "UTF-8";
+    in property <string> editor-line-ending: "LF";
+    in property <string> editor-file-type: "Plain Text";
+    in property <string> editor-line-numbers-text: "  1";
+    // Go-to-line
+    in-out property <bool> editor-show-goto-line: false;
+    in-out property <string> editor-goto-line-input: "";
+    callback editor-goto-line(int);
+    // Autosave
+    in property <bool> editor-autosave-enabled: true;
+    in property <string> editor-last-saved-time: "";
+    // Save As
     in-out property <bool> editor-show-save-dialog: false;
     in-out property <string> editor-save-dir: "~/";
     in-out property <string> editor-save-filename: "untitled.txt";
@@ -364,16 +492,61 @@ export component App inherits Window {
     callback editor-replace-current();
     callback editor-replace-all();
     callback editor-find-query-changed(string);
+    // Large file & encoding/line-ending picker
+    in property <bool> editor-large-file-warning: false;
+    in property <string> editor-file-size-text: "";
+    in-out property <bool> editor-minimap-visible: false;
+    callback editor-set-encoding(string);
+    callback editor-set-line-ending(string);
+    callback editor-toggle-minimap();
 
     // Media Player state (screen 13)
     in property <string> player-track-name: "";
+    in property <string> player-track-path: "";
     in property <bool> player-is-playing: false;
     in property <float> player-progress: 0.0;
     in property <string> player-time-current: "0:00";
     in property <string> player-time-total: "0:00";
+    in-out property <float> player-volume: 0.8;
+    in-out property <bool> player-is-muted: false;
+    in property <string> player-speed-text: "1.0x";
+    in-out property <int> player-speed-index: 3;
+    in-out property <int> player-repeat-mode: 0;
+    in-out property <bool> player-shuffle-on: false;
+    in property <string> player-track-artist: "";
+    in property <string> player-track-album: "";
+    in property <string> player-track-format: "";
+    in property <bool> player-is-video: false;
+    in property <int> player-queue-count: 0;
+    in property <int> player-queue-position: 0;
     callback player-play-pause();
     callback player-stop();
     callback player-seek(float);
+    callback player-set-volume(float);
+    callback player-toggle-mute();
+    callback player-set-speed(int);
+    callback player-next-track();
+    callback player-prev-track();
+    callback player-toggle-repeat();
+    callback player-toggle-shuffle();
+    // Subtitle tracks
+    in property <[string]> player-subtitle-tracks: [];
+    in property <int> player-subtitle-active: -1;
+    in-out property <bool> player-show-subtitle-menu: false;
+    callback player-select-subtitle(int);
+    // A-B repeat
+    in-out property <bool> player-ab-repeat-active: false;
+    in property <float> player-ab-start: 0.0;
+    in property <float> player-ab-end: 1.0;
+    callback player-set-ab-start();
+    callback player-set-ab-end();
+    callback player-toggle-ab-repeat();
+    // Media Player AI
+    in property <bool> player-ai-is-working: false;
+    in property <string> player-ai-response: "";
+    in-out property <bool> player-ai-panel-open: false;
+    callback player-ai-explain();
+    callback player-ai-dismiss();
 
     // Terminal state (screen 14)
     in property <string> terminal-output: "";
@@ -385,6 +558,15 @@ export component App inherits Window {
     in property <int> terminal-tab-count: 1;
     in property <int> terminal-active-tab: 0;
     in property <[TerminalTabData]> terminal-tabs: [];
+    in property <int> terminal-search-match-count: 0;
+    in property <int> terminal-search-current-match: 0;
+    // Split pane
+    in property <bool> terminal-split-active: false;
+    in property <string> terminal-split-output: "";
+    in property <int> terminal-split-cursor-row: 0;
+    in property <int> terminal-split-cursor-col: 0;
+    // Profile
+    in property <string> terminal-profile-name: "Default";
     callback terminal-key-pressed(KeyEvent) -> EventResult;
     callback terminal-request-ai-help();
     callback terminal-dismiss-suggestion();
@@ -392,6 +574,13 @@ export component App inherits Window {
     callback terminal-switch-tab(int);
     callback terminal-new-tab();
     callback terminal-close-tab(int);
+    callback terminal-search-query-changed(string);
+    callback terminal-search-next();
+    callback terminal-search-prev();
+    callback terminal-split-toggle();
+    callback terminal-switch-pane(int);
+    callback terminal-split-input(string);
+    callback terminal-set-profile(string);
 
     // Notes Editor state (screen 15)
     in-out property <string> notes-current-content: "";
@@ -407,6 +596,47 @@ export component App inherits Window {
     callback notes-select(int);
     callback notes-search(string);
     callback notes-content-changed(string);
+    // Notes folders
+    in-out property <int> notes-active-folder: 0;
+    in property <int> notes-folder-all-count: 0;
+    in property <int> notes-folder-fav-count: 0;
+    in property <int> notes-folder-recent-count: 0;
+    callback notes-select-folder(int);
+    // Notes tags
+    in-out property <string> notes-current-tags: "";
+    callback notes-update-tags(string);
+    // Notes pin/favorite
+    callback notes-toggle-pin(int);
+    // Notes templates
+    callback notes-new-from-template(string);
+    // Notes metadata
+    in property <string> notes-meta-created: "";
+    in property <string> notes-meta-modified: "";
+    in property <int> notes-meta-word-count: 0;
+    // Notes formatting
+    callback notes-insert-format(string);
+    // Notes AI
+    in property <bool> notes-ai-is-working: false;
+    in property <string> notes-ai-response: "";
+    in-out property <bool> notes-ai-panel-open: false;
+    callback notes-ai-structure();
+    callback notes-ai-summarize();
+    callback notes-ai-apply();
+    callback notes-ai-dismiss();
+
+    // Notes V43: Version history, backlinks, meeting mode, export/import
+    in property <[NoteVersionEntry]> notes-version-history: [];
+    in property <[NoteBacklink]> notes-backlinks: [];
+    in-out property <bool> notes-version-panel-open: false;
+    in-out property <bool> notes-backlinks-panel-open: false;
+    in property <bool> notes-meeting-mode: false;
+    in property <string> notes-export-status: "";
+    callback notes-view-version(int);
+    callback notes-restore-version(int);
+    callback notes-export-md();
+    callback notes-import-md();
+    callback notes-toggle-meeting-mode();
+    callback notes-find-backlinks();
 
     // About screen state (screen 16)
     in property <string> about-hostname: "";
@@ -437,6 +667,16 @@ export component App inherits Window {
     in-out property <string> email-compose-bcc: "";
     in-out property <string> email-compose-subject: "";
     in-out property <string> email-compose-body: "";
+    // Thread messages for detail view
+    in property <[EmailThreadMessage]> email-thread-messages: [];
+    // Search state
+    in property <int> email-search-count: 0;
+    in property <bool> email-search-active: false;
+    in-out property <string> email-search-query: "";
+    // Sync/status bar state
+    in property <string> email-sync-status: "Synced";
+    in property <int> email-folder-total: 0;
+    in property <int> email-folder-unread: 0;
     // Account setup state
     in property <bool> email-has-account: false;
     in property <string> email-setup-status: "";
@@ -455,7 +695,9 @@ export component App inherits Window {
     callback email-compose-new();
     callback email-send(string, string, string, string, string);  // to, cc, bcc, subject, body
     callback email-reply();
+    callback email-reply-all();
     callback email-forward();
+    callback email-archive(int);
     callback email-delete(int);
     callback email-mark-read(int);
     callback email-mark-flagged(int);
@@ -467,11 +709,25 @@ export component App inherits Window {
     callback email-search(string);
     callback email-sync();
     callback email-cancel-compose();
+    callback email-toggle-thread-message(int);
     // Account setup: save-account(email, password, display_name, provider, imap_server, imap_port, smtp_server, smtp_port)
     callback email-save-account(string, string, string, string, string, string, string, string);
     // test-connection(email, password, provider, imap_server, imap_port)
     callback email-test-connection(string, string, string, string, string);
     callback email-oauth-google();  // Sign in with Google (OAuth2)
+    // V41: Enterprise email enhancements
+    in property <[EmailAttachmentData]> email-attachments: [];
+    in property <[EmailSignatureData]> email-signatures: [];
+    in property <int> email-active-signature: 0;
+    in property <int> email-triage-view: 0;
+    in property <string> email-draft-status: "";
+    in property <string> email-ai-intent: "";
+    callback email-download-attachment(int);
+    callback email-preview-attachment(int);
+    callback email-set-signature(int);
+    callback email-triage-filter(int);
+    callback email-save-draft();
+    callback email-ai-classify();
 
     // Calendar state (screen 18)
     in property <string> cal-month-title: "March 2026";
@@ -492,6 +748,32 @@ export component App inherits Window {
     callback cal-delete-event(int);
     callback cal-cancel-event-form();
     callback cal-today-pressed();
+    // Calendar view mode
+    in-out property <int> cal-view-mode: 0;
+    callback cal-switch-view(int);
+    in property <[CalendarTimeEvent]> cal-week-events: [];
+    in property <[string]> cal-week-day-labels: [];
+    in property <int> cal-current-hour: 0;
+    in property <[CalendarTimeEvent]> cal-day-events: [];
+    in property <string> cal-day-view-title: "";
+    // Calendar AI
+    in property <bool> cal-ai-is-working: false;
+    in property <string> cal-ai-response: "";
+    in-out property <bool> cal-ai-panel-open: false;
+    callback cal-ai-explain();
+    callback cal-ai-dismiss();
+
+    // Calendar templates, attendees, reminders
+    in-out property <bool> cal-template-panel-open: false;
+    in property <[CalendarAttendee]> cal-event-attendees: [];
+    in property <[CalendarTemplate]> cal-templates: [];
+    in property <string> cal-timezone-display: "";
+    in property <int> cal-reminder-minutes: 15;
+    callback cal-add-attendee(string, string);
+    callback cal-remove-attendee(int);
+    callback cal-set-reminder(int);
+    callback cal-toggle-template-panel();
+    callback cal-use-template(int);
 
     // Package Manager state (screen 21)
     in property <[PackageData]> pkg-packages: [];
@@ -524,6 +806,13 @@ export component App inherits Window {
     callback pkg-apply-changes();
     callback pkg-cancel-changes();
     callback pkg-filter-changed(int);
+    // Package Manager AI
+    in property <bool> pkg-ai-is-working: false;
+    in property <string> pkg-ai-response: "";
+    in-out property <bool> pkg-ai-panel-open: false;
+    callback pkg-ai-explain();
+    callback pkg-ai-intent(string);
+    callback pkg-ai-dismiss();
 
     // Network Manager state (screen 22)
     in property <bool> net-wifi-enabled: false;
@@ -545,6 +834,18 @@ export component App inherits Window {
     in property <int> net-firewall-rule-count: 0;
     in property <[FirewallRule]> net-firewall-rules: [];
     in property <string> net-firewall-profile: "Custom";
+    // WiFi connection details
+    in property <string> net-wifi-gateway: "";
+    in property <string> net-wifi-dns: "";
+    in property <string> net-wifi-subnet: "";
+    // Diagnostics
+    in property <[DiagTestResult]> net-diag-tests: [];
+    in property <[ConnectionEvent]> net-diag-connection-history: [];
+    // Status bar
+    in property <string> net-status-connection-type: "";
+    in property <string> net-status-ip-address: "";
+    in property <int> net-status-signal-strength: 0;
+    in property <string> net-status-state: "disconnected";
     callback net-toggle-wifi();
     callback net-wifi-scan();
     callback net-wifi-connect(string, string);
@@ -561,8 +862,31 @@ export component App inherits Window {
     callback net-firewall-allow-port(string);
     callback net-firewall-block-port(string);
     callback net-firewall-apply-profile(string);
+    callback net-diag-run-test(string);
+    callback net-diag-run-all-tests();
+    // Network Manager — Ping / Traceroute
+    in-out property <string> net-diag-ping-target: "8.8.8.8";
+    in property <string> net-diag-ping-result: "";
+    in property <bool> net-diag-ping-running: false;
+    in property <string> net-diag-traceroute-result: "";
+    in property <bool> net-diag-traceroute-running: false;
+    callback net-diag-run-ping();
+    callback net-diag-run-traceroute();
+    // Network Manager — VPN config import
+    in-out property <string> net-vpn-import-path: "";
+    in property <string> net-vpn-import-status: "";
+    callback net-vpn-import-config();
+    // Network Manager AI
+    in property <bool> net-ai-is-working: false;
+    in property <string> net-ai-response: "";
+    in-out property <bool> net-ai-panel-open: false;
+    callback net-ai-explain();
+    callback net-ai-dismiss();
 
     // System Monitor state (screen 23)
+    in property <string> mon-health-status: "Healthy";
+    in property <float> mon-health-score: 100.0;
+    in property <string> mon-health-summary: "";
     in property <float> mon-cpu-usage: 0.0;
     in property <string> mon-cpu-model: "";
     in property <string> mon-cpu-frequency: "";
@@ -583,8 +907,18 @@ export component App inherits Window {
     in property <[NetworkInterfaceData]> mon-network-interfaces: [];
     in property <[MonitorProcessData]> mon-processes: [];
     in-out property <int> mon-sort-column: 0;
+    in-out property <string> mon-process-search: "";
+    in-out property <int> mon-selected-process-pid: -1;
     in property <string> mon-uptime-text: "";
+    in property <bool> mon-ai-is-working: false;
+    in property <string> mon-ai-response: "";
+    in-out property <bool> mon-ai-panel-open: false;
     callback sort-by-column(int);
+    callback mon-process-search-changed(string);
+    callback mon-kill-process(int);
+    callback mon-force-kill-process(int);
+    callback mon-ai-explain();
+    callback mon-ai-dismiss();
 
     // Weather Dashboard state (screen 19)
     in property <WeatherCurrent> weather-current: {
@@ -596,11 +930,40 @@ export component App inherits Window {
     in property <[WeatherHourly]> weather-hourly: [];
     in property <[WeatherDaily]> weather-daily: [];
     callback weather-refresh();
+    // Weather AI
+    in property <bool> weather-ai-is-working: false;
+    in property <string> weather-ai-response: "";
+    in-out property <bool> weather-ai-panel-open: false;
+    callback weather-ai-explain();
+    callback weather-ai-dismiss();
+    // Weather saved locations
+    in property <[WeatherSavedLocation]> weather-saved-locations: [];
+    in-out property <bool> weather-location-panel-open: false;
+    in-out property <string> weather-add-location-text: "";
+    callback weather-select-location(int);
+    callback weather-add-location(string);
+    callback weather-remove-location(int);
+    // Weather units toggle
+    in-out property <bool> weather-use-fahrenheit: false;
+    callback weather-toggle-units();
+    // Weather alerts
+    in property <[WeatherAlert]> weather-alerts: [];
+    // Severe weather alert banner
+    in property <bool> weather-severe-alert-active: false;
+    in property <string> weather-severe-alert-text: "";
+    in property <string> weather-severe-alert-level: "";
+    // Weather last updated
+    in property <string> weather-last-updated: "";
+    // Weather AQI
+    in property <string> weather-aqi-value: "--";
+    in property <string> weather-aqi-label: "N/A";
+    in property <int> weather-aqi-level: 0;
 
     // Music Player state (screen 20)
     in property <[MusicTrackData]> music-library-tracks: [];
-    in property <[string]> music-library-artists: [];
-    in property <[string]> music-library-albums: [];
+    in property <[MusicArtistData]> music-library-artists: [];
+    in property <[MusicAlbumData]> music-library-albums: [];
+    in property <[MusicGenreData]> music-library-genres: [];
     in property <int> music-library-track-count: 0;
     in-out property <int> music-browse-category: 0;
     in-out property <string> music-browse-filter: "";
@@ -608,29 +971,69 @@ export component App inherits Window {
     in property <string> music-now-title: "";
     in property <string> music-now-artist: "";
     in property <string> music-now-album: "";
+    in property <string> music-now-genre: "";
+    in property <string> music-now-format-info: "";
+    in property <string> music-now-bitrate: "";
     in property <bool> music-is-playing: false;
     in property <float> music-progress: 0.0;
     in property <string> music-time-current: "0:00";
     in property <string> music-time-total: "0:00";
     in property <float> music-volume: 0.8;
+    in property <bool> music-volume-muted: false;
     in property <[MusicTrackData]> music-queue-tracks: [];
     in property <int> music-queue-current-index: -1;
     in property <bool> music-shuffle-on: false;
-    in property <bool> music-repeat-on: false;
+    in property <int> music-repeat-mode: 0;
+    in property <float> music-playback-speed: 1.0;
+    in property <[MusicPlaylistData]> music-playlists: [];
+    in property <int> music-active-playlist-index: -1;
+    in property <[MusicScanFolderData]> music-scan-folders: [];
+    in property <bool> music-is-scanning: false;
+    in property <float> music-scan-progress: 0.0;
+    in property <string> music-scan-status: "";
     callback music-play-pause();
     callback music-stop();
     callback music-next-track();
     callback music-prev-track();
     callback music-seek(float);
     callback music-volume-changed(float);
+    callback music-toggle-mute();
     callback music-toggle-shuffle();
-    callback music-toggle-repeat();
+    callback music-cycle-repeat();
+    callback music-set-playback-speed(float);
     callback music-play-track-index(int);
     callback music-queue-play-index(int);
     callback music-browse-category-changed(int);
     callback music-browse-filter-changed(string);
     callback music-browse-item-selected(string);
     callback music-add-to-queue(int);
+    callback music-play-next(int);
+    callback music-queue-remove(int);
+    callback music-queue-move-up(int);
+    callback music-queue-move-down(int);
+    callback music-queue-clear();
+    callback music-playlist-create(string);
+    callback music-playlist-rename(int, string);
+    callback music-playlist-delete(int);
+    callback music-playlist-select(int);
+    callback music-playlist-add-track(int, int);
+    callback music-playlist-remove-track(int, int);
+    callback music-scan-add-folder(string);
+    callback music-scan-remove-folder(int);
+    callback music-scan-rescan();
+    // Folder watch + Equalizer
+    in property <bool> music-folder-watch-active: false;
+    in property <string> music-folder-watch-status: "";
+    in property <int> music-equalizer-preset: 0;
+    in-out property <bool> music-show-equalizer: false;
+    callback music-toggle-folder-watch();
+    callback music-set-equalizer(int);
+    // Music Player AI
+    in property <bool> music-ai-is-working: false;
+    in property <string> music-ai-response: "";
+    in-out property <bool> music-ai-panel-open: false;
+    callback music-ai-explain();
+    callback music-ai-dismiss();
 
     // Download Manager state (screen 24)
     in property <[DownloadItem]> dl-downloads: [];
@@ -639,7 +1042,7 @@ export component App inherits Window {
     in property <int> dl-completed-today: 0;
     in property <string> dl-error-text: "";
     in-out property <int> dl-active-filter: 0;
-    callback dl-add(string);
+    callback dl-add(/* url */ string, /* checksum */ string, /* save-dir */ string);
     callback dl-pause(int);
     callback dl-resume(int);
     callback dl-cancel(int);
@@ -647,17 +1050,41 @@ export component App inherits Window {
     callback dl-open-folder(int);
     callback dl-clear-completed();
     callback dl-filter(int);
+    callback dl-verify-checksum(int);
+    callback dl-toggle-select(int);
+    callback dl-select-all(bool);
+    callback dl-pause-all();
+    callback dl-resume-all();
+    callback dl-search(string);
+    callback dl-sort(int);
+    in property <int> dl-search-match-count: 0;
+    in property <bool> dl-resume-supported: false;
+    in property <string> dl-checksum-result: "";
+    // Download Manager AI
+    in property <bool> dl-ai-is-working: false;
+    in property <string> dl-ai-response: "";
+    in-out property <bool> dl-ai-panel-open: false;
+    callback dl-ai-explain();
+    callback dl-ai-dismiss();
 
     // Code Snippet Manager state (screen 25)
     in property <[SnippetData]> snip-snippets: [];
     in property <[TagChip]> snip-tag-chips: [];
     in property <int> snip-snippet-count: 0;
+    in property <[CollectionData]> snip-collections: [];
+    in property <[LanguageOption]> snip-language-options: [];
+    in property <int> snip-match-count: -1;
     in property <int> snip-detail-id: -1;
     in-out property <string> snip-detail-title: "";
     in-out property <string> snip-detail-language: "";
     in-out property <string> snip-detail-code: "";
     in-out property <string> snip-detail-tags: "";
+    in property <bool> snip-detail-is-favorite: false;
+    in property <string> snip-detail-created-date: "";
+    in property <string> snip-detail-last-used-date: "";
+    in property <int> snip-detail-use-count: 0;
     in-out property <string> snip-search-query: "";
+    in property <bool> snip-copy-feedback-visible: false;
     callback snip-search(string);
     callback snip-select(int);
     callback snip-new();
@@ -665,6 +1092,26 @@ export component App inherits Window {
     callback snip-delete(int);
     callback snip-copy(int);
     callback snip-tag-filter(string);
+    callback snip-toggle-favorite(int);
+    callback snip-collection-select(int);
+    callback snip-collection-create(string);
+    callback snip-collection-rename(int, string);
+    callback snip-collection-delete(int);
+    callback snip-export-all();
+    callback snip-import();
+    callback snip-set-language(string);
+    // Snippet version history
+    in property <[string]> snip-version-list: [];
+    in-out property <bool> snip-version-panel-open: false;
+    in property <string> snip-version-content: "";
+    callback snip-view-version(int);
+    callback snip-restore-version(int);
+    // Snippet Manager AI
+    in property <bool> snip-ai-is-working: false;
+    in property <string> snip-ai-response: "";
+    in-out property <bool> snip-ai-panel-open: false;
+    callback snip-ai-explain();
+    callback snip-ai-dismiss();
 
     // Container Manager state (screen 26)
     in-out property <int> ct-active-tab: 0;
@@ -693,6 +1140,12 @@ export component App inherits Window {
     callback ct-create-volume(string);
     callback ct-remove-volume(string);
     callback ct-refresh();
+    // Container Manager AI
+    in property <bool> ct-ai-is-working: false;
+    in property <string> ct-ai-response: "";
+    in-out property <bool> ct-ai-panel-open: false;
+    callback ct-ai-summarize-logs();
+    callback ct-ai-dismiss();
 
     // Device Dashboard state (screen 27)
     in-out property <int> dev-active-tab: 0;
@@ -700,15 +1153,34 @@ export component App inherits Window {
     in-out property <int> dev-usb-selected-index: -1;
     in property <string> dev-usb-detail-text: "";
     in property <[PciDeviceData]> dev-pci-devices: [];
+    in-out property <int> dev-pci-selected-index: -1;
     in property <[InputDeviceData]> dev-input-devices: [];
     in property <[StorageDeviceData]> dev-storage-devices: [];
     in property <[DisplayDeviceData]> dev-display-devices: [];
     in property <string> dev-gpu-info: "";
     in property <bool> dev-scanning: false;
+    in property <string> dev-selected-device-info: "";
+    in-out property <string> dev-search-text: "";
+    in property <string> dev-export-status: "";
+    in property <string> dev-summary: "";
     callback dev-tab(int);
     callback dev-select-usb(int);
     callback dev-select-pci(int);
     callback dev-refresh();
+    callback dev-export();
+    callback dev-search(string);
+    callback dev-close-detail();
+    // Device hotplug
+    in property <string> dev-hotplug-notification: "";
+    in property <int> dev-hotplug-count: 0;
+    in-out property <bool> dev-hotplug-banner-visible: false;
+    callback dev-dismiss-hotplug();
+    // Device Dashboard AI
+    in property <bool> dev-ai-is-working: false;
+    in property <string> dev-ai-response: "";
+    in-out property <bool> dev-ai-panel-open: false;
+    callback dev-ai-explain();
+    callback dev-ai-dismiss();
 
     // Permission Dashboard state (screen 28)
     in-out property <int> perm-active-tab: 0;
@@ -718,10 +1190,317 @@ export component App inherits Window {
     in property <[PermFileData]> perm-suid-files: [];
     in property <[PermFileData]> perm-world-writable: [];
     in property <bool> perm-scanning: false;
+    in property <int> perm-high-risk-count: 0;
+    in property <int> perm-medium-risk-count: 0;
+    in property <int> perm-low-risk-count: 0;
+    in-out property <string> perm-scan-path: "/";
+    in property <string> perm-scan-status: "";
+    in-out property <string> perm-search-text: "";
+    in property <PermFileData> perm-selected-file: {
+        path: "", owner: "", group-name: "", perms: "", size-text: "",
+        risk: "", numeric-perms: "", owner-rwx: "", group-rwx: "",
+        other-rwx: "", recommended-perms: "",
+        owner-r: false, owner-w: false, owner-x: false,
+        group-r: false, group-w: false, group-x: false,
+        other-r: false, other-w: false, other-x: false
+    };
+    in property <bool> perm-has-selected-file: false;
+    in property <string> perm-export-status: "";
     callback perm-tab(int);
     callback perm-refresh();
     callback perm-fix(string);
     callback perm-select-user(int);
+    callback perm-select-file(int, int);
+    callback perm-scan-dir(string);
+    callback perm-export-report();
+    callback perm-search(string);
+    callback perm-fix-permission(string);
+    // Permission ACL
+    in property <string> perm-acl-output: "";
+    in-out property <bool> perm-acl-panel-open: false;
+    in-out property <string> perm-acl-target-path: "";
+    callback perm-view-acl(string);
+    callback perm-set-acl(string, string);
+    // Permission Dashboard AI
+    in property <bool> perm-ai-is-working: false;
+    in property <string> perm-ai-response: "";
+    in-out property <bool> perm-ai-panel-open: false;
+    callback perm-ai-explain();
+    callback perm-ai-dismiss();
+
+    // Spreadsheet state (screen 29)
+    in-out property <int> sheet-active-row: 0;
+    in-out property <int> sheet-active-col: 0;
+    in property <string> sheet-cell-data: "";
+    in property <[SheetTab]> sheet-tabs: [{ name: "Sheet 1", is-active: true }];
+    in property <string> sheet-status-text: "Ready";
+    in property <int> sheet-row-count: 50;
+    in property <int> sheet-col-count: 26;
+    in property <[SpreadsheetCell]> sheet-cell-grid: [];
+    in property <bool> sheet-fmt-bold-active: false;
+    in property <bool> sheet-fmt-italic-active: false;
+    in property <int> sheet-fmt-align-active: 0;
+    in property <int> sheet-fmt-number-format: 0;
+    in property <int> sheet-freeze-row-count: 0;
+    in property <int> sheet-freeze-col-count: 0;
+    in property <string> sheet-find-status: "";
+    in property <string> sheet-active-comment: "";
+    in property <bool> sheet-filter-active: false;
+    in property <int> sheet-sort-col: -1;
+    in property <bool> sheet-sort-ascending: true;
+    in property <string> sheet-formula-error: "";
+    in property <[string]> sheet-formula-hints: [];
+    in-out property <bool> sheet-formula-help-open: false;
+    // chart-data is internal to SpreadsheetScreen
+    // Existing callbacks
+    callback sheet-cell-clicked(int, int);
+    callback sheet-cell-edited(int, int, string);
+    callback sheet-formula-submitted(string);
+    callback sheet-switch-sheet(int);
+    callback sheet-add-sheet();
+    callback sheet-format-bold();
+    callback sheet-format-italic();
+    callback sheet-format-align(int);
+    callback sheet-import-csv();
+    callback sheet-export-csv();
+    // Sort & Filter
+    callback sheet-sort-column(int, bool);
+    callback sheet-filter-column(int, string);
+    callback sheet-clear-filter();
+    // Row/Column operations
+    callback sheet-insert-row(int);
+    callback sheet-delete-row(int);
+    callback sheet-insert-col(int);
+    callback sheet-delete-col(int);
+    // Number formatting & colors
+    callback sheet-format-number(int);
+    callback sheet-set-bg-color(int);
+    callback sheet-set-text-color(int);
+    // Find & Replace
+    callback sheet-find(string);
+    callback sheet-find-next();
+    callback sheet-replace-one(string, string);
+    callback sheet-replace-all(string, string);
+    // Copy/Paste
+    callback sheet-copy();
+    callback sheet-cut();
+    callback sheet-paste();
+    // Undo/Redo
+    callback sheet-undo();
+    callback sheet-redo();
+    // Keyboard navigation
+    callback sheet-key-pressed(string);
+    // Comments
+    callback sheet-add-comment(string);
+    callback sheet-delete-comment();
+    // Merge cells
+    callback sheet-merge-cells(int, int, int, int);
+    callback sheet-unmerge-cells();
+    // Freeze panes
+    callback sheet-freeze-panes(int, int);
+    // Save/Load
+    callback sheet-save();
+    callback sheet-load();
+    // Chart
+    callback sheet-create-chart(int, string);
+    // Formula help
+    callback sheet-show-formula-help();
+    // ySheets AI Assist
+    in property <bool> sheet-ai-working: false;
+    in property <string> sheet-ai-response: "";
+    callback sheet-ai-submit(string);
+    callback sheet-ai-apply();
+    callback sheet-ai-dismiss();
+    callback sheet-ai-formula(string);
+    callback sheet-ai-analyze();
+    callback sheet-ai-suggest-chart();
+    callback sheet-ai-insights();
+
+    // Document Editor state (screen 30)
+    in-out property <string> doc-title: "Untitled";
+    in-out property <string> doc-content: "";
+    in property <string> doc-file-path: "";
+    in property <int> doc-word-count: 0;
+    in property <int> doc-char-count: 0;
+    in property <int> doc-page-estimate: 0;
+    in property <int> doc-reading-time: 0;
+    in property <int> doc-sentence-count: 0;
+    in property <int> doc-paragraph-count: 0;
+    in property <[DocHeadingEntry]> doc-headings: [];
+    in property <bool> doc-is-modified: false;
+    in property <string> doc-save-status: "";
+    in-out property <bool> doc-show-find: false;
+    in-out property <string> doc-find-query: "";
+    in property <int> doc-find-count: 0;
+    in-out property <string> doc-replace-text: "";
+    // Comments
+    in property <[DocCommentEntry]> doc-comments: [];
+    in property <bool> doc-track-changes-on: false;
+    in property <[DocChangeEntry]> doc-changes: [];
+    in property <[DocVersionEntry]> doc-versions: [];
+    in property <string> doc-export-status: "";
+    in-out property <string> doc-page-size: "A4";
+    // Existing callbacks
+    callback doc-save();
+    callback doc-open();
+    callback doc-new();
+    callback doc-export-pdf();
+    callback doc-format-bold();
+    callback doc-format-italic();
+    callback doc-format-underline();
+    callback doc-format-heading(int);
+    callback doc-format-bullet();
+    callback doc-format-checklist();
+    callback doc-format-quote();
+    callback doc-format-code();
+    callback doc-format-divider();
+    callback doc-undo();
+    callback doc-redo();
+    callback doc-find-next();
+    callback doc-find-prev();
+    callback doc-replace-one();
+    callback doc-replace-all();
+    callback doc-heading-clicked(int);
+    callback doc-import-md();
+    callback doc-export-md();
+    callback doc-content-changed(string);
+    // New: Comments
+    callback doc-add-comment(string);
+    callback doc-delete-comment(int);
+    callback doc-resolve-comment(int);
+    // New: Track Changes
+    callback doc-toggle-track-changes();
+    callback doc-accept-change(int);
+    callback doc-reject-change(int);
+    callback doc-accept-all-changes();
+    callback doc-reject-all-changes();
+    // New: Versions
+    callback doc-save-version(string);
+    callback doc-list-versions();
+    callback doc-restore-version(int);
+    // New: Tables
+    callback doc-insert-table(int, int);
+    callback doc-add-table-row();
+    callback doc-add-table-col();
+    // New: Formatting
+    callback doc-format-strikethrough();
+    callback doc-format-highlight();
+    callback doc-format-link(string);
+    callback doc-format-inline-code();
+    callback doc-insert-toc();
+    callback doc-insert-footnote();
+    // New: Export
+    callback doc-export-html();
+    // New: Templates
+    callback doc-use-template(int);
+    // New: Image
+    callback doc-insert-image(string);
+    // New: Page layout & print
+    callback doc-set-page-layout(string);
+    callback doc-print-preview();
+
+    // yDoc AI Assist
+    in property <bool> doc-ai-working: false;
+    in property <string> doc-ai-response: "";
+    callback doc-ai-submit(string);
+    callback doc-ai-apply();
+    callback doc-ai-dismiss();
+    callback doc-ai-draft(string);
+    callback doc-ai-summarize();
+    callback doc-ai-improve();
+    callback doc-ai-translate(string);
+    callback doc-ai-insights();
+
+    // Presentation state (screen 31)
+    in property <[SlideData]> pres-slides: [{ title: "Title Slide", body: "Click to add subtitle", notes: "", layout: 0, slide-number: 1 }];
+    in-out property <int> pres-current-slide-index: 0;
+    in property <int> pres-slide-count: 1;
+    in-out property <int> pres-current-layout: 0;
+    in property <[PresentTheme]> pres-themes: [];
+    in-out property <bool> pres-is-presenting: false;
+    in property <string> pres-current-title: "Title Slide";
+    in property <string> pres-current-body: "Click to add subtitle";
+    in-out property <string> pres-current-notes: "";
+    // Formatting
+    in property <bool> pres-current-bold: false;
+    in property <bool> pres-current-italic: false;
+    in property <int> pres-current-font-size: 24;
+    in property <int> pres-current-text-color: 0;
+    // Image
+    in property <string> pres-current-image: "";
+    // Transition
+    in property <int> pres-current-transition: 0;
+    // Presenter info
+    in property <string> pres-timer-text: "00:00";
+    in property <string> pres-next-title: "";
+    in property <string> pres-next-body: "";
+    in property <string> pres-slide-progress: "Slide 1 of 1";
+    in property <string> pres-presentation-title: "Title Slide";
+    // Metadata
+    in property <bool> pres-is-modified: false;
+    in property <string> pres-file-path: "";
+    in property <string> pres-save-status: "";
+    // Search
+    in property <int> pres-search-count: 0;
+    // Template gallery & speaker notes
+    in-out property <bool> pres-template-gallery-open: false;
+    in-out property <string> pres-current-speaker-note: "";
+    // Existing callbacks
+    callback pres-add-slide();
+    callback pres-delete-slide();
+    callback pres-duplicate-slide();
+    callback pres-move-slide-up();
+    callback pres-move-slide-down();
+    callback pres-select-slide(int);
+    callback pres-set-layout(int);
+    callback pres-set-theme(int);
+    callback pres-toggle-present();
+    callback pres-export-pdf();
+    callback pres-title-edited(string);
+    callback pres-body-edited(string);
+    callback pres-notes-edited(string);
+    callback pres-next-slide();
+    callback pres-prev-slide();
+    // New callbacks
+    callback pres-format-bold();
+    callback pres-format-italic();
+    callback pres-set-font-size(int);
+    callback pres-set-text-color(int);
+    callback pres-save();
+    callback pres-load();
+    callback pres-save-as(string);
+    callback pres-insert-image(string);
+    callback pres-insert-object(string);
+    callback pres-toggle-timer();
+    callback pres-reset-timer();
+    callback pres-generate-notes();
+    callback pres-key-pressed(string);
+    callback pres-set-transition(int);
+    callback pres-use-template(int);
+    callback pres-export-markdown();
+    callback pres-export-outline();
+    callback pres-undo();
+    callback pres-redo();
+    callback pres-search(string);
+    callback pres-search-next();
+    callback pres-custom-theme(/* bg */ string, /* text */ string, /* accent */ string);
+    callback pres-set-default-layout(int);
+    // Template gallery & speaker notes
+    callback pres-open-template-gallery();
+    callback pres-select-template(int);
+    callback pres-save-speaker-note(string);
+
+    // ySlides AI Assist
+    in property <bool> pres-ai-working: false;
+    in property <string> pres-ai-response: "";
+    callback pres-ai-submit(string);
+    callback pres-ai-apply();
+    callback pres-ai-dismiss();
+    callback pres-ai-generate-deck(string);
+    callback pres-ai-improve-slide();
+    callback pres-ai-generate-notes();
+    callback pres-ai-suggest-visuals();
+    callback pres-ai-insights();
 
     // Onboarding state (0=not onboarding, 1=step:terminal, 2=step:focus, 3=done)
     in-out property <int> onboarding-step: 0;
@@ -877,6 +1656,11 @@ export component App inherits Window {
             window-switcher-open <=> root.window-switcher-open;
             window-list: root.window-list;
             switch-window(title) => { root.switch-window(title); }
+            // Command Palette
+            command-palette-open <=> root.command-palette-open;
+            command-palette-filtered: root.command-palette-filtered;
+            command-palette-search(query) => { root.command-palette-search(query); }
+            command-palette-selected(action-id) => { root.command-palette-selected(action-id); }
             // Dock items
             dock-items: root.dock-items;
             // Quick Settings
@@ -1129,6 +1913,42 @@ export component App inherits Window {
                 dir-type-badge: root.file-dir-type-badge;
                 request-summarize => { root.file-request-summarize(); }
                 request-ask-ai => { root.file-request-ask-ai(); }
+                create-file(name) => { root.file-create-file(name); }
+                multi-select-clicked(idx, ctrl, shift) => { root.file-multi-select-clicked(idx, ctrl, shift); }
+                select-all => { root.file-select-all(); }
+                clear-selection => { root.file-clear-selection(); }
+                delete-selected => { root.file-delete-selected(); }
+                copy-selected => { root.file-copy-selected(); }
+                cut-selected => { root.file-cut-selected(); }
+                context-copy-path(name) => { root.file-context-copy-path(name); }
+                context-open-terminal => { root.file-context-open-terminal(); }
+                context-compress(name) => { root.file-context-compress(name); }
+                selection-count: root.file-selection-count;
+                selection-size-text: root.file-selection-size-text;
+                detail-panel-visible <=> root.file-detail-panel-visible;
+                selected-index <=> root.file-selected-index;
+                // V44 — tabs, ops queue, batch rename, quick look, trash
+                file-tabs: root.file-tabs;
+                file-active-tab: root.file-active-tab;
+                file-new-tab => { root.file-new-tab(); }
+                file-close-tab(idx) => { root.file-close-tab(idx); }
+                file-switch-tab(idx) => { root.file-switch-tab(idx); }
+                file-op-queue: root.file-op-queue;
+                file-op-queue-visible <=> root.file-op-queue-visible;
+                file-batch-rename-open <=> root.file-batch-rename-open;
+                file-batch-rename-pattern <=> root.file-batch-rename-pattern;
+                file-batch-rename-replace <=> root.file-batch-rename-replace;
+                file-batch-rename-execute => { root.file-batch-rename-execute(); }
+                file-quick-look-open <=> root.file-quick-look-open;
+                file-quick-look-content: root.file-quick-look-content;
+                file-quick-look-name: root.file-quick-look-name;
+                file-quick-look(idx) => { root.file-quick-look(idx); }
+                file-close-quick-look => { root.file-close-quick-look(); }
+                file-trash-mode <=> root.file-trash-mode;
+                file-trash-count: root.file-trash-count;
+                file-toggle-trash => { root.file-toggle-trash(); }
+                file-empty-trash => { root.file-empty-trash(); }
+                file-restore-from-trash(idx) => { root.file-restore-from-trash(idx); }
             }
         }
 
@@ -1239,6 +2059,47 @@ export component App inherits Window {
                 nav-prev => { root.viewer-nav-prev(); }
                 nav-next => { root.viewer-nav-next(); }
                 toggle-fit => { root.viewer-toggle-fit(); }
+                ai-is-working: root.viewer-ai-is-working;
+                ai-response: root.viewer-ai-response;
+                ai-panel-open <=> root.viewer-ai-panel-open;
+                ai-describe-pressed => { root.viewer-ai-describe(); }
+                ai-dismiss => { root.viewer-ai-dismiss(); }
+                // Rotate / Flip
+                viewer-rotation <=> root.viewer-rotation;
+                viewer-flip-h <=> root.viewer-flip-h;
+                viewer-flip-v <=> root.viewer-flip-v;
+                viewer-rotate-left => { root.viewer-rotate-left(); }
+                viewer-rotate-right => { root.viewer-rotate-right(); }
+                viewer-flip-horizontal => { root.viewer-flip-horizontal(); }
+                viewer-flip-vertical => { root.viewer-flip-vertical(); }
+                // EXIF Info Panel
+                viewer-info-open <=> root.viewer-info-open;
+                viewer-exif-dimensions: root.viewer-exif-dimensions;
+                viewer-exif-file-size: root.viewer-exif-file-size;
+                viewer-exif-format: root.viewer-exif-format;
+                viewer-exif-camera: root.viewer-exif-camera;
+                viewer-exif-focal-length: root.viewer-exif-focal-length;
+                viewer-exif-iso: root.viewer-exif-iso;
+                viewer-exif-exposure: root.viewer-exif-exposure;
+                viewer-exif-date-taken: root.viewer-exif-date-taken;
+                viewer-exif-gps: root.viewer-exif-gps;
+                viewer-toggle-info => { root.viewer-toggle-info(); }
+                // Slideshow
+                viewer-slideshow-active <=> root.viewer-slideshow-active;
+                viewer-slideshow-paused <=> root.viewer-slideshow-paused;
+                viewer-slideshow-progress <=> root.viewer-slideshow-progress;
+                viewer-slideshow-toggle => { root.viewer-slideshow-toggle(); }
+                viewer-slideshow-stop => { root.viewer-slideshow-stop(); }
+                viewer-crop-mode <=> root.viewer-crop-mode;
+                viewer-start-crop => { root.viewer-start-crop(); }
+                viewer-apply-crop => { root.viewer-apply-crop(); }
+                viewer-cancel-crop => { root.viewer-cancel-crop(); }
+                viewer-batch-status: root.viewer-batch-status;
+                viewer-batch-total: root.viewer-batch-total;
+                viewer-batch-done: root.viewer-batch-done;
+                viewer-batch-panel-open <=> root.viewer-batch-panel-open;
+                viewer-batch-rotate-all(deg) => { root.viewer-batch-rotate-all(deg); }
+                viewer-batch-resize(w, h) => { root.viewer-batch-resize(w, h); }
             }
         }
 
@@ -1266,6 +2127,29 @@ export component App inherits Window {
                 file-content <=> root.editor-file-content;
                 is-modified: root.editor-is-modified;
                 is-readonly: root.editor-is-readonly;
+                // Tabs
+                tabs: root.editor-tabs;
+                tab-count: root.editor-tab-count;
+                active-tab: root.editor-active-tab;
+                switch-tab(idx) => { root.editor-switch-tab(idx); }
+                new-tab => { root.editor-new-tab(); }
+                close-tab(idx) => { root.editor-close-tab(idx); }
+                // Line/column info
+                cursor-line: root.editor-cursor-line;
+                cursor-col: root.editor-cursor-col;
+                total-lines: root.editor-total-lines;
+                encoding: root.editor-encoding;
+                line-ending: root.editor-line-ending;
+                file-type: root.editor-file-type;
+                line-numbers-text: root.editor-line-numbers-text;
+                // Go-to-line
+                show-goto-line <=> root.editor-show-goto-line;
+                goto-line-input <=> root.editor-goto-line-input;
+                goto-line(ln) => { root.editor-goto-line(ln); }
+                // Autosave
+                autosave-enabled: root.editor-autosave-enabled;
+                last-saved-time: root.editor-last-saved-time;
+                // Save As
                 show-save-dialog <=> root.editor-show-save-dialog;
                 save-dir <=> root.editor-save-dir;
                 save-filename <=> root.editor-save-filename;
@@ -1273,6 +2157,7 @@ export component App inherits Window {
                 save-file => { root.editor-save(); }
                 save-file-as(dir, name) => { root.editor-save-as(dir, name); }
                 content-changed(text) => { root.editor-content-changed(text); }
+                // AI
                 show-ai-panel <=> root.editor-show-ai-panel;
                 ai-prompt <=> root.editor-ai-prompt;
                 ai-response: root.editor-ai-response;
@@ -1280,6 +2165,7 @@ export component App inherits Window {
                 ai-request(prompt) => { root.editor-ai-request(prompt); }
                 ai-insert => { root.editor-ai-insert(); }
                 ai-dismiss => { root.editor-ai-dismiss(); }
+                // Find & Replace
                 show-find-bar <=> root.editor-show-find-bar;
                 find-query <=> root.editor-find-query;
                 replace-text <=> root.editor-replace-text;
@@ -1291,6 +2177,13 @@ export component App inherits Window {
                 replace-current => { root.editor-replace-current(); }
                 replace-all => { root.editor-replace-all(); }
                 find-query-changed(q) => { root.editor-find-query-changed(q); }
+                // Large file & encoding/line-ending
+                editor-large-file-warning: root.editor-large-file-warning;
+                editor-file-size-text: root.editor-file-size-text;
+                editor-minimap-visible <=> root.editor-minimap-visible;
+                editor-set-encoding(enc) => { root.editor-set-encoding(enc); }
+                editor-set-line-ending(le) => { root.editor-set-line-ending(le); }
+                editor-toggle-minimap => { root.editor-toggle-minimap(); }
             }
         }
 
@@ -1315,13 +2208,48 @@ export component App inherits Window {
             MediaPlayer {
                 width: 100%; height: 100%;
                 track-name: root.player-track-name;
+                track-path: root.player-track-path;
                 is-playing: root.player-is-playing;
                 progress: root.player-progress;
                 time-current: root.player-time-current;
                 time-total: root.player-time-total;
+                volume: root.player-volume;
+                is-muted: root.player-is-muted;
+                speed-text: root.player-speed-text;
+                speed-index: root.player-speed-index;
+                repeat-mode: root.player-repeat-mode;
+                shuffle-on: root.player-shuffle-on;
+                track-artist: root.player-track-artist;
+                track-album: root.player-track-album;
+                track-format: root.player-track-format;
+                is-video: root.player-is-video;
+                queue-count: root.player-queue-count;
+                queue-position: root.player-queue-position;
+                ai-is-working: root.player-ai-is-working;
+                ai-response: root.player-ai-response;
+                ai-panel-open: root.player-ai-panel-open;
                 play-pause => { root.player-play-pause(); }
                 stop => { root.player-stop(); }
                 seek(pos) => { root.player-seek(pos); }
+                set-volume(v) => { root.player-set-volume(v); }
+                toggle-mute => { root.player-toggle-mute(); }
+                set-speed(idx) => { root.player-set-speed(idx); }
+                next-track => { root.player-next-track(); }
+                prev-track => { root.player-prev-track(); }
+                toggle-repeat => { root.player-toggle-repeat(); }
+                toggle-shuffle => { root.player-toggle-shuffle(); }
+                player-subtitle-tracks: root.player-subtitle-tracks;
+                player-subtitle-active: root.player-subtitle-active;
+                player-show-subtitle-menu <=> root.player-show-subtitle-menu;
+                player-select-subtitle(idx) => { root.player-select-subtitle(idx); }
+                player-ab-repeat-active <=> root.player-ab-repeat-active;
+                player-ab-start: root.player-ab-start;
+                player-ab-end: root.player-ab-end;
+                player-set-ab-start => { root.player-set-ab-start(); }
+                player-set-ab-end => { root.player-set-ab-end(); }
+                player-toggle-ab-repeat => { root.player-toggle-ab-repeat(); }
+                ai-explain-pressed => { root.player-ai-explain(); }
+                ai-dismiss => { root.player-ai-dismiss(); }
             }
         }
 
@@ -1354,6 +2282,13 @@ export component App inherits Window {
                 tab-count: root.terminal-tab-count;
                 active-tab: root.terminal-active-tab;
                 tabs: root.terminal-tabs;
+                search-match-count: root.terminal-search-match-count;
+                search-current-match: root.terminal-search-current-match;
+                terminal-split-active: root.terminal-split-active;
+                terminal-split-output: root.terminal-split-output;
+                terminal-split-cursor-row: root.terminal-split-cursor-row;
+                terminal-split-cursor-col: root.terminal-split-cursor-col;
+                terminal-profile-name: root.terminal-profile-name;
                 terminal-key-pressed(event) => { return root.terminal-key-pressed(event); }
                 request-ai-help => { root.terminal-request-ai-help(); }
                 dismiss-suggestion => { root.terminal-dismiss-suggestion(); }
@@ -1361,6 +2296,13 @@ export component App inherits Window {
                 switch-tab(idx) => { root.terminal-switch-tab(idx); }
                 new-tab => { root.terminal-new-tab(); }
                 close-tab(idx) => { root.terminal-close-tab(idx); }
+                search-query-changed(q) => { root.terminal-search-query-changed(q); }
+                search-next => { root.terminal-search-next(); }
+                search-prev => { root.terminal-search-prev(); }
+                terminal-split-toggle => { root.terminal-split-toggle(); }
+                terminal-switch-pane(idx) => { root.terminal-switch-pane(idx); }
+                terminal-split-input(text) => { root.terminal-split-input(text); }
+                terminal-set-profile(name) => { root.terminal-set-profile(name); }
             }
         }
 
@@ -1397,6 +2339,46 @@ export component App inherits Window {
                 select-note(idx) => { root.notes-select(idx); }
                 search-notes(query) => { root.notes-search(query); }
                 content-changed(text) => { root.notes-content-changed(text); }
+                // Folders
+                active-folder <=> root.notes-active-folder;
+                folder-all-count: root.notes-folder-all-count;
+                folder-fav-count: root.notes-folder-fav-count;
+                folder-recent-count: root.notes-folder-recent-count;
+                select-folder(idx) => { root.notes-select-folder(idx); }
+                // Tags
+                current-tags <=> root.notes-current-tags;
+                update-tags(tags) => { root.notes-update-tags(tags); }
+                // Pin/Favorite
+                toggle-pin(idx) => { root.notes-toggle-pin(idx); }
+                // Templates
+                new-from-template(tpl) => { root.notes-new-from-template(tpl); }
+                // Metadata
+                meta-created: root.notes-meta-created;
+                meta-modified: root.notes-meta-modified;
+                meta-word-count: root.notes-meta-word-count;
+                // Formatting
+                insert-format(fmt) => { root.notes-insert-format(fmt); }
+                // AI
+                ai-is-working: root.notes-ai-is-working;
+                ai-response: root.notes-ai-response;
+                ai-panel-open <=> root.notes-ai-panel-open;
+                ai-structure => { root.notes-ai-structure(); }
+                ai-summarize => { root.notes-ai-summarize(); }
+                ai-apply => { root.notes-ai-apply(); }
+                ai-dismiss => { root.notes-ai-dismiss(); }
+                // V43: Version history, backlinks, meeting mode, export/import
+                version-history: root.notes-version-history;
+                backlinks: root.notes-backlinks;
+                version-panel-open <=> root.notes-version-panel-open;
+                backlinks-panel-open <=> root.notes-backlinks-panel-open;
+                meeting-mode: root.notes-meeting-mode;
+                export-status: root.notes-export-status;
+                view-version(idx) => { root.notes-view-version(idx); }
+                restore-version(idx) => { root.notes-restore-version(idx); }
+                export-md => { root.notes-export-md(); }
+                import-md => { root.notes-import-md(); }
+                toggle-meeting-mode => { root.notes-toggle-meeting-mode(); }
+                find-backlinks => { root.notes-find-backlinks(); }
             }
         }
 
@@ -1473,6 +2455,16 @@ export component App inherits Window {
                 compose-bcc <=> root.email-compose-bcc;
                 compose-subject <=> root.email-compose-subject;
                 compose-body <=> root.email-compose-body;
+                // Thread messages
+                email-thread-messages: root.email-thread-messages;
+                // Search state
+                email-search-count: root.email-search-count;
+                email-search-active: root.email-search-active;
+                email-search-query <=> root.email-search-query;
+                // Status bar
+                email-sync-status: root.email-sync-status;
+                email-folder-total: root.email-folder-total;
+                email-folder-unread: root.email-folder-unread;
                 // Account setup bindings
                 has-account: root.email-has-account;
                 setup-status: root.email-setup-status;
@@ -1491,7 +2483,9 @@ export component App inherits Window {
                 compose-new => { root.email-compose-new(); }
                 send-email(to, cc, bcc, subject, body) => { root.email-send(to, cc, bcc, subject, body); }
                 reply-email => { root.email-reply(); }
+                reply-all-email => { root.email-reply-all(); }
                 forward-email => { root.email-forward(); }
+                archive-email(id) => { root.email-archive(id); }
                 delete-email(id) => { root.email-delete(id); }
                 mark-read(id) => { root.email-mark-read(id); }
                 mark-flagged(id) => { root.email-mark-flagged(id); }
@@ -1503,6 +2497,7 @@ export component App inherits Window {
                 search-emails(query) => { root.email-search(query); }
                 sync-emails => { root.email-sync(); }
                 cancel-compose => { root.email-cancel-compose(); }
+                toggle-thread-message(id) => { root.email-toggle-thread-message(id); }
                 save-account(email, password, name, provider, imap-srv, imap-port, smtp-srv, smtp-port) => {
                     root.email-save-account(email, password, name, provider, imap-srv, imap-port, smtp-srv, smtp-port);
                 }
@@ -1510,6 +2505,19 @@ export component App inherits Window {
                     root.email-test-connection(email, password, provider, imap-srv, imap-port);
                 }
                 oauth-google => { root.email-oauth-google(); }
+                // V41: Enterprise email enhancements
+                email-attachments: root.email-attachments;
+                email-signatures: root.email-signatures;
+                email-active-signature: root.email-active-signature;
+                email-triage-view: root.email-triage-view;
+                email-draft-status: root.email-draft-status;
+                email-ai-intent: root.email-ai-intent;
+                download-attachment(idx) => { root.email-download-attachment(idx); }
+                preview-attachment(idx) => { root.email-preview-attachment(idx); }
+                set-signature(idx) => { root.email-set-signature(idx); }
+                triage-filter(view) => { root.email-triage-filter(view); }
+                save-draft => { root.email-save-draft(); }
+                ai-classify => { root.email-ai-classify(); }
             }
         }
 
@@ -1551,6 +2559,28 @@ export component App inherits Window {
                 delete-event(id) => { root.cal-delete-event(id); }
                 cancel-event-form => { root.cal-cancel-event-form(); }
                 today-pressed => { root.cal-today-pressed(); }
+                view-mode <=> root.cal-view-mode;
+                switch-view(mode) => { root.cal-switch-view(mode); }
+                week-events: root.cal-week-events;
+                week-day-labels: root.cal-week-day-labels;
+                current-hour: root.cal-current-hour;
+                day-events: root.cal-day-events;
+                day-view-title: root.cal-day-view-title;
+                ai-is-working: root.cal-ai-is-working;
+                ai-response: root.cal-ai-response;
+                ai-panel-open <=> root.cal-ai-panel-open;
+                ai-explain-pressed => { root.cal-ai-explain(); }
+                ai-dismiss => { root.cal-ai-dismiss(); }
+                cal-template-panel-open <=> root.cal-template-panel-open;
+                cal-event-attendees: root.cal-event-attendees;
+                cal-templates: root.cal-templates;
+                cal-timezone-display: root.cal-timezone-display;
+                cal-reminder-minutes: root.cal-reminder-minutes;
+                cal-add-attendee(name, email) => { root.cal-add-attendee(name, email); }
+                cal-remove-attendee(idx) => { root.cal-remove-attendee(idx); }
+                cal-set-reminder(mins) => { root.cal-set-reminder(mins); }
+                cal-toggle-template-panel => { root.cal-toggle-template-panel(); }
+                cal-use-template(idx) => { root.cal-use-template(idx); }
             }
         }
 
@@ -1604,6 +2634,12 @@ export component App inherits Window {
                 apply-changes => { root.pkg-apply-changes(); }
                 cancel-changes => { root.pkg-cancel-changes(); }
                 filter-changed(idx) => { root.pkg-filter-changed(idx); }
+                ai-is-working: root.pkg-ai-is-working;
+                ai-response: root.pkg-ai-response;
+                ai-panel-open <=> root.pkg-ai-panel-open;
+                ai-explain-pressed => { root.pkg-ai-explain(); }
+                ai-intent(query) => { root.pkg-ai-intent(query); }
+                ai-dismiss => { root.pkg-ai-dismiss(); }
             }
         }
 
@@ -1646,6 +2682,15 @@ export component App inherits Window {
                 firewall-rule-count: root.net-firewall-rule-count;
                 firewall-rules: root.net-firewall-rules;
                 firewall-profile: root.net-firewall-profile;
+                wifi-gateway: root.net-wifi-gateway;
+                wifi-dns: root.net-wifi-dns;
+                wifi-subnet: root.net-wifi-subnet;
+                diag-tests: root.net-diag-tests;
+                diag-connection-history: root.net-diag-connection-history;
+                status-connection-type: root.net-status-connection-type;
+                status-ip-address: root.net-status-ip-address;
+                status-signal-strength: root.net-status-signal-strength;
+                status-state: root.net-status-state;
                 toggle-wifi => { root.net-toggle-wifi(); }
                 wifi-scan => { root.net-wifi-scan(); }
                 wifi-connect(ssid, pw) => { root.net-wifi-connect(ssid, pw); }
@@ -1662,6 +2707,23 @@ export component App inherits Window {
                 firewall-allow-port(port) => { root.net-firewall-allow-port(port); }
                 firewall-block-port(port) => { root.net-firewall-block-port(port); }
                 firewall-apply-profile(p) => { root.net-firewall-apply-profile(p); }
+                diag-run-test(name) => { root.net-diag-run-test(name); }
+                diag-run-all-tests => { root.net-diag-run-all-tests(); }
+                net-diag-ping-target <=> root.net-diag-ping-target;
+                net-diag-ping-result: root.net-diag-ping-result;
+                net-diag-ping-running: root.net-diag-ping-running;
+                net-diag-traceroute-result: root.net-diag-traceroute-result;
+                net-diag-traceroute-running: root.net-diag-traceroute-running;
+                net-diag-run-ping => { root.net-diag-run-ping(); }
+                net-diag-run-traceroute => { root.net-diag-run-traceroute(); }
+                net-vpn-import-path <=> root.net-vpn-import-path;
+                net-vpn-import-status: root.net-vpn-import-status;
+                net-vpn-import-config => { root.net-vpn-import-config(); }
+                ai-is-working: root.net-ai-is-working;
+                ai-response: root.net-ai-response;
+                ai-panel-open <=> root.net-ai-panel-open;
+                ai-explain-pressed => { root.net-ai-explain(); }
+                ai-dismiss => { root.net-ai-dismiss(); }
             }
         }
 
@@ -1690,6 +2752,32 @@ export component App inherits Window {
                 daily: root.weather-daily;
                 back-pressed => { root.current-screen = 1; root.navigate(1); }
                 refresh-pressed => { root.weather-refresh(); }
+                ai-is-working: root.weather-ai-is-working;
+                ai-response: root.weather-ai-response;
+                ai-panel-open <=> root.weather-ai-panel-open;
+                ai-explain-pressed => { root.weather-ai-explain(); }
+                ai-dismiss => { root.weather-ai-dismiss(); }
+                // Saved locations
+                weather-saved-locations: root.weather-saved-locations;
+                weather-location-panel-open <=> root.weather-location-panel-open;
+                weather-add-location-text <=> root.weather-add-location-text;
+                weather-select-location(idx) => { root.weather-select-location(idx); }
+                weather-add-location(name) => { root.weather-add-location(name); }
+                weather-remove-location(idx) => { root.weather-remove-location(idx); }
+                // Units toggle
+                weather-use-fahrenheit <=> root.weather-use-fahrenheit;
+                weather-toggle-units => { root.weather-toggle-units(); }
+                // Alerts
+                weather-alerts: root.weather-alerts;
+                weather-severe-alert-active: root.weather-severe-alert-active;
+                weather-severe-alert-text: root.weather-severe-alert-text;
+                weather-severe-alert-level: root.weather-severe-alert-level;
+                // Last updated
+                weather-last-updated: root.weather-last-updated;
+                // AQI
+                weather-aqi-value: root.weather-aqi-value;
+                weather-aqi-label: root.weather-aqi-label;
+                weather-aqi-level: root.weather-aqi-level;
             }
         }
 
@@ -1716,6 +2804,7 @@ export component App inherits Window {
                 library-tracks: root.music-library-tracks;
                 library-artists: root.music-library-artists;
                 library-albums: root.music-library-albums;
+                library-genres: root.music-library-genres;
                 library-track-count: root.music-library-track-count;
                 browse-category <=> root.music-browse-category;
                 browse-filter <=> root.music-browse-filter;
@@ -1723,29 +2812,67 @@ export component App inherits Window {
                 now-title: root.music-now-title;
                 now-artist: root.music-now-artist;
                 now-album: root.music-now-album;
+                now-genre: root.music-now-genre;
+                now-format-info: root.music-now-format-info;
+                now-bitrate: root.music-now-bitrate;
                 is-playing: root.music-is-playing;
                 progress: root.music-progress;
                 time-current: root.music-time-current;
                 time-total: root.music-time-total;
                 volume: root.music-volume;
+                volume-muted: root.music-volume-muted;
                 queue-tracks: root.music-queue-tracks;
                 queue-current-index: root.music-queue-current-index;
                 shuffle-on: root.music-shuffle-on;
-                repeat-on: root.music-repeat-on;
+                repeat-mode: root.music-repeat-mode;
+                playback-speed: root.music-playback-speed;
+                playlists: root.music-playlists;
+                active-playlist-index: root.music-active-playlist-index;
+                scan-folders: root.music-scan-folders;
+                is-scanning: root.music-is-scanning;
+                scan-progress: root.music-scan-progress;
+                scan-status: root.music-scan-status;
                 play-pause => { root.music-play-pause(); }
                 stop => { root.music-stop(); }
                 next-track => { root.music-next-track(); }
                 prev-track => { root.music-prev-track(); }
                 seek(pos) => { root.music-seek(pos); }
                 volume-changed(vol) => { root.music-volume-changed(vol); }
+                toggle-mute => { root.music-toggle-mute(); }
                 toggle-shuffle => { root.music-toggle-shuffle(); }
-                toggle-repeat => { root.music-toggle-repeat(); }
+                cycle-repeat => { root.music-cycle-repeat(); }
+                set-playback-speed(s) => { root.music-set-playback-speed(s); }
                 play-track-index(idx) => { root.music-play-track-index(idx); }
                 queue-play-index(idx) => { root.music-queue-play-index(idx); }
                 browse-category-changed(cat) => { root.music-browse-category-changed(cat); }
                 browse-filter-changed(f) => { root.music-browse-filter-changed(f); }
                 browse-item-selected(name) => { root.music-browse-item-selected(name); }
                 add-to-queue(idx) => { root.music-add-to-queue(idx); }
+                play-next(idx) => { root.music-play-next(idx); }
+                queue-remove(idx) => { root.music-queue-remove(idx); }
+                queue-move-up(idx) => { root.music-queue-move-up(idx); }
+                queue-move-down(idx) => { root.music-queue-move-down(idx); }
+                queue-clear => { root.music-queue-clear(); }
+                playlist-create(name) => { root.music-playlist-create(name); }
+                playlist-rename(idx, name) => { root.music-playlist-rename(idx, name); }
+                playlist-delete(idx) => { root.music-playlist-delete(idx); }
+                playlist-select(idx) => { root.music-playlist-select(idx); }
+                playlist-add-track(pi, ti) => { root.music-playlist-add-track(pi, ti); }
+                playlist-remove-track(pi, ti) => { root.music-playlist-remove-track(pi, ti); }
+                scan-add-folder(p) => { root.music-scan-add-folder(p); }
+                scan-remove-folder(idx) => { root.music-scan-remove-folder(idx); }
+                scan-rescan => { root.music-scan-rescan(); }
+                music-folder-watch-active: root.music-folder-watch-active;
+                music-folder-watch-status: root.music-folder-watch-status;
+                music-equalizer-preset: root.music-equalizer-preset;
+                music-show-equalizer <=> root.music-show-equalizer;
+                music-toggle-folder-watch => { root.music-toggle-folder-watch(); }
+                music-set-equalizer(idx) => { root.music-set-equalizer(idx); }
+                ai-is-working: root.music-ai-is-working;
+                ai-response: root.music-ai-response;
+                ai-panel-open <=> root.music-ai-panel-open;
+                ai-explain-pressed => { root.music-ai-explain(); }
+                ai-dismiss => { root.music-ai-dismiss(); }
             }
         }
 
@@ -1769,6 +2896,9 @@ export component App inherits Window {
 
             SystemMonitor {
                 width: 100%; height: 100%;
+                health-status: root.mon-health-status;
+                health-score: root.mon-health-score;
+                health-summary: root.mon-health-summary;
                 cpu-usage: root.mon-cpu-usage;
                 cpu-model: root.mon-cpu-model;
                 cpu-frequency: root.mon-cpu-frequency;
@@ -1789,8 +2919,18 @@ export component App inherits Window {
                 network-interfaces: root.mon-network-interfaces;
                 processes: root.mon-processes;
                 sort-column <=> root.mon-sort-column;
+                process-search <=> root.mon-process-search;
+                selected-process-pid <=> root.mon-selected-process-pid;
                 uptime-text: root.mon-uptime-text;
+                ai-is-working: root.mon-ai-is-working;
+                ai-response: root.mon-ai-response;
+                ai-panel-open <=> root.mon-ai-panel-open;
                 sort-by-column(col) => { root.sort-by-column(col); }
+                process-search-changed(query) => { root.mon-process-search-changed(query); }
+                kill-process(pid) => { root.mon-kill-process(pid); }
+                force-kill-process(pid) => { root.mon-force-kill-process(pid); }
+                ai-explain-pressed => { root.mon-ai-explain(); }
+                ai-dismiss => { root.mon-ai-dismiss(); }
                 back-pressed => { root.current-screen = 1; root.navigate(1); }
             }
         }
@@ -1821,7 +2961,10 @@ export component App inherits Window {
                 completed-today: root.dl-completed-today;
                 error-text: root.dl-error-text;
                 active-filter <=> root.dl-active-filter;
-                dl-add(url) => { root.dl-add(url); }
+                dl-search-match-count: root.dl-search-match-count;
+                dl-resume-supported: root.dl-resume-supported;
+                dl-checksum-result: root.dl-checksum-result;
+                dl-add(url, checksum, save-dir) => { root.dl-add(url, checksum, save-dir); }
                 dl-pause(id) => { root.dl-pause(id); }
                 dl-resume(id) => { root.dl-resume(id); }
                 dl-cancel(id) => { root.dl-cancel(id); }
@@ -1829,6 +2972,18 @@ export component App inherits Window {
                 dl-open-folder(id) => { root.dl-open-folder(id); }
                 dl-clear-completed() => { root.dl-clear-completed(); }
                 dl-filter(idx) => { root.dl-filter(idx); }
+                dl-verify-checksum(id) => { root.dl-verify-checksum(id); }
+                dl-toggle-select(id) => { root.dl-toggle-select(id); }
+                dl-select-all(val) => { root.dl-select-all(val); }
+                dl-pause-all() => { root.dl-pause-all(); }
+                dl-resume-all() => { root.dl-resume-all(); }
+                dl-search(query) => { root.dl-search(query); }
+                dl-sort(mode) => { root.dl-sort(mode); }
+                ai-is-working: root.dl-ai-is-working;
+                ai-response: root.dl-ai-response;
+                ai-panel-open <=> root.dl-ai-panel-open;
+                ai-explain-pressed => { root.dl-ai-explain(); }
+                ai-dismiss => { root.dl-ai-dismiss(); }
             }
         }
 
@@ -1855,12 +3010,20 @@ export component App inherits Window {
                 snippets: root.snip-snippets;
                 tag-chips: root.snip-tag-chips;
                 snippet-count: root.snip-snippet-count;
+                collections: root.snip-collections;
+                language-options: root.snip-language-options;
+                match-count: root.snip-match-count;
                 detail-id: root.snip-detail-id;
                 detail-title <=> root.snip-detail-title;
                 detail-language <=> root.snip-detail-language;
                 detail-code <=> root.snip-detail-code;
                 detail-tags <=> root.snip-detail-tags;
+                detail-is-favorite: root.snip-detail-is-favorite;
+                detail-created-date: root.snip-detail-created-date;
+                detail-last-used-date: root.snip-detail-last-used-date;
+                detail-use-count: root.snip-detail-use-count;
                 search-query <=> root.snip-search-query;
+                copy-feedback-visible: root.snip-copy-feedback-visible;
                 snip-search(q) => { root.snip-search(q); }
                 snip-select(id) => { root.snip-select(id); }
                 snip-new() => { root.snip-new(); }
@@ -1868,6 +3031,24 @@ export component App inherits Window {
                 snip-delete(id) => { root.snip-delete(id); }
                 snip-copy(id) => { root.snip-copy(id); }
                 snip-tag-filter(tag) => { root.snip-tag-filter(tag); }
+                snip-toggle-favorite(id) => { root.snip-toggle-favorite(id); }
+                collection-select(id) => { root.snip-collection-select(id); }
+                collection-create(name) => { root.snip-collection-create(name); }
+                collection-rename(id, name) => { root.snip-collection-rename(id, name); }
+                collection-delete(id) => { root.snip-collection-delete(id); }
+                snip-export-all() => { root.snip-export-all(); }
+                snip-import() => { root.snip-import(); }
+                snip-set-language(lang) => { root.snip-set-language(lang); }
+                snip-version-list: root.snip-version-list;
+                snip-version-panel-open <=> root.snip-version-panel-open;
+                snip-version-content: root.snip-version-content;
+                snip-view-version(idx) => { root.snip-view-version(idx); }
+                snip-restore-version(idx) => { root.snip-restore-version(idx); }
+                ai-is-working: root.snip-ai-is-working;
+                ai-response: root.snip-ai-response;
+                ai-panel-open <=> root.snip-ai-panel-open;
+                ai-explain-pressed => { root.snip-ai-explain(); }
+                ai-dismiss => { root.snip-ai-dismiss(); }
             }
         }
 
@@ -1917,6 +3098,11 @@ export component App inherits Window {
                 ct-create-volume(name) => { root.ct-create-volume(name); }
                 ct-remove-volume(name) => { root.ct-remove-volume(name); }
                 ct-refresh() => { root.ct-refresh(); }
+                ai-is-working: root.ct-ai-is-working;
+                ai-response: root.ct-ai-response;
+                ai-panel-open <=> root.ct-ai-panel-open;
+                ai-summarize-logs => { root.ct-ai-summarize-logs(); }
+                ai-dismiss => { root.ct-ai-dismiss(); }
             }
         }
 
@@ -1945,15 +3131,32 @@ export component App inherits Window {
                 usb-selected-index <=> root.dev-usb-selected-index;
                 usb-detail-text: root.dev-usb-detail-text;
                 pci-devices: root.dev-pci-devices;
+                pci-selected-index <=> root.dev-pci-selected-index;
                 input-devices: root.dev-input-devices;
                 storage-devices: root.dev-storage-devices;
                 display-devices: root.dev-display-devices;
                 gpu-info: root.dev-gpu-info;
                 scanning: root.dev-scanning;
+                selected-device-info: root.dev-selected-device-info;
+                dev-search-text <=> root.dev-search-text;
+                dev-export-status: root.dev-export-status;
+                dev-summary: root.dev-summary;
                 dev-tab(idx) => { root.dev-tab(idx); }
                 dev-select-usb(idx) => { root.dev-select-usb(idx); }
                 dev-select-pci(idx) => { root.dev-select-pci(idx); }
                 dev-refresh() => { root.dev-refresh(); }
+                dev-export() => { root.dev-export(); }
+                dev-search(text) => { root.dev-search(text); }
+                dev-close-detail() => { root.dev-close-detail(); }
+                dev-hotplug-notification: root.dev-hotplug-notification;
+                dev-hotplug-count: root.dev-hotplug-count;
+                dev-hotplug-banner-visible <=> root.dev-hotplug-banner-visible;
+                dev-dismiss-hotplug() => { root.dev-dismiss-hotplug(); }
+                ai-is-working: root.dev-ai-is-working;
+                ai-response: root.dev-ai-response;
+                ai-panel-open <=> root.dev-ai-panel-open;
+                ai-explain-pressed => { root.dev-ai-explain(); }
+                ai-dismiss => { root.dev-ai-dismiss(); }
             }
         }
 
@@ -1984,38 +3187,402 @@ export component App inherits Window {
                 perm-suid-files: root.perm-suid-files;
                 perm-world-writable: root.perm-world-writable;
                 perm-scanning: root.perm-scanning;
+                perm-high-risk-count: root.perm-high-risk-count;
+                perm-medium-risk-count: root.perm-medium-risk-count;
+                perm-low-risk-count: root.perm-low-risk-count;
+                perm-scan-path <=> root.perm-scan-path;
+                perm-scan-status: root.perm-scan-status;
+                perm-search-text <=> root.perm-search-text;
+                perm-selected-file: root.perm-selected-file;
+                perm-has-selected-file: root.perm-has-selected-file;
+                perm-export-status: root.perm-export-status;
                 perm-tab(idx) => { root.perm-tab(idx); }
                 perm-refresh() => { root.perm-refresh(); }
                 perm-fix(path) => { root.perm-fix(path); }
                 perm-select-user(idx) => { root.perm-select-user(idx); }
+                perm-select-file(tab, idx) => { root.perm-select-file(tab, idx); }
+                perm-scan-dir(path) => { root.perm-scan-dir(path); }
+                perm-export-report() => { root.perm-export-report(); }
+                perm-search(query) => { root.perm-search(query); }
+                perm-fix-permission(path) => { root.perm-fix-permission(path); }
+                perm-acl-output: root.perm-acl-output;
+                perm-acl-panel-open <=> root.perm-acl-panel-open;
+                perm-acl-target-path <=> root.perm-acl-target-path;
+                perm-view-acl(path) => { root.perm-view-acl(path); }
+                perm-set-acl(path, spec) => { root.perm-set-acl(path, spec); }
+                ai-is-working: root.perm-ai-is-working;
+                ai-response: root.perm-ai-response;
+                ai-panel-open <=> root.perm-ai-panel-open;
+                ai-explain-pressed => { root.perm-ai-explain(); }
+                ai-dismiss => { root.perm-ai-dismiss(); }
             }
         }
 
-        // ── Persistent dock for windowed app screens ──
-        if current-screen >= 4 && current-screen <= 28 : AppDock {
-            y: parent.height - self.height;
+        // Spreadsheet
+        if current-screen == 29 : WindowFrame {
+            x: root.window-maximized ? 0px : root.window-x;
+            y: root.window-maximized ? 0px : root.window-y;
+            width: root.window-maximized ? parent.width : root.window-w;
+            height: root.window-maximized ? parent.height - 60px : root.window-h;
+            is-maximized <=> root.window-maximized;
+            win-x <=> root.window-x;
+            win-y <=> root.window-y;
+            win-w <=> root.window-w;
+            win-h <=> root.window-h;
+            icon-char: "YS";
+            icon-color: #2e9b47;
+            title: "ySheets";
+            close => { root.current-screen = 1; root.navigate(1); }
+            minimize => { root.current-screen = 1; root.navigate(1); }
+            animate x, y, width, height { duration: 200ms; easing: ease-out; }
+
+            SpreadsheetScreen {
+                width: 100%; height: 100%;
+                active-row <=> root.sheet-active-row;
+                active-col <=> root.sheet-active-col;
+                cell-data: root.sheet-cell-data;
+                sheet-tabs: root.sheet-tabs;
+                status-text: root.sheet-status-text;
+                row-count: root.sheet-row-count;
+                col-count: root.sheet-col-count;
+                cell-grid: root.sheet-cell-grid;
+                fmt-bold-active: root.sheet-fmt-bold-active;
+                fmt-italic-active: root.sheet-fmt-italic-active;
+                fmt-align-active: root.sheet-fmt-align-active;
+                fmt-number-format: root.sheet-fmt-number-format;
+                freeze-rows: root.sheet-freeze-row-count;
+                freeze-cols: root.sheet-freeze-col-count;
+                find-status: root.sheet-find-status;
+                active-comment: root.sheet-active-comment;
+                filter-active: root.sheet-filter-active;
+                sort-col: root.sheet-sort-col;
+                sort-ascending: root.sheet-sort-ascending;
+                // Existing callbacks
+                cell-clicked(row, col) => { root.sheet-cell-clicked(row, col); }
+                cell-edited(row, col, text) => { root.sheet-cell-edited(row, col, text); }
+                formula-submitted(text) => { root.sheet-formula-submitted(text); }
+                switch-sheet(idx) => { root.sheet-switch-sheet(idx); }
+                add-sheet() => { root.sheet-add-sheet(); }
+                format-bold() => { root.sheet-format-bold(); }
+                format-italic() => { root.sheet-format-italic(); }
+                format-align(a) => { root.sheet-format-align(a); }
+                import-csv() => { root.sheet-import-csv(); }
+                export-csv() => { root.sheet-export-csv(); }
+                // New callbacks
+                sort-column(col, asc) => { root.sheet-sort-column(col, asc); }
+                filter-column(col, text) => { root.sheet-filter-column(col, text); }
+                clear-filter() => { root.sheet-clear-filter(); }
+                insert-row(r) => { root.sheet-insert-row(r); }
+                delete-row(r) => { root.sheet-delete-row(r); }
+                insert-col(c) => { root.sheet-insert-col(c); }
+                delete-col(c) => { root.sheet-delete-col(c); }
+                format-number(fmt) => { root.sheet-format-number(fmt); }
+                set-bg-color(idx) => { root.sheet-set-bg-color(idx); }
+                set-text-color(idx) => { root.sheet-set-text-color(idx); }
+                find-text(q) => { root.sheet-find(q); }
+                find-next() => { root.sheet-find-next(); }
+                replace-one(f, r) => { root.sheet-replace-one(f, r); }
+                replace-all(f, r) => { root.sheet-replace-all(f, r); }
+                copy-cell() => { root.sheet-copy(); }
+                paste-cell() => { root.sheet-paste(); }
+                cut-cell() => { root.sheet-cut(); }
+                undo() => { root.sheet-undo(); }
+                redo() => { root.sheet-redo(); }
+                key-pressed(k) => { root.sheet-key-pressed(k); }
+                add-comment(text) => { root.sheet-add-comment(text); }
+                delete-comment() => { root.sheet-delete-comment(); }
+                merge-cells(r1, c1, r2, c2) => { root.sheet-merge-cells(r1, c1, r2, c2); }
+                unmerge-cells() => { root.sheet-unmerge-cells(); }
+                freeze-panes(r, c) => { root.sheet-freeze-panes(r, c); }
+                save-sheet() => { root.sheet-save(); }
+                load-sheet() => { root.sheet-load(); }
+                create-chart(t, range) => { root.sheet-create-chart(t, range); }
+                // Formula help
+                sheet-formula-error: root.sheet-formula-error;
+                sheet-formula-hints: root.sheet-formula-hints;
+                sheet-formula-help-open <=> root.sheet-formula-help-open;
+                sheet-show-formula-help() => { root.sheet-show-formula-help(); }
+                // AI Assist
+                sheet-ai-working: root.sheet-ai-working;
+                sheet-ai-response: root.sheet-ai-response;
+                sheet-ai-submit(prompt) => { root.sheet-ai-submit(prompt); }
+                sheet-ai-apply() => { root.sheet-ai-apply(); }
+                sheet-ai-dismiss() => { root.sheet-ai-dismiss(); }
+                sheet-ai-formula(prompt) => { root.sheet-ai-formula(prompt); }
+                sheet-ai-analyze() => { root.sheet-ai-analyze(); }
+                sheet-ai-suggest-chart() => { root.sheet-ai-suggest-chart(); }
+                sheet-ai-insights() => { root.sheet-ai-insights(); }
+            }
+        }
+
+        // ── Document Editor (screen 30) ──
+        if current-screen == 30 : WindowFrame {
+            x: root.window-maximized ? 0px : root.window-x;
+            y: root.window-maximized ? 0px : root.window-y;
+            width: root.window-maximized ? parent.width : root.window-w;
+            height: root.window-maximized ? parent.height - 60px : root.window-h;
+            is-maximized <=> root.window-maximized;
+            win-x <=> root.window-x;
+            win-y <=> root.window-y;
+            win-w <=> root.window-w;
+            win-h <=> root.window-h;
+            icon-char: "YD";
+            icon-color: #4a90d9;
+            title: "yDoc";
+            close => { root.current-screen = 1; root.navigate(1); }
+            minimize => { root.current-screen = 1; root.navigate(1); }
+            animate x, y, width, height { duration: 200ms; easing: ease-out; }
+
+            DocumentEditorScreen {
+                width: 100%; height: 100%;
+                doc-title <=> root.doc-title;
+                doc-content <=> root.doc-content;
+                doc-file-path: root.doc-file-path;
+                doc-word-count: root.doc-word-count;
+                doc-char-count: root.doc-char-count;
+                doc-page-estimate: root.doc-page-estimate;
+                doc-reading-time: root.doc-reading-time;
+                doc-sentence-count: root.doc-sentence-count;
+                doc-paragraph-count: root.doc-paragraph-count;
+                doc-headings: root.doc-headings;
+                doc-is-modified: root.doc-is-modified;
+                doc-save-status: root.doc-save-status;
+                doc-show-find <=> root.doc-show-find;
+                doc-find-query <=> root.doc-find-query;
+                doc-find-count: root.doc-find-count;
+                doc-replace-text <=> root.doc-replace-text;
+                doc-comments: root.doc-comments;
+                doc-track-changes-on: root.doc-track-changes-on;
+                doc-changes: root.doc-changes;
+                doc-versions: root.doc-versions;
+                // Existing callbacks
+                doc-save() => { root.doc-save(); }
+                doc-open() => { root.doc-open(); }
+                doc-new() => { root.doc-new(); }
+                doc-export-pdf() => { root.doc-export-pdf(); }
+                doc-format-bold() => { root.doc-format-bold(); }
+                doc-format-italic() => { root.doc-format-italic(); }
+                doc-format-underline() => { root.doc-format-underline(); }
+                doc-format-heading(level) => { root.doc-format-heading(level); }
+                doc-format-bullet() => { root.doc-format-bullet(); }
+                doc-format-checklist() => { root.doc-format-checklist(); }
+                doc-format-quote() => { root.doc-format-quote(); }
+                doc-format-code() => { root.doc-format-code(); }
+                doc-format-divider() => { root.doc-format-divider(); }
+                doc-undo() => { root.doc-undo(); }
+                doc-redo() => { root.doc-redo(); }
+                doc-find-next() => { root.doc-find-next(); }
+                doc-find-prev() => { root.doc-find-prev(); }
+                doc-replace-one() => { root.doc-replace-one(); }
+                doc-replace-all() => { root.doc-replace-all(); }
+                doc-heading-clicked(idx) => { root.doc-heading-clicked(idx); }
+                doc-import-md() => { root.doc-import-md(); }
+                doc-export-md() => { root.doc-export-md(); }
+                doc-content-changed(text) => { root.doc-content-changed(text); }
+                // New callbacks
+                doc-add-comment(text) => { root.doc-add-comment(text); }
+                doc-delete-comment(id) => { root.doc-delete-comment(id); }
+                doc-resolve-comment(id) => { root.doc-resolve-comment(id); }
+                doc-toggle-track-changes() => { root.doc-toggle-track-changes(); }
+                doc-accept-change(id) => { root.doc-accept-change(id); }
+                doc-reject-change(id) => { root.doc-reject-change(id); }
+                doc-accept-all-changes() => { root.doc-accept-all-changes(); }
+                doc-reject-all-changes() => { root.doc-reject-all-changes(); }
+                doc-save-version(label) => { root.doc-save-version(label); }
+                doc-list-versions() => { root.doc-list-versions(); }
+                doc-restore-version(idx) => { root.doc-restore-version(idx); }
+                doc-insert-table(rows, cols) => { root.doc-insert-table(rows, cols); }
+                doc-add-table-row() => { root.doc-add-table-row(); }
+                doc-add-table-col() => { root.doc-add-table-col(); }
+                doc-format-strikethrough() => { root.doc-format-strikethrough(); }
+                doc-format-highlight() => { root.doc-format-highlight(); }
+                doc-format-link(url) => { root.doc-format-link(url); }
+                doc-format-inline-code() => { root.doc-format-inline-code(); }
+                doc-insert-toc() => { root.doc-insert-toc(); }
+                doc-insert-footnote() => { root.doc-insert-footnote(); }
+                doc-export-html() => { root.doc-export-html(); }
+                doc-use-template(idx) => { root.doc-use-template(idx); }
+                doc-insert-image(path) => { root.doc-insert-image(path); }
+                // Page layout & print
+                doc-export-status: root.doc-export-status;
+                doc-page-size <=> root.doc-page-size;
+                doc-set-page-layout(size) => { root.doc-set-page-layout(size); }
+                doc-print-preview() => { root.doc-print-preview(); }
+                // AI Assist
+                doc-ai-working: root.doc-ai-working;
+                doc-ai-response: root.doc-ai-response;
+                doc-ai-submit(prompt) => { root.doc-ai-submit(prompt); }
+                doc-ai-apply() => { root.doc-ai-apply(); }
+                doc-ai-dismiss() => { root.doc-ai-dismiss(); }
+                doc-ai-draft(prompt) => { root.doc-ai-draft(prompt); }
+                doc-ai-summarize() => { root.doc-ai-summarize(); }
+                doc-ai-improve() => { root.doc-ai-improve(); }
+                doc-ai-translate(lang) => { root.doc-ai-translate(lang); }
+                doc-ai-insights() => { root.doc-ai-insights(); }
+            }
+        }
+
+        // Presentation (screen 31)
+        if current-screen == 31 : WindowFrame {
+            x: root.window-maximized ? 0px : root.window-x;
+            y: root.window-maximized ? 0px : root.window-y;
+            width: root.window-maximized ? parent.width : root.window-w;
+            height: root.window-maximized ? parent.height - 60px : root.window-h;
+            is-maximized <=> root.window-maximized;
+            win-x <=> root.window-x;
+            win-y <=> root.window-y;
+            win-w <=> root.window-w;
+            win-h <=> root.window-h;
+            icon-char: "YP";
+            icon-color: #6c63ff;
+            title: "ySlides";
+            close => { root.current-screen = 1; root.navigate(1); }
+            minimize => { root.current-screen = 1; root.navigate(1); }
+            animate x, y, width, height { duration: 200ms; easing: ease-out; }
+
+            PresentationScreen {
+                width: 100%; height: 100%;
+                slides: root.pres-slides;
+                current-slide-index <=> root.pres-current-slide-index;
+                slide-count: root.pres-slide-count;
+                current-layout <=> root.pres-current-layout;
+                themes: root.pres-themes;
+                is-presenting <=> root.pres-is-presenting;
+                current-title: root.pres-current-title;
+                current-body: root.pres-current-body;
+                current-notes <=> root.pres-current-notes;
+                timer-text: root.pres-timer-text;
+                next-title: root.pres-next-title;
+                next-body: root.pres-next-body;
+                presentation-title: root.pres-presentation-title;
+                slide-progress: root.pres-slide-progress;
+                file-path: root.pres-file-path;
+                is-modified: root.pres-is-modified;
+                save-status: root.pres-save-status;
+                search-count: root.pres-search-count;
+                current-transition: root.pres-current-transition;
+                // Existing callbacks
+                add-slide => { root.pres-add-slide(); }
+                delete-slide => { root.pres-delete-slide(); }
+                duplicate-slide => { root.pres-duplicate-slide(); }
+                move-slide-up => { root.pres-move-slide-up(); }
+                move-slide-down => { root.pres-move-slide-down(); }
+                select-slide(idx) => { root.pres-select-slide(idx); }
+                set-layout(l) => { root.pres-set-layout(l); }
+                set-theme(t) => { root.pres-set-theme(t); }
+                toggle-present => { root.pres-toggle-present(); }
+                export-pdf => { root.pres-export-pdf(); }
+                title-edited(t) => { root.pres-title-edited(t); }
+                body-edited(t) => { root.pres-body-edited(t); }
+                notes-edited(t) => { root.pres-notes-edited(t); }
+                next-slide => { root.pres-next-slide(); }
+                prev-slide => { root.pres-prev-slide(); }
+                // New callbacks
+                save-presentation => { root.pres-save(); }
+                load-presentation => { root.pres-load(); }
+                toggle-timer => { root.pres-toggle-timer(); }
+                reset-timer => { root.pres-reset-timer(); }
+                use-template(idx) => { root.pres-use-template(idx); }
+                export-markdown => { root.pres-export-markdown(); }
+                export-outline => { root.pres-export-outline(); }
+                search-slides(q) => { root.pres-search(q); }
+                search-next => { root.pres-search-next(); }
+                set-transition(t) => { root.pres-set-transition(t); }
+                undo => { root.pres-undo(); }
+                redo => { root.pres-redo(); }
+                generate-notes => { root.pres-generate-notes(); }
+                format-bold => { root.pres-format-bold(); }
+                format-italic => { root.pres-format-italic(); }
+                set-font-size(s) => { root.pres-set-font-size(s); }
+                set-text-color(c) => { root.pres-set-text-color(c); }
+                insert-object(kind) => { root.pres-insert-object(kind); }
+                key-pressed(k) => { root.pres-key-pressed(k); }
+                // Template gallery & speaker notes
+                pres-template-gallery-open <=> root.pres-template-gallery-open;
+                pres-current-speaker-note <=> root.pres-current-speaker-note;
+                pres-open-template-gallery() => { root.pres-open-template-gallery(); }
+                pres-select-template(idx) => { root.pres-select-template(idx); }
+                pres-save-speaker-note(text) => { root.pres-save-speaker-note(text); }
+                // AI Assist
+                pres-ai-working: root.pres-ai-working;
+                pres-ai-response: root.pres-ai-response;
+                pres-ai-submit(prompt) => { root.pres-ai-submit(prompt); }
+                pres-ai-apply() => { root.pres-ai-apply(); }
+                pres-ai-dismiss() => { root.pres-ai-dismiss(); }
+                pres-ai-generate-deck(topic) => { root.pres-ai-generate-deck(topic); }
+                pres-ai-improve-slide() => { root.pres-ai-improve-slide(); }
+                pres-ai-generate-notes() => { root.pres-ai-generate-notes(); }
+                pres-ai-suggest-visuals() => { root.pres-ai-suggest-visuals(); }
+                pres-ai-insights() => { root.pres-ai-insights(); }
+            }
+        }
+
+        // ── Persistent dock for windowed app screens (auto-hide) ──
+        if current-screen >= 4 && current-screen <= 31 : Rectangle {
             width: 100%;
-            items: root.dock-items.length > 0 ? root.dock-items : [
-                { app-id: "terminal",      label: "Terminal", icon-char: ">_", is-running: false },
-                { app-id: "browser",       label: "Browser",  icon-char: "W",  is-running: false },
-                { app-id: "files",         label: "Files",    icon-char: "F",  is-running: false },
-                { app-id: "notes",         label: "Notes",    icon-char: "✎",  is-running: false },
-                { app-id: "editor",        label: "Editor",   icon-char: "≡",  is-running: false },
-                { app-id: "bond",          label: "Bond",     icon-char: "♥",  is-running: false },
-                { app-id: "memory",        label: "Memory",   icon-char: "◈",  is-running: false },
-                { app-id: "notifications", label: "Alerts",   icon-char: "N",  is-running: false },
-                { app-id: "system",        label: "System",   icon-char: "◉",  is-running: false },
-                { app-id: "media",         label: "Media",    icon-char: "♪",  is-running: false },
-                { app-id: "email",         label: "Email",    icon-char: "@",  is-running: false },
-                { app-id: "calendar",      label: "Calendar", icon-char: "▦",  is-running: false },
-                { app-id: "network",       label: "Network",  icon-char: "\u{25CE}",  is-running: false },
-                { app-id: "launchpad",     label: "Apps",     icon-char: "\u{229E}",  is-running: false },
-                { app-id: "settings",      label: "Settings", icon-char: "\u{2699}",  is-running: false },
-            ];
-            launch-app(app-id) => { root.launch-app(app-id); }
-            anchor-pressed => {
-                root.current-screen = 1;
-                root.navigate(1);
+            height: parent.height;
+            y: 0;
+            background: transparent;
+
+            // Invisible hover-trigger zone at bottom edge
+            dock-trigger := TouchArea {
+                y: parent.height - 6px;
+                width: 100%;
+                height: 6px;
+            }
+
+            property <bool> dock-revealed: dock-trigger.has-hover || dock-area.has-hover;
+
+            // The actual dock, slides up when revealed
+            dock-area := TouchArea {
+                y: parent.height - (dock-revealed ? 60px : 4px);
+                width: 100%;
+                height: 60px;
+
+                animate y { duration: 200ms; easing: ease-out; }
+
+                AppDock {
+                    width: 100%;
+                    opacity: dock-revealed ? 1.0 : 0.0;
+                    animate opacity { duration: 150ms; }
+                    items: root.dock-items.length > 0 ? root.dock-items : [
+                        { app-id: "terminal",      label: "Terminal", icon-char: ">_", is-running: false },
+                        { app-id: "browser",       label: "Browser",  icon-char: "W",  is-running: false },
+                        { app-id: "files",         label: "Files",    icon-char: "F",  is-running: false },
+                        { app-id: "notes",         label: "Notes",    icon-char: "✎",  is-running: false },
+                        { app-id: "editor",        label: "Editor",   icon-char: "≡",  is-running: false },
+                        { app-id: "bond",          label: "Bond",     icon-char: "♥",  is-running: false },
+                        { app-id: "memory",        label: "Memory",   icon-char: "◈",  is-running: false },
+                        { app-id: "notifications", label: "Alerts",   icon-char: "N",  is-running: false },
+                        { app-id: "system",        label: "System",   icon-char: "◉",  is-running: false },
+                        { app-id: "media",         label: "Media",    icon-char: "♪",  is-running: false },
+                        { app-id: "email",         label: "Email",    icon-char: "@",  is-running: false },
+                        { app-id: "calendar",      label: "Calendar", icon-char: "▦",  is-running: false },
+                        { app-id: "network",       label: "Network",  icon-char: "\u{25CE}",  is-running: false },
+                        { app-id: "launchpad",     label: "Apps",     icon-char: "\u{229E}",  is-running: false },
+                        { app-id: "spreadsheet",   label: "ySheets",  icon-char: "YS", is-running: false },
+                        { app-id: "documents",     label: "yDoc",     icon-char: "YD", is-running: false },
+                        { app-id: "presentation",  label: "ySlides",  icon-char: "YP", is-running: false },
+                        { app-id: "settings",      label: "Settings", icon-char: "\u{2699}",  is-running: false },
+                    ];
+                    launch-app(app-id) => { root.launch-app(app-id); }
+                    anchor-pressed => {
+                        root.current-screen = 1;
+                        root.navigate(1);
+                    }
+                }
+            }
+
+            // Thin glow hint line when dock is hidden
+            Rectangle {
+                y: parent.height - 2px;
+                width: parent.width * 0.3;
+                x: (parent.width - self.width) / 2;
+                height: 2px;
+                border-radius: 1px;
+                background: @linear-gradient(90deg, transparent 0%, Theme.cyan-glow 50%, transparent 100%);
+                opacity: dock-revealed ? 0.0 : 0.3;
+                animate opacity { duration: 200ms; }
             }
         }
 
@@ -2038,5 +3605,9 @@ export component App inherits Window {
             toast-clicked(id) => { root.toast-clicked(id); }
             toast-dismissed(id) => { root.toast-dismissed(id); }
         }
+
+        // Debug: navigate to screen from Rust
+        // Set debug-target-screen from Rust, then call debug-navigate()
+        // to switch to that screen (useful for automated screenshots).
     }
 }

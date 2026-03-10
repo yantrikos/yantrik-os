@@ -1,0 +1,230 @@
+// Command Palette — Ctrl+Shift+P overlay for quick command access.
+// Glassmorphic centered panel with fuzzy search and categorized commands.
+
+import { Theme } from "../theme.slint";
+
+export struct CommandItem {
+    label: string,
+    category: string,
+    shortcut: string,
+    icon-char: string,
+    action-id: string,
+}
+
+export component CommandPalette inherits Rectangle {
+    in-out property <bool> is-open: false;
+    in property <[CommandItem]> commands: [];
+    in property <[CommandItem]> filtered-commands: [];
+    in property <string> search-text: "";
+
+    callback search-changed(string);
+    callback command-selected(string);
+    callback close();
+
+    width: 100%;
+    height: 100%;
+
+    // Backdrop
+    if root.is-open : TouchArea {
+        width: 100%;
+        height: 100%;
+        clicked => { root.is-open = false; root.close(); }
+
+        Rectangle {
+            width: 100%;
+            height: 100%;
+            background: Theme.overlay-backdrop;
+        }
+    }
+
+    // Panel — glassmorphic, centered
+    if root.is-open : Rectangle {
+        x: (parent.width - 560px) / 2;
+        y: 80px;
+        width: 560px;
+        height: min(palette-layout.preferred-height + 16px, parent.height - 160px);
+        border-radius: 16px;
+        clip: true;
+
+        // Glass background
+        background: @linear-gradient(180deg,
+            #12111ae8 0%,
+            #0c0b10e0 50%,
+            #080810d8 100%
+        );
+        border-width: 1px;
+        border-color: #ffffff10;
+
+        // Subtle glow
+        drop-shadow-blur: 40px;
+        drop-shadow-color: #5ac8d410;
+        drop-shadow-offset-y: 8px;
+
+        palette-layout := VerticalLayout {
+            padding: 0px;
+            spacing: 0px;
+
+            // Search input area
+            Rectangle {
+                height: 52px;
+                background: #ffffff06;
+                border-width: 0px;
+
+                HorizontalLayout {
+                    padding-left: 16px;
+                    padding-right: 16px;
+                    spacing: 10px;
+                    alignment: center;
+
+                    // Prompt icon
+                    Text {
+                        text: ">";
+                        color: Theme.accent;
+                        font-size: 16px;
+                        font-weight: 700;
+                        vertical-alignment: center;
+                        width: 18px;
+                    }
+
+                    search-input := TextInput {
+                        text: root.search-text;
+                        font-size: 15px;
+                        color: Theme.text-primary;
+                        horizontal-alignment: left;
+                        vertical-alignment: center;
+                        input-type: text;
+                        edited => {
+                            root.search-changed(self.text);
+                        }
+                        accepted => {
+                            // Select first result
+                            if root.filtered-commands.length > 0 {
+                                root.command-selected(root.filtered-commands[0].action-id);
+                            }
+                        }
+                    }
+                }
+
+                // Bottom separator
+                Rectangle {
+                    y: parent.height - 1px;
+                    width: 100%;
+                    height: 1px;
+                    background: #ffffff0a;
+                }
+            }
+
+            // Results list
+            Flickable {
+                viewport-height: results-col.preferred-height;
+                height: min(results-col.preferred-height, 400px);
+
+                results-col := VerticalLayout {
+                    padding: 4px;
+                    spacing: 1px;
+
+                    for item[idx] in root.filtered-commands : TouchArea {
+                        height: 40px;
+                        clicked => { root.command-selected(item.action-id); }
+
+                        Rectangle {
+                            width: 100%;
+                            height: 100%;
+                            border-radius: 8px;
+                            background: parent.has-hover ? #ffffff0c : transparent;
+                            animate background { duration: 100ms; }
+
+                            HorizontalLayout {
+                                padding-left: 12px;
+                                padding-right: 12px;
+                                spacing: 10px;
+                                alignment: stretch;
+
+                                // Icon
+                                Rectangle {
+                                    width: 28px;
+                                    Text {
+                                        text: item.icon-char;
+                                        color: Theme.accent;
+                                        font-size: 13px;
+                                        font-weight: 600;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+                                }
+
+                                // Label
+                                Text {
+                                    text: item.label;
+                                    color: Theme.text-primary;
+                                    font-size: 14px;
+                                    vertical-alignment: center;
+                                    overflow: elide;
+                                }
+
+                                // Category badge
+                                Rectangle {
+                                    width: cat-text.preferred-width + 12px;
+                                    height: 20px;
+                                    border-radius: 4px;
+                                    background: #ffffff08;
+
+                                    cat-text := Text {
+                                        text: item.category;
+                                        color: Theme.text-dim;
+                                        font-size: 11px;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+                                }
+
+                                // Shortcut
+                                if item.shortcut != "" : Text {
+                                    text: item.shortcut;
+                                    color: Theme.text-dim;
+                                    font-size: 11px;
+                                    font-weight: 500;
+                                    vertical-alignment: center;
+                                    horizontal-alignment: right;
+                                }
+                            }
+                        }
+                    }
+
+                    // Empty state
+                    if root.filtered-commands.length == 0 : Rectangle {
+                        height: 60px;
+                        Text {
+                            text: "No matching commands";
+                            color: Theme.text-dim;
+                            font-size: 13px;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+            }
+
+            // Footer hint
+            Rectangle {
+                height: 32px;
+                background: #ffffff04;
+
+                HorizontalLayout {
+                    padding-left: 16px;
+                    padding-right: 16px;
+                    alignment: center;
+
+                    Text {
+                        text: "Enter to select  ·  Esc to close";
+                        color: Theme.text-dim;
+                        font-size: 11px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                        opacity: 0.6;
+                    }
+                }
+            }
+        }
+    }
+}

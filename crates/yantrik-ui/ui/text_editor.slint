@@ -1,8 +1,16 @@
-// Text Editor — simple text editing with AI assist and save.
+// Text Editor — multi-tab code/text editor with line numbers, syntax-aware status bar, AI assist.
 // Screen 12. Opens from file browser or "Editor" dock icon.
-// AI panel: summarize, generate, or improve text via Yantrik.
+// Supports up to 12 tabs, line numbers gutter, encoding/line-ending display,
+// go-to-line (Ctrl+G), autosave indicator, and AI panel.
 
 import { Theme } from "theme.slint";
+
+export struct EditorTabData {
+    title: string,
+    is-active: bool,
+    is-modified: bool,
+    path: string,
+}
 
 export component TextEditorScreen inherits Rectangle {
     background: Theme.bg-deep;
@@ -11,6 +19,34 @@ export component TextEditorScreen inherits Rectangle {
     in-out property <string> file-content: "";
     in property <bool> is-modified: false;
     in property <bool> is-readonly: false;
+
+    // Tab state
+    in property <[EditorTabData]> tabs: [];
+    in property <int> tab-count: 0;
+    in property <int> active-tab: 0;
+    callback switch-tab(int);
+    callback new-tab();
+    callback close-tab(int);
+
+    // Line/column info (from Rust)
+    in property <int> cursor-line: 1;
+    in property <int> cursor-col: 1;
+    in property <int> total-lines: 1;
+    in property <string> encoding: "UTF-8";
+    in property <string> line-ending: "LF";
+    in property <string> file-type: "Plain Text";
+
+    // Line numbers text (computed in Rust: "  1\n  2\n  3\n...")
+    in property <string> line-numbers-text: "  1";
+
+    // Go-to-line
+    in-out property <bool> show-goto-line: false;
+    in-out property <string> goto-line-input: "";
+    callback goto-line(int);
+
+    // Autosave
+    in property <bool> autosave-enabled: true;
+    in property <string> last-saved-time: "";
 
     // Save As dialog state
     in-out property <bool> show-save-dialog: false;
@@ -32,28 +68,149 @@ export component TextEditorScreen inherits Rectangle {
     in property <int> find-current-match: 0;
     in-out property <bool> show-replace-row: false;
 
+    // Large file & encoding/line-ending picker state
+    in property <bool> editor-large-file-warning: false;
+    in property <string> editor-file-size-text: "";
+    in-out property <bool> editor-show-encoding-picker: false;
+    in-out property <bool> editor-show-line-ending-picker: false;
+    in-out property <bool> editor-minimap-visible: false;
+
     callback save-file();
     callback save-file-as(string, string);
     callback content-changed(string);
-    callback ai-request(string);       // Send prompt with document context
-    callback ai-insert();              // Insert AI response into document
-    callback ai-dismiss();             // Close AI panel
+    callback ai-request(string);
+    callback ai-insert();
+    callback ai-dismiss();
     callback find-next();
     callback find-prev();
     callback replace-current();
     callback replace-all();
     callback find-query-changed(string);
+    callback editor-set-encoding(string);
+    callback editor-set-line-ending(string);
+    callback editor-toggle-minimap();
 
     VerticalLayout {
         spacing: 0px;
 
-        // ── Toolbar ──
-        Rectangle {
-            height: 40px;
+        // ── Tab Bar ──
+        if root.tab-count > 0 : Rectangle {
+            height: 32px;
             background: Theme.bg-surface;
 
             HorizontalLayout {
-                padding-left: 16px;
+                padding-left: 4px;
+                padding-right: 4px;
+                spacing: 0px;
+                alignment: start;
+
+                for tab[idx] in root.tabs : TouchArea {
+                    width: 150px;
+                    height: 32px;
+                    clicked => { root.switch-tab(idx); }
+
+                    Rectangle {
+                        width: 150px;
+                        height: 32px;
+                        background: tab.is-active ? Theme.bg-deep : (parent.has-hover ? Theme.hover-fill : Theme.bg-surface);
+
+                        // Active tab top accent
+                        if tab.is-active : Rectangle {
+                            x: 0px;
+                            y: 0px;
+                            width: parent.width;
+                            height: 2px;
+                            background: Theme.cyan;
+                        }
+
+                        HorizontalLayout {
+                            padding-left: 10px;
+                            padding-right: 4px;
+                            spacing: 4px;
+                            alignment: space-between;
+
+                            HorizontalLayout {
+                                spacing: 5px;
+                                alignment: start;
+
+                                // Modified indicator
+                                if tab.is-modified : Text {
+                                    text: "\u{25CF}";
+                                    color: Theme.amber;
+                                    font-size: 8px;
+                                    vertical-alignment: center;
+                                }
+
+                                // Tab title
+                                Text {
+                                    text: tab.title;
+                                    color: tab.is-active ? Theme.text-primary : Theme.text-secondary;
+                                    font-size: 12px;
+                                    font-weight: tab.is-active ? 600 : 400;
+                                    vertical-alignment: center;
+                                    overflow: elide;
+                                }
+                            }
+
+                            // Close button
+                            tab-close-ta := TouchArea {
+                                width: 18px;
+                                height: 18px;
+                                clicked => { root.close-tab(idx); }
+
+                                Rectangle {
+                                    width: 18px;
+                                    height: 18px;
+                                    border-radius: 4px;
+                                    background: tab-close-ta.has-hover ? Theme.hover-fill-strong : transparent;
+
+                                    Text {
+                                        text: "\u{00D7}";
+                                        color: tab-close-ta.has-hover ? Theme.text-primary : Theme.text-dim;
+                                        font-size: 13px;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // New tab button (+)
+                if root.tab-count < 12 : TouchArea {
+                    width: 28px;
+                    height: 32px;
+                    clicked => { root.new-tab(); }
+
+                    Rectangle {
+                        width: 28px;
+                        height: 32px;
+                        background: parent.has-hover ? Theme.hover-fill : transparent;
+
+                        Text {
+                            text: "+";
+                            color: Theme.text-dim;
+                            font-size: 16px;
+                            font-weight: 400;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Tab bar separator
+        if root.tab-count > 0 : Rectangle { height: 1px; background: Theme.separator; }
+
+        // ── Toolbar ──
+        Rectangle {
+            height: 36px;
+            background: Theme.bg-surface;
+
+            HorizontalLayout {
+                padding-left: 14px;
                 padding-right: 12px;
                 alignment: space-between;
 
@@ -66,7 +223,7 @@ export component TextEditorScreen inherits Rectangle {
                     Text {
                         text: root.file-name;
                         color: Theme.text-primary;
-                        font-size: 14px;
+                        font-size: 13px;
                         font-weight: 500;
                         vertical-alignment: center;
                         overflow: elide;
@@ -75,7 +232,7 @@ export component TextEditorScreen inherits Rectangle {
                     if root.is-modified : Text {
                         text: "\u{25CF}";
                         color: Theme.amber;
-                        font-size: 14px;
+                        font-size: 12px;
                         vertical-alignment: center;
                     }
 
@@ -85,17 +242,62 @@ export component TextEditorScreen inherits Rectangle {
                         font-size: Theme.font-small;
                         vertical-alignment: center;
                     }
+
+                    // File type badge
+                    if root.file-type != "" : Rectangle {
+                        width: ft-text.preferred-width + 12px;
+                        height: 20px;
+                        border-radius: 4px;
+                        background: Theme.hover-fill;
+
+                        ft-text := Text {
+                            text: root.file-type;
+                            color: Theme.text-dim;
+                            font-size: 10px;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
                 }
 
-                // Right: Find + AI button + Save button
+                // Right: toolbar buttons
                 HorizontalLayout {
                     spacing: 6px;
                     alignment: end;
 
-                    // Find button (Ctrl+F)
+                    // Go-to-line button (Ctrl+G)
+                    goto-btn-ta := TouchArea {
+                        width: 48px;
+                        height: 28px;
+                        clicked => {
+                            root.show-goto-line = !root.show-goto-line;
+                            root.goto-line-input = "";
+                        }
+
+                        Rectangle {
+                            width: 48px;
+                            height: 28px;
+                            border-radius: 6px;
+                            background: root.show-goto-line
+                                ? Theme.hover-fill-strong
+                                : (goto-btn-ta.has-hover ? Theme.hover-fill : transparent);
+                            border-width: 1px;
+                            border-color: root.show-goto-line ? Theme.cyan-dim : Theme.border-subtle;
+
+                            Text {
+                                text: "Ln:Co";
+                                color: root.show-goto-line ? Theme.cyan : Theme.text-dim;
+                                font-size: 10px;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+
+                    // Find button
                     find-btn-ta := TouchArea {
-                        width: 56px;
-                        height: 32px;
+                        width: 48px;
+                        height: 28px;
                         clicked => {
                             root.show-find-bar = !root.show-find-bar;
                             if !root.show-find-bar {
@@ -107,9 +309,9 @@ export component TextEditorScreen inherits Rectangle {
                         }
 
                         Rectangle {
-                            width: 56px;
-                            height: 32px;
-                            border-radius: 8px;
+                            width: 48px;
+                            height: 28px;
+                            border-radius: 6px;
                             background: root.show-find-bar
                                 ? Theme.cyan
                                 : (find-btn-ta.has-hover ? Theme.hover-fill-strong : Theme.hover-fill);
@@ -119,7 +321,7 @@ export component TextEditorScreen inherits Rectangle {
                             Text {
                                 text: "Find";
                                 color: root.show-find-bar ? Theme.bg-deep : Theme.text-secondary;
-                                font-size: 12px;
+                                font-size: 11px;
                                 font-weight: root.show-find-bar ? 600 : 400;
                                 horizontal-alignment: center;
                                 vertical-alignment: center;
@@ -129,17 +331,17 @@ export component TextEditorScreen inherits Rectangle {
 
                     // AI assist button
                     ai-btn-ta := TouchArea {
-                        width: 56px;
-                        height: 32px;
+                        width: 40px;
+                        height: 28px;
                         clicked => {
                             root.show-ai-panel = !root.show-ai-panel;
                             root.show-save-dialog = false;
                         }
 
                         Rectangle {
-                            width: 56px;
-                            height: 32px;
-                            border-radius: 8px;
+                            width: 40px;
+                            height: 28px;
+                            border-radius: 6px;
                             background: root.show-ai-panel
                                 ? Theme.amber
                                 : (ai-btn-ta.has-hover ? Theme.hover-fill-strong : Theme.hover-fill);
@@ -149,7 +351,7 @@ export component TextEditorScreen inherits Rectangle {
                             Text {
                                 text: "AI";
                                 color: root.show-ai-panel ? Theme.bg-deep : Theme.amber;
-                                font-size: 12px;
+                                font-size: 11px;
                                 font-weight: 600;
                                 horizontal-alignment: center;
                                 vertical-alignment: center;
@@ -159,14 +361,14 @@ export component TextEditorScreen inherits Rectangle {
 
                     // Save button
                     if !root.is-readonly : save-btn-ta := TouchArea {
-                        width: 72px;
-                        height: 32px;
+                        width: 56px;
+                        height: 28px;
                         clicked => { root.save-file(); }
 
                         Rectangle {
-                            width: 72px;
-                            height: 32px;
-                            border-radius: 8px;
+                            width: 56px;
+                            height: 28px;
+                            border-radius: 6px;
                             background: root.is-modified
                                 ? Theme.cyan
                                 : (save-btn-ta.has-hover ? Theme.hover-fill-strong : Theme.hover-fill);
@@ -176,7 +378,7 @@ export component TextEditorScreen inherits Rectangle {
                             Text {
                                 text: "Save";
                                 color: root.is-modified ? Theme.bg-deep : Theme.text-secondary;
-                                font-size: 13px;
+                                font-size: 12px;
                                 font-weight: root.is-modified ? 600 : 400;
                                 horizontal-alignment: center;
                                 vertical-alignment: center;
@@ -188,6 +390,87 @@ export component TextEditorScreen inherits Rectangle {
         }
 
         Rectangle { height: 1px; background: Theme.separator; }
+
+        // ── Go-to-line bar ──
+        if root.show-goto-line : Rectangle {
+            height: 38px;
+            background: @linear-gradient(135deg, #12111ae0 0%, #0c0b10c0 100%);
+            border-width: 1px;
+            border-color: Theme.cyan-dim;
+
+            HorizontalLayout {
+                padding: 4px;
+                padding-left: 12px;
+                padding-right: 12px;
+                spacing: 8px;
+
+                Text {
+                    text: "Go to line:";
+                    color: Theme.cyan;
+                    font-size: 12px;
+                    vertical-alignment: center;
+                    width: 80px;
+                }
+
+                Rectangle {
+                    horizontal-stretch: 0;
+                    width: 100px;
+                    height: 28px;
+                    border-radius: 6px;
+                    background: #0a091080;
+                    border-width: 1px;
+                    border-color: Theme.border-subtle;
+
+                    goto-input := TextInput {
+                        x: 8px;
+                        y: (parent.height - self.preferred-height) / 2;
+                        width: parent.width - 16px;
+                        color: Theme.text-primary;
+                        font-size: 13px;
+                        text <=> root.goto-line-input;
+                        input-type: number;
+                        single-line: true;
+                        accepted => {
+                            root.goto-line(root.goto-line-input.to-float());
+                            root.show-goto-line = false;
+                        }
+                    }
+                }
+
+                Text {
+                    text: "of \{root.total-lines}";
+                    color: Theme.text-dim;
+                    font-size: 12px;
+                    vertical-alignment: center;
+                }
+
+                Rectangle { horizontal-stretch: 1; }
+
+                // Close
+                goto-close-ta := TouchArea {
+                    width: 24px;
+                    height: 24px;
+                    clicked => { root.show-goto-line = false; }
+
+                    Rectangle {
+                        width: 24px;
+                        height: 24px;
+                        border-radius: 6px;
+                        background: goto-close-ta.has-hover ? Theme.hover-fill-strong : transparent;
+
+                        Text {
+                            text: "\u{00D7}";
+                            color: Theme.text-dim;
+                            font-size: 16px;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+            }
+        }
+
+        if root.show-goto-line : Rectangle { height: 1px; background: Theme.separator; }
 
         // ── Find & Replace bar ──
         if root.show-find-bar : Rectangle {
@@ -206,7 +489,6 @@ export component TextEditorScreen inherits Rectangle {
                 HorizontalLayout {
                     spacing: 6px;
 
-                    // Search icon
                     Text {
                         text: "\u{26B2}";
                         color: Theme.cyan;
@@ -215,11 +497,10 @@ export component TextEditorScreen inherits Rectangle {
                         width: 18px;
                     }
 
-                    // Search input
                     Rectangle {
                         horizontal-stretch: 1;
-                        height: 30px;
-                        border-radius: 8px;
+                        height: 28px;
+                        border-radius: 6px;
                         background: #0a091080;
                         border-width: 1px;
                         border-color: root.find-query != "" && root.find-match-count > 0
@@ -231,7 +512,7 @@ export component TextEditorScreen inherits Rectangle {
                             y: (parent.height - self.preferred-height) / 2;
                             width: parent.width - 20px;
                             color: Theme.text-primary;
-                            font-size: 13px;
+                            font-size: 12px;
                             text <=> root.find-query;
                             input-type: text;
                             single-line: true;
@@ -240,11 +521,10 @@ export component TextEditorScreen inherits Rectangle {
                         }
                     }
 
-                    // Match count badge
                     if root.find-query != "" : Rectangle {
-                        width: match-count-text.preferred-width + 16px;
-                        height: 24px;
-                        border-radius: 12px;
+                        width: match-count-text.preferred-width + 14px;
+                        height: 22px;
+                        border-radius: 11px;
                         background: root.find-match-count > 0 ? Theme.tint-cyan : #ff444430;
 
                         match-count-text := Text {
@@ -252,81 +532,52 @@ export component TextEditorScreen inherits Rectangle {
                                 ? "\{root.find-current-match} of \{root.find-match-count}"
                                 : "0";
                             color: root.find-match-count > 0 ? Theme.cyan : Theme.color-emotional;
-                            font-size: 11px;
+                            font-size: 10px;
                             font-weight: 500;
                             horizontal-alignment: center;
                             vertical-alignment: center;
                         }
                     }
 
-                    // Prev match
                     find-prev-ta := TouchArea {
-                        width: 28px;
-                        height: 28px;
+                        width: 24px;
+                        height: 24px;
                         clicked => { root.find-prev(); }
-
                         Rectangle {
-                            width: 28px;
-                            height: 28px;
-                            border-radius: 6px;
+                            width: 24px; height: 24px; border-radius: 6px;
                             background: find-prev-ta.has-hover ? Theme.hover-fill-strong : transparent;
-
-                            Text {
-                                text: "\u{25B2}";
-                                color: Theme.text-secondary;
-                                font-size: 10px;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
-                            }
+                            Text { text: "\u{25B2}"; color: Theme.text-secondary; font-size: 9px; horizontal-alignment: center; vertical-alignment: center; }
                         }
                     }
 
-                    // Next match
                     find-next-ta := TouchArea {
-                        width: 28px;
-                        height: 28px;
+                        width: 24px;
+                        height: 24px;
                         clicked => { root.find-next(); }
-
                         Rectangle {
-                            width: 28px;
-                            height: 28px;
-                            border-radius: 6px;
+                            width: 24px; height: 24px; border-radius: 6px;
                             background: find-next-ta.has-hover ? Theme.hover-fill-strong : transparent;
-
-                            Text {
-                                text: "\u{25BC}";
-                                color: Theme.text-secondary;
-                                font-size: 10px;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
-                            }
+                            Text { text: "\u{25BC}"; color: Theme.text-secondary; font-size: 9px; horizontal-alignment: center; vertical-alignment: center; }
                         }
                     }
 
-                    // Toggle replace row
                     find-expand-ta := TouchArea {
-                        width: 28px;
-                        height: 28px;
+                        width: 24px;
+                        height: 24px;
                         clicked => { root.show-replace-row = !root.show-replace-row; }
-
                         Rectangle {
-                            width: 28px;
-                            height: 28px;
-                            border-radius: 6px;
-                            background: find-expand-ta.has-hover ? Theme.hover-fill-strong
-                                : (root.show-replace-row ? Theme.hover-fill : transparent);
-
+                            width: 24px; height: 24px; border-radius: 6px;
+                            background: find-expand-ta.has-hover ? Theme.hover-fill-strong : (root.show-replace-row ? Theme.hover-fill : transparent);
                             Text {
                                 text: root.show-replace-row ? "\u{25BD}" : "\u{25B7}";
                                 color: root.show-replace-row ? Theme.cyan : Theme.text-dim;
-                                font-size: 10px;
+                                font-size: 9px;
                                 horizontal-alignment: center;
                                 vertical-alignment: center;
                             }
                         }
                     }
 
-                    // Close find bar
                     find-close-ta := TouchArea {
                         width: 24px;
                         height: 24px;
@@ -337,36 +588,24 @@ export component TextEditorScreen inherits Rectangle {
                             root.show-replace-row = false;
                             root.find-query-changed("");
                         }
-
                         Rectangle {
-                            width: 24px;
-                            height: 24px;
-                            border-radius: 6px;
+                            width: 24px; height: 24px; border-radius: 6px;
                             background: find-close-ta.has-hover ? Theme.hover-fill-strong : transparent;
-
-                            Text {
-                                text: "\u{00D7}";
-                                color: Theme.text-dim;
-                                font-size: 16px;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
-                            }
+                            Text { text: "\u{00D7}"; color: Theme.text-dim; font-size: 14px; horizontal-alignment: center; vertical-alignment: center; }
                         }
                     }
                 }
 
-                // Row 2: Replace input + Replace + Replace All (expandable)
+                // Row 2: Replace input + Replace + Replace All
                 if root.show-replace-row && !root.is-readonly : HorizontalLayout {
                     spacing: 6px;
 
-                    // Spacer to align with search input (icon width + spacing)
                     Rectangle { width: 18px; }
 
-                    // Replace input
                     Rectangle {
                         horizontal-stretch: 1;
-                        height: 30px;
-                        border-radius: 8px;
+                        height: 28px;
+                        border-radius: 6px;
                         background: #0a091080;
                         border-width: 1px;
                         border-color: Theme.border-subtle;
@@ -376,7 +615,7 @@ export component TextEditorScreen inherits Rectangle {
                             y: (parent.height - self.preferred-height) / 2;
                             width: parent.width - 20px;
                             color: Theme.text-primary;
-                            font-size: 13px;
+                            font-size: 12px;
                             text <=> root.replace-text;
                             input-type: text;
                             single-line: true;
@@ -384,53 +623,29 @@ export component TextEditorScreen inherits Rectangle {
                         }
                     }
 
-                    // Replace button
                     replace-btn-ta := TouchArea {
-                        width: 68px;
-                        height: 28px;
+                        width: 60px;
+                        height: 24px;
                         clicked => { root.replace-current(); }
-
                         Rectangle {
-                            width: 68px;
-                            height: 28px;
-                            border-radius: 8px;
+                            width: 60px; height: 24px; border-radius: 6px;
                             background: replace-btn-ta.has-hover ? Theme.cyan : Theme.hover-fill-strong;
                             border-width: replace-btn-ta.has-hover ? 0px : 1px;
                             border-color: Theme.cyan-dim;
-
-                            Text {
-                                text: "Replace";
-                                color: replace-btn-ta.has-hover ? Theme.bg-deep : Theme.cyan;
-                                font-size: 11px;
-                                font-weight: 600;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
-                            }
+                            Text { text: "Replace"; color: replace-btn-ta.has-hover ? Theme.bg-deep : Theme.cyan; font-size: 10px; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; }
                         }
                     }
 
-                    // Replace All button
                     replace-all-ta := TouchArea {
-                        width: 80px;
-                        height: 28px;
+                        width: 72px;
+                        height: 24px;
                         clicked => { root.replace-all(); }
-
                         Rectangle {
-                            width: 80px;
-                            height: 28px;
-                            border-radius: 8px;
+                            width: 72px; height: 24px; border-radius: 6px;
                             background: replace-all-ta.has-hover ? Theme.cyan : Theme.hover-fill-strong;
                             border-width: replace-all-ta.has-hover ? 0px : 1px;
                             border-color: Theme.cyan-dim;
-
-                            Text {
-                                text: "Replace All";
-                                color: replace-all-ta.has-hover ? Theme.bg-deep : Theme.cyan;
-                                font-size: 11px;
-                                font-weight: 600;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
-                            }
+                            Text { text: "Replace All"; color: replace-all-ta.has-hover ? Theme.bg-deep : Theme.cyan; font-size: 10px; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; }
                         }
                     }
                 }
@@ -441,14 +656,14 @@ export component TextEditorScreen inherits Rectangle {
 
         // ── AI assist panel ──
         if root.show-ai-panel : Rectangle {
-            max-height: 250px;
+            max-height: 220px;
             background: @linear-gradient(135deg, #12111ae0 0%, #0c0b10c0 100%);
             border-width: 1px;
             border-color: Theme.amber-dim;
 
             ai-panel-layout := VerticalLayout {
-                padding: 12px;
-                spacing: 8px;
+                padding: 10px;
+                spacing: 6px;
 
                 // Header: label + quick actions + close
                 HorizontalLayout {
@@ -457,78 +672,45 @@ export component TextEditorScreen inherits Rectangle {
                     Text {
                         text: "\u{25C9} AI Assist";
                         color: Theme.amber;
-                        font-size: 12px;
+                        font-size: 11px;
                         font-weight: 600;
                         vertical-alignment: center;
                     }
 
                     Rectangle { horizontal-stretch: 1; }
 
-                    // Quick action: Summarize
                     sum-ta := TouchArea {
-                        width: 76px;
-                        height: 24px;
+                        width: 70px;
+                        height: 22px;
                         clicked => { root.ai-request("summarize"); }
-
                         Rectangle {
-                            width: 76px;
-                            height: 24px;
-                            border-radius: 12px;
+                            width: 70px; height: 22px; border-radius: 11px;
                             background: sum-ta.has-hover ? Theme.hover-fill-strong : Theme.hover-fill;
-                            border-width: 1px;
-                            border-color: Theme.border-subtle;
-
-                            Text {
-                                text: "Summarize";
-                                color: Theme.text-secondary;
-                                font-size: 11px;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
-                            }
+                            border-width: 1px; border-color: Theme.border-subtle;
+                            Text { text: "Summarize"; color: Theme.text-secondary; font-size: 10px; horizontal-alignment: center; vertical-alignment: center; }
                         }
                     }
 
-                    // Quick action: Improve
                     imp-ta := TouchArea {
-                        width: 66px;
-                        height: 24px;
+                        width: 60px;
+                        height: 22px;
                         clicked => { root.ai-request("improve"); }
-
                         Rectangle {
-                            width: 66px;
-                            height: 24px;
-                            border-radius: 12px;
+                            width: 60px; height: 22px; border-radius: 11px;
                             background: imp-ta.has-hover ? Theme.hover-fill-strong : Theme.hover-fill;
-                            border-width: 1px;
-                            border-color: Theme.border-subtle;
-
-                            Text {
-                                text: "Improve";
-                                color: Theme.text-secondary;
-                                font-size: 11px;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
-                            }
+                            border-width: 1px; border-color: Theme.border-subtle;
+                            Text { text: "Improve"; color: Theme.text-secondary; font-size: 10px; horizontal-alignment: center; vertical-alignment: center; }
                         }
                     }
 
-                    // Close
                     ai-close-ta := TouchArea {
-                        width: 24px;
-                        height: 24px;
+                        width: 22px;
+                        height: 22px;
                         clicked => { root.ai-dismiss(); }
                         Rectangle {
-                            width: 24px;
-                            height: 24px;
-                            border-radius: 6px;
+                            width: 22px; height: 22px; border-radius: 6px;
                             background: ai-close-ta.has-hover ? Theme.hover-fill-strong : transparent;
-                            Text {
-                                text: "\u{00D7}";
-                                color: Theme.text-dim;
-                                font-size: 16px;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
-                            }
+                            Text { text: "\u{00D7}"; color: Theme.text-dim; font-size: 14px; horizontal-alignment: center; vertical-alignment: center; }
                         }
                     }
                 }
@@ -539,18 +721,18 @@ export component TextEditorScreen inherits Rectangle {
 
                     Rectangle {
                         horizontal-stretch: 1;
-                        height: 32px;
-                        border-radius: 8px;
+                        height: 30px;
+                        border-radius: 6px;
                         background: #0a091080;
                         border-width: 1px;
                         border-color: Theme.border-subtle;
 
                         ai-input := TextInput {
-                            x: 12px;
+                            x: 10px;
                             y: (parent.height - self.preferred-height) / 2;
-                            width: parent.width - 24px;
+                            width: parent.width - 20px;
                             color: Theme.text-primary;
-                            font-size: 13px;
+                            font-size: 12px;
                             text <=> root.ai-prompt;
                             input-type: text;
                             accepted => {
@@ -561,88 +743,63 @@ export component TextEditorScreen inherits Rectangle {
                         }
                     }
 
-                    // Send button
                     send-ta := TouchArea {
-                        width: 56px;
-                        height: 32px;
+                        width: 48px;
+                        height: 30px;
                         clicked => {
                             if root.ai-prompt != "" {
                                 root.ai-request(root.ai-prompt);
                             }
                         }
-
                         Rectangle {
-                            width: 56px;
-                            height: 32px;
-                            border-radius: 8px;
-                            background: root.ai-is-working
-                                ? Theme.hover-fill
-                                : (send-ta.has-hover ? Theme.amber : Theme.hover-fill-strong);
+                            width: 48px; height: 30px; border-radius: 6px;
+                            background: root.ai-is-working ? Theme.hover-fill : (send-ta.has-hover ? Theme.amber : Theme.hover-fill-strong);
                             border-width: send-ta.has-hover ? 0px : 1px;
                             border-color: Theme.amber-dim;
-
-                            Text {
-                                text: root.ai-is-working ? "..." : "Ask";
-                                color: send-ta.has-hover && !root.ai-is-working ? Theme.bg-deep : Theme.amber;
-                                font-size: 12px;
-                                font-weight: 600;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
-                            }
+                            Text { text: root.ai-is-working ? "..." : "Ask"; color: send-ta.has-hover && !root.ai-is-working ? Theme.bg-deep : Theme.amber; font-size: 11px; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; }
                         }
                     }
                 }
 
-                // AI response area (scrollable)
+                // AI response area
                 if root.ai-response != "" : Rectangle {
-                    min-height: 40px;
-                    max-height: 140px;
-                    border-radius: 8px;
+                    min-height: 36px;
+                    max-height: 120px;
+                    border-radius: 6px;
                     background: #0a091060;
 
                     Flickable {
                         width: parent.width;
                         height: parent.height;
-                        viewport-height: ai-resp-text.preferred-height + 16px;
+                        viewport-height: ai-resp-text.preferred-height + 14px;
 
                         ai-resp-text := Text {
-                            x: 12px;
-                            y: 8px;
-                            width: parent.width - 24px;
+                            x: 10px;
+                            y: 7px;
+                            width: parent.width - 20px;
                             text: root.ai-response;
                             color: Theme.text-secondary;
-                            font-size: 13px;
+                            font-size: 12px;
                             wrap: word-wrap;
                         }
                     }
                 }
 
-                // Insert button (when response is available and not working)
+                // Insert button
                 if root.ai-response != "" && !root.ai-is-working : HorizontalLayout {
                     alignment: end;
                     spacing: 6px;
 
                     ins-ta := TouchArea {
-                        width: 110px;
-                        height: 28px;
+                        width: 100px;
+                        height: 26px;
                         clicked => { root.ai-insert(); }
-
                         Rectangle {
-                            width: 110px;
-                            height: 28px;
-                            border-radius: 8px;
+                            width: 100px; height: 26px; border-radius: 6px;
                             background: ins-ta.has-hover ? Theme.cyan : Theme.hover-fill-strong;
                             border-width: ins-ta.has-hover ? 0px : 1px;
                             border-color: Theme.cyan-dim;
-
-                            Text {
-                                text: "Insert into doc";
-                                color: ins-ta.has-hover ? Theme.bg-deep : Theme.cyan;
-                                font-size: 11px;
-                                font-weight: 600;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
-                            }
+                            Text { text: "Insert into doc"; color: ins-ta.has-hover ? Theme.bg-deep : Theme.cyan; font-size: 10px; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; }
                         }
                     }
                 }
@@ -659,55 +816,32 @@ export component TextEditorScreen inherits Rectangle {
             border-color: Theme.cyan-dim;
 
             save-dialog-layout := VerticalLayout {
-                padding: 16px;
-                spacing: 12px;
+                padding: 14px;
+                spacing: 10px;
 
                 HorizontalLayout {
                     spacing: 8px;
-                    Text {
-                        text: "Save As";
-                        color: Theme.cyan;
-                        font-size: 14px;
-                        font-weight: 600;
-                        horizontal-stretch: 1;
-                        vertical-alignment: center;
-                    }
-                    close-ta := TouchArea {
-                        width: 24px;
-                        height: 24px;
+                    Text { text: "Save As"; color: Theme.cyan; font-size: 13px; font-weight: 600; horizontal-stretch: 1; vertical-alignment: center; }
+                    saveas-close-ta := TouchArea {
+                        width: 24px; height: 24px;
                         clicked => { root.show-save-dialog = false; }
                         Rectangle {
-                            width: 24px;
-                            height: 24px;
-                            border-radius: 6px;
-                            background: close-ta.has-hover ? Theme.hover-fill-strong : transparent;
-                            Text {
-                                text: "\u{00D7}";
-                                color: Theme.text-dim;
-                                font-size: 16px;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
-                            }
+                            width: 24px; height: 24px; border-radius: 6px;
+                            background: saveas-close-ta.has-hover ? Theme.hover-fill-strong : transparent;
+                            Text { text: "\u{00D7}"; color: Theme.text-dim; font-size: 16px; horizontal-alignment: center; vertical-alignment: center; }
                         }
                     }
                 }
 
                 VerticalLayout {
                     spacing: 4px;
-                    Text { text: "Directory"; color: Theme.text-dim; font-size: 11px; }
+                    Text { text: "Directory"; color: Theme.text-dim; font-size: 10px; }
                     Rectangle {
-                        height: 34px;
-                        border-radius: 8px;
-                        background: #0a091080;
-                        border-width: 1px;
-                        border-color: Theme.border-subtle;
+                        height: 30px; border-radius: 6px; background: #0a091080;
+                        border-width: 1px; border-color: Theme.border-subtle;
                         dir-input := TextInput {
-                            x: 12px;
-                            y: (parent.height - self.preferred-height) / 2;
-                            width: parent.width - 24px;
-                            color: Theme.text-primary;
-                            font-size: 13px;
-                            text <=> root.save-dir;
+                            x: 10px; y: (parent.height - self.preferred-height) / 2; width: parent.width - 20px;
+                            color: Theme.text-primary; font-size: 12px; text <=> root.save-dir;
                             accepted => { root.save-file-as(root.save-dir, root.save-filename); }
                         }
                     }
@@ -715,20 +849,13 @@ export component TextEditorScreen inherits Rectangle {
 
                 VerticalLayout {
                     spacing: 4px;
-                    Text { text: "Filename"; color: Theme.text-dim; font-size: 11px; }
+                    Text { text: "Filename"; color: Theme.text-dim; font-size: 10px; }
                     Rectangle {
-                        height: 34px;
-                        border-radius: 8px;
-                        background: #0a091080;
-                        border-width: 1px;
-                        border-color: Theme.border-subtle;
+                        height: 30px; border-radius: 6px; background: #0a091080;
+                        border-width: 1px; border-color: Theme.border-subtle;
                         name-input := TextInput {
-                            x: 12px;
-                            y: (parent.height - self.preferred-height) / 2;
-                            width: parent.width - 24px;
-                            color: Theme.text-primary;
-                            font-size: 13px;
-                            text <=> root.save-filename;
+                            x: 10px; y: (parent.height - self.preferred-height) / 2; width: parent.width - 20px;
+                            color: Theme.text-primary; font-size: 12px; text <=> root.save-filename;
                             accepted => { root.save-file-as(root.save-dir, root.save-filename); }
                         }
                     }
@@ -737,29 +864,29 @@ export component TextEditorScreen inherits Rectangle {
                 if root.save-error != "" : Text {
                     text: root.save-error;
                     color: Theme.color-emotional;
-                    font-size: 12px;
+                    font-size: 11px;
                 }
 
                 HorizontalLayout {
                     spacing: 8px;
                     alignment: end;
                     cancel-ta := TouchArea {
-                        width: 72px; height: 32px;
+                        width: 64px; height: 28px;
                         clicked => { root.show-save-dialog = false; }
                         Rectangle {
-                            width: 72px; height: 32px; border-radius: 8px;
+                            width: 64px; height: 28px; border-radius: 6px;
                             background: cancel-ta.has-hover ? Theme.hover-fill-strong : Theme.hover-fill;
                             border-width: 1px; border-color: Theme.border-subtle;
-                            Text { text: "Cancel"; color: Theme.text-secondary; font-size: 13px; horizontal-alignment: center; vertical-alignment: center; }
+                            Text { text: "Cancel"; color: Theme.text-secondary; font-size: 12px; horizontal-alignment: center; vertical-alignment: center; }
                         }
                     }
                     confirm-ta := TouchArea {
-                        width: 72px; height: 32px;
+                        width: 64px; height: 28px;
                         clicked => { root.save-file-as(root.save-dir, root.save-filename); }
                         Rectangle {
-                            width: 72px; height: 32px; border-radius: 8px;
+                            width: 64px; height: 28px; border-radius: 6px;
                             background: Theme.cyan;
-                            Text { text: "Save"; color: Theme.bg-deep; font-size: 13px; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; }
+                            Text { text: "Save"; color: Theme.bg-deep; font-size: 12px; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; }
                         }
                     }
                 }
@@ -768,31 +895,326 @@ export component TextEditorScreen inherits Rectangle {
 
         if root.show-save-dialog : Rectangle { height: 1px; background: Theme.separator; }
 
-        // ── Editor area ──
-        Rectangle {
-            background: Theme.bg-deep;
+        // ── Large file warning banner ──
+        if root.editor-large-file-warning : Rectangle {
+            height: 28px;
+            background: #ff990020;
+            border-width: 1px;
+            border-color: Theme.amber-dim;
+
+            HorizontalLayout {
+                padding-left: 12px;
+                padding-right: 12px;
+                spacing: 8px;
+                alignment: start;
+
+                Text {
+                    text: "\u{26A0}";
+                    color: Theme.amber;
+                    font-size: 12px;
+                    vertical-alignment: center;
+                }
+
+                Text {
+                    text: "Large file — some features disabled for performance";
+                    color: Theme.amber;
+                    font-size: 11px;
+                    font-weight: 500;
+                    vertical-alignment: center;
+                }
+            }
+        }
+
+        // ── Editor area with line numbers ──
+        HorizontalLayout {
+            spacing: 0px;
             vertical-stretch: 1;
 
-            Flickable {
-                x: 0px;
-                y: 0px;
-                width: parent.width;
-                height: parent.height;
-                viewport-height: editor-input.preferred-height + 32px;
+            // Line numbers gutter
+            Rectangle {
+                width: 50px;
+                background: #0a0a0f;
 
-                editor-input := TextInput {
-                    x: 16px;
-                    y: 12px;
-                    width: parent.width - 32px;
-                    color: Theme.text-primary;
-                    font-size: 14px;
-                    text <=> root.file-content;
-                    read-only: root.is-readonly;
-                    single-line: false;
-                    wrap: word-wrap;
-                    selection-foreground-color: Theme.bg-deep;
-                    selection-background-color: Theme.cyan;
-                    edited => { root.content-changed(self.text); }
+                Flickable {
+                    x: 0px;
+                    y: 0px;
+                    width: parent.width;
+                    height: parent.height;
+                    viewport-height: line-num-text.preferred-height + 24px;
+
+                    line-num-text := Text {
+                        x: 0px;
+                        y: 12px;
+                        width: 42px;
+                        text: root.line-numbers-text;
+                        color: Theme.text-dim;
+                        font-family: "monospace";
+                        font-size: 14px;
+                        horizontal-alignment: right;
+                        wrap: no-wrap;
+                    }
+                }
+
+                // Gutter separator
+                Rectangle {
+                    x: parent.width - 1px;
+                    y: 0px;
+                    width: 1px;
+                    height: parent.height;
+                    background: Theme.separator;
+                }
+            }
+
+            // Main editor
+            Rectangle {
+                background: Theme.bg-deep;
+                horizontal-stretch: 1;
+
+                Flickable {
+                    x: 0px;
+                    y: 0px;
+                    width: parent.width;
+                    height: parent.height;
+                    viewport-height: editor-input.preferred-height + 32px;
+
+                    editor-input := TextInput {
+                        x: 12px;
+                        y: 12px;
+                        width: parent.width - 24px;
+                        color: Theme.text-primary;
+                        font-family: "monospace";
+                        font-size: 14px;
+                        text <=> root.file-content;
+                        read-only: root.is-readonly;
+                        single-line: false;
+                        wrap: no-wrap;
+                        selection-foreground-color: Theme.bg-deep;
+                        selection-background-color: Theme.cyan;
+                        edited => { root.content-changed(self.text); }
+                    }
+                }
+            }
+        }
+
+        // ── Status bar ──
+        Rectangle {
+            height: 24px;
+            background: Theme.bg-surface;
+
+            HorizontalLayout {
+                padding-left: 12px;
+                padding-right: 12px;
+                spacing: 16px;
+                alignment: start;
+
+                // Cursor position
+                Text {
+                    text: "Ln \{root.cursor-line}, Col \{root.cursor-col}";
+                    color: Theme.text-dim;
+                    font-size: 11px;
+                    vertical-alignment: center;
+                }
+
+                // Total lines
+                Text {
+                    text: "\{root.total-lines} lines";
+                    color: Theme.text-dim;
+                    font-size: 11px;
+                    vertical-alignment: center;
+                }
+
+                // File size
+                if root.editor-file-size-text != "" : Text {
+                    text: root.editor-file-size-text;
+                    color: Theme.text-dim;
+                    font-size: 11px;
+                    vertical-alignment: center;
+                }
+
+                Rectangle { horizontal-stretch: 1; }
+
+                // Autosave indicator
+                if root.autosave-enabled && root.last-saved-time != "" : Text {
+                    text: "Saved \{root.last-saved-time}";
+                    color: Theme.text-dim;
+                    font-size: 10px;
+                    vertical-alignment: center;
+                }
+
+                // Encoding (clickable with dropdown)
+                Rectangle {
+                    width: enc-click-text.preferred-width + 4px;
+                    height: 24px;
+
+                    enc-ta := TouchArea {
+                        width: parent.width;
+                        height: parent.height;
+                        clicked => {
+                            root.editor-show-encoding-picker = !root.editor-show-encoding-picker;
+                            root.editor-show-line-ending-picker = false;
+                        }
+
+                        enc-click-text := Text {
+                            text: root.encoding;
+                            color: enc-ta.has-hover || root.editor-show-encoding-picker ? Theme.cyan : Theme.text-dim;
+                            font-size: 11px;
+                            vertical-alignment: center;
+                        }
+                    }
+
+                    // Encoding picker dropdown
+                    if root.editor-show-encoding-picker : Rectangle {
+                        x: 0px;
+                        y: -100px;
+                        width: 100px;
+                        height: 92px;
+                        border-radius: 8px;
+                        background: @linear-gradient(135deg, #18172ae0 0%, #0e0d14c0 100%);
+                        border-width: 1px;
+                        border-color: Theme.cyan-dim;
+
+                        VerticalLayout {
+                            padding: 4px;
+                            spacing: 2px;
+
+                            enc-utf8-ta := TouchArea {
+                                height: 26px;
+                                clicked => {
+                                    root.editor-set-encoding("UTF-8");
+                                    root.editor-show-encoding-picker = false;
+                                }
+                                Rectangle {
+                                    height: 26px; border-radius: 6px;
+                                    background: root.encoding == "UTF-8" ? Theme.tint-cyan : (enc-utf8-ta.has-hover ? Theme.hover-fill : transparent);
+                                    HorizontalLayout { padding-left: 10px;
+                                        Text { text: "UTF-8"; color: root.encoding == "UTF-8" ? Theme.cyan : Theme.text-secondary; font-size: 11px; vertical-alignment: center; }
+                                    }
+                                }
+                            }
+
+                            enc-latin1-ta := TouchArea {
+                                height: 26px;
+                                clicked => {
+                                    root.editor-set-encoding("Latin-1");
+                                    root.editor-show-encoding-picker = false;
+                                }
+                                Rectangle {
+                                    height: 26px; border-radius: 6px;
+                                    background: root.encoding == "Latin-1" ? Theme.tint-cyan : (enc-latin1-ta.has-hover ? Theme.hover-fill : transparent);
+                                    HorizontalLayout { padding-left: 10px;
+                                        Text { text: "Latin-1"; color: root.encoding == "Latin-1" ? Theme.cyan : Theme.text-secondary; font-size: 11px; vertical-alignment: center; }
+                                    }
+                                }
+                            }
+
+                            enc-utf16-ta := TouchArea {
+                                height: 26px;
+                                clicked => {
+                                    root.editor-set-encoding("UTF-16");
+                                    root.editor-show-encoding-picker = false;
+                                }
+                                Rectangle {
+                                    height: 26px; border-radius: 6px;
+                                    background: root.encoding == "UTF-16" ? Theme.tint-cyan : (enc-utf16-ta.has-hover ? Theme.hover-fill : transparent);
+                                    HorizontalLayout { padding-left: 10px;
+                                        Text { text: "UTF-16"; color: root.encoding == "UTF-16" ? Theme.cyan : Theme.text-secondary; font-size: 11px; vertical-alignment: center; }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Line ending (clickable with dropdown)
+                Rectangle {
+                    width: le-click-text.preferred-width + 4px;
+                    height: 24px;
+
+                    le-ta := TouchArea {
+                        width: parent.width;
+                        height: parent.height;
+                        clicked => {
+                            root.editor-show-line-ending-picker = !root.editor-show-line-ending-picker;
+                            root.editor-show-encoding-picker = false;
+                        }
+
+                        le-click-text := Text {
+                            text: root.line-ending;
+                            color: le-ta.has-hover || root.editor-show-line-ending-picker ? Theme.cyan : Theme.text-dim;
+                            font-size: 11px;
+                            vertical-alignment: center;
+                        }
+                    }
+
+                    // Line ending picker dropdown
+                    if root.editor-show-line-ending-picker : Rectangle {
+                        x: 0px;
+                        y: -92px;
+                        width: 80px;
+                        height: 84px;
+                        border-radius: 8px;
+                        background: @linear-gradient(135deg, #18172ae0 0%, #0e0d14c0 100%);
+                        border-width: 1px;
+                        border-color: Theme.cyan-dim;
+
+                        VerticalLayout {
+                            padding: 4px;
+                            spacing: 2px;
+
+                            le-lf-ta := TouchArea {
+                                height: 24px;
+                                clicked => {
+                                    root.editor-set-line-ending("LF");
+                                    root.editor-show-line-ending-picker = false;
+                                }
+                                Rectangle {
+                                    height: 24px; border-radius: 6px;
+                                    background: root.line-ending == "LF" ? Theme.tint-cyan : (le-lf-ta.has-hover ? Theme.hover-fill : transparent);
+                                    HorizontalLayout { padding-left: 10px;
+                                        Text { text: "LF"; color: root.line-ending == "LF" ? Theme.cyan : Theme.text-secondary; font-size: 11px; vertical-alignment: center; }
+                                    }
+                                }
+                            }
+
+                            le-crlf-ta := TouchArea {
+                                height: 24px;
+                                clicked => {
+                                    root.editor-set-line-ending("CRLF");
+                                    root.editor-show-line-ending-picker = false;
+                                }
+                                Rectangle {
+                                    height: 24px; border-radius: 6px;
+                                    background: root.line-ending == "CRLF" ? Theme.tint-cyan : (le-crlf-ta.has-hover ? Theme.hover-fill : transparent);
+                                    HorizontalLayout { padding-left: 10px;
+                                        Text { text: "CRLF"; color: root.line-ending == "CRLF" ? Theme.cyan : Theme.text-secondary; font-size: 11px; vertical-alignment: center; }
+                                    }
+                                }
+                            }
+
+                            le-cr-ta := TouchArea {
+                                height: 24px;
+                                clicked => {
+                                    root.editor-set-line-ending("CR");
+                                    root.editor-show-line-ending-picker = false;
+                                }
+                                Rectangle {
+                                    height: 24px; border-radius: 6px;
+                                    background: root.line-ending == "CR" ? Theme.tint-cyan : (le-cr-ta.has-hover ? Theme.hover-fill : transparent);
+                                    HorizontalLayout { padding-left: 10px;
+                                        Text { text: "CR"; color: root.line-ending == "CR" ? Theme.cyan : Theme.text-secondary; font-size: 11px; vertical-alignment: center; }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // File type
+                Text {
+                    text: root.file-type;
+                    color: Theme.text-secondary;
+                    font-size: 11px;
+                    vertical-alignment: center;
                 }
             }
         }

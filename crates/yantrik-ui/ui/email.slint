@@ -1,5 +1,6 @@
-// Email client — 3-pane layout with AI integration.
-// Multi-account, CC/BCC, AI draft/enhance/summarize.
+// Email client — Enterprise 3-pane layout with AI integration.
+// Threaded conversations, search, message actions, compose with formatting,
+// folder sidebar with icons & badges, rich email list, status bar.
 
 import { Theme } from "theme.slint";
 import { ScrollView, VerticalBox, HorizontalBox } from "std-widgets.slint";
@@ -8,8 +9,11 @@ import { ScrollView, VerticalBox, HorizontalBox } from "std-widgets.slint";
 
 export struct EmailFolderData {
     name: string,
+    icon: string,
     unread-count: int,
+    total-count: int,
     is-selected: bool,
+    folder-type: string,    // "inbox", "starred", "sent", "drafts", "archive", "trash", "spam", "custom"
 }
 
 export struct EmailListItem {
@@ -22,6 +26,20 @@ export struct EmailListItem {
     is-read: bool,
     is-flagged: bool,
     is-selected: bool,
+    has-attachment: bool,
+    thread-count: int,      // number of messages in thread (0 or 1 = no thread badge)
+    thread-id: string,      // grouping key for threaded view
+    avatar-initial: string, // first letter of sender name for avatar circle
+    avatar-color: color,    // background color for avatar circle
+}
+
+export struct EmailThreadMessage {
+    id: int,
+    from-name: string,
+    from-addr: string,
+    date-text: string,
+    body: string,
+    is-collapsed: bool,
 }
 
 export struct EmailDetailData {
@@ -29,11 +47,29 @@ export struct EmailDetailData {
     from-name: string,
     from-addr: string,
     to-addr: string,
+    cc-addr: string,
     subject: string,
     date-text: string,
     body: string,
     ai-summary: string,
     is-flagged: bool,
+    is-read: bool,
+    has-attachment: bool,
+    attachment-names: string,   // comma-separated list
+    thread-count: int,
+}
+
+export struct EmailAttachmentData {
+    name: string,
+    size-text: string,
+    mime-type: string,
+    is-downloaded: bool,
+}
+
+export struct EmailSignatureData {
+    name: string,
+    content: string,
+    is-default: bool,
 }
 
 // ── Email Client Component ──
@@ -56,6 +92,19 @@ export component EmailClient inherits Rectangle {
     in property <bool> has-account: false;
     in property <string> setup-status: "";
     in property <bool> setup-testing: false;
+
+    // Thread messages for detail view
+    in property <[EmailThreadMessage]> email-thread-messages: [];
+
+    // Search state
+    in property <int> email-search-count: 0;
+    in property <bool> email-search-active: false;
+    in-out property <string> email-search-query: "";
+
+    // Sync status
+    in property <string> email-sync-status: "Synced";
+    in property <int> email-folder-total: 0;
+    in property <int> email-folder-unread: 0;
 
     // Compose state
     in-out property <string> compose-to: "";
@@ -82,13 +131,28 @@ export component EmailClient inherits Rectangle {
     // CC/BCC toggle
     in-out property <bool> show-cc-bcc: false;
 
+    // Compose formatting state
+    in-out property <bool> compose-bold-active: false;
+    in-out property <bool> compose-italic-active: false;
+
+    // V41: Enterprise email enhancements
+    in property <[EmailAttachmentData]> email-attachments: [];
+    in property <[EmailSignatureData]> email-signatures: [];
+    in property <int> email-active-signature: 0;
+    in property <int> email-triage-view: 0;  // 0=all, 1=priority, 2=unread, 3=flagged
+    in property <int> email-priority-count: 0;
+    in property <string> email-draft-status: "";  // "Saved" / "Saving..." / ""
+    in property <string> email-ai-intent: "";  // "action-needed", "fyi", "meeting", "newsletter"
+
     // Callbacks — email operations
     callback folder-clicked(int);
     callback email-selected(int);
     callback compose-new();
     callback send-email(string, string, string, string, string);  // to, cc, bcc, subject, body
     callback reply-email();
+    callback reply-all-email();
     callback forward-email();
+    callback archive-email(int);
     callback delete-email(int);
     callback mark-read(int);
     callback mark-flagged(int);
@@ -101,6 +165,15 @@ export component EmailClient inherits Rectangle {
     callback cancel-compose();
     callback back-pressed();
     callback add-account();              // open setup for additional account
+    callback toggle-thread-message(int); // collapse/expand a thread message
+
+    // V41: Enterprise callbacks
+    callback download-attachment(int);
+    callback preview-attachment(int);
+    callback set-signature(int);
+    callback triage-filter(int);
+    callback save-draft();
+    callback ai-classify();
 
     // Callbacks — account setup
     callback save-account(string, string, string, string, string, string, string, string);
@@ -427,148 +500,975 @@ export component EmailClient inherits Rectangle {
     }
 
     // ── Main Email View (shown when account is configured) ──
-    if root.has-account : HorizontalLayout {
+    if root.has-account : VerticalLayout {
         spacing: 0px;
 
-        // ── Left: Folder sidebar ──
-        Rectangle {
-            width: 180px;
-            background: Theme.bg-surface;
+        HorizontalLayout {
+            spacing: 0px;
 
-            VerticalLayout {
-                padding: 12px;
-                spacing: 4px;
+            // ── Left: Folder sidebar ──
+            Rectangle {
+                width: 200px;
+                background: Theme.bg-surface;
+                border-width: 0px;
 
-                Text {
-                    text: root.account-name;
-                    color: Theme.text-secondary;
-                    font-size: 11px;
-                    font-weight: 600;
-                    overflow: elide;
-                }
+                VerticalLayout {
+                    padding: 12px;
+                    spacing: 2px;
 
-                Rectangle { height: 8px; }
+                    // Account header
+                    Rectangle {
+                        height: 40px;
+                        border-radius: 8px;
 
-                // Compose button
-                Rectangle {
-                    height: 36px;
-                    border-radius: 8px;
-                    background: Theme.cyan;
+                        HorizontalLayout {
+                            padding-left: 10px;
+                            padding-right: 10px;
+                            spacing: 8px;
+                            alignment: start;
 
-                    TouchArea {
-                        clicked => { root.compose-new(); }
-                        mouse-cursor: pointer;
-                    }
+                            // Account avatar
+                            Rectangle {
+                                width: 28px;
+                                height: 28px;
+                                border-radius: 14px;
+                                background: Theme.cyan.with-alpha(0.2);
 
-                    HorizontalLayout {
-                        padding-left: 12px;
-                        alignment: start;
-                        spacing: 6px;
+                                Text {
+                                    text: "@";
+                                    color: Theme.cyan;
+                                    font-size: 14px;
+                                    font-weight: 700;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                            }
 
-                        Text { text: "+"; color: Theme.bg-deep; font-size: 16px; font-weight: 700; vertical-alignment: center; }
-                        Text { text: "Compose"; color: Theme.bg-deep; font-size: 13px; font-weight: 600; vertical-alignment: center; }
-                    }
-                }
+                            VerticalLayout {
+                                alignment: center;
+                                spacing: 1px;
 
-                Rectangle { height: 8px; }
-
-                // Folder list
-                for folder[idx] in root.folders : Rectangle {
-                    height: 36px;
-                    border-radius: 6px;
-                    background: folder.is-selected ? Theme.bg-card : transparent;
-
-                    TouchArea {
-                        clicked => { root.folder-clicked(idx); }
-                        mouse-cursor: pointer;
-                    }
-
-                    HorizontalLayout {
-                        padding-left: 12px;
-                        padding-right: 12px;
-                        alignment: space-between;
-
-                        Text {
-                            text: folder.name;
-                            color: folder.is-selected ? Theme.text-primary : Theme.text-secondary;
-                            font-size: 13px; vertical-alignment: center;
-                        }
-                        if folder.unread-count > 0 : Text {
-                            text: folder.unread-count;
-                            color: Theme.cyan;
-                            font-size: 11px; font-weight: 700; vertical-alignment: center;
+                                Text {
+                                    text: root.account-name;
+                                    color: Theme.text-primary;
+                                    font-size: 12px;
+                                    font-weight: 600;
+                                    overflow: elide;
+                                }
+                            }
                         }
                     }
-                }
 
-                Rectangle {} // spacer
+                    Rectangle { height: 8px; }
 
-                // Add another account
-                Rectangle {
-                    height: 32px;
-                    border-radius: 6px;
+                    // Compose button
+                    Rectangle {
+                        height: 38px;
+                        border-radius: 10px;
+                        background: Theme.cyan;
+                        drop-shadow-blur: 8px;
+                        drop-shadow-color: Theme.cyan.with-alpha(0.3);
 
-                    TouchArea {
-                        clicked => { root.add-account(); }
-                        mouse-cursor: pointer;
+                        TouchArea {
+                            clicked => { root.compose-new(); }
+                            mouse-cursor: pointer;
+                        }
+
+                        HorizontalLayout {
+                            alignment: center;
+                            spacing: 6px;
+
+                            Text { text: "+"; color: Theme.bg-deep; font-size: 16px; font-weight: 700; vertical-alignment: center; }
+                            Text { text: "Compose"; color: Theme.bg-deep; font-size: 13px; font-weight: 600; vertical-alignment: center; }
+                        }
                     }
 
-                    Text {
-                        text: "+ Add Account";
-                        color: Theme.text-dim;
-                        font-size: 11px;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
+                    Rectangle { height: 12px; }
+
+                    // Folder list with icons and badges
+                    for folder[idx] in root.folders : Rectangle {
+                        height: 36px;
+                        border-radius: 8px;
+                        background: folder.is-selected ? Theme.cyan.with-alpha(0.12) : transparent;
+
+                        TouchArea {
+                            clicked => { root.folder-clicked(idx); }
+                            mouse-cursor: pointer;
+                        }
+
+                        HorizontalLayout {
+                            padding-left: 10px;
+                            padding-right: 10px;
+                            alignment: space-between;
+
+                            HorizontalLayout {
+                                spacing: 8px;
+                                alignment: start;
+
+                                // Folder icon
+                                Text {
+                                    text: folder.folder-type == "inbox" ? "\u{1F4E5}"
+                                        : folder.folder-type == "starred" ? "\u{2B50}"
+                                        : folder.folder-type == "sent" ? "\u{1F4E4}"
+                                        : folder.folder-type == "drafts" ? "\u{1F4DD}"
+                                        : folder.folder-type == "archive" ? "\u{1F4E6}"
+                                        : folder.folder-type == "trash" ? "\u{1F5D1}"
+                                        : folder.folder-type == "spam" ? "\u{26A0}"
+                                        : "\u{1F4C1}";
+                                    font-size: 13px;
+                                    vertical-alignment: center;
+                                    width: 20px;
+                                }
+
+                                Text {
+                                    text: folder.name;
+                                    color: folder.is-selected ? Theme.cyan : Theme.text-secondary;
+                                    font-size: 13px;
+                                    font-weight: folder.is-selected ? 600 : 400;
+                                    vertical-alignment: center;
+                                    overflow: elide;
+                                }
+                            }
+
+                            // Unread badge
+                            if folder.unread-count > 0 : Rectangle {
+                                width: folder.unread-count >= 100 ? 32px : folder.unread-count >= 10 ? 26px : 20px;
+                                height: 20px;
+                                border-radius: 10px;
+                                background: folder.is-selected ? Theme.cyan.with-alpha(0.25) : Theme.cyan.with-alpha(0.15);
+
+                                Text {
+                                    text: folder.unread-count >= 1000 ? "999+" : folder.unread-count;
+                                    color: Theme.cyan;
+                                    font-size: 10px;
+                                    font-weight: 700;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
                     }
-                }
 
-                // Sync button
-                Rectangle {
-                    height: 32px;
-                    border-radius: 6px;
-                    background: Theme.bg-card;
+                    Rectangle {} // spacer
 
-                    TouchArea {
-                        clicked => { root.sync-emails(); }
-                        mouse-cursor: pointer;
+                    // Add another account
+                    Rectangle {
+                        height: 32px;
+                        border-radius: 6px;
+
+                        TouchArea {
+                            clicked => { root.add-account(); }
+                            mouse-cursor: pointer;
+                        }
+
+                        HorizontalLayout {
+                            padding-left: 10px;
+                            spacing: 6px;
+
+                            Text {
+                                text: "+";
+                                color: Theme.text-dim;
+                                font-size: 14px;
+                                font-weight: 600;
+                                vertical-alignment: center;
+                            }
+                            Text {
+                                text: "Add Account";
+                                color: Theme.text-dim;
+                                font-size: 11px;
+                                vertical-alignment: center;
+                            }
+                        }
                     }
 
-                    Text {
-                        text: root.is-loading ? "Syncing..." : "Sync";
-                        color: Theme.text-secondary;
-                        font-size: 12px;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
+                    // Sync button
+                    Rectangle {
+                        height: 32px;
+                        border-radius: 6px;
+                        background: Theme.bg-card;
+
+                        TouchArea {
+                            clicked => { root.sync-emails(); }
+                            mouse-cursor: pointer;
+                        }
+
+                        HorizontalLayout {
+                            alignment: center;
+                            spacing: 6px;
+
+                            Text {
+                                text: "\u{1F504}";
+                                font-size: 11px;
+                                vertical-alignment: center;
+                            }
+                            Text {
+                                text: root.is-loading ? "Syncing..." : "Sync";
+                                color: Theme.text-secondary;
+                                font-size: 12px;
+                                vertical-alignment: center;
+                            }
+                        }
                     }
                 }
             }
-        }
 
-        // ── Middle: Email list ──
-        Rectangle {
-            width: 300px;
-            background: Theme.bg-deep;
+            // Sidebar separator line
+            Rectangle {
+                width: 1px;
+                background: Theme.border-subtle;
+            }
 
-            VerticalLayout {
-                // Search bar
-                Rectangle {
-                    height: 44px;
-                    background: Theme.bg-surface;
+            // ── Middle: Email list ──
+            Rectangle {
+                width: 320px;
+                background: Theme.bg-deep;
 
+                VerticalLayout {
+                    spacing: 0px;
+
+                    // Search bar
+                    Rectangle {
+                        height: 48px;
+                        background: Theme.bg-surface;
+                        border-width: 0px;
+
+                        HorizontalLayout {
+                            padding: 8px;
+                            padding-left: 10px;
+                            padding-right: 10px;
+
+                            Rectangle {
+                                border-radius: 8px;
+                                background: Theme.bg-card;
+                                border-width: 1px;
+                                border-color: root.email-search-active ? Theme.cyan.with-alpha(0.4) : Theme.border-subtle;
+
+                                HorizontalLayout {
+                                    padding-left: 10px;
+                                    padding-right: 10px;
+                                    spacing: 6px;
+
+                                    // Search icon
+                                    Text {
+                                        text: "\u{1F50D}";
+                                        font-size: 12px;
+                                        vertical-alignment: center;
+                                        width: 18px;
+                                    }
+
+                                    search-input := TextInput {
+                                        text <=> root.email-search-query;
+                                        color: Theme.text-primary;
+                                        font-size: 13px;
+                                        vertical-alignment: center;
+
+                                        accepted => {
+                                            root.search-emails(root.email-search-query);
+                                        }
+                                        edited => {
+                                            if self.text == "" {
+                                                root.search-emails("");
+                                            }
+                                        }
+                                    }
+
+                                    // Match count badge
+                                    if root.email-search-active && root.email-search-query != "" : Rectangle {
+                                        width: match-count-text.preferred-width + 12px;
+                                        height: 20px;
+                                        border-radius: 10px;
+                                        background: Theme.cyan.with-alpha(0.15);
+
+                                        match-count-text := Text {
+                                            text: root.email-search-count;
+                                            color: Theme.cyan;
+                                            font-size: 10px;
+                                            font-weight: 600;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+
+                                    // Clear search
+                                    if root.email-search-query != "" : Rectangle {
+                                        width: 20px;
+                                        height: 20px;
+                                        border-radius: 10px;
+
+                                        TouchArea {
+                                            clicked => {
+                                                root.email-search-query = "";
+                                                root.search-emails("");
+                                            }
+                                            mouse-cursor: pointer;
+                                        }
+
+                                        Text {
+                                            text: "\u{2715}";
+                                            color: Theme.text-dim;
+                                            font-size: 11px;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    Rectangle { height: 1px; background: Theme.border-subtle; }
+
+                    // ── Triage filter tabs ──
+                    Rectangle {
+                        height: 38px;
+                        background: Theme.bg-surface;
+
+                        HorizontalLayout {
+                            padding-left: 8px;
+                            padding-right: 8px;
+                            padding-top: 4px;
+                            padding-bottom: 4px;
+                            spacing: 4px;
+
+                            for triage-item[tidx] in [
+                                { label: "All", idx: 0 },
+                                { label: "Priority", idx: 1 },
+                                { label: "Unread", idx: 2 },
+                                { label: "Flagged", idx: 3 },
+                            ] : Rectangle {
+                                height: 28px;
+                                border-radius: 14px;
+                                background: root.email-triage-view == triage-item.idx
+                                    ? Theme.cyan.with-alpha(0.15)
+                                    : #ffffff08;
+                                border-width: root.email-triage-view == triage-item.idx ? 1px : 0px;
+                                border-color: Theme.cyan.with-alpha(0.4);
+
+                                TouchArea {
+                                    clicked => { root.triage-filter(triage-item.idx); }
+                                    mouse-cursor: pointer;
+                                }
+
+                                HorizontalLayout {
+                                    alignment: center;
+                                    padding-left: 12px;
+                                    padding-right: 12px;
+                                    spacing: 4px;
+
+                                    Text {
+                                        text: triage-item.label;
+                                        color: root.email-triage-view == triage-item.idx
+                                            ? Theme.cyan
+                                            : Theme.text-secondary;
+                                        font-size: 11px;
+                                        font-weight: root.email-triage-view == triage-item.idx ? 600 : 400;
+                                        vertical-alignment: center;
+                                    }
+
+                                    // Show priority count badge next to Priority tab
+                                    if triage-item.idx == 1 && root.email-priority-count > 0 : Rectangle {
+                                        width: 18px;
+                                        height: 16px;
+                                        border-radius: 8px;
+                                        background: Theme.amber.with-alpha(0.2);
+
+                                        Text {
+                                            text: root.email-priority-count;
+                                            color: Theme.amber;
+                                            font-size: 9px;
+                                            font-weight: 700;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    Rectangle { height: 1px; background: Theme.border-subtle; }
+
+                    // Email list
+                    ScrollView {
+                        VerticalLayout {
+                            spacing: 0px;
+
+                            for email[idx] in root.email-list : Rectangle {
+                                height: 76px;
+                                background: email.is-selected ? Theme.cyan.with-alpha(0.08)
+                                    : (email.is-read ? Theme.bg-deep : Theme.bg-surface.with-alpha(0.6));
+                                border-width: 0px;
+
+                                // Bottom border
+                                Rectangle {
+                                    y: parent.height - 1px;
+                                    height: 1px;
+                                    background: Theme.border-subtle;
+                                }
+
+                                // Selected indicator bar
+                                if email.is-selected : Rectangle {
+                                    x: 0px;
+                                    width: 3px;
+                                    height: parent.height;
+                                    background: Theme.cyan;
+                                    border-radius: 0px;
+                                }
+
+                                TouchArea {
+                                    clicked => { root.email-selected(email.id); }
+                                    mouse-cursor: pointer;
+                                }
+
+                                HorizontalLayout {
+                                    padding-left: 12px;
+                                    padding-right: 12px;
+                                    padding-top: 10px;
+                                    padding-bottom: 10px;
+                                    spacing: 10px;
+
+                                    // Avatar circle with initial
+                                    Rectangle {
+                                        width: 36px;
+                                        height: 36px;
+                                        border-radius: 18px;
+                                        background: email.avatar-color != #000000 ? email.avatar-color.with-alpha(0.2) : Theme.cyan.with-alpha(0.15);
+
+                                        Text {
+                                            text: email.avatar-initial != "" ? email.avatar-initial :
+                                                (email.from-name != "" ? email.from-name : "?");
+                                            color: email.avatar-color != #000000 ? email.avatar-color : Theme.cyan;
+                                            font-size: 14px;
+                                            font-weight: 700;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+
+                                    // Email content
+                                    VerticalLayout {
+                                        spacing: 2px;
+
+                                        // Row 1: Sender name + date
+                                        HorizontalLayout {
+                                            alignment: space-between;
+
+                                            HorizontalLayout {
+                                                spacing: 6px;
+
+                                                // Unread dot
+                                                if !email.is-read : Rectangle {
+                                                    width: 8px;
+                                                    height: 8px;
+                                                    border-radius: 4px;
+                                                    background: Theme.cyan;
+                                                    y: (parent.height - self.height) / 2;
+                                                }
+
+                                                Text {
+                                                    text: email.from-name != "" ? email.from-name : email.from-addr;
+                                                    color: email.is-read ? Theme.text-secondary : Theme.text-primary;
+                                                    font-size: 13px;
+                                                    font-weight: email.is-read ? 400 : 700;
+                                                    overflow: elide;
+                                                }
+                                            }
+
+                                            HorizontalLayout {
+                                                spacing: 4px;
+                                                alignment: end;
+
+                                                // Attachment icon
+                                                if email.has-attachment : Text {
+                                                    text: "\u{1F4CE}";
+                                                    font-size: 11px;
+                                                    vertical-alignment: center;
+                                                }
+
+                                                // Thread count badge
+                                                if email.thread-count > 1 : Rectangle {
+                                                    width: 22px;
+                                                    height: 16px;
+                                                    border-radius: 8px;
+                                                    background: Theme.bg-card;
+                                                    border-width: 1px;
+                                                    border-color: Theme.border-subtle;
+
+                                                    Text {
+                                                        text: email.thread-count;
+                                                        color: Theme.text-secondary;
+                                                        font-size: 9px;
+                                                        font-weight: 600;
+                                                        horizontal-alignment: center;
+                                                        vertical-alignment: center;
+                                                    }
+                                                }
+
+                                                Text {
+                                                    text: email.date-text;
+                                                    color: Theme.text-dim;
+                                                    font-size: 11px;
+                                                    vertical-alignment: center;
+                                                }
+                                            }
+                                        }
+
+                                        // Row 2: Subject (bold when unread)
+                                        Text {
+                                            text: email.subject;
+                                            color: email.is-read ? Theme.text-secondary : Theme.text-primary;
+                                            font-size: 12px;
+                                            font-weight: email.is-read ? 400 : 600;
+                                            overflow: elide;
+                                        }
+
+                                        // Row 3: Preview snippet + star
+                                        HorizontalLayout {
+                                            alignment: space-between;
+
+                                            Text {
+                                                text: email.preview;
+                                                color: Theme.text-dim;
+                                                font-size: 11px;
+                                                overflow: elide;
+                                            }
+
+                                            // Star toggle
+                                            Rectangle {
+                                                width: 20px;
+                                                height: 16px;
+
+                                                TouchArea {
+                                                    clicked => { root.mark-flagged(email.id); }
+                                                    mouse-cursor: pointer;
+                                                }
+
+                                                Text {
+                                                    text: email.is-flagged ? "\u{2605}" : "\u{2606}";
+                                                    color: email.is-flagged ? Theme.amber : Theme.text-dim;
+                                                    font-size: 13px;
+                                                    horizontal-alignment: center;
+                                                    vertical-alignment: center;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            if root.email-list.length == 0 : Rectangle {
+                                height: 200px;
+
+                                VerticalLayout {
+                                    alignment: center;
+                                    spacing: 8px;
+
+                                    Text {
+                                        text: root.is-loading ? "\u{1F504}" : "\u{1F4EC}";
+                                        font-size: 28px;
+                                        horizontal-alignment: center;
+                                    }
+                                    Text {
+                                        text: root.is-loading ? "Loading emails..."
+                                            : root.email-search-active ? "No matching emails"
+                                            : "No emails in this folder";
+                                        color: Theme.text-dim;
+                                        font-size: 13px;
+                                        horizontal-alignment: center;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // List separator line
+            Rectangle {
+                width: 1px;
+                background: Theme.border-subtle;
+            }
+
+            // ── Right: Detail / Compose pane ──
+            Rectangle {
+                background: Theme.bg-surface;
+
+                // ══ COMPOSE VIEW ══
+                if root.is-composing : VerticalLayout {
+                    padding: 20px;
+                    spacing: 10px;
+
+                    // Header bar
                     HorizontalLayout {
-                        padding: 8px;
+                        alignment: space-between;
 
-                        Rectangle {
-                            border-radius: 6px;
-                            background: Theme.bg-card;
+                        HorizontalLayout {
+                            spacing: 8px;
+                            alignment: start;
 
-                            HorizontalLayout {
-                                padding-left: 10px;
+                            Text {
+                                text: "New Message";
+                                color: Theme.text-primary;
+                                font-size: 16px;
+                                font-weight: 600;
+                                vertical-alignment: center;
+                            }
+
+                            // Draft autosave indicator
+                            if root.email-draft-status != "" : Text {
+                                text: root.email-draft-status;
+                                color: Theme.text-dim;
+                                font-size: 11px;
+                                vertical-alignment: center;
+                            }
+                        }
+
+                        HorizontalLayout {
+                            spacing: 8px;
+
+                            // Save Draft button
+                            Rectangle {
+                                width: 80px; height: 32px; border-radius: 8px;
+                                background: Theme.bg-card;
+                                border-width: 1px;
+                                border-color: Theme.border-subtle;
+                                TouchArea { clicked => { root.save-draft(); } mouse-cursor: pointer; }
+                                Text { text: "Save Draft"; color: Theme.text-secondary; font-size: 12px; horizontal-alignment: center; vertical-alignment: center; }
+                            }
+
+                            Rectangle {
+                                width: 70px; height: 32px; border-radius: 8px;
+                                background: Theme.bg-card;
+                                border-width: 1px;
+                                border-color: Theme.border-subtle;
+                                TouchArea { clicked => { root.cancel-compose(); } mouse-cursor: pointer; }
+                                Text { text: "Cancel"; color: Theme.text-secondary; font-size: 12px; horizontal-alignment: center; vertical-alignment: center; }
+                            }
+
+                            Rectangle {
+                                width: 80px; height: 32px; border-radius: 8px;
+                                background: Theme.cyan;
+                                drop-shadow-blur: 6px;
+                                drop-shadow-color: Theme.cyan.with-alpha(0.3);
+                                TouchArea {
+                                    clicked => {
+                                        root.send-email(root.compose-to, root.compose-cc, root.compose-bcc, root.compose-subject, root.compose-body);
+                                    }
+                                    mouse-cursor: pointer;
+                                }
+                                HorizontalLayout {
+                                    alignment: center;
+                                    spacing: 4px;
+                                    Text { text: "\u{1F4E8}"; font-size: 11px; vertical-alignment: center; }
+                                    Text { text: "Send"; color: Theme.bg-deep; font-size: 13px; font-weight: 600; vertical-alignment: center; }
+                                }
+                            }
+                        }
+                    }
+
+                    Rectangle { height: 1px; background: Theme.border-subtle; }
+
+                    // To field
+                    Rectangle {
+                        height: 38px; border-radius: 8px; background: Theme.bg-card;
+                        border-width: 1px; border-color: Theme.border-subtle;
+                        HorizontalLayout {
+                            padding-left: 12px; spacing: 8px;
+                            Text { text: "To"; color: Theme.text-dim; font-size: 13px; font-weight: 500; vertical-alignment: center; width: 55px; }
+                            Rectangle { width: 1px; height: 20px; background: Theme.border-subtle; }
+                            TextInput { text <=> root.compose-to; color: Theme.text-primary; font-size: 13px; vertical-alignment: center; }
+                            // CC/BCC toggle
+                            Rectangle {
+                                width: 60px;
+                                TouchArea { clicked => { root.show-cc-bcc = !root.show-cc-bcc; } mouse-cursor: pointer; }
+                                Text {
+                                    text: "Cc/Bcc";
+                                    color: root.show-cc-bcc ? Theme.cyan : Theme.text-dim;
+                                    font-size: 11px;
+                                    font-weight: root.show-cc-bcc ? 600 : 400;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+                    }
+
+                    // CC field (collapsible)
+                    if root.show-cc-bcc : Rectangle {
+                        height: 38px; border-radius: 8px; background: Theme.bg-card;
+                        border-width: 1px; border-color: Theme.border-subtle;
+                        HorizontalLayout {
+                            padding-left: 12px; spacing: 8px;
+                            Text { text: "Cc"; color: Theme.text-dim; font-size: 13px; font-weight: 500; vertical-alignment: center; width: 55px; }
+                            Rectangle { width: 1px; height: 20px; background: Theme.border-subtle; }
+                            TextInput { text <=> root.compose-cc; color: Theme.text-primary; font-size: 13px; vertical-alignment: center; }
+                        }
+                    }
+
+                    // BCC field (collapsible)
+                    if root.show-cc-bcc : Rectangle {
+                        height: 38px; border-radius: 8px; background: Theme.bg-card;
+                        border-width: 1px; border-color: Theme.border-subtle;
+                        HorizontalLayout {
+                            padding-left: 12px; spacing: 8px;
+                            Text { text: "Bcc"; color: Theme.text-dim; font-size: 13px; font-weight: 500; vertical-alignment: center; width: 55px; }
+                            Rectangle { width: 1px; height: 20px; background: Theme.border-subtle; }
+                            TextInput { text <=> root.compose-bcc; color: Theme.text-primary; font-size: 13px; vertical-alignment: center; }
+                        }
+                    }
+
+                    // Subject field
+                    Rectangle {
+                        height: 38px; border-radius: 8px; background: Theme.bg-card;
+                        border-width: 1px; border-color: Theme.border-subtle;
+                        HorizontalLayout {
+                            padding-left: 12px; spacing: 8px;
+                            Text { text: "Subject"; color: Theme.text-dim; font-size: 13px; font-weight: 500; vertical-alignment: center; width: 55px; }
+                            Rectangle { width: 1px; height: 20px; background: Theme.border-subtle; }
+                            TextInput { text <=> root.compose-subject; color: Theme.text-primary; font-size: 13px; vertical-alignment: center; }
+                        }
+                    }
+
+                    // ── Formatting Toolbar ──
+                    Rectangle {
+                        height: 36px;
+                        border-radius: 8px;
+                        background: Theme.bg-deep;
+                        border-width: 1px;
+                        border-color: Theme.border-subtle;
+
+                        HorizontalLayout {
+                            padding-left: 8px;
+                            padding-right: 8px;
+                            spacing: 2px;
+                            alignment: start;
+
+                            // Bold
+                            Rectangle {
+                                width: 32px; height: 28px; border-radius: 6px;
+                                background: root.compose-bold-active ? Theme.cyan.with-alpha(0.15) : transparent;
+                                TouchArea {
+                                    clicked => { root.compose-bold-active = !root.compose-bold-active; }
+                                    mouse-cursor: pointer;
+                                }
+                                Text { text: "B"; color: root.compose-bold-active ? Theme.cyan : Theme.text-secondary; font-size: 13px; font-weight: 800; horizontal-alignment: center; vertical-alignment: center; }
+                            }
+
+                            // Italic
+                            Rectangle {
+                                width: 32px; height: 28px; border-radius: 6px;
+                                background: root.compose-italic-active ? Theme.cyan.with-alpha(0.15) : transparent;
+                                TouchArea {
+                                    clicked => { root.compose-italic-active = !root.compose-italic-active; }
+                                    mouse-cursor: pointer;
+                                }
+                                Text { text: "I"; color: root.compose-italic-active ? Theme.cyan : Theme.text-secondary; font-size: 13px; font-weight: 400; horizontal-alignment: center; vertical-alignment: center; }
+                            }
+
+                            // Link
+                            Rectangle {
+                                width: 32px; height: 28px; border-radius: 6px;
+                                TouchArea { mouse-cursor: pointer; }
+                                Text { text: "\u{1F517}"; font-size: 12px; horizontal-alignment: center; vertical-alignment: center; }
+                            }
+
+                            Rectangle { width: 1px; height: 20px; background: Theme.border-subtle; }
+
+                            // Attachment indicator
+                            Rectangle {
+                                width: 32px; height: 28px; border-radius: 6px;
+                                TouchArea { mouse-cursor: pointer; }
+                                Text { text: "\u{1F4CE}"; font-size: 12px; horizontal-alignment: center; vertical-alignment: center; }
+                            }
+
+                            Rectangle {} // spacer
+
+                            // AI section separator
+                            Rectangle { width: 1px; height: 20px; background: Theme.cyan.with-alpha(0.3); }
+
+                            // AI toolbar label
+                            Text {
+                                text: "Yantrik";
+                                color: Theme.cyan;
+                                font-size: 11px;
+                                font-weight: 700;
+                                vertical-alignment: center;
+                            }
+
+                            // AI Draft button
+                            Rectangle {
+                                width: 65px; height: 28px; border-radius: 6px;
+                                background: Theme.bg-card;
+                                TouchArea {
+                                    clicked => { root.show-ai-prompt = !root.show-ai-prompt; }
+                                    mouse-cursor: pointer;
+                                }
+                                Text { text: "AI Draft"; color: Theme.cyan; font-size: 11px; font-weight: 500; horizontal-alignment: center; vertical-alignment: center; }
+                            }
+
+                            // Enhance button
+                            Rectangle {
+                                width: 65px; height: 28px; border-radius: 6px;
+                                background: Theme.bg-card;
+                                TouchArea {
+                                    clicked => { root.enhance-text(root.compose-body); }
+                                    mouse-cursor: pointer;
+                                }
+                                Text {
+                                    text: root.ai-is-working ? "..." : "Enhance";
+                                    color: Theme.text-secondary; font-size: 11px; font-weight: 500;
+                                    horizontal-alignment: center; vertical-alignment: center;
+                                }
+                            }
+
+                            // Tone: Professional
+                            Rectangle {
+                                width: 75px; height: 28px; border-radius: 6px;
+                                background: Theme.bg-card;
+                                TouchArea {
+                                    clicked => { root.enhance-text("Make this email professional and formal:\n\n" + root.compose-body); }
+                                    mouse-cursor: pointer;
+                                }
+                                Text { text: "Professional"; color: Theme.text-dim; font-size: 10px; horizontal-alignment: center; vertical-alignment: center; }
+                            }
+
+                            // Tone: Casual
+                            Rectangle {
+                                width: 50px; height: 28px; border-radius: 6px;
+                                background: Theme.bg-card;
+                                TouchArea {
+                                    clicked => { root.enhance-text("Make this email casual and friendly:\n\n" + root.compose-body); }
+                                    mouse-cursor: pointer;
+                                }
+                                Text { text: "Casual"; color: Theme.text-dim; font-size: 10px; horizontal-alignment: center; vertical-alignment: center; }
+                            }
+
+                            // Tone: Concise
+                            Rectangle {
+                                width: 55px; height: 28px; border-radius: 6px;
+                                background: Theme.bg-card;
+                                TouchArea {
+                                    clicked => { root.enhance-text("Make this email shorter and more concise:\n\n" + root.compose-body); }
+                                    mouse-cursor: pointer;
+                                }
+                                Text { text: "Concise"; color: Theme.text-dim; font-size: 10px; horizontal-alignment: center; vertical-alignment: center; }
+                            }
+                        }
+                    }
+
+                    // AI Draft prompt input (shown when AI Draft clicked)
+                    if root.show-ai-prompt : Rectangle {
+                        height: 70px;
+                        border-radius: 8px;
+                        background: Theme.bg-deep;
+                        border-width: 1px;
+                        border-color: Theme.cyan.with-alpha(0.3);
+
+                        HorizontalLayout {
+                            padding: 10px;
+                            spacing: 8px;
+
+                            VerticalLayout {
+                                spacing: 4px;
 
                                 Text {
-                                    text: "Search...";
+                                    text: "Describe what you want to write...";
                                     color: Theme.text-dim;
-                                    font-size: 12px;
+                                    font-size: 11px;
+                                }
+                                TextInput {
+                                    text <=> root.ai-draft-prompt;
+                                    color: Theme.text-primary;
+                                    font-size: 13px;
+                                    wrap: word-wrap;
+                                }
+                            }
+
+                            Rectangle {
+                                width: 60px;
+                                border-radius: 6px;
+                                background: Theme.cyan;
+
+                                TouchArea {
+                                    clicked => {
+                                        root.ai-draft(root.ai-draft-prompt);
+                                        root.show-ai-prompt = false;
+                                    }
+                                    mouse-cursor: pointer;
+                                }
+                                Text { text: "Draft"; color: Theme.bg-deep; font-size: 12px; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; }
+                            }
+                        }
+                    }
+
+                    // Body editor
+                    Rectangle {
+                        border-radius: 8px;
+                        background: Theme.bg-card;
+                        border-width: 1px;
+                        border-color: Theme.border-subtle;
+
+                        ScrollView {
+                            VerticalLayout {
+                                padding: 14px;
+
+                                TextInput {
+                                    text <=> root.compose-body;
+                                    color: Theme.text-primary;
+                                    font-size: 13px;
+                                    wrap: word-wrap;
+                                }
+                            }
+                        }
+                    }
+
+                    // Signature selector (V41)
+                    if root.email-signatures.length > 0 : Rectangle {
+                        height: 36px;
+                        border-radius: 8px;
+                        background: Theme.bg-card;
+                        border-width: 1px;
+                        border-color: Theme.border-subtle;
+
+                        HorizontalLayout {
+                            padding-left: 12px;
+                            padding-right: 8px;
+                            spacing: 6px;
+
+                            Text {
+                                text: "Signature:";
+                                color: Theme.text-dim;
+                                font-size: 11px;
+                                font-weight: 500;
+                                vertical-alignment: center;
+                                width: 65px;
+                            }
+
+                            Rectangle { width: 1px; height: 20px; background: Theme.border-subtle; }
+
+                            for sig[sidx] in root.email-signatures : Rectangle {
+                                height: 26px;
+                                border-radius: 6px;
+                                background: root.email-active-signature == sidx
+                                    ? Theme.cyan.with-alpha(0.15)
+                                    : #ffffff08;
+                                border-width: root.email-active-signature == sidx ? 1px : 0px;
+                                border-color: Theme.cyan.with-alpha(0.3);
+                                width: sig-label.preferred-width + 16px;
+
+                                TouchArea {
+                                    clicked => { root.set-signature(sidx); }
+                                    mouse-cursor: pointer;
+                                }
+
+                                sig-label := Text {
+                                    text: sig.name;
+                                    color: root.email-active-signature == sidx
+                                        ? Theme.cyan
+                                        : Theme.text-secondary;
+                                    font-size: 11px;
+                                    font-weight: root.email-active-signature == sidx ? 600 : 400;
+                                    horizontal-alignment: center;
                                     vertical-alignment: center;
                                 }
                             }
@@ -576,488 +1476,696 @@ export component EmailClient inherits Rectangle {
                     }
                 }
 
-                // Email list
-                ScrollView {
-                    VerticalLayout {
-                        spacing: 1px;
+                // ══ EMAIL DETAIL VIEW ══
+                if !root.is-composing && root.email-detail.id > 0 : VerticalLayout {
+                    spacing: 0px;
 
-                        for email[idx] in root.email-list : Rectangle {
-                            height: 72px;
-                            background: email.is-selected ? Theme.bg-card :
-                                       (email.is-read ? Theme.bg-deep : Theme.bg-surface);
+                    // ── Actions Toolbar ──
+                    Rectangle {
+                        height: 48px;
+                        background: Theme.bg-surface;
+                        border-width: 0px;
 
-                            TouchArea {
-                                clicked => { root.email-selected(email.id); }
-                                mouse-cursor: pointer;
-                            }
-
-                            VerticalLayout {
-                                padding: 10px;
-                                padding-left: 14px;
-                                spacing: 3px;
-
-                                HorizontalLayout {
-                                    alignment: space-between;
-
-                                    Text {
-                                        text: email.from-name != "" ? email.from-name : email.from-addr;
-                                        color: email.is-read ? Theme.text-secondary : Theme.text-primary;
-                                        font-size: 13px;
-                                        font-weight: email.is-read ? 400 : 700;
-                                        overflow: elide;
-                                    }
-
-                                    Text {
-                                        text: email.date-text;
-                                        color: Theme.text-dim;
-                                        font-size: 11px;
-                                    }
-                                }
-
-                                Text {
-                                    text: email.subject;
-                                    color: email.is-read ? Theme.text-secondary : Theme.text-primary;
-                                    font-size: 12px;
-                                    font-weight: email.is-read ? 400 : 600;
-                                    overflow: elide;
-                                }
-
-                                Text {
-                                    text: email.preview;
-                                    color: Theme.text-dim;
-                                    font-size: 11px;
-                                    overflow: elide;
-                                }
-                            }
-
-                            // Unread dot
-                            if !email.is-read : Rectangle {
-                                x: 4px;
-                                y: (parent.height - self.height) / 2;
-                                width: 6px; height: 6px; border-radius: 3px;
-                                background: Theme.cyan;
-                            }
+                        // Bottom border
+                        Rectangle {
+                            y: parent.height - 1px;
+                            height: 1px;
+                            background: Theme.border-subtle;
                         }
 
-                        if root.email-list.length == 0 : Rectangle {
-                            height: 200px;
+                        HorizontalLayout {
+                            padding-left: 12px;
+                            padding-right: 12px;
+                            spacing: 4px;
+                            alignment: start;
 
-                            Text {
-                                text: root.is-loading ? "Loading..." : "No emails";
-                                color: Theme.text-dim;
-                                font-size: 14px;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
+                            // Reply
+                            Rectangle {
+                                width: 70px; height: 32px; border-radius: 8px;
+                                background: Theme.bg-card;
+                                border-width: 1px;
+                                border-color: Theme.border-subtle;
+                                TouchArea { clicked => { root.reply-email(); } mouse-cursor: pointer; }
+                                HorizontalLayout {
+                                    alignment: center;
+                                    spacing: 4px;
+                                    Text { text: "\u{21A9}"; font-size: 12px; vertical-alignment: center; }
+                                    Text { text: "Reply"; color: Theme.text-secondary; font-size: 12px; vertical-alignment: center; }
+                                }
                             }
+
+                            // Reply All
+                            Rectangle {
+                                width: 82px; height: 32px; border-radius: 8px;
+                                background: Theme.bg-card;
+                                border-width: 1px;
+                                border-color: Theme.border-subtle;
+                                TouchArea { clicked => { root.reply-all-email(); } mouse-cursor: pointer; }
+                                HorizontalLayout {
+                                    alignment: center;
+                                    spacing: 4px;
+                                    Text { text: "\u{21A9}"; font-size: 12px; vertical-alignment: center; }
+                                    Text { text: "Reply All"; color: Theme.text-secondary; font-size: 12px; vertical-alignment: center; }
+                                }
+                            }
+
+                            // Forward
+                            Rectangle {
+                                width: 80px; height: 32px; border-radius: 8px;
+                                background: Theme.bg-card;
+                                border-width: 1px;
+                                border-color: Theme.border-subtle;
+                                TouchArea { clicked => { root.forward-email(); } mouse-cursor: pointer; }
+                                HorizontalLayout {
+                                    alignment: center;
+                                    spacing: 4px;
+                                    Text { text: "\u{21AA}"; font-size: 12px; vertical-alignment: center; }
+                                    Text { text: "Forward"; color: Theme.text-secondary; font-size: 12px; vertical-alignment: center; }
+                                }
+                            }
+
+                            Rectangle { width: 1px; height: 20px; background: Theme.border-subtle; }
+
+                            // Archive
+                            Rectangle {
+                                width: 75px; height: 32px; border-radius: 8px;
+                                background: Theme.bg-card;
+                                border-width: 1px;
+                                border-color: Theme.border-subtle;
+                                TouchArea { clicked => { root.archive-email(root.email-detail.id); } mouse-cursor: pointer; }
+                                HorizontalLayout {
+                                    alignment: center;
+                                    spacing: 4px;
+                                    Text { text: "\u{1F4E6}"; font-size: 11px; vertical-alignment: center; }
+                                    Text { text: "Archive"; color: Theme.text-secondary; font-size: 12px; vertical-alignment: center; }
+                                }
+                            }
+
+                            // Delete
+                            Rectangle {
+                                width: 70px; height: 32px; border-radius: 8px;
+                                background: Theme.bg-card;
+                                border-width: 1px;
+                                border-color: #cc555530;
+                                TouchArea { clicked => { root.delete-email(root.email-detail.id); } mouse-cursor: pointer; }
+                                HorizontalLayout {
+                                    alignment: center;
+                                    spacing: 4px;
+                                    Text { text: "\u{1F5D1}"; font-size: 11px; vertical-alignment: center; }
+                                    Text { text: "Delete"; color: #cc5555; font-size: 12px; vertical-alignment: center; }
+                                }
+                            }
+
+                            Rectangle { width: 1px; height: 20px; background: Theme.border-subtle; }
+
+                            // Mark Read/Unread
+                            Rectangle {
+                                width: root.email-detail.is-read ? 80px : 70px;
+                                height: 32px; border-radius: 8px;
+                                background: Theme.bg-card;
+                                border-width: 1px;
+                                border-color: Theme.border-subtle;
+                                TouchArea { clicked => { root.mark-read(root.email-detail.id); } mouse-cursor: pointer; }
+                                HorizontalLayout {
+                                    alignment: center;
+                                    spacing: 4px;
+                                    Text { text: root.email-detail.is-read ? "\u{2709}" : "\u{1F4E7}"; font-size: 11px; vertical-alignment: center; }
+                                    Text { text: root.email-detail.is-read ? "Unread" : "Read"; color: Theme.text-secondary; font-size: 12px; vertical-alignment: center; }
+                                }
+                            }
+
+                            // Star/Flag
+                            Rectangle {
+                                width: 36px; height: 32px; border-radius: 8px;
+                                background: root.email-detail.is-flagged ? Theme.amber.with-alpha(0.12) : Theme.bg-card;
+                                border-width: 1px;
+                                border-color: root.email-detail.is-flagged ? Theme.amber.with-alpha(0.3) : Theme.border-subtle;
+                                TouchArea { clicked => { root.mark-flagged(root.email-detail.id); } mouse-cursor: pointer; }
+                                Text {
+                                    text: root.email-detail.is-flagged ? "\u{2605}" : "\u{2606}";
+                                    color: root.email-detail.is-flagged ? Theme.amber : Theme.text-dim;
+                                    font-size: 14px;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                            }
+
+                            Rectangle {} // spacer
+
+                            // AI Summary
+                            Rectangle {
+                                width: 95px; height: 32px; border-radius: 8px;
+                                background: Theme.bg-card;
+                                border-width: 1px;
+                                border-color: Theme.cyan.with-alpha(0.3);
+                                TouchArea { clicked => { root.summarize-email(); } mouse-cursor: pointer; }
+                                HorizontalLayout {
+                                    alignment: center;
+                                    spacing: 4px;
+                                    Text { text: "\u{2728}"; font-size: 11px; vertical-alignment: center; }
+                                    Text {
+                                        text: root.ai-is-working ? "Thinking..." : "AI Summary";
+                                        color: Theme.cyan; font-size: 12px;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                            }
+
+                            // AI Reply
+                            Rectangle {
+                                width: 80px; height: 32px; border-radius: 8px;
+                                background: Theme.bg-card;
+                                border-width: 1px;
+                                border-color: Theme.cyan.with-alpha(0.3);
+                                TouchArea { clicked => { root.ai-reply-suggest(); } mouse-cursor: pointer; }
+                                HorizontalLayout {
+                                    alignment: center;
+                                    spacing: 4px;
+                                    Text { text: "\u{1F916}"; font-size: 11px; vertical-alignment: center; }
+                                    Text { text: "AI Reply"; color: Theme.cyan; font-size: 12px; vertical-alignment: center; }
+                                }
+                            }
+                        }
+                    }
+
+                    // ── Email detail content ──
+                    ScrollView {
+                        VerticalLayout {
+                            padding: 20px;
+                            spacing: 12px;
+
+                            // Subject line
+                            Text {
+                                text: root.email-detail.subject;
+                                color: Theme.text-primary;
+                                font-size: 18px;
+                                font-weight: 700;
+                                wrap: word-wrap;
+                            }
+
+                            // AI Intent badge
+                            if root.email-ai-intent != "" : Rectangle {
+                                height: 24px;
+                                width: intent-label.preferred-width + 20px;
+                                border-radius: 12px;
+                                background: root.email-ai-intent == "action-needed" ? Theme.amber.with-alpha(0.15)
+                                    : root.email-ai-intent == "meeting" ? #44cc8840
+                                    : root.email-ai-intent == "newsletter" ? #b084e040
+                                    : Theme.cyan.with-alpha(0.15);
+                                border-width: 1px;
+                                border-color: root.email-ai-intent == "action-needed" ? Theme.amber.with-alpha(0.4)
+                                    : root.email-ai-intent == "meeting" ? #44cc8860
+                                    : root.email-ai-intent == "newsletter" ? #b084e060
+                                    : Theme.cyan.with-alpha(0.4);
+
+                                intent-label := Text {
+                                    text: root.email-ai-intent == "action-needed" ? "ACTION NEEDED"
+                                        : root.email-ai-intent == "fyi" ? "FYI"
+                                        : root.email-ai-intent == "meeting" ? "MEETING"
+                                        : root.email-ai-intent == "newsletter" ? "NEWSLETTER"
+                                        : root.email-ai-intent;
+                                    color: root.email-ai-intent == "action-needed" ? Theme.amber
+                                        : root.email-ai-intent == "meeting" ? #44cc88
+                                        : root.email-ai-intent == "newsletter" ? #b084e0
+                                        : Theme.cyan;
+                                    font-size: 10px;
+                                    font-weight: 700;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                            }
+
+                            // Sender info card
+                            Rectangle {
+                                height: 56px;
+                                border-radius: 8px;
+
+                                HorizontalLayout {
+                                    spacing: 12px;
+
+                                    // Sender avatar
+                                    Rectangle {
+                                        width: 40px;
+                                        height: 40px;
+                                        border-radius: 20px;
+                                        background: Theme.cyan.with-alpha(0.15);
+
+                                        Text {
+                                            text: root.email-detail.from-name != "" ? root.email-detail.from-name : "?";
+                                            color: Theme.cyan;
+                                            font-size: 16px;
+                                            font-weight: 700;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+
+                                    VerticalLayout {
+                                        alignment: center;
+                                        spacing: 2px;
+
+                                        HorizontalLayout {
+                                            spacing: 8px;
+
+                                            Text {
+                                                text: root.email-detail.from-name != "" ? root.email-detail.from-name : root.email-detail.from-addr;
+                                                color: Theme.text-primary;
+                                                font-size: 14px;
+                                                font-weight: 600;
+                                            }
+                                            Text {
+                                                text: "<" + root.email-detail.from-addr + ">";
+                                                color: Theme.text-dim;
+                                                font-size: 12px;
+                                                vertical-alignment: center;
+                                            }
+                                        }
+
+                                        HorizontalLayout {
+                                            spacing: 12px;
+
+                                            if root.email-detail.to-addr != "" : Text {
+                                                text: "To: " + root.email-detail.to-addr;
+                                                color: Theme.text-dim;
+                                                font-size: 11px;
+                                            }
+                                            if root.email-detail.cc-addr != "" : Text {
+                                                text: "Cc: " + root.email-detail.cc-addr;
+                                                color: Theme.text-dim;
+                                                font-size: 11px;
+                                            }
+                                        }
+                                    }
+
+                                    Rectangle {} // spacer
+
+                                    // AI Classify button
+                                    Rectangle {
+                                        width: 28px;
+                                        height: 28px;
+                                        border-radius: 6px;
+                                        background: #ffffff08;
+
+                                        TouchArea {
+                                            clicked => { root.ai-classify(); }
+                                            mouse-cursor: pointer;
+                                        }
+
+                                        Text {
+                                            text: "\u{1F3F7}";
+                                            font-size: 12px;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+
+                                    Text {
+                                        text: root.email-detail.date-text;
+                                        color: Theme.text-dim;
+                                        font-size: 11px;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                            }
+
+                            // Attachment bar (legacy simple view)
+                            if root.email-detail.has-attachment && root.email-attachments.length == 0 : Rectangle {
+                                height: 36px;
+                                border-radius: 8px;
+                                background: Theme.bg-card;
+                                border-width: 1px;
+                                border-color: Theme.border-subtle;
+
+                                HorizontalLayout {
+                                    padding-left: 12px;
+                                    padding-right: 12px;
+                                    spacing: 6px;
+
+                                    Text { text: "\u{1F4CE}"; font-size: 12px; vertical-alignment: center; }
+                                    Text {
+                                        text: root.email-detail.attachment-names != "" ? root.email-detail.attachment-names : "Attachments";
+                                        color: Theme.text-secondary;
+                                        font-size: 12px;
+                                        vertical-alignment: center;
+                                        overflow: elide;
+                                    }
+                                }
+                            }
+
+                            // Rich attachment chips (V41)
+                            if root.email-attachments.length > 0 : Rectangle {
+                                height: 48px;
+                                border-radius: 8px;
+                                background: Theme.bg-card;
+                                border-width: 1px;
+                                border-color: Theme.border-subtle;
+
+                                HorizontalLayout {
+                                    padding-left: 10px;
+                                    padding-right: 10px;
+                                    padding-top: 8px;
+                                    padding-bottom: 8px;
+                                    spacing: 6px;
+
+                                    Text { text: "\u{1F4CE}"; font-size: 12px; vertical-alignment: center; width: 18px; }
+
+                                    for att[aidx] in root.email-attachments : Rectangle {
+                                        height: 32px;
+                                        border-radius: 8px;
+                                        background: att.is-downloaded ? Theme.cyan.with-alpha(0.08) : #ffffff08;
+                                        border-width: 1px;
+                                        border-color: att.is-downloaded ? Theme.cyan.with-alpha(0.2) : Theme.border-subtle;
+                                        width: att-chip-content.preferred-width + 24px;
+
+                                        att-chip-content := HorizontalLayout {
+                                            padding-left: 8px;
+                                            padding-right: 4px;
+                                            spacing: 6px;
+
+                                            // File type icon
+                                            Text {
+                                                text: att.mime-type == "application/pdf" ? "\u{1F4C4}"
+                                                    : att.mime-type == "image/png" || att.mime-type == "image/jpeg" ? "\u{1F5BC}"
+                                                    : "\u{1F4C1}";
+                                                font-size: 11px;
+                                                vertical-alignment: center;
+                                            }
+
+                                            // Filename
+                                            Text {
+                                                text: att.name;
+                                                color: Theme.text-secondary;
+                                                font-size: 11px;
+                                                font-weight: 500;
+                                                vertical-alignment: center;
+                                                overflow: elide;
+                                                max-width: 120px;
+                                            }
+
+                                            // Size
+                                            Text {
+                                                text: att.size-text;
+                                                color: Theme.text-dim;
+                                                font-size: 10px;
+                                                vertical-alignment: center;
+                                            }
+
+                                            // Download button
+                                            if !att.is-downloaded : Rectangle {
+                                                width: 22px;
+                                                height: 22px;
+                                                border-radius: 4px;
+                                                background: Theme.cyan.with-alpha(0.12);
+
+                                                TouchArea {
+                                                    clicked => { root.download-attachment(aidx); }
+                                                    mouse-cursor: pointer;
+                                                }
+
+                                                Text {
+                                                    text: "\u{2B07}";
+                                                    font-size: 10px;
+                                                    color: Theme.cyan;
+                                                    horizontal-alignment: center;
+                                                    vertical-alignment: center;
+                                                }
+                                            }
+
+                                            // Preview button (when downloaded)
+                                            if att.is-downloaded : Rectangle {
+                                                width: 22px;
+                                                height: 22px;
+                                                border-radius: 4px;
+                                                background: Theme.cyan.with-alpha(0.12);
+
+                                                TouchArea {
+                                                    clicked => { root.preview-attachment(aidx); }
+                                                    mouse-cursor: pointer;
+                                                }
+
+                                                Text {
+                                                    text: "\u{1F441}";
+                                                    font-size: 10px;
+                                                    horizontal-alignment: center;
+                                                    vertical-alignment: center;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            // AI Summary card
+                            if root.email-detail.ai-summary != "" : Rectangle {
+                                height: ai-summary-content.preferred-height + 20px;
+                                border-radius: 10px;
+                                background: Theme.bg-card;
+                                border-width: 1px;
+                                border-color: Theme.cyan.with-alpha(0.3);
+
+                                ai-summary-content := VerticalLayout {
+                                    padding: 12px;
+                                    spacing: 6px;
+
+                                    HorizontalLayout {
+                                        spacing: 6px;
+                                        Text { text: "\u{2728}"; font-size: 12px; vertical-alignment: center; }
+                                        Text {
+                                            text: "Yantrik AI Summary";
+                                            color: Theme.cyan;
+                                            font-size: 12px;
+                                            font-weight: 600;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                    Text {
+                                        text: root.email-detail.ai-summary;
+                                        color: Theme.text-secondary;
+                                        font-size: 12px;
+                                        wrap: word-wrap;
+                                    }
+                                }
+                            }
+
+                            // Thread header (if threaded)
+                            if root.email-detail.thread-count > 1 : Rectangle {
+                                height: 32px;
+                                border-radius: 8px;
+                                background: Theme.bg-card;
+                                border-width: 1px;
+                                border-color: Theme.border-subtle;
+
+                                HorizontalLayout {
+                                    padding-left: 12px;
+                                    padding-right: 12px;
+                                    spacing: 6px;
+
+                                    Text {
+                                        text: "\u{1F4AC}";
+                                        font-size: 12px;
+                                        vertical-alignment: center;
+                                    }
+                                    Text {
+                                        text: root.email-detail.thread-count + " messages in this thread";
+                                        color: Theme.text-secondary;
+                                        font-size: 12px;
+                                        font-weight: 500;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                            }
+
+                            // Thread messages (collapsible)
+                            for tmsg[tidx] in root.email-thread-messages : VerticalLayout {
+                                spacing: 0px;
+
+                                // Thread message header (always visible)
+                                Rectangle {
+                                    height: 40px;
+                                    border-radius: tmsg.is-collapsed ? 8px : 0px;
+                                    background: Theme.bg-card;
+                                    border-width: 1px;
+                                    border-color: Theme.border-subtle;
+
+                                    TouchArea {
+                                        clicked => { root.toggle-thread-message(tmsg.id); }
+                                        mouse-cursor: pointer;
+                                    }
+
+                                    HorizontalLayout {
+                                        padding-left: 12px;
+                                        padding-right: 12px;
+                                        spacing: 8px;
+
+                                        Text {
+                                            text: tmsg.is-collapsed ? "\u{25B6}" : "\u{25BC}";
+                                            color: Theme.text-dim;
+                                            font-size: 10px;
+                                            vertical-alignment: center;
+                                            width: 14px;
+                                        }
+                                        Text {
+                                            text: tmsg.from-name != "" ? tmsg.from-name : tmsg.from-addr;
+                                            color: Theme.text-primary;
+                                            font-size: 13px;
+                                            font-weight: 600;
+                                            vertical-alignment: center;
+                                            overflow: elide;
+                                        }
+                                        Rectangle {} // spacer
+                                        Text {
+                                            text: tmsg.date-text;
+                                            color: Theme.text-dim;
+                                            font-size: 11px;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                }
+
+                                // Thread message body (shown when expanded)
+                                if !tmsg.is-collapsed : Rectangle {
+                                    border-radius: 0px;
+                                    background: Theme.bg-card;
+                                    border-width: 1px;
+                                    border-color: Theme.border-subtle;
+                                    height: thread-body-text.preferred-height + 24px;
+
+                                    VerticalLayout {
+                                        padding: 12px;
+                                        padding-top: 0px;
+
+                                        thread-body-text := Text {
+                                            text: tmsg.body;
+                                            color: Theme.text-primary;
+                                            font-size: 13px;
+                                            wrap: word-wrap;
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Main email body (shown when no thread messages, or as the latest message)
+                            if root.email-thread-messages.length == 0 : Rectangle {
+                                border-radius: 8px;
+                                background: Theme.bg-card;
+                                border-width: 1px;
+                                border-color: Theme.border-subtle;
+
+                                VerticalLayout {
+                                    padding: 16px;
+
+                                    Text {
+                                        text: root.email-detail.body;
+                                        color: Theme.text-primary;
+                                        font-size: 13px;
+                                        wrap: word-wrap;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // ══ EMPTY STATE ══
+                if !root.is-composing && root.email-detail.id <= 0 : Rectangle {
+                    VerticalLayout {
+                        alignment: center;
+                        spacing: 12px;
+
+                        Text {
+                            text: "\u{1F4EC}";
+                            font-size: 40px;
+                            horizontal-alignment: center;
+                        }
+                        Text {
+                            text: "Select an email to read";
+                            color: Theme.text-secondary;
+                            font-size: 15px;
+                            font-weight: 500;
+                            horizontal-alignment: center;
+                        }
+                        Text {
+                            text: "or compose a new message with AI assistance";
+                            color: Theme.text-dim;
+                            font-size: 12px;
+                            horizontal-alignment: center;
                         }
                     }
                 }
             }
         }
 
-        // ── Right: Detail / Compose pane ──
+        // ── Status Bar ──
         Rectangle {
-            background: Theme.bg-surface;
+            height: 28px;
+            background: Theme.bg-card;
+            border-width: 0px;
 
-            // ══ COMPOSE VIEW ══
-            if root.is-composing : VerticalLayout {
-                padding: 20px;
-                spacing: 10px;
+            // Top border
+            Rectangle {
+                y: 0px;
+                height: 1px;
+                background: Theme.border-subtle;
+            }
 
-                // Header bar
+            HorizontalLayout {
+                padding-left: 14px;
+                padding-right: 14px;
+                spacing: 16px;
+
+                // Total emails in folder
                 HorizontalLayout {
-                    alignment: space-between;
+                    spacing: 4px;
 
                     Text {
-                        text: "New Message";
-                        color: Theme.text-primary;
-                        font-size: 16px;
-                        font-weight: 600;
+                        text: "\u{1F4E7}";
+                        font-size: 10px;
                         vertical-alignment: center;
                     }
-
-                    HorizontalLayout {
-                        spacing: 8px;
-
-                        Rectangle {
-                            width: 70px; height: 30px; border-radius: 6px;
-                            background: Theme.bg-card;
-                            TouchArea { clicked => { root.cancel-compose(); } mouse-cursor: pointer; }
-                            Text { text: "Cancel"; color: Theme.text-secondary; font-size: 12px; horizontal-alignment: center; vertical-alignment: center; }
-                        }
-
-                        Rectangle {
-                            width: 70px; height: 30px; border-radius: 6px;
-                            background: Theme.cyan;
-                            TouchArea {
-                                clicked => {
-                                    root.send-email(root.compose-to, root.compose-cc, root.compose-bcc, root.compose-subject, root.compose-body);
-                                }
-                                mouse-cursor: pointer;
-                            }
-                            Text { text: "Send"; color: Theme.bg-deep; font-size: 12px; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; }
-                        }
-                    }
-                }
-
-                // To field
-                Rectangle {
-                    height: 36px; border-radius: 6px; background: Theme.bg-card;
-                    HorizontalLayout {
-                        padding-left: 12px; spacing: 8px;
-                        Text { text: "To:"; color: Theme.text-dim; font-size: 13px; vertical-alignment: center; width: 30px; }
-                        TextInput { text <=> root.compose-to; color: Theme.text-primary; font-size: 13px; vertical-alignment: center; }
-                        // CC/BCC toggle
-                        Rectangle {
-                            width: 60px;
-                            TouchArea { clicked => { root.show-cc-bcc = !root.show-cc-bcc; } mouse-cursor: pointer; }
-                            Text {
-                                text: "Cc/Bcc";
-                                color: root.show-cc-bcc ? Theme.cyan : Theme.text-dim;
-                                font-size: 11px;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
-                            }
-                        }
-                    }
-                }
-
-                // CC field
-                if root.show-cc-bcc : Rectangle {
-                    height: 36px; border-radius: 6px; background: Theme.bg-card;
-                    HorizontalLayout {
-                        padding-left: 12px; spacing: 8px;
-                        Text { text: "Cc:"; color: Theme.text-dim; font-size: 13px; vertical-alignment: center; width: 30px; }
-                        TextInput { text <=> root.compose-cc; color: Theme.text-primary; font-size: 13px; vertical-alignment: center; }
-                    }
-                }
-
-                // BCC field
-                if root.show-cc-bcc : Rectangle {
-                    height: 36px; border-radius: 6px; background: Theme.bg-card;
-                    HorizontalLayout {
-                        padding-left: 12px; spacing: 8px;
-                        Text { text: "Bcc:"; color: Theme.text-dim; font-size: 13px; vertical-alignment: center; width: 30px; }
-                        TextInput { text <=> root.compose-bcc; color: Theme.text-primary; font-size: 13px; vertical-alignment: center; }
-                    }
-                }
-
-                // Subject field
-                Rectangle {
-                    height: 36px; border-radius: 6px; background: Theme.bg-card;
-                    HorizontalLayout {
-                        padding-left: 12px; spacing: 8px;
-                        Text { text: "Subject:"; color: Theme.text-dim; font-size: 13px; vertical-alignment: center; width: 60px; }
-                        TextInput { text <=> root.compose-subject; color: Theme.text-primary; font-size: 13px; vertical-alignment: center; }
-                    }
-                }
-
-                // ── AI Compose Toolbar ──
-                Rectangle {
-                    height: 36px;
-                    border-radius: 6px;
-                    background: Theme.bg-deep;
-                    border-width: 1px;
-                    border-color: Theme.cyan.with-alpha(0.2);
-
-                    HorizontalLayout {
-                        padding-left: 10px;
-                        padding-right: 10px;
-                        spacing: 4px;
-                        alignment: start;
-
-                        Text {
-                            text: "Yantrik";
-                            color: Theme.cyan;
-                            font-size: 11px;
-                            font-weight: 700;
-                            vertical-alignment: center;
-                        }
-
-                        Rectangle { width: 1px; height: 20px; background: #ffffff10; }
-
-                        // AI Draft button
-                        Rectangle {
-                            width: 70px; height: 28px; border-radius: 6px;
-                            background: Theme.bg-card;
-                            TouchArea {
-                                clicked => { root.show-ai-prompt = !root.show-ai-prompt; }
-                                mouse-cursor: pointer;
-                            }
-                            Text { text: "AI Draft"; color: Theme.cyan; font-size: 11px; font-weight: 500; horizontal-alignment: center; vertical-alignment: center; }
-                        }
-
-                        // Enhance button
-                        Rectangle {
-                            width: 70px; height: 28px; border-radius: 6px;
-                            background: Theme.bg-card;
-                            TouchArea {
-                                clicked => { root.enhance-text(root.compose-body); }
-                                mouse-cursor: pointer;
-                            }
-                            Text {
-                                text: root.ai-is-working ? "..." : "Enhance";
-                                color: Theme.text-secondary; font-size: 11px; font-weight: 500;
-                                horizontal-alignment: center; vertical-alignment: center;
-                            }
-                        }
-
-                        // Tone: Professional
-                        Rectangle {
-                            width: 80px; height: 28px; border-radius: 6px;
-                            background: Theme.bg-card;
-                            TouchArea {
-                                clicked => { root.enhance-text("Make this email professional and formal:\n\n" + root.compose-body); }
-                                mouse-cursor: pointer;
-                            }
-                            Text { text: "Professional"; color: Theme.text-dim; font-size: 10px; horizontal-alignment: center; vertical-alignment: center; }
-                        }
-
-                        // Tone: Casual
-                        Rectangle {
-                            width: 55px; height: 28px; border-radius: 6px;
-                            background: Theme.bg-card;
-                            TouchArea {
-                                clicked => { root.enhance-text("Make this email casual and friendly:\n\n" + root.compose-body); }
-                                mouse-cursor: pointer;
-                            }
-                            Text { text: "Casual"; color: Theme.text-dim; font-size: 10px; horizontal-alignment: center; vertical-alignment: center; }
-                        }
-
-                        // Tone: Concise
-                        Rectangle {
-                            width: 60px; height: 28px; border-radius: 6px;
-                            background: Theme.bg-card;
-                            TouchArea {
-                                clicked => { root.enhance-text("Make this email shorter and more concise:\n\n" + root.compose-body); }
-                                mouse-cursor: pointer;
-                            }
-                            Text { text: "Concise"; color: Theme.text-dim; font-size: 10px; horizontal-alignment: center; vertical-alignment: center; }
-                        }
-                    }
-                }
-
-                // AI Draft prompt input (shown when AI Draft clicked)
-                if root.show-ai-prompt : Rectangle {
-                    height: 70px;
-                    border-radius: 8px;
-                    background: Theme.bg-deep;
-                    border-width: 1px;
-                    border-color: Theme.cyan.with-alpha(0.3);
-
-                    HorizontalLayout {
-                        padding: 10px;
-                        spacing: 8px;
-
-                        VerticalLayout {
-                            spacing: 4px;
-
-                            Text {
-                                text: "Describe what you want to write...";
-                                color: Theme.text-dim;
-                                font-size: 11px;
-                            }
-                            TextInput {
-                                text <=> root.ai-draft-prompt;
-                                color: Theme.text-primary;
-                                font-size: 13px;
-                                wrap: word-wrap;
-                            }
-                        }
-
-                        Rectangle {
-                            width: 60px;
-                            border-radius: 6px;
-                            background: Theme.cyan;
-
-                            TouchArea {
-                                clicked => {
-                                    root.ai-draft(root.ai-draft-prompt);
-                                    root.show-ai-prompt = false;
-                                }
-                                mouse-cursor: pointer;
-                            }
-                            Text { text: "Draft"; color: Theme.bg-deep; font-size: 12px; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; }
-                        }
-                    }
-                }
-
-                // Body editor
-                Rectangle {
-                    border-radius: 6px;
-                    background: Theme.bg-card;
-
-                    ScrollView {
-                        VerticalLayout {
-                            padding: 12px;
-
-                            TextInput {
-                                text <=> root.compose-body;
-                                color: Theme.text-primary;
-                                font-size: 13px;
-                                wrap: word-wrap;
-                            }
-                        }
-                    }
-                }
-            }
-
-            // ══ EMAIL DETAIL VIEW ══
-            if !root.is-composing && root.email-detail.id > 0 : ScrollView {
-                VerticalLayout {
-                    padding: 20px;
-                    spacing: 12px;
-
-                    // Subject + sender info
-                    HorizontalLayout {
-                        alignment: space-between;
-
-                        VerticalLayout {
-                            spacing: 4px;
-
-                            Text {
-                                text: root.email-detail.subject;
-                                color: Theme.text-primary;
-                                font-size: 16px;
-                                font-weight: 600;
-                                wrap: word-wrap;
-                            }
-                            Text {
-                                text: root.email-detail.from-name != "" ?
-                                    root.email-detail.from-name + " <" + root.email-detail.from-addr + ">" :
-                                    root.email-detail.from-addr;
-                                color: Theme.text-secondary;
-                                font-size: 12px;
-                            }
-                            if root.email-detail.to-addr != "" : Text {
-                                text: "To: " + root.email-detail.to-addr;
-                                color: Theme.text-dim;
-                                font-size: 11px;
-                            }
-                            Text {
-                                text: root.email-detail.date-text;
-                                color: Theme.text-dim;
-                                font-size: 11px;
-                            }
-                        }
-                    }
-
-                // Action buttons
-                HorizontalLayout {
-                    spacing: 6px;
-
-                    Rectangle {
-                        width: 65px; height: 30px; border-radius: 6px; background: Theme.bg-card;
-                        TouchArea { clicked => { root.reply-email(); } mouse-cursor: pointer; }
-                        Text { text: "Reply"; color: Theme.text-secondary; font-size: 12px; horizontal-alignment: center; vertical-alignment: center; }
-                    }
-
-                    Rectangle {
-                        width: 70px; height: 30px; border-radius: 6px; background: Theme.bg-card;
-                        TouchArea { clicked => { root.forward-email(); } mouse-cursor: pointer; }
-                        Text { text: "Forward"; color: Theme.text-secondary; font-size: 12px; horizontal-alignment: center; vertical-alignment: center; }
-                    }
-
-                    Rectangle {
-                        width: 90px; height: 30px; border-radius: 6px; background: Theme.bg-card;
-                        border-width: 1px; border-color: Theme.cyan.with-alpha(0.3);
-                        TouchArea { clicked => { root.summarize-email(); } mouse-cursor: pointer; }
-                        Text {
-                            text: root.ai-is-working ? "Thinking..." : "AI Summary";
-                            color: Theme.cyan; font-size: 12px;
-                            horizontal-alignment: center; vertical-alignment: center;
-                        }
-                    }
-
-                    Rectangle {
-                        width: 95px; height: 30px; border-radius: 6px; background: Theme.bg-card;
-                        border-width: 1px; border-color: Theme.cyan.with-alpha(0.3);
-                        TouchArea { clicked => { root.ai-reply-suggest(); } mouse-cursor: pointer; }
-                        Text {
-                            text: "AI Reply";
-                            color: Theme.cyan; font-size: 12px;
-                            horizontal-alignment: center; vertical-alignment: center;
-                        }
-                    }
-
-                    Rectangle {} // spacer
-
-                    Rectangle {
-                        width: 60px; height: 30px; border-radius: 6px; background: Theme.bg-card;
-                        TouchArea { clicked => { root.delete-email(root.email-detail.id); } mouse-cursor: pointer; }
-                        Text { text: "Delete"; color: #cc5555; font-size: 12px; horizontal-alignment: center; vertical-alignment: center; }
-                    }
-                }
-
-                // AI Summary card
-                if root.email-detail.ai-summary != "" : Rectangle {
-                    height: ai-summary-content.preferred-height + 20px;
-                    border-radius: 8px;
-                    background: Theme.bg-card;
-                    border-width: 1px;
-                    border-color: Theme.cyan.with-alpha(0.3);
-
-                    ai-summary-content := VerticalLayout {
-                        padding: 10px;
-                        spacing: 4px;
-
-                        Text {
-                            text: "Yantrik AI Summary";
-                            color: Theme.cyan;
-                            font-size: 11px;
-                            font-weight: 600;
-                        }
-                        Text {
-                            text: root.email-detail.ai-summary;
-                            color: Theme.text-secondary;
-                            font-size: 12px;
-                            wrap: word-wrap;
-                        }
-                    }
-                }
-
-                // Email body
-                Rectangle {
-                    border-radius: 6px;
-                    background: Theme.bg-card;
-
-                    VerticalLayout {
-                        padding: 12px;
-
-                        Text {
-                            text: root.email-detail.body;
-                            color: Theme.text-primary;
-                            font-size: 13px;
-                            wrap: word-wrap;
-                        }
-                    }
-                }
-                }
-            }
-
-            // ══ EMPTY STATE ══
-            if !root.is-composing && root.email-detail.id <= 0 : Rectangle {
-                VerticalLayout {
-                    alignment: center;
-                    spacing: 8px;
-
                     Text {
-                        text: "@";
-                        color: Theme.text-dim;
-                        font-size: 32px;
-                        horizontal-alignment: center;
-                    }
-                    Text {
-                        text: "Select an email to read";
-                        color: Theme.text-dim;
-                        font-size: 14px;
-                        horizontal-alignment: center;
-                    }
-                    Text {
-                        text: "or compose a new one with AI assistance";
+                        text: root.email-folder-total + " emails";
                         color: Theme.text-dim;
                         font-size: 11px;
-                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+
+                // Unread count
+                if root.email-folder-unread > 0 : HorizontalLayout {
+                    spacing: 4px;
+
+                    Rectangle {
+                        width: 6px;
+                        height: 6px;
+                        border-radius: 3px;
+                        background: Theme.cyan;
+                        y: (parent.height - self.height) / 2;
+                    }
+                    Text {
+                        text: root.email-folder-unread + " unread";
+                        color: Theme.cyan;
+                        font-size: 11px;
+                        font-weight: 500;
+                        vertical-alignment: center;
+                    }
+                }
+
+                Rectangle {} // spacer
+
+                // Sync status
+                HorizontalLayout {
+                    spacing: 4px;
+
+                    Text {
+                        text: root.is-loading ? "\u{1F504}" : "\u{2713}";
+                        font-size: 10px;
+                        vertical-alignment: center;
+                    }
+                    Text {
+                        text: root.email-sync-status;
+                        color: root.is-loading ? Theme.amber : Theme.text-dim;
+                        font-size: 11px;
+                        vertical-alignment: center;
                     }
                 }
             }

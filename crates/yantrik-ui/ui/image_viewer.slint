@@ -1,5 +1,6 @@
 // Image Viewer — full-screen image display with prev/next navigation,
 // mouse-wheel zoom, click-drag pan, fit-to-window and actual-size buttons.
+// Rotate/flip, EXIF info panel, slideshow mode, hover info overlay.
 // Screen 11. Opens from file browser when clicking image files.
 
 import { Theme } from "theme.slint";
@@ -40,6 +41,60 @@ export component ImageViewer inherits Rectangle {
     callback nav-next();
     callback toggle-fit();
 
+    // AI Assist
+    in property <bool> ai-is-working: false;
+    in property <string> ai-response: "";
+    in-out property <bool> ai-panel-open: false;
+    callback ai-describe-pressed();
+    callback ai-dismiss();
+
+    // ── Rotation / Flip ──
+    in-out property <int> viewer-rotation: 0;       // 0, 90, 180, 270
+    in-out property <bool> viewer-flip-h: false;
+    in-out property <bool> viewer-flip-v: false;
+    callback viewer-rotate-left();
+    callback viewer-rotate-right();
+    callback viewer-flip-horizontal();
+    callback viewer-flip-vertical();
+
+    // ── EXIF Info Panel ──
+    in-out property <bool> viewer-info-open: false;
+    in property <string> viewer-exif-dimensions: "";
+    in property <string> viewer-exif-file-size: "";
+    in property <string> viewer-exif-format: "";
+    in property <string> viewer-exif-camera: "";
+    in property <string> viewer-exif-focal-length: "";
+    in property <string> viewer-exif-iso: "";
+    in property <string> viewer-exif-exposure: "";
+    in property <string> viewer-exif-date-taken: "";
+    in property <string> viewer-exif-gps: "";
+    callback viewer-toggle-info();
+
+    // ── Slideshow ──
+    in-out property <bool> viewer-slideshow-active: false;
+    in-out property <bool> viewer-slideshow-paused: false;
+    in-out property <float> viewer-slideshow-progress: 0.0;   // 0.0 to 1.0
+    callback viewer-slideshow-toggle();
+    callback viewer-slideshow-stop();
+
+    // ── Crop mode ──
+    in-out property <bool> viewer-crop-mode: false;
+    callback viewer-start-crop();
+    callback viewer-apply-crop();
+    callback viewer-cancel-crop();
+
+    // ── Batch operations ──
+    in property <string> viewer-batch-status: "";
+    in property <int> viewer-batch-total: 0;
+    in property <int> viewer-batch-done: 0;
+    in-out property <bool> viewer-batch-panel-open: false;
+    callback viewer-batch-rotate-all(int);   // degrees
+    callback viewer-batch-resize(int, int);  // width, height
+
+    // Batch resize inputs (internal)
+    in-out property <string> batch-resize-w: "1920";
+    in-out property <string> batch-resize-h: "1080";
+
     // Zoom / pan state (pure Slint, no Rust wiring needed)
     property <float> zoom-level: 1.0;
     property <float> pan-x: 0.0;
@@ -56,6 +111,9 @@ export component ImageViewer inherits Rectangle {
         : Math.round(zoom-level * 100) > 1000 ? "1000%"
         : Math.round(zoom-level * 100) + "%";
 
+    // Computed rotation angle for Image element
+    property <angle> computed-rotation: root.viewer-rotation * 1deg;
+
     // Internal helper: reset zoom/pan to fit
     function reset-zoom() {
         self.zoom-level = 1.0;
@@ -70,10 +128,24 @@ export component ImageViewer inherits Rectangle {
         Math.max(0.1, Math.min(10.0, z))
     }
 
+    // ── Slideshow timer ──
+    Timer {
+        interval: 50ms;
+        running: root.viewer-slideshow-active && !root.viewer-slideshow-paused;
+        triggered => {
+            root.viewer-slideshow-progress += 0.0125;  // 50ms / 4000ms = 0.0125
+            if (root.viewer-slideshow-progress >= 1.0) {
+                root.viewer-slideshow-progress = 0.0;
+                root.reset-zoom();
+                root.nav-next();
+            }
+        }
+    }
+
     VerticalLayout {
         spacing: 0px;
 
-        // Toolbar (filename + counter + zoom controls + fit toggle)
+        // Toolbar (filename + counter + zoom controls + rotate + info + slideshow + fit toggle)
         Rectangle {
             height: 40px;
             background: Theme.bg-surface;
@@ -94,14 +166,14 @@ export component ImageViewer inherits Rectangle {
                     horizontal-stretch: 1;
                 }
 
-                // Right: zoom controls + counter + fit toggle
+                // Right: all toolbar controls
                 HorizontalLayout {
                     spacing: 6px;
                     alignment: end;
 
                     // Zoom out button
                     ToolbarButton {
-                        label: "−";
+                        label: "\u{2212}";
                         clicked => {
                             root.zoom-level = root.clamp-zoom(root.zoom-level / 1.25);
                             root.is-custom-zoom = true;
@@ -164,12 +236,140 @@ export component ImageViewer inherits Rectangle {
                         background: Theme.separator;
                     }
 
+                    // ── Rotate / Flip buttons ──
+                    ToolbarButton {
+                        label: "\u{21b6}";  // CCW arrow
+                        clicked => {
+                            root.viewer-rotation = mod(root.viewer-rotation + 270, 360);
+                            root.viewer-rotate-left();
+                        }
+                    }
+
+                    ToolbarButton {
+                        label: "\u{21b7}";  // CW arrow
+                        clicked => {
+                            root.viewer-rotation = mod(root.viewer-rotation + 90, 360);
+                            root.viewer-rotate-right();
+                        }
+                    }
+
+                    ToolbarButton {
+                        label: "\u{2194}";  // Flip H
+                        active: root.viewer-flip-h;
+                        clicked => {
+                            root.viewer-flip-h = !root.viewer-flip-h;
+                            root.viewer-flip-horizontal();
+                        }
+                    }
+
+                    ToolbarButton {
+                        label: "\u{2195}";  // Flip V
+                        active: root.viewer-flip-v;
+                        clicked => {
+                            root.viewer-flip-v = !root.viewer-flip-v;
+                            root.viewer-flip-vertical();
+                        }
+                    }
+
+                    // Separator
+                    Rectangle {
+                        width: 1px;
+                        height: 20px;
+                        background: Theme.separator;
+                    }
+
                     // Counter text
                     Text {
                         text: root.counter-text;
                         color: Theme.text-dim;
                         font-size: Theme.font-small;
                         vertical-alignment: center;
+                    }
+
+                    // ── Slideshow button ──
+                    ToolbarButton {
+                        label: root.viewer-slideshow-active
+                            ? (root.viewer-slideshow-paused ? "\u{25b6}" : "\u{23f8}")
+                            : "Slideshow";
+                        active: root.viewer-slideshow-active;
+                        clicked => {
+                            if (root.viewer-slideshow-active) {
+                                root.viewer-slideshow-paused = !root.viewer-slideshow-paused;
+                            } else {
+                                root.viewer-slideshow-active = true;
+                                root.viewer-slideshow-paused = false;
+                                root.viewer-slideshow-progress = 0.0;
+                                root.reset-zoom();
+                            }
+                            root.viewer-slideshow-toggle();
+                        }
+                    }
+
+                    // Slideshow stop button (only when active)
+                    if root.viewer-slideshow-active : ToolbarButton {
+                        label: "\u{25a0}";
+                        clicked => {
+                            root.viewer-slideshow-active = false;
+                            root.viewer-slideshow-paused = false;
+                            root.viewer-slideshow-progress = 0.0;
+                            root.viewer-slideshow-stop();
+                        }
+                    }
+
+                    // Separator
+                    Rectangle {
+                        width: 1px;
+                        height: 20px;
+                        background: Theme.separator;
+                    }
+
+                    // AI Describe button
+                    ToolbarButton {
+                        label: root.ai-is-working ? "..." : "AI Describe";
+                        active: root.ai-panel-open;
+                        clicked => {
+                            root.ai-describe-pressed();
+                            root.ai-panel-open = true;
+                        }
+                    }
+
+                    // Info panel toggle
+                    ToolbarButton {
+                        label: "Info";
+                        active: root.viewer-info-open;
+                        clicked => {
+                            root.viewer-info-open = !root.viewer-info-open;
+                            root.viewer-toggle-info();
+                        }
+                    }
+
+                    // Crop mode toggle
+                    ToolbarButton {
+                        label: "Crop";
+                        active: root.viewer-crop-mode;
+                        clicked => {
+                            if (!root.viewer-crop-mode) {
+                                root.viewer-start-crop();
+                            } else {
+                                root.viewer-cancel-crop();
+                            }
+                        }
+                    }
+
+                    // Batch operations toggle
+                    ToolbarButton {
+                        label: "Batch";
+                        active: root.viewer-batch-panel-open;
+                        clicked => {
+                            root.viewer-batch-panel-open = !root.viewer-batch-panel-open;
+                        }
+                    }
+
+                    // Separator
+                    Rectangle {
+                        width: 1px;
+                        height: 20px;
+                        background: Theme.separator;
                     }
 
                     // Fit/cover toggle (legacy)
@@ -201,135 +401,834 @@ export component ImageViewer inherits Rectangle {
         // Separator
         Rectangle { height: 1px; background: Theme.separator; }
 
-        // Image area with zoom/pan
-        Rectangle {
-            background: #000000;
-            clip: true;
+        // ── AI Response Panel ──
+        if root.ai-panel-open && root.ai-response != "" : Rectangle {
+            max-height: 160px;
+            background: #1a2332;
+            border-width: 1px;
+            border-color: Theme.accent.transparentize(70%);
 
-            if !root.is-custom-zoom : Image {
-                width: 100%;
-                height: 100%;
-                source: root.current-image;
-                image-fit: root.fit-contain ? contain : cover;
+            Flickable {
+                viewport-height: ai-img-resp.preferred-height + 16px;
+
+                ai-img-resp := VerticalLayout {
+                    padding: 12px;
+                    spacing: 8px;
+
+                    HorizontalLayout {
+                        spacing: 6px;
+                        Text {
+                            text: "\u{2728}";
+                            font-size: 12px;
+                            vertical-alignment: center;
+                        }
+                        Text {
+                            text: "AI Description";
+                            color: Theme.accent;
+                            font-size: 12px;
+                            font-weight: 600;
+                            vertical-alignment: center;
+                        }
+                        Rectangle { horizontal-stretch: 1; }
+
+                        // Dismiss button
+                        TouchArea {
+                            width: 24px;
+                            height: 24px;
+                            clicked => {
+                                root.ai-panel-open = false;
+                                root.ai-dismiss();
+                            }
+                            Rectangle {
+                                width: 24px; height: 24px;
+                                border-radius: 12px;
+                                background: parent.has-hover ? Theme.hover-fill : transparent;
+                                Text {
+                                    text: "\u{2715}";
+                                    font-size: 11px;
+                                    color: Theme.text-dim;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+                    }
+
+                    Text {
+                        text: root.ai-response;
+                        color: Theme.text-primary;
+                        font-size: 12px;
+                        wrap: word-wrap;
+                    }
+                }
             }
+        }
 
-            if root.is-custom-zoom : Rectangle {
-                // Zoomed image container — positioned via pan offsets
-                img := Image {
-                    x: root.pan-x * 1px;
-                    y: root.pan-y * 1px;
-                    width: parent.width * root.zoom-level;
-                    height: parent.height * root.zoom-level;
+        // ── Main content: image area + optional EXIF panel ──
+        HorizontalLayout {
+            spacing: 0px;
+
+            // Image area with zoom/pan
+            Rectangle {
+                background: #000000;
+                clip: true;
+                horizontal-stretch: 1;
+
+                // Helper function: compute scale-x for flip
+                // Slint doesn't have conditional scale, so we use two Image variants
+
+                if !root.is-custom-zoom : Image {
+                    width: 100%;
+                    height: 100%;
                     source: root.current-image;
-                    image-fit: contain;
-                }
-            }
-
-            // Zoom + pan interaction layer
-            touch := TouchArea {
-                x: 0;
-                y: 0;
-                width: 100%;
-                height: 100%;
-                mouse-cursor: root.is-custom-zoom ? move : default;
-
-                scroll-event(e) => {
-                    if (e.delta-y > 0) {
-                        // Scroll up = zoom in
-                        root.zoom-level = root.clamp-zoom(root.zoom-level * 1.15);
-                    } else if (e.delta-y < 0) {
-                        // Scroll down = zoom out
-                        root.zoom-level = root.clamp-zoom(root.zoom-level / 1.15);
-                    }
-                    if (root.zoom-level != 1.0 || root.is-custom-zoom) {
-                        root.is-custom-zoom = true;
-                    }
-                    // If zoomed back to ~1.0, reset
-                    if (root.zoom-level > 0.95 && root.zoom-level < 1.05 && !root.is-custom-zoom) {
-                        root.reset-zoom();
-                    }
-                    return accept;
+                    image-fit: root.fit-contain ? contain : cover;
+                    transform-rotation: root.computed-rotation;
                 }
 
-                double-clicked => {
-                    if (root.is-custom-zoom) {
-                        // Double-click: go back to fit
-                        root.reset-zoom();
-                    } else {
-                        // Double-click: go to 100%
-                        root.zoom-level = 1.0;
-                        root.pan-x = 0.0;
-                        root.pan-y = 0.0;
-                        root.is-custom-zoom = true;
-                        root.fit-contain = false;
+                if root.is-custom-zoom : Rectangle {
+                    // Zoomed image container — positioned via pan offsets
+                    img := Image {
+                        x: root.pan-x * 1px;
+                        y: root.pan-y * 1px;
+                        width: parent.width * root.zoom-level;
+                        height: parent.height * root.zoom-level;
+                        source: root.current-image;
+                        image-fit: contain;
+                        transform-rotation: root.computed-rotation;
                     }
                 }
 
-                pointer-event(e) => {
-                    if (e.kind == PointerEventKind.down && e.button == PointerEventButton.left) {
-                        root.drag-start-x = self.mouse-x / 1px;
-                        root.drag-start-y = self.mouse-y / 1px;
-                        root.pan-start-x = root.pan-x;
-                        root.pan-start-y = root.pan-y;
-                    }
-                }
+                // Flip overlay: render a second image with mirroring when flipped
+                // Slint doesn't support negative scale, so we use image-rendering
+                // with rotation to simulate flips:
+                //   flip-h = rotate 180° around Y axis → not directly supported
+                // Instead we handle flips by pre-processing in the backend (Rust).
+                // The flip-h/flip-v properties signal the backend to do the transform.
 
-                moved => {
-                    if (self.pressed && root.is-custom-zoom) {
-                        root.pan-x = root.pan-start-x + (self.mouse-x / 1px - root.drag-start-x);
-                        root.pan-y = root.pan-start-y + (self.mouse-y / 1px - root.drag-start-y);
-                    }
-                }
-            }
-
-            // Left nav zone (only when not zoomed, to avoid conflicting with pan)
-            if !root.is-custom-zoom : TouchArea {
-                x: 0;
-                y: 0;
-                width: parent.width * 0.25;
-                height: 100%;
-                clicked => {
-                    root.reset-zoom();
-                    root.nav-prev();
-                }
-
-                if self.has-hover : Rectangle {
+                // Zoom + pan interaction layer
+                touch := TouchArea {
+                    x: 0;
+                    y: 0;
                     width: 100%;
                     height: 100%;
-                    background: @linear-gradient(90deg, #00000040 0%, transparent 100%);
+                    mouse-cursor: root.is-custom-zoom ? move : default;
 
-                    Text {
-                        x: 16px;
-                        text: "\u{2039}";
-                        color: #ffffffc0;
-                        font-size: 48px;
-                        vertical-alignment: center;
+                    scroll-event(e) => {
+                        if (e.delta-y > 0) {
+                            // Scroll up = zoom in
+                            root.zoom-level = root.clamp-zoom(root.zoom-level * 1.15);
+                        } else if (e.delta-y < 0) {
+                            // Scroll down = zoom out
+                            root.zoom-level = root.clamp-zoom(root.zoom-level / 1.15);
+                        }
+                        if (root.zoom-level != 1.0 || root.is-custom-zoom) {
+                            root.is-custom-zoom = true;
+                        }
+                        // If zoomed back to ~1.0, reset
+                        if (root.zoom-level > 0.95 && root.zoom-level < 1.05 && !root.is-custom-zoom) {
+                            root.reset-zoom();
+                        }
+                        return accept;
+                    }
+
+                    double-clicked => {
+                        if (root.is-custom-zoom) {
+                            // Double-click: go back to fit
+                            root.reset-zoom();
+                        } else {
+                            // Double-click: go to 100%
+                            root.zoom-level = 1.0;
+                            root.pan-x = 0.0;
+                            root.pan-y = 0.0;
+                            root.is-custom-zoom = true;
+                            root.fit-contain = false;
+                        }
+                    }
+
+                    pointer-event(e) => {
+                        if (e.kind == PointerEventKind.down && e.button == PointerEventButton.left) {
+                            root.drag-start-x = self.mouse-x / 1px;
+                            root.drag-start-y = self.mouse-y / 1px;
+                            root.pan-start-x = root.pan-x;
+                            root.pan-start-y = root.pan-y;
+                        }
+                    }
+
+                    moved => {
+                        if (self.pressed && root.is-custom-zoom) {
+                            root.pan-x = root.pan-start-x + (self.mouse-x / 1px - root.drag-start-x);
+                            root.pan-y = root.pan-start-y + (self.mouse-y / 1px - root.drag-start-y);
+                        }
+                    }
+                }
+
+                // Left nav zone (only when not zoomed, to avoid conflicting with pan)
+                if !root.is-custom-zoom && !root.viewer-slideshow-active : TouchArea {
+                    x: 0;
+                    y: 0;
+                    width: parent.width * 0.25;
+                    height: 100%;
+                    clicked => {
+                        root.reset-zoom();
+                        root.nav-prev();
+                    }
+
+                    if self.has-hover : Rectangle {
+                        width: 100%;
+                        height: 100%;
+                        background: @linear-gradient(90deg, #00000040 0%, transparent 100%);
+
+                        Text {
+                            x: 16px;
+                            text: "\u{2039}";
+                            color: #ffffffc0;
+                            font-size: 48px;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+
+                // Right nav zone (only when not zoomed)
+                if !root.is-custom-zoom && !root.viewer-slideshow-active : TouchArea {
+                    x: parent.width * 0.75;
+                    y: 0;
+                    width: parent.width * 0.25;
+                    height: 100%;
+                    clicked => {
+                        root.reset-zoom();
+                        root.nav-next();
+                    }
+
+                    if self.has-hover : Rectangle {
+                        width: 100%;
+                        height: 100%;
+                        background: @linear-gradient(270deg, #00000040 0%, transparent 100%);
+
+                        Text {
+                            x: parent.width - 40px;
+                            text: "\u{203a}";
+                            color: #ffffffc0;
+                            font-size: 48px;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+
+                // ── Image info overlay (bottom, visible on hover) ──
+                if touch.has-hover || root.viewer-slideshow-active : Rectangle {
+                    x: 0;
+                    y: parent.height - 32px;
+                    width: parent.width;
+                    height: 32px;
+                    background: #000000a0;
+
+                    HorizontalLayout {
+                        padding-left: 12px;
+                        padding-right: 12px;
+                        spacing: 16px;
+                        alignment: start;
+
+                        Text {
+                            text: root.file-name;
+                            color: #ffffffd0;
+                            font-size: 11px;
+                            vertical-alignment: center;
+                            overflow: elide;
+                        }
+
+                        Text {
+                            text: root.viewer-exif-dimensions;
+                            color: #ffffff90;
+                            font-size: 11px;
+                            vertical-alignment: center;
+                        }
+
+                        Text {
+                            text: root.zoom-text;
+                            color: #ffffff90;
+                            font-size: 11px;
+                            vertical-alignment: center;
+                        }
+
+                        if root.viewer-rotation != 0 : Text {
+                            text: root.viewer-rotation + "\u{00b0}";
+                            color: #ffffff90;
+                            font-size: 11px;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+
+                // ── Slideshow progress bar ──
+                if root.viewer-slideshow-active : Rectangle {
+                    x: 0;
+                    y: parent.height - 3px;
+                    width: parent.width;
+                    height: 3px;
+                    background: #ffffff20;
+
+                    Rectangle {
+                        x: 0;
+                        y: 0;
+                        width: parent.width * root.viewer-slideshow-progress;
+                        height: 3px;
+                        background: Theme.accent;
+
+                        animate width { duration: 50ms; }
+                    }
+                }
+
+                // ── Crop mode overlay ──
+                if root.viewer-crop-mode : Rectangle {
+                    x: 0;
+                    y: 0;
+                    width: parent.width;
+                    height: parent.height;
+                    background: #00000060;
+
+                    // Block interaction with image beneath
+                    TouchArea { width: 100%; height: 100%; }
+
+                    VerticalLayout {
+                        alignment: center;
+                        spacing: 16px;
+
+                        Text {
+                            text: "Select crop area";
+                            color: #ffffffd0;
+                            font-size: 18px;
+                            font-weight: 600;
+                            horizontal-alignment: center;
+                        }
+
+                        Text {
+                            text: "Drag to select region (scaffold — full crop selection coming soon)";
+                            color: #ffffff80;
+                            font-size: 12px;
+                            horizontal-alignment: center;
+                        }
+
+                        HorizontalLayout {
+                            alignment: center;
+                            spacing: 12px;
+
+                            // Apply crop
+                            TouchArea {
+                                width: crop-apply-bg.width;
+                                height: 34px;
+                                clicked => { root.viewer-apply-crop(); }
+
+                                crop-apply-bg := Rectangle {
+                                    width: crop-apply-txt.preferred-width + 28px;
+                                    height: 34px;
+                                    border-radius: 8px;
+                                    background: parent.has-hover ? Theme.accent : Theme.accent-dim;
+
+                                    crop-apply-txt := Text {
+                                        text: "Apply Crop";
+                                        color: Theme.text-primary;
+                                        font-size: 13px;
+                                        font-weight: 600;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                            }
+
+                            // Cancel crop
+                            TouchArea {
+                                width: crop-cancel-bg.width;
+                                height: 34px;
+                                clicked => { root.viewer-cancel-crop(); }
+
+                                crop-cancel-bg := Rectangle {
+                                    width: crop-cancel-txt.preferred-width + 28px;
+                                    height: 34px;
+                                    border-radius: 8px;
+                                    background: parent.has-hover ? #ffffff30 : #ffffff18;
+
+                                    crop-cancel-txt := Text {
+                                        text: "Cancel";
+                                        color: #ffffffc0;
+                                        font-size: 13px;
+                                        font-weight: 500;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
 
-            // Right nav zone (only when not zoomed)
-            if !root.is-custom-zoom : TouchArea {
-                x: parent.width * 0.75;
-                y: 0;
-                width: parent.width * 0.25;
-                height: 100%;
-                clicked => {
-                    root.reset-zoom();
-                    root.nav-next();
+            // ── EXIF Info Panel (right side, 250px) ──
+            if root.viewer-info-open : Rectangle {
+                width: 250px;
+                background: Theme.bg-surface;
+                border-width: 0px;
+
+                // Left border separator
+                Rectangle {
+                    x: 0;
+                    y: 0;
+                    width: 1px;
+                    height: 100%;
+                    background: Theme.separator;
                 }
 
-                if self.has-hover : Rectangle {
-                    width: 100%;
-                    height: 100%;
-                    background: @linear-gradient(270deg, #00000040 0%, transparent 100%);
+                Flickable {
+                    x: 1px;
+                    width: parent.width - 1px;
+                    viewport-height: info-content.preferred-height + 24px;
 
-                    Text {
-                        x: parent.width - 40px;
-                        text: "\u{203a}";
-                        color: #ffffffc0;
-                        font-size: 48px;
-                        vertical-alignment: center;
+                    info-content := VerticalLayout {
+                        padding: 16px;
+                        spacing: 12px;
+
+                        // Panel title
+                        HorizontalLayout {
+                            spacing: 6px;
+                            Text {
+                                text: "Image Info";
+                                color: Theme.text-primary;
+                                font-size: 14px;
+                                font-weight: 600;
+                                vertical-alignment: center;
+                            }
+                            Rectangle { horizontal-stretch: 1; }
+                            TouchArea {
+                                width: 24px; height: 24px;
+                                clicked => {
+                                    root.viewer-info-open = false;
+                                }
+                                Rectangle {
+                                    border-radius: 12px;
+                                    background: parent.has-hover ? Theme.hover-fill : transparent;
+                                    Text {
+                                        text: "\u{2715}";
+                                        font-size: 11px;
+                                        color: Theme.text-dim;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                            }
+                        }
+
+                        // Separator
+                        Rectangle { height: 1px; background: Theme.separator; }
+
+                        // File section
+                        Text {
+                            text: "File";
+                            color: Theme.accent;
+                            font-size: 11px;
+                            font-weight: 600;
+                        }
+
+                        // Filename
+                        VerticalLayout {
+                            spacing: 2px;
+                            Text { text: "Name"; color: Theme.text-dim; font-size: 10px; }
+                            Text {
+                                text: root.file-name;
+                                color: Theme.text-primary;
+                                font-size: 12px;
+                                wrap: word-wrap;
+                            }
+                        }
+
+                        // Dimensions
+                        if root.viewer-exif-dimensions != "" : VerticalLayout {
+                            spacing: 2px;
+                            Text { text: "Dimensions"; color: Theme.text-dim; font-size: 10px; }
+                            Text {
+                                text: root.viewer-exif-dimensions;
+                                color: Theme.text-primary;
+                                font-size: 12px;
+                            }
+                        }
+
+                        // File size
+                        if root.viewer-exif-file-size != "" : VerticalLayout {
+                            spacing: 2px;
+                            Text { text: "File Size"; color: Theme.text-dim; font-size: 10px; }
+                            Text {
+                                text: root.viewer-exif-file-size;
+                                color: Theme.text-primary;
+                                font-size: 12px;
+                            }
+                        }
+
+                        // Format
+                        if root.viewer-exif-format != "" : VerticalLayout {
+                            spacing: 2px;
+                            Text { text: "Format"; color: Theme.text-dim; font-size: 10px; }
+                            Text {
+                                text: root.viewer-exif-format;
+                                color: Theme.text-primary;
+                                font-size: 12px;
+                            }
+                        }
+
+                        // EXIF section separator
+                        if root.viewer-exif-camera != "" || root.viewer-exif-focal-length != ""
+                            || root.viewer-exif-iso != "" || root.viewer-exif-exposure != ""
+                            || root.viewer-exif-date-taken != "" || root.viewer-exif-gps != "" : Rectangle {
+                            height: 1px;
+                            background: Theme.separator;
+                        }
+
+                        if root.viewer-exif-camera != "" || root.viewer-exif-focal-length != ""
+                            || root.viewer-exif-iso != "" : Text {
+                            text: "EXIF Data";
+                            color: Theme.accent;
+                            font-size: 11px;
+                            font-weight: 600;
+                        }
+
+                        // Camera
+                        if root.viewer-exif-camera != "" : VerticalLayout {
+                            spacing: 2px;
+                            Text { text: "Camera"; color: Theme.text-dim; font-size: 10px; }
+                            Text {
+                                text: root.viewer-exif-camera;
+                                color: Theme.text-primary;
+                                font-size: 12px;
+                                wrap: word-wrap;
+                            }
+                        }
+
+                        // Focal length
+                        if root.viewer-exif-focal-length != "" : VerticalLayout {
+                            spacing: 2px;
+                            Text { text: "Focal Length"; color: Theme.text-dim; font-size: 10px; }
+                            Text {
+                                text: root.viewer-exif-focal-length;
+                                color: Theme.text-primary;
+                                font-size: 12px;
+                            }
+                        }
+
+                        // ISO
+                        if root.viewer-exif-iso != "" : VerticalLayout {
+                            spacing: 2px;
+                            Text { text: "ISO"; color: Theme.text-dim; font-size: 10px; }
+                            Text {
+                                text: root.viewer-exif-iso;
+                                color: Theme.text-primary;
+                                font-size: 12px;
+                            }
+                        }
+
+                        // Exposure
+                        if root.viewer-exif-exposure != "" : VerticalLayout {
+                            spacing: 2px;
+                            Text { text: "Exposure"; color: Theme.text-dim; font-size: 10px; }
+                            Text {
+                                text: root.viewer-exif-exposure;
+                                color: Theme.text-primary;
+                                font-size: 12px;
+                            }
+                        }
+
+                        // Date taken
+                        if root.viewer-exif-date-taken != "" : VerticalLayout {
+                            spacing: 2px;
+                            Text { text: "Date Taken"; color: Theme.text-dim; font-size: 10px; }
+                            Text {
+                                text: root.viewer-exif-date-taken;
+                                color: Theme.text-primary;
+                                font-size: 12px;
+                            }
+                        }
+
+                        // GPS
+                        if root.viewer-exif-gps != "" : VerticalLayout {
+                            spacing: 2px;
+                            Text { text: "GPS"; color: Theme.text-dim; font-size: 10px; }
+                            Text {
+                                text: root.viewer-exif-gps;
+                                color: Theme.text-primary;
+                                font-size: 12px;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ── Batch Operations Panel (right side, 260px) ──
+            if root.viewer-batch-panel-open : Rectangle {
+                width: 260px;
+                background: Theme.bg-surface;
+
+                // Left border separator
+                Rectangle {
+                    x: 0;
+                    y: 0;
+                    width: 1px;
+                    height: 100%;
+                    background: Theme.separator;
+                }
+
+                Flickable {
+                    x: 1px;
+                    width: parent.width - 1px;
+                    viewport-height: batch-content.preferred-height + 24px;
+
+                    batch-content := VerticalLayout {
+                        padding: 16px;
+                        spacing: 12px;
+
+                        // Panel title
+                        HorizontalLayout {
+                            spacing: 6px;
+                            Text {
+                                text: "Batch Operations";
+                                color: Theme.text-primary;
+                                font-size: 14px;
+                                font-weight: 600;
+                                vertical-alignment: center;
+                            }
+                            Rectangle { horizontal-stretch: 1; }
+                            TouchArea {
+                                width: 24px; height: 24px;
+                                clicked => {
+                                    root.viewer-batch-panel-open = false;
+                                }
+                                Rectangle {
+                                    border-radius: 12px;
+                                    background: parent.has-hover ? Theme.hover-fill : transparent;
+                                    Text {
+                                        text: "\u{2715}";
+                                        font-size: 11px;
+                                        color: Theme.text-dim;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                            }
+                        }
+
+                        // Separator
+                        Rectangle { height: 1px; background: Theme.separator; }
+
+                        // ── Rotate All ──
+                        Text {
+                            text: "Rotate All Images";
+                            color: Theme.accent;
+                            font-size: 11px;
+                            font-weight: 600;
+                        }
+
+                        HorizontalLayout {
+                            spacing: 8px;
+
+                            TouchArea {
+                                width: batch-rot-90.width;
+                                height: 32px;
+                                clicked => { root.viewer-batch-rotate-all(90); }
+                                batch-rot-90 := Rectangle {
+                                    width: batch-rot-90-txt.preferred-width + 20px;
+                                    height: 32px;
+                                    border-radius: 8px;
+                                    background: parent.has-hover ? Theme.hover-fill-strong : Theme.bg-elevated;
+                                    border-width: 1px;
+                                    border-color: Theme.border-subtle;
+                                    batch-rot-90-txt := Text {
+                                        text: "90\u{00b0} CW";
+                                        color: Theme.text-secondary;
+                                        font-size: 12px;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                            }
+
+                            TouchArea {
+                                width: batch-rot-180.width;
+                                height: 32px;
+                                clicked => { root.viewer-batch-rotate-all(180); }
+                                batch-rot-180 := Rectangle {
+                                    width: batch-rot-180-txt.preferred-width + 20px;
+                                    height: 32px;
+                                    border-radius: 8px;
+                                    background: parent.has-hover ? Theme.hover-fill-strong : Theme.bg-elevated;
+                                    border-width: 1px;
+                                    border-color: Theme.border-subtle;
+                                    batch-rot-180-txt := Text {
+                                        text: "180\u{00b0}";
+                                        color: Theme.text-secondary;
+                                        font-size: 12px;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                            }
+
+                            TouchArea {
+                                width: batch-rot-270.width;
+                                height: 32px;
+                                clicked => { root.viewer-batch-rotate-all(270); }
+                                batch-rot-270 := Rectangle {
+                                    width: batch-rot-270-txt.preferred-width + 20px;
+                                    height: 32px;
+                                    border-radius: 8px;
+                                    background: parent.has-hover ? Theme.hover-fill-strong : Theme.bg-elevated;
+                                    border-width: 1px;
+                                    border-color: Theme.border-subtle;
+                                    batch-rot-270-txt := Text {
+                                        text: "90\u{00b0} CCW";
+                                        color: Theme.text-secondary;
+                                        font-size: 12px;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                            }
+                        }
+
+                        // Separator
+                        Rectangle { height: 1px; background: Theme.separator; }
+
+                        // ── Resize All ──
+                        Text {
+                            text: "Resize All Images";
+                            color: Theme.accent;
+                            font-size: 11px;
+                            font-weight: 600;
+                        }
+
+                        HorizontalLayout {
+                            spacing: 8px;
+                            alignment: start;
+
+                            VerticalLayout {
+                                spacing: 4px;
+                                Text { text: "Width"; color: Theme.text-dim; font-size: 10px; }
+                                Rectangle {
+                                    width: 80px;
+                                    height: 30px;
+                                    background: Theme.bg-input;
+                                    border-radius: 6px;
+                                    border-width: 1px;
+                                    border-color: Theme.border-subtle;
+                                    TextInput {
+                                        x: 6px;
+                                        width: parent.width - 12px;
+                                        height: 100%;
+                                        text <=> root.batch-resize-w;
+                                        color: Theme.text-primary;
+                                        font-size: 12px;
+                                    }
+                                }
+                            }
+
+                            Text {
+                                text: "\u{00d7}";
+                                color: Theme.text-dim;
+                                font-size: 14px;
+                                vertical-alignment: center;
+                                y: 10px;
+                            }
+
+                            VerticalLayout {
+                                spacing: 4px;
+                                Text { text: "Height"; color: Theme.text-dim; font-size: 10px; }
+                                Rectangle {
+                                    width: 80px;
+                                    height: 30px;
+                                    background: Theme.bg-input;
+                                    border-radius: 6px;
+                                    border-width: 1px;
+                                    border-color: Theme.border-subtle;
+                                    TextInput {
+                                        x: 6px;
+                                        width: parent.width - 12px;
+                                        height: 100%;
+                                        text <=> root.batch-resize-h;
+                                        color: Theme.text-primary;
+                                        font-size: 12px;
+                                    }
+                                }
+                            }
+                        }
+
+                        TouchArea {
+                            width: batch-resize-btn.width;
+                            height: 34px;
+                            clicked => {
+                                // Parse width/height from text inputs
+                                root.viewer-batch-resize(Math.round(root.batch-resize-w.to-float()), Math.round(root.batch-resize-h.to-float()));
+                            }
+                            batch-resize-btn := Rectangle {
+                                width: batch-resize-btn-txt.preferred-width + 24px;
+                                height: 34px;
+                                border-radius: 8px;
+                                background: parent.has-hover ? Theme.accent : Theme.accent-dim;
+                                batch-resize-btn-txt := Text {
+                                    text: "Resize All";
+                                    color: Theme.text-primary;
+                                    font-size: 13px;
+                                    font-weight: 600;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+
+                        // Separator
+                        Rectangle { height: 1px; background: Theme.separator; }
+
+                        // ── Progress ──
+                        if root.viewer-batch-total > 0 : VerticalLayout {
+                            spacing: 6px;
+
+                            HorizontalLayout {
+                                spacing: 6px;
+                                Text {
+                                    text: "Progress:";
+                                    color: Theme.text-dim;
+                                    font-size: 11px;
+                                    vertical-alignment: center;
+                                }
+                                Text {
+                                    text: root.viewer-batch-done + " / " + root.viewer-batch-total;
+                                    color: Theme.text-primary;
+                                    font-size: 11px;
+                                    font-weight: 600;
+                                    vertical-alignment: center;
+                                }
+                            }
+
+                            // Progress bar
+                            Rectangle {
+                                height: 4px;
+                                border-radius: 2px;
+                                background: Theme.bg-elevated;
+
+                                Rectangle {
+                                    x: 0;
+                                    y: 0;
+                                    width: root.viewer-batch-total > 0
+                                        ? parent.width * (root.viewer-batch-done / root.viewer-batch-total)
+                                        : 0px;
+                                    height: 4px;
+                                    border-radius: 2px;
+                                    background: Theme.accent;
+
+                                    animate width { duration: 200ms; }
+                                }
+                            }
+
+                            if root.viewer-batch-status != "" : Text {
+                                text: root.viewer-batch-status;
+                                color: Theme.text-secondary;
+                                font-size: 11px;
+                                wrap: word-wrap;
+                            }
+                        }
                     }
                 }
             }

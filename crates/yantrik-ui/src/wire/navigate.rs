@@ -30,6 +30,8 @@ pub fn wire(ui: &App, ctx: &AppContext) {
     let terminals = ctx.terminals.clone();
     let terminal_active = ctx.terminal_active.clone();
     let term_poll_timer: Rc<RefCell<Option<Timer>>> = Rc::new(RefCell::new(None));
+    let terminal_split_handle = ctx.terminal_split_handle.clone();
+    let term_split_poll_timer: Rc<RefCell<Option<Timer>>> = Rc::new(RefCell::new(None));
 
     ui.on_navigate(move |screen| {
         tracing::debug!(screen, "Navigate to screen");
@@ -150,6 +152,7 @@ pub fn wire(ui: &App, ctx: &AppContext) {
                             size_text: e.size_text.into(),
                             modified_text: e.modified_text.into(),
                             icon_char: e.icon_char.into(),
+                            selected: false,
                         })
                         .collect();
                     ui.set_file_browser_entries(ModelRc::new(VecModel::from(items)));
@@ -241,6 +244,15 @@ pub fn wire(ui: &App, ctx: &AppContext) {
                         &bridge,
                         &term_poll_timer,
                     );
+
+                    // Start split pane poll timer if split handle is available
+                    if let Some(ref sh) = *terminal_split_handle.borrow() {
+                        super::terminal::start_split_poll_timer(
+                            &ui,
+                            sh,
+                            &term_split_poll_timer,
+                        );
+                    }
                 }
             }
             // Notes editor — load notes list
@@ -295,6 +307,21 @@ pub fn wire(ui: &App, ctx: &AppContext) {
             // Permission Dashboard
             28 => {
                 tracing::debug!("Navigated to permission dashboard");
+            }
+            // Spreadsheet
+            29 => {
+                tracing::debug!("Navigated to spreadsheet");
+                if let Some(ui) = ui_weak.upgrade() {
+                    super::spreadsheet::load_spreadsheet(&ui);
+                }
+            }
+            // Document Editor
+            30 => {
+                tracing::debug!("Navigated to document editor");
+            }
+            // Presentation
+            31 => {
+                tracing::debug!("Navigated to presentation");
             }
             _ => {}
         }

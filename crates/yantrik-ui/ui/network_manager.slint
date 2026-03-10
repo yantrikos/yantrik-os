@@ -1,5 +1,5 @@
 // Network Manager — comprehensive network settings app.
-// Screen 22. Five tabs: WiFi, Ethernet, Bluetooth, VPN, Firewall.
+// Screen 22. Six tabs: WiFi, Ethernet, Bluetooth, VPN, Firewall, Diagnostics.
 
 import { Theme } from "theme.slint";
 
@@ -46,6 +46,17 @@ export struct FirewallRule {
     description: string,  // "tcp/22 ACCEPT", "DROP 10.0.0.5"
     chain: string,        // "INPUT", "OUTPUT", "FORWARD"
     action: string,       // "ACCEPT", "DROP", "REJECT"
+}
+
+export struct DiagTestResult {
+    name: string,         // "Gateway", "DNS", "Internet"
+    status: string,       // "ok", "fail", "running", "idle"
+    latency: string,      // "12ms" or "unreachable" or ""
+}
+
+export struct ConnectionEvent {
+    description: string,  // "WiFi connected to HomeNet"
+    timestamp: string,    // "14:32:05"
 }
 
 // ── Signal bar component ──
@@ -219,7 +230,7 @@ component ActionButton inherits TouchArea {
 export component NetworkManager inherits Rectangle {
     background: Theme.bg-deep;
 
-    // Active tab: 0=WiFi, 1=Ethernet, 2=Bluetooth, 3=VPN, 4=Firewall
+    // Active tab: 0=WiFi, 1=Ethernet, 2=Bluetooth, 3=VPN, 4=Firewall, 5=Diagnostics
     in-out property <int> active-tab: 0;
 
     // WiFi state
@@ -257,6 +268,22 @@ export component NetworkManager inherits Rectangle {
     in property <[FirewallRule]> firewall-rules: [];
     in property <string> firewall-profile: "Custom";
 
+    // WiFi connection details (expandable section)
+    in property <string> wifi-gateway: "";
+    in property <string> wifi-dns: "";
+    in property <string> wifi-subnet: "";
+    in-out property <bool> wifi-details-expanded: false;
+
+    // Diagnostics state
+    in property <[DiagTestResult]> diag-tests: [];
+    in property <[ConnectionEvent]> diag-connection-history: [];
+
+    // Status bar (shown on all tabs)
+    in property <string> status-connection-type: "";   // "WiFi", "Ethernet", ""
+    in property <string> status-ip-address: "";
+    in property <int> status-signal-strength: 0;        // 0-100, for WiFi
+    in property <string> status-state: "disconnected";  // "connected", "disconnected", "connecting"
+
     // Callbacks
     callback toggle-wifi();
     callback wifi-scan();
@@ -277,6 +304,31 @@ export component NetworkManager inherits Rectangle {
     callback firewall-allow-port(string);   // port string
     callback firewall-block-port(string);
     callback firewall-apply-profile(string);
+
+    // Diagnostics callbacks
+    callback diag-run-test(string);    // "gateway", "dns", "internet"
+    callback diag-run-all-tests();
+
+    // Diagnostics — Ping / Traceroute
+    in-out property <string> net-diag-ping-target: "8.8.8.8";
+    in property <string> net-diag-ping-result: "";
+    in property <bool> net-diag-ping-running: false;
+    in property <string> net-diag-traceroute-result: "";
+    in property <bool> net-diag-traceroute-running: false;
+    callback net-diag-run-ping();
+    callback net-diag-run-traceroute();
+
+    // VPN config import
+    in-out property <string> net-vpn-import-path: "";
+    in property <string> net-vpn-import-status: "";
+    callback net-vpn-import-config();
+
+    // AI Assist
+    in property <bool> ai-is-working: false;
+    in property <string> ai-response: "";
+    in-out property <bool> ai-panel-open: false;
+    callback ai-explain-pressed();
+    callback ai-dismiss();
 
     // Background nebula
     Rectangle {
@@ -346,6 +398,119 @@ export component NetworkManager inherits Rectangle {
                     label: "Firewall";
                     active: root.active-tab == 4;
                     clicked => { root.active-tab = 4; }
+                }
+                TabButton {
+                    icon: "\u{2699}";  // Diagnostics
+                    label: "Diagnostics";
+                    active: root.active-tab == 5;
+                    clicked => { root.active-tab = 5; }
+                }
+
+                // Spacer
+                Rectangle { horizontal-stretch: 1; }
+
+                // AI Explain button
+                TouchArea {
+                    width: ai-net-btn.preferred-width + 16px;
+                    height: 32px;
+                    clicked => {
+                        if root.ai-panel-open {
+                            root.ai-dismiss();
+                            root.ai-panel-open = false;
+                        } else {
+                            root.ai-explain-pressed();
+                            root.ai-panel-open = true;
+                        }
+                    }
+                    ai-net-btn := Rectangle {
+                        height: 32px;
+                        border-radius: Theme.radius-pill;
+                        background: root.ai-is-working ? Theme.accent
+                            : (parent.has-hover ? Theme.hover-fill-strong : Theme.bg-card);
+                        border-width: 1px;
+                        border-color: Theme.border-subtle;
+                        HorizontalLayout {
+                            padding-left: 10px;
+                            padding-right: 10px;
+                            spacing: 4px;
+                            alignment: center;
+                            Text {
+                                text: root.ai-is-working ? "\u{2B50}" : "\u{2728}";
+                                font-size: 12px;
+                                vertical-alignment: center;
+                            }
+                            Text {
+                                text: root.ai-is-working ? "Analyzing..." : "AI Explain";
+                                color: root.ai-is-working ? #ffffff : Theme.text-secondary;
+                                font-size: 11px;
+                                font-weight: 500;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                }
+
+                Rectangle { width: 12px; }
+            }
+        }
+
+        // ── AI Response Panel ──
+        if root.ai-panel-open && root.ai-response != "" : Rectangle {
+            max-height: 160px;
+            background: #1a2332;
+            border-width: 1px;
+            border-color: Theme.accent.transparentize(70%);
+
+            Flickable {
+                viewport-height: ai-net-resp.preferred-height + 16px;
+
+                ai-net-resp := VerticalLayout {
+                    padding: 12px;
+                    spacing: 8px;
+
+                    HorizontalLayout {
+                        spacing: 6px;
+                        Text {
+                            text: "\u{2728}";
+                            font-size: 12px;
+                            vertical-alignment: center;
+                        }
+                        Text {
+                            text: "AI Analysis";
+                            color: Theme.accent;
+                            font-size: 12px;
+                            font-weight: 600;
+                            vertical-alignment: center;
+                        }
+                        Rectangle { horizontal-stretch: 1; }
+                        TouchArea {
+                            width: 24px;
+                            height: 24px;
+                            clicked => {
+                                root.ai-panel-open = false;
+                                root.ai-dismiss();
+                            }
+                            Rectangle {
+                                width: 24px; height: 24px;
+                                border-radius: 12px;
+                                background: parent.has-hover ? Theme.hover-fill : transparent;
+                                Text {
+                                    text: "\u{2715}";
+                                    font-size: 11px;
+                                    color: Theme.text-dim;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+                    }
+
+                    Text {
+                        text: root.ai-response;
+                        color: Theme.text-primary;
+                        font-size: 12px;
+                        wrap: word-wrap;
+                    }
                 }
             }
         }
@@ -446,6 +611,81 @@ export component NetworkManager inherits Rectangle {
                                     spacing: 2px;
                                     Text { text: "Speed"; color: Theme.text-dim; font-size: Theme.font-small; }
                                     Text { text: root.wifi-speed != "" ? root.wifi-speed : "—"; color: Theme.text-secondary; font-size: Theme.font-body; }
+                                }
+                            }
+                        }
+                    }
+
+                    // Connection Details (expandable)
+                    if root.wifi-current-ssid != "" : Rectangle {
+                        background: Theme.bg-card;
+                        border-radius: Theme.radius-card;
+                        border-width: 1px;
+                        border-color: Theme.border-subtle;
+                        height: wifi-details-inner.preferred-height + 16px;
+
+                        wifi-details-inner := VerticalLayout {
+                            padding: 12px;
+                            padding-left: 16px;
+                            padding-right: 16px;
+                            spacing: 8px;
+
+                            details-toggle := TouchArea {
+                                height: 28px;
+                                clicked => { root.wifi-details-expanded = !root.wifi-details-expanded; }
+
+                                HorizontalLayout {
+                                    spacing: 8px;
+                                    alignment: space-between;
+
+                                    HorizontalLayout {
+                                        spacing: 6px;
+                                        Text {
+                                            text: root.wifi-details-expanded ? "\u{25BC}" : "\u{25B6}";
+                                            color: Theme.text-dim;
+                                            font-size: 10px;
+                                            vertical-alignment: center;
+                                        }
+                                        Text {
+                                            text: "Connection Details";
+                                            color: Theme.text-secondary;
+                                            font-size: Theme.font-body;
+                                            font-weight: 500;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                }
+                            }
+
+                            if root.wifi-details-expanded : VerticalLayout {
+                                spacing: 10px;
+                                // Row 1
+                                HorizontalLayout {
+                                    spacing: 32px;
+                                    VerticalLayout {
+                                        spacing: 2px;
+                                        Text { text: "IP Address"; color: Theme.text-dim; font-size: Theme.font-small; }
+                                        Text { text: root.wifi-ip-address != "" ? root.wifi-ip-address : "\u{2014}"; color: Theme.text-secondary; font-size: Theme.font-body; }
+                                    }
+                                    VerticalLayout {
+                                        spacing: 2px;
+                                        Text { text: "Subnet Mask"; color: Theme.text-dim; font-size: Theme.font-small; }
+                                        Text { text: root.wifi-subnet != "" ? root.wifi-subnet : "\u{2014}"; color: Theme.text-secondary; font-size: Theme.font-body; }
+                                    }
+                                }
+                                // Row 2
+                                HorizontalLayout {
+                                    spacing: 32px;
+                                    VerticalLayout {
+                                        spacing: 2px;
+                                        Text { text: "Gateway"; color: Theme.text-dim; font-size: Theme.font-small; }
+                                        Text { text: root.wifi-gateway != "" ? root.wifi-gateway : "\u{2014}"; color: Theme.text-secondary; font-size: Theme.font-body; }
+                                    }
+                                    VerticalLayout {
+                                        spacing: 2px;
+                                        Text { text: "DNS"; color: Theme.text-dim; font-size: Theme.font-small; }
+                                        Text { text: root.wifi-dns != "" ? root.wifi-dns : "\u{2014}"; color: Theme.text-secondary; font-size: Theme.font-body; }
+                                    }
                                 }
                             }
                         }
@@ -1045,6 +1285,63 @@ export component NetworkManager inherits Rectangle {
                             }
                         }
                     }
+
+                    // ── Import VPN Config ──
+                    Rectangle {
+                        background: Theme.bg-card;
+                        border-radius: Theme.radius-card;
+                        border-width: 1px;
+                        border-color: Theme.border-subtle;
+                        height: vpn-import-layout.preferred-height + 24px;
+
+                        vpn-import-layout := VerticalLayout {
+                            padding: 16px;
+                            spacing: 10px;
+
+                            Text {
+                                text: "Import VPN Config";
+                                color: Theme.text-primary;
+                                font-size: Theme.font-body;
+                                font-weight: 600;
+                            }
+
+                            HorizontalLayout {
+                                spacing: 8px;
+
+                                Rectangle {
+                                    horizontal-stretch: 1;
+                                    height: 36px;
+                                    background: Theme.bg-input;
+                                    border-radius: Theme.radius-card;
+                                    border-width: 1px;
+                                    border-color: Theme.border-subtle;
+
+                                    vpn-import-input := TextInput {
+                                        x: 10px;
+                                        width: parent.width - 20px;
+                                        height: 100%;
+                                        text <=> root.net-vpn-import-path;
+                                        color: Theme.text-primary;
+                                        font-size: Theme.font-body;
+                                        accepted => { root.net-vpn-import-config(); }
+                                    }
+                                }
+
+                                ActionButton {
+                                    label: "Import";
+                                    width: 80px;
+                                    primary: true;
+                                    clicked => { root.net-vpn-import-config(); }
+                                }
+                            }
+
+                            if root.net-vpn-import-status != "" : Text {
+                                text: root.net-vpn-import-status;
+                                color: Theme.text-secondary;
+                                font-size: Theme.font-small;
+                            }
+                        }
+                    }
                 }
             }
 
@@ -1272,6 +1569,386 @@ export component NetworkManager inherits Rectangle {
                                 }
                             }
                         }
+                    }
+                }
+            }
+
+            // ═════════════════════════════════════
+            // TAB 5: Diagnostics
+            // ═════════════════════════════════════
+            if root.active-tab == 5 : Flickable {
+                width: 100%;
+                height: 100%;
+                viewport-height: diag-content.preferred-height + 40px;
+
+                diag-content := VerticalLayout {
+                    padding: 20px;
+                    spacing: 16px;
+
+                    // Connection Tests section
+                    VerticalLayout {
+                        spacing: 8px;
+
+                        HorizontalLayout {
+                            spacing: 12px;
+                            alignment: space-between;
+
+                            Text {
+                                text: "Connection Tests";
+                                color: Theme.text-primary;
+                                font-size: Theme.font-title;
+                                font-weight: 600;
+                                vertical-alignment: center;
+                            }
+
+                            ActionButton {
+                                label: "Run All Tests";
+                                width: 130px;
+                                primary: true;
+                                clicked => { root.diag-run-all-tests(); }
+                            }
+                        }
+
+                        // Test rows
+                        for test[idx] in root.diag-tests : Rectangle {
+                            height: 56px;
+                            background: Theme.bg-card;
+                            border-radius: Theme.radius-card;
+                            border-width: 1px;
+                            border-color: test.status == "ok" ? #2a8a3a40
+                                        : test.status == "fail" ? #a0404040
+                                        : Theme.border-subtle;
+
+                            HorizontalLayout {
+                                padding-left: 16px;
+                                padding-right: 12px;
+                                spacing: 12px;
+                                alignment: space-between;
+
+                                HorizontalLayout {
+                                    spacing: 12px;
+
+                                    // Status icon
+                                    Rectangle {
+                                        width: 28px;
+                                        height: 28px;
+                                        border-radius: 14px;
+                                        background: test.status == "ok" ? #2a8a3a40
+                                                  : test.status == "fail" ? #a0404040
+                                                  : test.status == "running" ? #a08a2a40
+                                                  : Theme.bg-elevated;
+
+                                        Text {
+                                            text: test.status == "ok" ? "\u{2713}"
+                                                : test.status == "fail" ? "\u{2717}"
+                                                : test.status == "running" ? "\u{25CB}"
+                                                : "\u{2014}";
+                                            color: test.status == "ok" ? #6cd480
+                                                 : test.status == "fail" ? #ff6060
+                                                 : test.status == "running" ? #e0c040
+                                                 : Theme.text-dim;
+                                            font-size: 14px;
+                                            font-weight: 700;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+
+                                    VerticalLayout {
+                                        spacing: 2px;
+                                        alignment: center;
+
+                                        Text {
+                                            text: test.name;
+                                            color: Theme.text-primary;
+                                            font-size: Theme.font-body;
+                                            font-weight: 500;
+                                        }
+                                        Text {
+                                            text: test.status == "running" ? "Testing..."
+                                                : test.status == "ok" ? test.latency
+                                                : test.status == "fail" ? "unreachable"
+                                                : "Not tested";
+                                            color: test.status == "ok" ? Theme.accent
+                                                 : test.status == "fail" ? #ff6060
+                                                 : test.status == "running" ? #e0c040
+                                                 : Theme.text-dim;
+                                            font-size: Theme.font-small;
+                                        }
+                                    }
+                                }
+
+                                ActionButton {
+                                    label: test.status == "running" ? "..." : "Test";
+                                    width: 70px;
+                                    clicked => { root.diag-run-test(test.name); }
+                                }
+                            }
+                        }
+                    }
+
+                    // ── Ping Tool ──
+                    VerticalLayout {
+                        spacing: 8px;
+
+                        Text {
+                            text: "Ping / Traceroute";
+                            color: Theme.text-primary;
+                            font-size: Theme.font-title;
+                            font-weight: 600;
+                        }
+
+                        Rectangle {
+                            background: Theme.bg-card;
+                            border-radius: Theme.radius-card;
+                            border-width: 1px;
+                            border-color: Theme.border-subtle;
+                            height: ping-tool-layout.preferred-height + 24px;
+
+                            ping-tool-layout := VerticalLayout {
+                                padding: 16px;
+                                spacing: 10px;
+
+                                HorizontalLayout {
+                                    spacing: 8px;
+
+                                    // Target input
+                                    Rectangle {
+                                        horizontal-stretch: 1;
+                                        height: 36px;
+                                        background: Theme.bg-input;
+                                        border-radius: Theme.radius-card;
+                                        border-width: 1px;
+                                        border-color: Theme.border-subtle;
+
+                                        ping-target-input := TextInput {
+                                            x: 10px;
+                                            width: parent.width - 20px;
+                                            height: 100%;
+                                            text <=> root.net-diag-ping-target;
+                                            color: Theme.text-primary;
+                                            font-size: Theme.font-body;
+                                            accepted => { root.net-diag-run-ping(); }
+                                        }
+                                    }
+
+                                    ActionButton {
+                                        label: root.net-diag-ping-running ? "..." : "Ping";
+                                        width: 80px;
+                                        primary: true;
+                                        clicked => { root.net-diag-run-ping(); }
+                                    }
+
+                                    ActionButton {
+                                        label: root.net-diag-traceroute-running ? "..." : "Traceroute";
+                                        width: 110px;
+                                        clicked => { root.net-diag-run-traceroute(); }
+                                    }
+                                }
+
+                                // Ping spinner
+                                if root.net-diag-ping-running || root.net-diag-traceroute-running : HorizontalLayout {
+                                    spacing: 8px;
+                                    Rectangle {
+                                        width: 14px;
+                                        height: 14px;
+                                        border-radius: 7px;
+                                        border-width: 2px;
+                                        border-color: Theme.accent;
+                                        background: transparent;
+                                    }
+                                    Text {
+                                        text: root.net-diag-ping-running ? "Pinging..." : "Running traceroute...";
+                                        color: Theme.accent;
+                                        font-size: Theme.font-small;
+                                        vertical-alignment: center;
+                                    }
+                                }
+
+                                // Ping result
+                                if root.net-diag-ping-result != "" : Rectangle {
+                                    background: Theme.bg-elevated;
+                                    border-radius: 6px;
+                                    height: Math.min(ping-result-text.preferred-height + 16px, 160px);
+
+                                    Flickable {
+                                        width: parent.width;
+                                        height: parent.height;
+                                        viewport-height: ping-result-text.preferred-height + 16px;
+
+                                        ping-result-text := Text {
+                                            x: 10px;
+                                            y: 8px;
+                                            width: parent.width - 20px;
+                                            text: root.net-diag-ping-result;
+                                            color: Theme.text-secondary;
+                                            font-size: 11px;
+                                            wrap: word-wrap;
+                                        }
+                                    }
+                                }
+
+                                // Traceroute result
+                                if root.net-diag-traceroute-result != "" : Rectangle {
+                                    background: Theme.bg-elevated;
+                                    border-radius: 6px;
+                                    height: Math.min(traceroute-result-text.preferred-height + 16px, 200px);
+
+                                    HorizontalLayout {
+                                        padding-left: 10px;
+                                        padding-top: 4px;
+                                        Text {
+                                            text: "Traceroute:";
+                                            color: Theme.text-dim;
+                                            font-size: 10px;
+                                            font-weight: 600;
+                                        }
+                                    }
+
+                                    Flickable {
+                                        y: 18px;
+                                        width: parent.width;
+                                        height: parent.height - 18px;
+                                        viewport-height: traceroute-result-text.preferred-height + 16px;
+
+                                        traceroute-result-text := Text {
+                                            x: 10px;
+                                            y: 4px;
+                                            width: parent.width - 20px;
+                                            text: root.net-diag-traceroute-result;
+                                            color: Theme.text-secondary;
+                                            font-size: 11px;
+                                            wrap: word-wrap;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Connection History section
+                    VerticalLayout {
+                        spacing: 8px;
+
+                        Text {
+                            text: "Connection History";
+                            color: Theme.text-primary;
+                            font-size: Theme.font-title;
+                            font-weight: 600;
+                        }
+
+                        if root.diag-connection-history.length == 0 : Rectangle {
+                            height: 60px;
+                            background: Theme.bg-card;
+                            border-radius: Theme.radius-card;
+                            border-width: 1px;
+                            border-color: Theme.border-subtle;
+                            Text {
+                                text: "No recent connection events";
+                                color: Theme.text-dim;
+                                font-size: Theme.font-body;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+
+                        for event[idx] in root.diag-connection-history : Rectangle {
+                            height: 44px;
+                            background: Theme.bg-card;
+                            border-radius: Theme.radius-card;
+                            border-width: 1px;
+                            border-color: Theme.border-subtle;
+
+                            HorizontalLayout {
+                                padding-left: 16px;
+                                padding-right: 16px;
+                                spacing: 12px;
+                                alignment: space-between;
+
+                                Text {
+                                    text: event.description;
+                                    color: Theme.text-primary;
+                                    font-size: Theme.font-body;
+                                    vertical-alignment: center;
+                                    overflow: elide;
+                                    horizontal-stretch: 1;
+                                }
+
+                                Text {
+                                    text: event.timestamp;
+                                    color: Theme.text-dim;
+                                    font-size: Theme.font-small;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── Network Status Bar (shown on all tabs) ──
+        Rectangle {
+            height: 32px;
+            background: @linear-gradient(180deg,
+                #0c0b1080 0%,
+                #12111aa0 100%
+            );
+
+            // Top border glow
+            Rectangle {
+                y: 0px;
+                width: 100%;
+                height: 1px;
+                background: Theme.border-subtle;
+                opacity: 0.5;
+            }
+
+            HorizontalLayout {
+                padding-left: 16px;
+                padding-right: 16px;
+                spacing: 16px;
+                alignment: start;
+
+                // Status dot
+                Rectangle {
+                    width: 8px;
+                    height: 8px;
+                    border-radius: 4px;
+                    background: root.status-state == "connected" ? #4cd964
+                              : root.status-state == "connecting" ? #e0c040
+                              : #ff3b30;
+                    y: (parent.height - self.height) / 2;
+                }
+
+                // Connection type
+                Text {
+                    text: root.status-connection-type != "" ? root.status-connection-type : "No Connection";
+                    color: Theme.text-secondary;
+                    font-size: 11px;
+                    font-weight: 500;
+                    vertical-alignment: center;
+                }
+
+                // IP address
+                if root.status-ip-address != "" : Text {
+                    text: root.status-ip-address;
+                    color: Theme.text-dim;
+                    font-size: 11px;
+                    vertical-alignment: center;
+                }
+
+                // Signal strength (WiFi only)
+                if root.status-connection-type == "WiFi" && root.status-signal-strength > 0 : HorizontalLayout {
+                    spacing: 4px;
+                    SignalBars {
+                        strength: root.status-signal-strength;
+                    }
+                    Text {
+                        text: root.status-signal-strength + "%";
+                        color: Theme.text-dim;
+                        font-size: 11px;
+                        vertical-alignment: center;
                     }
                 }
             }

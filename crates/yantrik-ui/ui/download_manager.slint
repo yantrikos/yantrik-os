@@ -15,6 +15,16 @@ export struct DownloadItem {
     status: string,        // "downloading", "paused", "completed", "failed", "queued"
     eta-text: string,      // "2m 30s"
     is-selected: bool,
+    // Checksum fields
+    checksum-expected: string,   // user-supplied expected hash
+    checksum-status: string,     // "none", "verifying", "pass", "fail"
+    // Per-download save location
+    save-dir: string,            // custom save directory
+    // Detail fields
+    start-time: string,          // "2026-03-09 14:32:01"
+    end-time: string,            // "2026-03-09 14:35:12"
+    file-hash: string,           // computed hash after download
+    file-type: string,           // "application/zip", "image/png", etc.
 }
 
 export component DownloadManagerScreen inherits Rectangle {
@@ -28,7 +38,7 @@ export component DownloadManagerScreen inherits Rectangle {
 
     in-out property <int> active-filter: 0;  // 0=All, 1=Active, 2=Completed, 3=Failed
 
-    callback dl-add(string);
+    callback dl-add(/* url */ string, /* checksum */ string, /* save-dir */ string);
     callback dl-pause(int);
     callback dl-resume(int);
     callback dl-cancel(int);
@@ -36,10 +46,43 @@ export component DownloadManagerScreen inherits Rectangle {
     callback dl-open-folder(int);
     callback dl-clear-completed();
     callback dl-filter(int);
+    callback dl-verify-checksum(int);
+    callback dl-toggle-select(int);
+    callback dl-select-all(bool);
+    callback dl-pause-all();
+    callback dl-resume-all();
+    callback dl-search(string);
+    callback dl-sort(int);  // 0=date, 1=name, 2=size, 3=status
 
     // State for the add-URL input
     in-out property <bool> add-url-open: false;
     in-out property <string> add-url-text: "";
+    in-out property <string> add-checksum-text: "";
+    in-out property <string> add-save-dir-text: "";
+
+    // Search / filter
+    in-out property <string> dl-search-text: "";
+    in property <int> dl-search-match-count: 0;
+
+    // Sort
+    in-out property <int> dl-sort-mode: 0;  // 0=date, 1=name, 2=size, 3=status
+
+    // Bulk selection
+    in-out property <bool> dl-all-selected: false;
+
+    // Expanded row tracking (which download id is expanded, -1 = none)
+    in-out property <int> dl-expanded-id: -1;
+
+    // Resume support & checksum result
+    in property <bool> dl-resume-supported: false;
+    in property <string> dl-checksum-result: "";
+
+    // AI Assist
+    in property <bool> ai-is-working: false;
+    in property <string> ai-response: "";
+    in-out property <bool> ai-panel-open: false;
+    callback ai-explain-pressed();
+    callback ai-dismiss();
 
     VerticalLayout {
         // ── Top Stats Bar ──
@@ -134,6 +177,68 @@ export component DownloadManagerScreen inherits Rectangle {
                 // Spacer
                 Rectangle { horizontal-stretch: 1; }
 
+                // Pause All button
+                Rectangle {
+                    width: 90px;
+                    height: 34px;
+                    background: pause-all-ta.has-hover ? Theme.hover-fill-strong : Theme.hover-fill;
+                    border-radius: Theme.radius-pill;
+                    border-width: 1px;
+                    border-color: Theme.border-subtle;
+
+                    HorizontalLayout {
+                        alignment: center;
+                        spacing: 4px;
+                        Text {
+                            text: "\u{23F8}";
+                            font-size: 11px;
+                            color: Theme.amber;
+                            vertical-alignment: center;
+                        }
+                        Text {
+                            text: "Pause All";
+                            font-size: Theme.font-small;
+                            color: Theme.text-secondary;
+                            vertical-alignment: center;
+                        }
+                    }
+
+                    pause-all-ta := TouchArea {
+                        clicked => { root.dl-pause-all(); }
+                    }
+                }
+
+                // Resume All button
+                Rectangle {
+                    width: 100px;
+                    height: 34px;
+                    background: resume-all-ta.has-hover ? Theme.hover-fill-strong : Theme.hover-fill;
+                    border-radius: Theme.radius-pill;
+                    border-width: 1px;
+                    border-color: Theme.border-subtle;
+
+                    HorizontalLayout {
+                        alignment: center;
+                        spacing: 4px;
+                        Text {
+                            text: "\u{25B6}";
+                            font-size: 11px;
+                            color: #4caf50;
+                            vertical-alignment: center;
+                        }
+                        Text {
+                            text: "Resume All";
+                            font-size: Theme.font-small;
+                            color: Theme.text-secondary;
+                            vertical-alignment: center;
+                        }
+                    }
+
+                    resume-all-ta := TouchArea {
+                        clicked => { root.dl-resume-all(); }
+                    }
+                }
+
                 // Clear Completed button
                 Rectangle {
                     width: 140px;
@@ -153,6 +258,47 @@ export component DownloadManagerScreen inherits Rectangle {
 
                     clear-ta := TouchArea {
                         clicked => { root.dl-clear-completed(); }
+                    }
+                }
+
+                // AI button
+                TouchArea {
+                    width: ai-dl-btn.preferred-width + 16px;
+                    height: 34px;
+                    clicked => {
+                        if root.ai-panel-open {
+                            root.ai-dismiss();
+                            root.ai-panel-open = false;
+                        } else {
+                            root.ai-explain-pressed();
+                            root.ai-panel-open = true;
+                        }
+                    }
+                    ai-dl-btn := Rectangle {
+                        height: 34px;
+                        border-radius: Theme.radius-pill;
+                        background: root.ai-is-working ? Theme.accent
+                            : (parent.has-hover ? Theme.hover-fill-strong : Theme.hover-fill);
+                        border-width: 1px;
+                        border-color: Theme.border-subtle;
+                        HorizontalLayout {
+                            padding-left: 10px;
+                            padding-right: 10px;
+                            spacing: 4px;
+                            alignment: center;
+                            Text {
+                                text: root.ai-is-working ? "\u{2B50}" : "\u{2728}";
+                                font-size: 12px;
+                                vertical-alignment: center;
+                            }
+                            Text {
+                                text: root.ai-is-working ? "Analyzing..." : "AI";
+                                color: root.ai-is-working ? #ffffff : Theme.text-secondary;
+                                font-size: 11px;
+                                font-weight: 500;
+                                vertical-alignment: center;
+                            }
+                        }
                     }
                 }
 
@@ -181,11 +327,264 @@ export component DownloadManagerScreen inherits Rectangle {
             }
         }
 
+        // ── AI Response Panel ──
+        if root.ai-panel-open && root.ai-response != "" : Rectangle {
+            max-height: 160px;
+            background: #1a2332;
+            border-width: 1px;
+            border-color: Theme.accent.transparentize(70%);
+
+            Flickable {
+                viewport-height: ai-dl-resp.preferred-height + 16px;
+
+                ai-dl-resp := VerticalLayout {
+                    padding: 12px;
+                    spacing: 8px;
+
+                    HorizontalLayout {
+                        spacing: 6px;
+                        Text {
+                            text: "\u{2728}";
+                            font-size: 12px;
+                            vertical-alignment: center;
+                        }
+                        Text {
+                            text: "AI Analysis";
+                            color: Theme.accent;
+                            font-size: 12px;
+                            font-weight: 600;
+                            vertical-alignment: center;
+                        }
+                        Rectangle { horizontal-stretch: 1; }
+                        TouchArea {
+                            width: 24px;
+                            height: 24px;
+                            clicked => {
+                                root.ai-panel-open = false;
+                                root.ai-dismiss();
+                            }
+                            Rectangle {
+                                width: 24px; height: 24px;
+                                border-radius: 12px;
+                                background: parent.has-hover ? Theme.hover-fill : transparent;
+                                Text {
+                                    text: "\u{2715}";
+                                    font-size: 11px;
+                                    color: Theme.text-dim;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+                    }
+
+                    Text {
+                        text: root.ai-response;
+                        color: Theme.text-primary;
+                        font-size: 12px;
+                        wrap: word-wrap;
+                    }
+                }
+            }
+        }
+
         // ── Add URL Input Row (collapsible) ──
         if root.add-url-open : Rectangle {
-            height: 48px;
+            height: 110px;
             background: Theme.bg-elevated;
             border-width: 0;
+
+            VerticalLayout {
+                padding: 10px;
+                padding-left: 20px;
+                padding-right: 20px;
+                spacing: 6px;
+
+                // Row 1: URL input + submit + cancel
+                HorizontalLayout {
+                    spacing: 10px;
+                    alignment: center;
+
+                    Rectangle {
+                        horizontal-stretch: 1;
+                        height: 36px;
+                        background: Theme.bg-input;
+                        border-radius: Theme.radius-pill;
+                        border-width: 1px;
+                        border-color: url-input-ta.has-focus ? Theme.accent : Theme.border-subtle;
+
+                        HorizontalLayout {
+                            padding-left: 14px;
+                            padding-right: 14px;
+                            alignment: center;
+
+                            url-input-ta := TextInput {
+                                horizontal-stretch: 1;
+                                text <=> root.add-url-text;
+                                font-size: Theme.font-body;
+                                color: Theme.text-primary;
+                                accepted => {
+                                    if root.add-url-text != "" {
+                                        root.dl-add(root.add-url-text, root.add-checksum-text, root.add-save-dir-text);
+                                        root.add-url-text = "";
+                                        root.add-checksum-text = "";
+                                        root.add-save-dir-text = "";
+                                        root.add-url-open = false;
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Submit button
+                    Rectangle {
+                        width: 90px;
+                        height: 36px;
+                        background: submit-ta.has-hover ? #2e9b47 : #27863e;
+                        border-radius: Theme.radius-pill;
+
+                        Text {
+                            text: "Download";
+                            font-size: Theme.font-small;
+                            font-weight: 600;
+                            color: #ffffff;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+
+                        submit-ta := TouchArea {
+                            clicked => {
+                                if root.add-url-text != "" {
+                                    root.dl-add(root.add-url-text, root.add-checksum-text, root.add-save-dir-text);
+                                    root.add-url-text = "";
+                                    root.add-checksum-text = "";
+                                    root.add-save-dir-text = "";
+                                    root.add-url-open = false;
+                                }
+                            }
+                        }
+                    }
+
+                    // Cancel
+                    Rectangle {
+                        width: 32px;
+                        height: 32px;
+                        background: cancel-input-ta.has-hover ? Theme.hover-fill-strong : transparent;
+                        border-radius: 16px;
+
+                        Text {
+                            text: "\u{2715}";
+                            font-size: 14px;
+                            color: Theme.text-dim;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+
+                        cancel-input-ta := TouchArea {
+                            clicked => {
+                                root.add-url-open = false;
+                                root.add-url-text = "";
+                                root.add-checksum-text = "";
+                                root.add-save-dir-text = "";
+                            }
+                        }
+                    }
+                }
+
+                // Row 2: Checksum + Save directory inputs
+                HorizontalLayout {
+                    spacing: 10px;
+                    alignment: center;
+
+                    // Checksum input
+                    Rectangle {
+                        horizontal-stretch: 1;
+                        height: 32px;
+                        background: Theme.bg-input;
+                        border-radius: Theme.radius-pill;
+                        border-width: 1px;
+                        border-color: checksum-input.has-focus ? Theme.accent : Theme.border-subtle;
+
+                        HorizontalLayout {
+                            padding-left: 12px;
+                            padding-right: 12px;
+                            spacing: 6px;
+                            alignment: center;
+
+                            Text {
+                                text: "#";
+                                font-size: 12px;
+                                color: Theme.text-dim;
+                                vertical-alignment: center;
+                            }
+
+                            checksum-input := TextInput {
+                                horizontal-stretch: 1;
+                                text <=> root.add-checksum-text;
+                                font-size: 11px;
+                                color: Theme.text-primary;
+                                input-type: text;
+                            }
+                        }
+                    }
+
+                    // Placeholder label when empty
+                    if root.add-checksum-text == "" : Text {
+                        text: "Expected hash (optional)";
+                        font-size: 11px;
+                        color: Theme.text-dim;
+                        vertical-alignment: center;
+                    }
+
+                    // Save directory input
+                    Rectangle {
+                        horizontal-stretch: 1;
+                        height: 32px;
+                        background: Theme.bg-input;
+                        border-radius: Theme.radius-pill;
+                        border-width: 1px;
+                        border-color: savedir-input.has-focus ? Theme.accent : Theme.border-subtle;
+
+                        HorizontalLayout {
+                            padding-left: 12px;
+                            padding-right: 12px;
+                            spacing: 6px;
+                            alignment: center;
+
+                            Text {
+                                text: "\u{1F4C1}";
+                                font-size: 11px;
+                                color: Theme.text-dim;
+                                vertical-alignment: center;
+                            }
+
+                            savedir-input := TextInput {
+                                horizontal-stretch: 1;
+                                text <=> root.add-save-dir-text;
+                                font-size: 11px;
+                                color: Theme.text-primary;
+                                input-type: text;
+                            }
+                        }
+                    }
+
+                    if root.add-save-dir-text == "" : Text {
+                        text: "Save to... (optional)";
+                        font-size: 11px;
+                        color: Theme.text-dim;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+        }
+
+        // ── Separator ──
+        Rectangle { height: 1px; background: Theme.separator; }
+
+        // ── Search bar + Sort + Select All ──
+        Rectangle {
+            height: 42px;
+            background: Theme.bg-elevated;
 
             HorizontalLayout {
                 padding-left: 20px;
@@ -193,81 +592,148 @@ export component DownloadManagerScreen inherits Rectangle {
                 spacing: 10px;
                 alignment: center;
 
+                // Select All checkbox
+                Rectangle {
+                    width: 28px;
+                    height: 28px;
+                    background: select-all-ta.has-hover ? Theme.hover-fill-strong : Theme.hover-fill;
+                    border-radius: 6px;
+                    border-width: 1px;
+                    border-color: root.dl-all-selected ? Theme.accent : Theme.border-subtle;
+
+                    Rectangle {
+                        width: 14px;
+                        height: 14px;
+                        x: 7px;
+                        y: 7px;
+                        border-radius: 3px;
+                        background: root.dl-all-selected ? Theme.accent : transparent;
+                        border-width: root.dl-all-selected ? 0 : 1px;
+                        border-color: Theme.text-dim;
+
+                        if root.dl-all-selected : Text {
+                            text: "\u{2713}";
+                            font-size: 10px;
+                            color: #ffffff;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
+
+                    select-all-ta := TouchArea {
+                        clicked => {
+                            root.dl-all-selected = !root.dl-all-selected;
+                            root.dl-select-all(root.dl-all-selected);
+                        }
+                    }
+                }
+
+                // Search bar
                 Rectangle {
                     horizontal-stretch: 1;
-                    height: 36px;
+                    height: 32px;
                     background: Theme.bg-input;
                     border-radius: Theme.radius-pill;
                     border-width: 1px;
-                    border-color: url-input-ta.has-focus ? Theme.accent : Theme.border-subtle;
+                    border-color: search-input.has-focus ? Theme.accent : Theme.border-subtle;
 
                     HorizontalLayout {
-                        padding-left: 14px;
-                        padding-right: 14px;
+                        padding-left: 12px;
+                        padding-right: 12px;
+                        spacing: 6px;
                         alignment: center;
 
-                        url-input-ta := TextInput {
+                        Text {
+                            text: "\u{1F50D}";
+                            font-size: 12px;
+                            color: Theme.text-dim;
+                            vertical-alignment: center;
+                        }
+
+                        search-input := TextInput {
                             horizontal-stretch: 1;
-                            text <=> root.add-url-text;
-                            font-size: Theme.font-body;
+                            text <=> root.dl-search-text;
+                            font-size: Theme.font-small;
                             color: Theme.text-primary;
-                            accepted => {
-                                if root.add-url-text != "" {
-                                    root.dl-add(root.add-url-text);
-                                    root.add-url-text = "";
-                                    root.add-url-open = false;
+                            edited => {
+                                root.dl-search(root.dl-search-text);
+                            }
+                        }
+
+                        // Match count
+                        if root.dl-search-text != "" : Text {
+                            text: root.dl-search-match-count + " found";
+                            font-size: 10px;
+                            color: Theme.text-dim;
+                            vertical-alignment: center;
+                        }
+
+                        // Clear search
+                        if root.dl-search-text != "" : TouchArea {
+                            width: 20px;
+                            height: 20px;
+                            clicked => {
+                                root.dl-search-text = "";
+                                root.dl-search("");
+                            }
+                            Rectangle {
+                                width: 20px; height: 20px;
+                                border-radius: 10px;
+                                background: parent.has-hover ? Theme.hover-fill : transparent;
+                                Text {
+                                    text: "\u{2715}";
+                                    font-size: 10px;
+                                    color: Theme.text-dim;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
                                 }
                             }
                         }
                     }
                 }
 
-                // Submit button
+                // Sort selector
                 Rectangle {
-                    width: 90px;
-                    height: 36px;
-                    background: submit-ta.has-hover ? #2e9b47 : #27863e;
+                    width: sort-label.preferred-width + 24px;
+                    height: 30px;
+                    background: sort-ta.has-hover ? Theme.hover-fill-strong : Theme.hover-fill;
                     border-radius: Theme.radius-pill;
+                    border-width: 1px;
+                    border-color: Theme.border-subtle;
 
-                    Text {
-                        text: "Download";
-                        font-size: Theme.font-small;
-                        font-weight: 600;
-                        color: #ffffff;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
-                    }
+                    sort-label := HorizontalLayout {
+                        padding-left: 10px;
+                        padding-right: 10px;
+                        spacing: 4px;
+                        alignment: center;
 
-                    submit-ta := TouchArea {
-                        clicked => {
-                            if root.add-url-text != "" {
-                                root.dl-add(root.add-url-text);
-                                root.add-url-text = "";
-                                root.add-url-open = false;
-                            }
+                        Text {
+                            text: "\u{2195}";
+                            font-size: 11px;
+                            color: Theme.text-dim;
+                            vertical-alignment: center;
+                        }
+
+                        Text {
+                            text: root.dl-sort-mode == 0 ? "Date"
+                                : root.dl-sort-mode == 1 ? "Name"
+                                : root.dl-sort-mode == 2 ? "Size"
+                                : "Status";
+                            font-size: 11px;
+                            color: Theme.text-secondary;
+                            vertical-alignment: center;
                         }
                     }
-                }
 
-                // Cancel
-                Rectangle {
-                    width: 32px;
-                    height: 32px;
-                    background: cancel-input-ta.has-hover ? Theme.hover-fill-strong : transparent;
-                    border-radius: 16px;
-
-                    Text {
-                        text: "\u{2715}";
-                        font-size: 14px;
-                        color: Theme.text-dim;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
-                    }
-
-                    cancel-input-ta := TouchArea {
+                    sort-ta := TouchArea {
                         clicked => {
-                            root.add-url-open = false;
-                            root.add-url-text = "";
+                            // Cycle through sort modes: 0->1->2->3->0
+                            if root.dl-sort-mode >= 3 {
+                                root.dl-sort-mode = 0;
+                            } else {
+                                root.dl-sort-mode = root.dl-sort-mode + 1;
+                            }
+                            root.dl-sort(root.dl-sort-mode);
                         }
                     }
                 }
@@ -299,14 +765,14 @@ export component DownloadManagerScreen inherits Rectangle {
                         }
 
                         Text {
-                            text: "No downloads";
+                            text: root.dl-search-text != "" ? "No matching downloads" : "No downloads";
                             font-size: Theme.font-title;
                             color: Theme.text-dim;
                             horizontal-alignment: center;
                         }
 
                         Text {
-                            text: "Add a URL to start downloading";
+                            text: root.dl-search-text != "" ? "Try a different search term" : "Add a URL to start downloading";
                             font-size: Theme.font-small;
                             color: Theme.text-dim;
                             horizontal-alignment: center;
@@ -319,8 +785,9 @@ export component DownloadManagerScreen inherits Rectangle {
                     vertical-stretch: 1;
 
                     for dl[idx] in root.downloads : Rectangle {
-                        height: 80px;
+                        height: root.dl-expanded-id == dl.id ? 210px : 80px;
                         background: dl-row-ta.has-hover ? Theme.hover-fill : transparent;
+                        animate height { duration: 150ms; easing: ease-out; }
 
                         VerticalLayout {
                             padding: 12px;
@@ -328,9 +795,32 @@ export component DownloadManagerScreen inherits Rectangle {
                             padding-right: 20px;
                             spacing: 6px;
 
-                            // Row 1: filename + status + actions
+                            // Row 1: checkbox + filename + status + actions
                             HorizontalLayout {
                                 spacing: 12px;
+
+                                // Selection checkbox
+                                Rectangle {
+                                    width: 18px;
+                                    height: 18px;
+                                    border-radius: 4px;
+                                    border-width: 1px;
+                                    border-color: dl.is-selected ? Theme.accent : Theme.text-dim;
+                                    background: dl.is-selected ? Theme.accent : transparent;
+                                    y: (parent.height - self.height) / 2;
+
+                                    if dl.is-selected : Text {
+                                        text: "\u{2713}";
+                                        font-size: 10px;
+                                        color: #ffffff;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+
+                                    TouchArea {
+                                        clicked => { root.dl-toggle-select(dl.id); }
+                                    }
+                                }
 
                                 // Status icon
                                 Rectangle {
@@ -354,6 +844,63 @@ export component DownloadManagerScreen inherits Rectangle {
                                     color: Theme.text-primary;
                                     overflow: elide;
                                     horizontal-stretch: 1;
+                                    vertical-alignment: center;
+                                }
+
+                                // Checksum badge (for completed downloads)
+                                if dl.status == "completed" && dl.checksum-status != "none" : Rectangle {
+                                    width: 70px;
+                                    height: 20px;
+                                    border-radius: 10px;
+                                    background:
+                                        dl.checksum-status == "pass" ? #4caf5020
+                                      : dl.checksum-status == "fail" ? #e0505020
+                                      : #ffffff10;
+
+                                    Text {
+                                        text: dl.checksum-status == "pass" ? "\u{2713} Hash OK"
+                                            : dl.checksum-status == "fail" ? "\u{2715} Mismatch"
+                                            : "\u{231B} Verifying";
+                                        font-size: 9px;
+                                        font-weight: 500;
+                                        color:
+                                            dl.checksum-status == "pass" ? #4caf50
+                                          : dl.checksum-status == "fail" ? #e05050
+                                          : Theme.text-dim;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+                                }
+
+                                // Verify button (for ALL completed downloads — no checksum needed)
+                                if dl.status == "completed" && dl.checksum-status == "none" : Rectangle {
+                                    width: 56px;
+                                    height: 22px;
+                                    background: verify-ta.has-hover ? Theme.hover-fill-strong : Theme.hover-fill;
+                                    border-radius: 11px;
+                                    border-width: 1px;
+                                    border-color: Theme.border-subtle;
+
+                                    Text {
+                                        text: "Verify";
+                                        font-size: 10px;
+                                        color: Theme.text-secondary;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+
+                                    verify-ta := TouchArea {
+                                        clicked => { root.dl-verify-checksum(dl.id); }
+                                    }
+                                }
+
+                                // Checksum result text (when verified without an expected checksum)
+                                if dl.status == "completed" && root.dl-checksum-result != "" && dl.checksum-expected == "" && dl.checksum-status != "none" : Text {
+                                    text: "SHA-256: " + root.dl-checksum-result;
+                                    font-size: 9px;
+                                    color: Theme.text-dim;
+                                    overflow: elide;
+                                    max-width: 200px;
                                     vertical-alignment: center;
                                 }
 
@@ -497,9 +1044,35 @@ export component DownloadManagerScreen inherits Rectangle {
                                         clicked => { root.dl-open-folder(dl.id); }
                                     }
                                 }
+
+                                // Expand/collapse toggle
+                                Rectangle {
+                                    width: 24px;
+                                    height: 24px;
+                                    background: expand-ta.has-hover ? Theme.hover-fill-strong : transparent;
+                                    border-radius: 12px;
+
+                                    Text {
+                                        text: root.dl-expanded-id == dl.id ? "\u{25B2}" : "\u{25BC}";
+                                        font-size: 10px;
+                                        color: Theme.text-dim;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+
+                                    expand-ta := TouchArea {
+                                        clicked => {
+                                            if root.dl-expanded-id == dl.id {
+                                                root.dl-expanded-id = -1;
+                                            } else {
+                                                root.dl-expanded-id = dl.id;
+                                            }
+                                        }
+                                    }
+                                }
                             }
 
-                            // Row 2: URL preview + progress bar
+                            // Row 2: URL preview + save dir
                             HorizontalLayout {
                                 spacing: 12px;
 
@@ -511,6 +1084,25 @@ export component DownloadManagerScreen inherits Rectangle {
                                     overflow: elide;
                                     horizontal-stretch: 1;
                                     vertical-alignment: center;
+                                }
+
+                                // Save directory indicator
+                                if dl.save-dir != "" : HorizontalLayout {
+                                    spacing: 4px;
+                                    Text {
+                                        text: "\u{1F4C1}";
+                                        font-size: 10px;
+                                        color: Theme.text-dim;
+                                        vertical-alignment: center;
+                                    }
+                                    Text {
+                                        text: dl.save-dir;
+                                        font-size: 10px;
+                                        color: Theme.text-dim;
+                                        overflow: elide;
+                                        max-width: 200px;
+                                        vertical-alignment: center;
+                                    }
                                 }
                             }
 
@@ -546,6 +1138,136 @@ export component DownloadManagerScreen inherits Rectangle {
                                 background: Theme.color-emotional;
                                 opacity: 0.6;
                             }
+
+                            // ── Expanded Details Panel ──
+                            if root.dl-expanded-id == dl.id : Rectangle {
+                                height: 100px;
+                                background: Theme.bg-deep;
+                                border-radius: 8px;
+
+                                VerticalLayout {
+                                    padding: 10px;
+                                    padding-left: 14px;
+                                    padding-right: 14px;
+                                    spacing: 4px;
+
+                                    // Full URL
+                                    HorizontalLayout {
+                                        spacing: 8px;
+                                        Text {
+                                            text: "URL:";
+                                            font-size: 10px;
+                                            font-weight: 600;
+                                            color: Theme.text-dim;
+                                            width: 70px;
+                                            vertical-alignment: center;
+                                        }
+                                        Text {
+                                            text: dl.url;
+                                            font-size: 10px;
+                                            color: Theme.text-secondary;
+                                            overflow: elide;
+                                            horizontal-stretch: 1;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+
+                                    // Save path
+                                    HorizontalLayout {
+                                        spacing: 8px;
+                                        Text {
+                                            text: "Save Path:";
+                                            font-size: 10px;
+                                            font-weight: 600;
+                                            color: Theme.text-dim;
+                                            width: 70px;
+                                            vertical-alignment: center;
+                                        }
+                                        Text {
+                                            text: dl.save-dir != "" ? dl.save-dir : "~/Downloads";
+                                            font-size: 10px;
+                                            color: Theme.text-secondary;
+                                            overflow: elide;
+                                            horizontal-stretch: 1;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+
+                                    // Start time
+                                    HorizontalLayout {
+                                        spacing: 8px;
+                                        Text {
+                                            text: "Started:";
+                                            font-size: 10px;
+                                            font-weight: 600;
+                                            color: Theme.text-dim;
+                                            width: 70px;
+                                            vertical-alignment: center;
+                                        }
+                                        Text {
+                                            text: dl.start-time != "" ? dl.start-time : "-";
+                                            font-size: 10px;
+                                            color: Theme.text-secondary;
+                                            vertical-alignment: center;
+                                        }
+
+                                        Rectangle { width: 20px; }
+
+                                        Text {
+                                            text: "Ended:";
+                                            font-size: 10px;
+                                            font-weight: 600;
+                                            color: Theme.text-dim;
+                                            width: 50px;
+                                            vertical-alignment: center;
+                                        }
+                                        Text {
+                                            text: dl.end-time != "" ? dl.end-time : "-";
+                                            font-size: 10px;
+                                            color: Theme.text-secondary;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+
+                                    // File type + hash
+                                    HorizontalLayout {
+                                        spacing: 8px;
+                                        Text {
+                                            text: "Type:";
+                                            font-size: 10px;
+                                            font-weight: 600;
+                                            color: Theme.text-dim;
+                                            width: 70px;
+                                            vertical-alignment: center;
+                                        }
+                                        Text {
+                                            text: dl.file-type != "" ? dl.file-type : "unknown";
+                                            font-size: 10px;
+                                            color: Theme.text-secondary;
+                                            vertical-alignment: center;
+                                        }
+
+                                        Rectangle { width: 20px; }
+
+                                        Text {
+                                            text: "SHA-256:";
+                                            font-size: 10px;
+                                            font-weight: 600;
+                                            color: Theme.text-dim;
+                                            width: 50px;
+                                            vertical-alignment: center;
+                                        }
+                                        Text {
+                                            text: dl.file-hash != "" ? dl.file-hash : "-";
+                                            font-size: 10px;
+                                            color: Theme.text-secondary;
+                                            overflow: elide;
+                                            horizontal-stretch: 1;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                }
+                            }
                         }
 
                         // Separator
@@ -555,7 +1277,16 @@ export component DownloadManagerScreen inherits Rectangle {
                             background: Theme.separator;
                         }
 
-                        dl-row-ta := TouchArea { }
+                        dl-row-ta := TouchArea {
+                            double-clicked => {
+                                // Double-click to expand/collapse
+                                if root.dl-expanded-id == dl.id {
+                                    root.dl-expanded-id = -1;
+                                } else {
+                                    root.dl-expanded-id = dl.id;
+                                }
+                            }
+                        }
                     }
                 }
             }

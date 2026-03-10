@@ -34,6 +34,7 @@ import { ClipboardPanel, ClipboardEntryData } from "components/clipboard_panel.s
 import { PowerMenu } from "components/power_menu.slint";
 import { AppGrid, AppGridItem } from "components/app_grid.slint";
 import { WindowSwitcher, WindowItem } from "components/window_switcher.slint";
+import { CommandPalette, CommandItem } from "components/command_palette.slint";
 import { MorningBriefCard, BriefSection } from "components/morning_brief.slint";
 import { Tr } from "translations.slint";
 
@@ -123,6 +124,12 @@ export component DesktopScreen inherits Rectangle {
     in-out property <bool> window-switcher-open: false;
     in property <[WindowItem]> window-list: [];
     callback switch-window(string);
+
+    // Command Palette (Ctrl+Shift+P)
+    in-out property <bool> command-palette-open: false;
+    in property <[CommandItem]> command-palette-filtered: [];
+    callback command-palette-search(string);
+    callback command-palette-selected(string);
 
     // Dock items (settable from Rust for running indicators)
     in property <[DockItem]> dock-items: [];
@@ -540,6 +547,9 @@ export component DesktopScreen inherits Rectangle {
                 { app-id: "media",         label: Tr.dock-media,    icon-char: "♪",  is-running: false },
                 { app-id: "calendar",      label: Tr.dock-calendar, icon-char: "▦",  is-running: false },
                 { app-id: "launchpad",     label: Tr.dock-apps,     icon-char: "⊞",  is-running: false },
+                { app-id: "spreadsheet",   label: Tr.dock-ysheets,  icon-char: "YS", is-running: false },
+                { app-id: "documents",     label: Tr.dock-ydoc,     icon-char: "YD", is-running: false },
+                { app-id: "presentation",  label: Tr.dock-yslides,  icon-char: "YP", is-running: false },
                 { app-id: "settings",      label: Tr.dock-settings, icon-char: "⚙",  is-running: false },
             ];
             launch-app(app-id) => { root.launch-app(app-id); }
@@ -595,6 +605,17 @@ export component DesktopScreen inherits Rectangle {
         windows: root.window-list;
         switch-window(title) => { root.switch-window(title); }
         close => { root.window-switcher-open = false; }
+    }
+
+    // ── Layer 2.56: Command Palette overlay ──
+    CommandPalette {
+        width: 100%;
+        height: 100%;
+        is-open <=> root.command-palette-open;
+        filtered-commands: root.command-palette-filtered;
+        search-changed(query) => { root.command-palette-search(query); }
+        command-selected(action-id) => { root.command-palette-selected(action-id); }
+        close => { root.command-palette-open = false; }
     }
 
     // ── Layer 2.55: Clipboard history panel ──

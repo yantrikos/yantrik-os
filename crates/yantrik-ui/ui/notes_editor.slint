@@ -1,6 +1,6 @@
 // Notes Editor — AI-native markdown notes with semantic search.
 // Screen 15. Opens from dock "Notes" icon.
-// Split-pane: sidebar note list + TextEdit editor.
+// Split-pane: folder sidebar + note list + TextEdit editor.
 // Notes saved as .md files + indexed in YantrikDB for semantic recall.
 
 import { Theme } from "theme.slint";
@@ -11,6 +11,21 @@ export struct NoteEntry {
     filename: string,
     modified: string,
     preview: string,
+    is-pinned: bool,
+    tags: string,
+    created: string,
+    word-count: int,
+}
+
+export struct NoteVersionEntry {
+    label: string,
+    timestamp: string,
+    index: int,
+}
+
+export struct NoteBacklink {
+    title: string,
+    filename: string,
 }
 
 export component NotesEditor inherits Rectangle {
@@ -30,6 +45,60 @@ export component NotesEditor inherits Rectangle {
     in-out property <string> search-query: "";
     in property <bool> is-searching: false;
 
+    // Folder/notebook state
+    in-out property <int> active-folder: 0;  // 0=All, 1=Favorites, 2=Recent
+    in property <int> folder-all-count: 0;
+    in property <int> folder-fav-count: 0;
+    in property <int> folder-recent-count: 0;
+    callback select-folder(int);
+
+    // Tags
+    in-out property <string> current-tags: "";
+    callback update-tags(string);
+
+    // Pin/Favorite
+    callback toggle-pin(int);
+
+    // Templates
+    callback new-from-template(string);
+
+    // Metadata
+    in property <string> meta-created: "";
+    in property <string> meta-modified: "";
+    in property <int> meta-word-count: 0;
+
+    // Formatting toolbar
+    callback insert-format(string);
+
+    // AI Assist
+    in property <bool> ai-is-working: false;
+    in property <string> ai-response: "";
+    in-out property <bool> ai-panel-open: false;
+    callback ai-structure();
+    callback ai-summarize();
+    callback ai-apply();
+    callback ai-dismiss();
+
+    // Version history
+    in property <[NoteVersionEntry]> version-history: [];
+    in-out property <bool> version-panel-open: false;
+    callback view-version(int);
+    callback restore-version(int);
+
+    // Backlinks
+    in property <[NoteBacklink]> backlinks: [];
+    in-out property <bool> backlinks-panel-open: false;
+    callback find-backlinks();
+
+    // Meeting mode
+    in property <bool> meeting-mode: false;
+    callback toggle-meeting-mode();
+
+    // Export/Import
+    in property <string> export-status: "";
+    callback export-md();
+    callback import-md();
+
     // Callbacks
     callback new-note();
     callback save-note();
@@ -37,6 +106,9 @@ export component NotesEditor inherits Rectangle {
     callback select-note(int);
     callback search-notes(string);
     callback content-changed(string);
+
+    // Template menu state (internal)
+    property <bool> template-menu-open: false;
 
     VerticalLayout {
         spacing: 0px;
@@ -71,12 +143,179 @@ export component NotesEditor inherits Rectangle {
                         font-size: 14px;
                         vertical-alignment: center;
                     }
+
+                    if root.export-status != "" : Text {
+                        text: root.export-status;
+                        color: Theme.cyan;
+                        font-size: 11px;
+                        vertical-alignment: center;
+                    }
                 }
 
                 // Right: buttons
                 HorizontalLayout {
                     spacing: 6px;
                     alignment: end;
+
+                    // Meeting mode toggle
+                    if root.selected-index >= 0 : TouchArea {
+                        width: 32px;
+                        height: 32px;
+                        clicked => { root.toggle-meeting-mode(); }
+                        Rectangle {
+                            width: 32px; height: 32px;
+                            border-radius: 8px;
+                            background: root.meeting-mode ? Theme.accent
+                                : (parent.has-hover ? Theme.hover-fill-strong : Theme.hover-fill);
+                            border-width: root.meeting-mode ? 0px : 1px;
+                            border-color: Theme.border-subtle;
+                            Text {
+                                text: "M";
+                                color: root.meeting-mode ? #ffffff : Theme.text-secondary;
+                                font-size: 12px;
+                                font-weight: 700;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+
+                    // Export MD button
+                    if root.selected-index >= 0 : TouchArea {
+                        width: 42px;
+                        height: 32px;
+                        clicked => { root.export-md(); }
+                        Rectangle {
+                            width: 42px; height: 32px;
+                            border-radius: 8px;
+                            background: parent.has-hover ? Theme.hover-fill-strong : Theme.hover-fill;
+                            border-width: 1px;
+                            border-color: Theme.border-subtle;
+                            Text {
+                                text: "\u{2193} MD";
+                                color: Theme.text-secondary;
+                                font-size: 10px;
+                                font-weight: 500;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+
+                    // Import MD button
+                    if root.selected-index >= 0 : TouchArea {
+                        width: 42px;
+                        height: 32px;
+                        clicked => { root.import-md(); }
+                        Rectangle {
+                            width: 42px; height: 32px;
+                            border-radius: 8px;
+                            background: parent.has-hover ? Theme.hover-fill-strong : Theme.hover-fill;
+                            border-width: 1px;
+                            border-color: Theme.border-subtle;
+                            Text {
+                                text: "\u{2191} MD";
+                                color: Theme.text-secondary;
+                                font-size: 10px;
+                                font-weight: 500;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+
+                    // Version history toggle
+                    if root.selected-index >= 0 : TouchArea {
+                        width: 32px;
+                        height: 32px;
+                        clicked => { root.version-panel-open = !root.version-panel-open; }
+                        Rectangle {
+                            width: 32px; height: 32px;
+                            border-radius: 8px;
+                            background: root.version-panel-open ? Theme.accent
+                                : (parent.has-hover ? Theme.hover-fill-strong : Theme.hover-fill);
+                            border-width: root.version-panel-open ? 0px : 1px;
+                            border-color: Theme.border-subtle;
+                            Text {
+                                text: "\u{23F3}";
+                                color: root.version-panel-open ? #ffffff : Theme.text-secondary;
+                                font-size: 13px;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+
+                    // AI Structure button
+                    if root.selected-index >= 0 : TouchArea {
+                        width: 72px;
+                        height: 32px;
+                        clicked => {
+                            root.ai-structure();
+                            root.ai-panel-open = true;
+                        }
+                        Rectangle {
+                            width: 72px; height: 32px;
+                            border-radius: 8px;
+                            background: root.ai-is-working ? Theme.accent
+                                : (parent.has-hover ? Theme.hover-fill-strong : Theme.hover-fill);
+                            border-width: root.ai-is-working ? 0px : 1px;
+                            border-color: Theme.border-subtle;
+                            HorizontalLayout {
+                                padding-left: 6px;
+                                padding-right: 6px;
+                                spacing: 3px;
+                                alignment: center;
+                                Text {
+                                    text: "\u{2728}";
+                                    font-size: 11px;
+                                    vertical-alignment: center;
+                                }
+                                Text {
+                                    text: root.ai-is-working ? "..." : "Structure";
+                                    color: root.ai-is-working ? #ffffff : Theme.text-secondary;
+                                    font-size: 11px;
+                                    font-weight: 500;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+                    }
+
+                    // AI Summarize button
+                    if root.selected-index >= 0 : TouchArea {
+                        width: 76px;
+                        height: 32px;
+                        clicked => {
+                            root.ai-summarize();
+                            root.ai-panel-open = true;
+                        }
+                        Rectangle {
+                            width: 76px; height: 32px;
+                            border-radius: 8px;
+                            background: parent.has-hover ? Theme.hover-fill-strong : Theme.hover-fill;
+                            border-width: 1px;
+                            border-color: Theme.border-subtle;
+                            HorizontalLayout {
+                                padding-left: 6px;
+                                padding-right: 6px;
+                                spacing: 3px;
+                                alignment: center;
+                                Text {
+                                    text: "\u{1F4CB}";
+                                    font-size: 11px;
+                                    vertical-alignment: center;
+                                }
+                                Text {
+                                    text: "Summarize";
+                                    color: Theme.text-secondary;
+                                    font-size: 11px;
+                                    font-weight: 500;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+                    }
 
                     // New note button
                     TouchArea {
@@ -95,6 +334,32 @@ export component NotesEditor inherits Rectangle {
                             Text {
                                 text: "+ New";
                                 color: Theme.cyan;
+                                font-size: 12px;
+                                font-weight: 500;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+
+                    // New from Template button
+                    TouchArea {
+                        width: 80px;
+                        height: 32px;
+                        clicked => { root.template-menu-open = !root.template-menu-open; }
+
+                        Rectangle {
+                            width: 80px;
+                            height: 32px;
+                            border-radius: 8px;
+                            background: root.template-menu-open ? Theme.hover-fill-strong
+                                : (parent.has-hover ? Theme.hover-fill-strong : Theme.hover-fill);
+                            border-width: 1px;
+                            border-color: Theme.border-subtle;
+
+                            Text {
+                                text: "Template";
+                                color: Theme.accent;
                                 font-size: 12px;
                                 font-weight: 500;
                                 horizontal-alignment: center;
@@ -158,17 +423,335 @@ export component NotesEditor inherits Rectangle {
         // Separator
         Rectangle { height: 1px; background: Theme.separator; }
 
-        // ── Main content: sidebar + editor ──
+        // ── Template dropdown menu (overlay) ──
+        if root.template-menu-open : Rectangle {
+            height: 180px;
+            background: Theme.bg-elevated;
+            border-width: 1px;
+            border-color: Theme.border-subtle;
+
+            VerticalLayout {
+                padding: 4px;
+                spacing: 0px;
+
+                // Meeting Notes
+                TouchArea {
+                    height: 32px;
+                    clicked => {
+                        root.new-from-template("meeting");
+                        root.template-menu-open = false;
+                    }
+                    Rectangle {
+                        height: 32px;
+                        border-radius: 4px;
+                        background: parent.has-hover ? Theme.hover-fill-strong : transparent;
+                        HorizontalLayout {
+                            padding-left: 10px; spacing: 8px;
+                            Text { text: "\u{1F4C5}"; font-size: 12px; vertical-alignment: center; }
+                            Text { text: "Meeting Notes"; color: Theme.text-primary; font-size: 12px; vertical-alignment: center; }
+                        }
+                    }
+                }
+                // Project Brief
+                TouchArea {
+                    height: 32px;
+                    clicked => {
+                        root.new-from-template("project");
+                        root.template-menu-open = false;
+                    }
+                    Rectangle {
+                        height: 32px;
+                        border-radius: 4px;
+                        background: parent.has-hover ? Theme.hover-fill-strong : transparent;
+                        HorizontalLayout {
+                            padding-left: 10px; spacing: 8px;
+                            Text { text: "\u{1F4CB}"; font-size: 12px; vertical-alignment: center; }
+                            Text { text: "Project Brief"; color: Theme.text-primary; font-size: 12px; vertical-alignment: center; }
+                        }
+                    }
+                }
+                // Decision Log
+                TouchArea {
+                    height: 32px;
+                    clicked => {
+                        root.new-from-template("decision");
+                        root.template-menu-open = false;
+                    }
+                    Rectangle {
+                        height: 32px;
+                        border-radius: 4px;
+                        background: parent.has-hover ? Theme.hover-fill-strong : transparent;
+                        HorizontalLayout {
+                            padding-left: 10px; spacing: 8px;
+                            Text { text: "\u{2696}"; font-size: 12px; vertical-alignment: center; }
+                            Text { text: "Decision Log"; color: Theme.text-primary; font-size: 12px; vertical-alignment: center; }
+                        }
+                    }
+                }
+                // TODO List
+                TouchArea {
+                    height: 32px;
+                    clicked => {
+                        root.new-from-template("todo");
+                        root.template-menu-open = false;
+                    }
+                    Rectangle {
+                        height: 32px;
+                        border-radius: 4px;
+                        background: parent.has-hover ? Theme.hover-fill-strong : transparent;
+                        HorizontalLayout {
+                            padding-left: 10px; spacing: 8px;
+                            Text { text: "\u{2705}"; font-size: 12px; vertical-alignment: center; }
+                            Text { text: "TODO List"; color: Theme.text-primary; font-size: 12px; vertical-alignment: center; }
+                        }
+                    }
+                }
+                // SOP
+                TouchArea {
+                    height: 32px;
+                    clicked => {
+                        root.new-from-template("sop");
+                        root.template-menu-open = false;
+                    }
+                    Rectangle {
+                        height: 32px;
+                        border-radius: 4px;
+                        background: parent.has-hover ? Theme.hover-fill-strong : transparent;
+                        HorizontalLayout {
+                            padding-left: 10px; spacing: 8px;
+                            Text { text: "\u{1F4D6}"; font-size: 12px; vertical-alignment: center; }
+                            Text { text: "Standard Operating Procedure"; color: Theme.text-primary; font-size: 12px; vertical-alignment: center; }
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── AI Response Panel ──
+        if root.ai-panel-open && root.ai-response != "" : Rectangle {
+            max-height: 200px;
+            background: #1a2332;
+            border-width: 1px;
+            border-color: Theme.accent.transparentize(70%);
+
+            Flickable {
+                viewport-height: ai-notes-resp.preferred-height + 16px;
+
+                ai-notes-resp := VerticalLayout {
+                    padding: 12px;
+                    spacing: 8px;
+
+                    HorizontalLayout {
+                        spacing: 6px;
+                        Text {
+                            text: "\u{2728}";
+                            font-size: 12px;
+                            vertical-alignment: center;
+                        }
+                        Text {
+                            text: "AI Result";
+                            color: Theme.accent;
+                            font-size: 12px;
+                            font-weight: 600;
+                            vertical-alignment: center;
+                        }
+                        Rectangle { horizontal-stretch: 1; }
+
+                        // Apply button
+                        TouchArea {
+                            width: 56px;
+                            height: 24px;
+                            clicked => { root.ai-apply(); }
+                            Rectangle {
+                                width: 56px; height: 24px;
+                                border-radius: 12px;
+                                background: parent.has-hover ? #2e9b47 : #27863e;
+                                Text {
+                                    text: "Apply";
+                                    color: #ffffff;
+                                    font-size: 11px;
+                                    font-weight: 600;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+
+                        // Dismiss button
+                        TouchArea {
+                            width: 24px;
+                            height: 24px;
+                            clicked => {
+                                root.ai-panel-open = false;
+                                root.ai-dismiss();
+                            }
+                            Rectangle {
+                                width: 24px; height: 24px;
+                                border-radius: 12px;
+                                background: parent.has-hover ? Theme.hover-fill : transparent;
+                                Text {
+                                    text: "\u{2715}";
+                                    font-size: 11px;
+                                    color: Theme.text-dim;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+                    }
+
+                    Text {
+                        text: root.ai-response;
+                        color: Theme.text-primary;
+                        font-size: 12px;
+                        wrap: word-wrap;
+                    }
+                }
+            }
+        }
+
+        // ── Main content: folders + note list + editor ──
         HorizontalLayout {
             spacing: 0px;
 
-            // ── Left sidebar: search + note list ──
+            // ── Left sidebar: folders + search + note list ──
             Rectangle {
-                width: 200px;
+                width: 220px;
                 background: Theme.bg-surface;
 
                 VerticalLayout {
                     spacing: 0px;
+
+                    // ── Folder/Notebook selector ──
+                    Rectangle {
+                        height: 108px;
+                        background: Theme.bg-surface;
+
+                        VerticalLayout {
+                            padding: 6px;
+                            padding-left: 8px;
+                            padding-right: 8px;
+                            spacing: 0px;
+
+                            // Header
+                            Text {
+                                text: "NOTEBOOKS";
+                                color: Theme.text-dim;
+                                font-size: 10px;
+                                font-weight: 600;
+                                height: 20px;
+                                vertical-alignment: center;
+                            }
+
+                            // All Notes
+                            TouchArea {
+                                height: 26px;
+                                clicked => { root.select-folder(0); }
+                                Rectangle {
+                                    height: 26px;
+                                    border-radius: 4px;
+                                    background: root.active-folder == 0 ? Theme.hover-fill-strong : (parent.has-hover ? Theme.hover-fill : transparent);
+                                    HorizontalLayout {
+                                        padding-left: 8px;
+                                        padding-right: 8px;
+                                        Text {
+                                            text: "\u{1F4C4}";
+                                            font-size: 11px;
+                                            vertical-alignment: center;
+                                            width: 20px;
+                                        }
+                                        Text {
+                                            text: "All Notes";
+                                            color: root.active-folder == 0 ? Theme.cyan : Theme.text-primary;
+                                            font-size: 12px;
+                                            font-weight: root.active-folder == 0 ? 600 : 400;
+                                            vertical-alignment: center;
+                                            horizontal-stretch: 1;
+                                        }
+                                        Text {
+                                            text: "\{root.folder-all-count}";
+                                            color: Theme.text-dim;
+                                            font-size: 10px;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Favorites
+                            TouchArea {
+                                height: 26px;
+                                clicked => { root.select-folder(1); }
+                                Rectangle {
+                                    height: 26px;
+                                    border-radius: 4px;
+                                    background: root.active-folder == 1 ? Theme.hover-fill-strong : (parent.has-hover ? Theme.hover-fill : transparent);
+                                    HorizontalLayout {
+                                        padding-left: 8px;
+                                        padding-right: 8px;
+                                        Text {
+                                            text: "\u{2B50}";
+                                            font-size: 11px;
+                                            vertical-alignment: center;
+                                            width: 20px;
+                                        }
+                                        Text {
+                                            text: "Favorites";
+                                            color: root.active-folder == 1 ? Theme.amber : Theme.text-primary;
+                                            font-size: 12px;
+                                            font-weight: root.active-folder == 1 ? 600 : 400;
+                                            vertical-alignment: center;
+                                            horizontal-stretch: 1;
+                                        }
+                                        Text {
+                                            text: "\{root.folder-fav-count}";
+                                            color: Theme.text-dim;
+                                            font-size: 10px;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Recent
+                            TouchArea {
+                                height: 26px;
+                                clicked => { root.select-folder(2); }
+                                Rectangle {
+                                    height: 26px;
+                                    border-radius: 4px;
+                                    background: root.active-folder == 2 ? Theme.hover-fill-strong : (parent.has-hover ? Theme.hover-fill : transparent);
+                                    HorizontalLayout {
+                                        padding-left: 8px;
+                                        padding-right: 8px;
+                                        Text {
+                                            text: "\u{1F552}";
+                                            font-size: 11px;
+                                            vertical-alignment: center;
+                                            width: 20px;
+                                        }
+                                        Text {
+                                            text: "Recent";
+                                            color: root.active-folder == 2 ? Theme.holo-blue : Theme.text-primary;
+                                            font-size: 12px;
+                                            font-weight: root.active-folder == 2 ? 600 : 400;
+                                            vertical-alignment: center;
+                                            horizontal-stretch: 1;
+                                        }
+                                        Text {
+                                            text: "\{root.folder-recent-count}";
+                                            color: Theme.text-dim;
+                                            font-size: 10px;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Separator
+                    Rectangle { height: 1px; background: Theme.separator; }
 
                     // Search input
                     Rectangle {
@@ -229,15 +812,14 @@ export component NotesEditor inherits Rectangle {
                             spacing: 0px;
 
                             for entry[idx] in root.notes-list : TouchArea {
-                                height: 64px;
+                                height: 72px;
                                 clicked => { root.select-note(idx); }
 
                                 Rectangle {
-                                    height: 64px;
+                                    height: 72px;
                                     background: idx == root.selected-index
                                         ? Theme.hover-fill-strong
                                         : (parent.has-hover ? Theme.hover-fill : transparent);
-                                    border-width: idx == root.selected-index ? 0px : 0px;
 
                                     VerticalLayout {
                                         padding: 8px;
@@ -245,15 +827,48 @@ export component NotesEditor inherits Rectangle {
                                         padding-right: 10px;
                                         spacing: 2px;
 
-                                        // Title
-                                        Text {
-                                            text: entry.title;
-                                            color: idx == root.selected-index
-                                                ? Theme.cyan
-                                                : Theme.text-primary;
-                                            font-size: 13px;
-                                            font-weight: 500;
-                                            overflow: elide;
+                                        // Title row with pin indicator
+                                        HorizontalLayout {
+                                            spacing: 4px;
+
+                                            // Pin star
+                                            if entry.is-pinned : Text {
+                                                text: "\u{2B50}";
+                                                font-size: 10px;
+                                                vertical-alignment: center;
+                                                width: 14px;
+                                            }
+
+                                            // Title
+                                            Text {
+                                                text: entry.title;
+                                                color: idx == root.selected-index
+                                                    ? Theme.cyan
+                                                    : Theme.text-primary;
+                                                font-size: 13px;
+                                                font-weight: 500;
+                                                overflow: elide;
+                                                horizontal-stretch: 1;
+                                            }
+
+                                            // Pin toggle
+                                            pin-ta := TouchArea {
+                                                width: 20px;
+                                                height: 20px;
+                                                clicked => { root.toggle-pin(idx); }
+                                                Rectangle {
+                                                    width: 20px; height: 20px;
+                                                    border-radius: 10px;
+                                                    background: parent.has-hover ? Theme.hover-fill : transparent;
+                                                    Text {
+                                                        text: entry.is-pinned ? "\u{2605}" : "\u{2606}";
+                                                        color: entry.is-pinned ? Theme.amber : Theme.text-dim;
+                                                        font-size: 12px;
+                                                        horizontal-alignment: center;
+                                                        vertical-alignment: center;
+                                                    }
+                                                }
+                                            }
                                         }
 
                                         // Preview (first line of content)
@@ -264,11 +879,36 @@ export component NotesEditor inherits Rectangle {
                                             overflow: elide;
                                         }
 
-                                        // Modified time
-                                        Text {
-                                            text: entry.modified;
-                                            color: Theme.text-dim;
-                                            font-size: 10px;
+                                        // Tags + modified row
+                                        HorizontalLayout {
+                                            spacing: 4px;
+
+                                            // Show first tag as chip if exists
+                                            if entry.tags != "" : Rectangle {
+                                                height: 14px;
+                                                width: tag-chip-text.preferred-width + 8px;
+                                                border-radius: 7px;
+                                                background: Theme.accent.transparentize(80%);
+                                                tag-chip-text := Text {
+                                                    text: entry.tags;
+                                                    color: Theme.accent;
+                                                    font-size: 9px;
+                                                    horizontal-alignment: center;
+                                                    vertical-alignment: center;
+                                                    overflow: elide;
+                                                    max-width: 70px;
+                                                }
+                                            }
+
+                                            Rectangle { horizontal-stretch: 1; }
+
+                                            // Modified time
+                                            Text {
+                                                text: entry.modified;
+                                                color: Theme.text-dim;
+                                                font-size: 10px;
+                                                vertical-alignment: center;
+                                            }
                                         }
                                     }
 
@@ -291,62 +931,567 @@ export component NotesEditor inherits Rectangle {
             Rectangle { width: 1px; background: Theme.separator; }
 
             // ── Right: editor area ──
-            Rectangle {
+            VerticalLayout {
                 horizontal-stretch: 1;
-                background: Theme.bg-deep;
+                spacing: 0px;
 
-                if root.selected-index >= 0 : TextEdit {
-                    width: 100%;
-                    height: 100%;
-                    text <=> root.current-content;
-                    font-size: 14px;
-                    edited(text) => {
-                        root.content-changed(text);
-                    }
-                }
+                // ── Formatting toolbar (only when note selected) ──
+                if root.selected-index >= 0 : Rectangle {
+                    height: 34px;
+                    background: Theme.bg-surface;
 
-                // Empty state when no note selected
-                if root.selected-index < 0 : Rectangle {
-                    VerticalLayout {
-                        alignment: center;
-                        spacing: 8px;
+                    HorizontalLayout {
+                        padding-left: 8px;
+                        padding-right: 8px;
+                        spacing: 2px;
+                        alignment: start;
 
-                        Text {
-                            text: "\u{1F4DD}";
-                            color: Theme.text-dim;
-                            font-size: 48px;
-                            horizontal-alignment: center;
-                        }
-
-                        Text {
-                            text: "Select a note or create a new one";
-                            color: Theme.text-dim;
-                            font-size: 14px;
-                            horizontal-alignment: center;
-                        }
-
-                        // Quick-create button
+                        // Bold
                         TouchArea {
-                            width: 120px;
-                            height: 36px;
-                            x: (parent.width - self.width) / 2;
-                            clicked => { root.new-note(); }
-
+                            width: 30px; height: 28px;
+                            clicked => { root.insert-format("bold"); }
                             Rectangle {
-                                width: 120px;
-                                height: 36px;
-                                border-radius: 8px;
-                                background: parent.has-hover ? Theme.hover-fill-strong : Theme.hover-fill;
-                                border-width: 1px;
-                                border-color: Theme.border-subtle;
-
+                                width: 30px; height: 28px;
+                                border-radius: 4px;
+                                background: parent.has-hover ? Theme.hover-fill-strong : transparent;
                                 Text {
-                                    text: "+ New Note";
-                                    color: Theme.cyan;
+                                    text: "B";
+                                    color: Theme.text-primary;
                                     font-size: 13px;
+                                    font-weight: 700;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+
+                        // Italic
+                        TouchArea {
+                            width: 30px; height: 28px;
+                            clicked => { root.insert-format("italic"); }
+                            Rectangle {
+                                width: 30px; height: 28px;
+                                border-radius: 4px;
+                                background: parent.has-hover ? Theme.hover-fill-strong : transparent;
+                                Text {
+                                    text: "I";
+                                    color: Theme.text-primary;
+                                    font-size: 13px;
+                                    font-weight: 400;
+                                    font-italic: true;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+
+                        // Heading
+                        TouchArea {
+                            width: 30px; height: 28px;
+                            clicked => { root.insert-format("heading"); }
+                            Rectangle {
+                                width: 30px; height: 28px;
+                                border-radius: 4px;
+                                background: parent.has-hover ? Theme.hover-fill-strong : transparent;
+                                Text {
+                                    text: "#";
+                                    color: Theme.text-primary;
+                                    font-size: 14px;
+                                    font-weight: 600;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+
+                        // Separator
+                        Rectangle {
+                            width: 1px;
+                            height: 18px;
+                            y: 5px;
+                            background: Theme.separator;
+                        }
+
+                        // Bullet list
+                        TouchArea {
+                            width: 30px; height: 28px;
+                            clicked => { root.insert-format("bullet"); }
+                            Rectangle {
+                                width: 30px; height: 28px;
+                                border-radius: 4px;
+                                background: parent.has-hover ? Theme.hover-fill-strong : transparent;
+                                Text {
+                                    text: "\u{2022}";
+                                    color: Theme.text-primary;
+                                    font-size: 16px;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+
+                        // Checklist
+                        TouchArea {
+                            width: 30px; height: 28px;
+                            clicked => { root.insert-format("checklist"); }
+                            Rectangle {
+                                width: 30px; height: 28px;
+                                border-radius: 4px;
+                                background: parent.has-hover ? Theme.hover-fill-strong : transparent;
+                                Text {
+                                    text: "\u{2610}";
+                                    color: Theme.text-primary;
+                                    font-size: 14px;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+
+                        // Separator
+                        Rectangle {
+                            width: 1px;
+                            height: 18px;
+                            y: 5px;
+                            background: Theme.separator;
+                        }
+
+                        // Code block
+                        TouchArea {
+                            width: 36px; height: 28px;
+                            clicked => { root.insert-format("code"); }
+                            Rectangle {
+                                width: 36px; height: 28px;
+                                border-radius: 4px;
+                                background: parent.has-hover ? Theme.hover-fill-strong : transparent;
+                                Text {
+                                    text: "</>";
+                                    color: Theme.text-primary;
+                                    font-size: 11px;
                                     font-weight: 500;
                                     horizontal-alignment: center;
                                     vertical-alignment: center;
+                                }
+                            }
+                        }
+
+                        // Divider
+                        TouchArea {
+                            width: 30px; height: 28px;
+                            clicked => { root.insert-format("divider"); }
+                            Rectangle {
+                                width: 30px; height: 28px;
+                                border-radius: 4px;
+                                background: parent.has-hover ? Theme.hover-fill-strong : transparent;
+                                Text {
+                                    text: "\u{2014}";
+                                    color: Theme.text-primary;
+                                    font-size: 14px;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Separator below toolbar
+                if root.selected-index >= 0 : Rectangle { height: 1px; background: Theme.separator; }
+
+                // ── Tags row (below toolbar, above editor) ──
+                if root.selected-index >= 0 : Rectangle {
+                    height: 32px;
+                    background: Theme.bg-deep;
+
+                    HorizontalLayout {
+                        padding-left: 12px;
+                        padding-right: 12px;
+                        spacing: 6px;
+                        alignment: start;
+
+                        Text {
+                            text: "Tags:";
+                            color: Theme.text-dim;
+                            font-size: 11px;
+                            vertical-alignment: center;
+                            width: 32px;
+                        }
+
+                        tags-edit := TextEdit {
+                            horizontal-stretch: 1;
+                            font-size: 11px;
+                            text <=> root.current-tags;
+                            edited(text) => {
+                                root.update-tags(text);
+                            }
+                        }
+                    }
+                }
+
+                // Separator
+                if root.selected-index >= 0 : Rectangle { height: 1px; background: Theme.separator; }
+
+                // ── Editor + Backlinks ──
+                VerticalLayout {
+                    horizontal-stretch: 1;
+                    vertical-stretch: 1;
+
+                    // ── Editor ──
+                    Rectangle {
+                        horizontal-stretch: 1;
+                        vertical-stretch: 1;
+                        background: Theme.bg-deep;
+
+                        if root.selected-index >= 0 : TextEdit {
+                            width: 100%;
+                            height: 100%;
+                            text <=> root.current-content;
+                            font-size: 14px;
+                            edited(text) => {
+                                root.content-changed(text);
+                            }
+                        }
+
+                        // Empty state when no note selected
+                        if root.selected-index < 0 : Rectangle {
+                            VerticalLayout {
+                                alignment: center;
+                                spacing: 8px;
+
+                                Text {
+                                    text: "\u{1F4DD}";
+                                    color: Theme.text-dim;
+                                    font-size: 48px;
+                                    horizontal-alignment: center;
+                                }
+
+                                Text {
+                                    text: "Select a note or create a new one";
+                                    color: Theme.text-dim;
+                                    font-size: 14px;
+                                    horizontal-alignment: center;
+                                }
+
+                                // Quick-create button
+                                TouchArea {
+                                    width: 120px;
+                                    height: 36px;
+                                    x: (parent.width - self.width) / 2;
+                                    clicked => { root.new-note(); }
+
+                                    Rectangle {
+                                        width: 120px;
+                                        height: 36px;
+                                        border-radius: 8px;
+                                        background: parent.has-hover ? Theme.hover-fill-strong : Theme.hover-fill;
+                                        border-width: 1px;
+                                        border-color: Theme.border-subtle;
+
+                                        Text {
+                                            text: "+ New Note";
+                                            color: Theme.cyan;
+                                            font-size: 13px;
+                                            font-weight: 500;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // ── Backlinks panel (toggle) ──
+                    if root.backlinks-panel-open && root.selected-index >= 0 : Rectangle {
+                        height: 140px;
+                        background: #ffffff08;
+                        border-width: 1px;
+                        border-color: Theme.border-subtle;
+
+                        VerticalLayout {
+                            padding: 10px;
+                            spacing: 6px;
+
+                            HorizontalLayout {
+                                spacing: 6px;
+                                Text {
+                                    text: "\u{1F517} Backlinks";
+                                    color: Theme.accent;
+                                    font-size: 12px;
+                                    font-weight: 600;
+                                    vertical-alignment: center;
+                                }
+                                Rectangle { horizontal-stretch: 1; }
+
+                                // Find backlinks button
+                                TouchArea {
+                                    width: 60px;
+                                    height: 22px;
+                                    clicked => { root.find-backlinks(); }
+                                    Rectangle {
+                                        width: 60px; height: 22px;
+                                        border-radius: 11px;
+                                        background: parent.has-hover ? Theme.hover-fill-strong : Theme.hover-fill;
+                                        border-width: 1px;
+                                        border-color: Theme.border-subtle;
+                                        Text {
+                                            text: "Scan";
+                                            color: Theme.text-secondary;
+                                            font-size: 10px;
+                                            font-weight: 500;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                }
+
+                                // Close button
+                                TouchArea {
+                                    width: 22px;
+                                    height: 22px;
+                                    clicked => { root.backlinks-panel-open = false; }
+                                    Rectangle {
+                                        width: 22px; height: 22px;
+                                        border-radius: 11px;
+                                        background: parent.has-hover ? Theme.hover-fill : transparent;
+                                        Text {
+                                            text: "\u{2715}";
+                                            font-size: 10px;
+                                            color: Theme.text-dim;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Backlink entries
+                            Flickable {
+                                vertical-stretch: 1;
+                                viewport-height: backlinks-list-layout.preferred-height;
+
+                                backlinks-list-layout := VerticalLayout {
+                                    spacing: 2px;
+
+                                    if root.backlinks.length == 0 : Text {
+                                        text: "No backlinks found. Click Scan to search.";
+                                        color: Theme.text-dim;
+                                        font-size: 11px;
+                                    }
+
+                                    for bl[idx] in root.backlinks : TouchArea {
+                                        height: 24px;
+                                        clicked => { /* navigate to backlinked note */ }
+                                        Rectangle {
+                                            height: 24px;
+                                            border-radius: 4px;
+                                            background: parent.has-hover ? Theme.hover-fill : transparent;
+                                            HorizontalLayout {
+                                                padding-left: 8px;
+                                                spacing: 6px;
+                                                Text {
+                                                    text: "\u{1F4C4}";
+                                                    font-size: 10px;
+                                                    vertical-alignment: center;
+                                                }
+                                                Text {
+                                                    text: bl.title;
+                                                    color: Theme.cyan;
+                                                    font-size: 11px;
+                                                    font-weight: 500;
+                                                    vertical-alignment: center;
+                                                    overflow: elide;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // ── Status bar with metadata ──
+                if root.selected-index >= 0 : Rectangle {
+                    height: 22px;
+                    background: Theme.bg-surface;
+
+                    HorizontalLayout {
+                        padding-left: 12px;
+                        padding-right: 12px;
+                        spacing: 16px;
+                        alignment: start;
+
+                        // Created date
+                        if root.meta-created != "" : Text {
+                            text: "Created: \{root.meta-created}";
+                            color: Theme.text-dim;
+                            font-size: 10px;
+                            vertical-alignment: center;
+                        }
+
+                        // Modified date
+                        if root.meta-modified != "" : Text {
+                            text: "Modified: \{root.meta-modified}";
+                            color: Theme.text-dim;
+                            font-size: 10px;
+                            vertical-alignment: center;
+                        }
+
+                        Rectangle { horizontal-stretch: 1; }
+
+                        // Backlinks toggle
+                        TouchArea {
+                            width: 60px;
+                            height: 18px;
+                            clicked => { root.backlinks-panel-open = !root.backlinks-panel-open; }
+                            Text {
+                                text: "Backlinks";
+                                color: root.backlinks-panel-open ? Theme.accent : Theme.text-dim;
+                                font-size: 10px;
+                                font-weight: root.backlinks-panel-open ? 600 : 400;
+                                vertical-alignment: center;
+                            }
+                        }
+
+                        // Word count
+                        Text {
+                            text: root.meta-word-count == 1
+                                ? "1 word"
+                                : "\{root.meta-word-count} words";
+                            color: Theme.text-dim;
+                            font-size: 10px;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+            }
+
+            // ── Version history panel (right side, toggled) ──
+            if root.version-panel-open && root.selected-index >= 0 : Rectangle {
+                width: 220px;
+                background: #ffffff08;
+                border-width: 1px;
+                border-color: Theme.border-subtle;
+
+                VerticalLayout {
+                    padding: 10px;
+                    spacing: 8px;
+
+                    // Header
+                    HorizontalLayout {
+                        spacing: 6px;
+                        Text {
+                            text: "\u{23F3} Versions";
+                            color: Theme.accent;
+                            font-size: 12px;
+                            font-weight: 600;
+                            vertical-alignment: center;
+                        }
+                        Rectangle { horizontal-stretch: 1; }
+                        TouchArea {
+                            width: 22px;
+                            height: 22px;
+                            clicked => { root.version-panel-open = false; }
+                            Rectangle {
+                                width: 22px; height: 22px;
+                                border-radius: 11px;
+                                background: parent.has-hover ? Theme.hover-fill : transparent;
+                                Text {
+                                    text: "\u{2715}";
+                                    font-size: 10px;
+                                    color: Theme.text-dim;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+                    }
+
+                    // Version list
+                    Flickable {
+                        vertical-stretch: 1;
+                        viewport-height: version-list-layout.preferred-height;
+
+                        version-list-layout := VerticalLayout {
+                            spacing: 4px;
+
+                            if root.version-history.length == 0 : Text {
+                                text: "No versions yet.\nVersions are created on save.";
+                                color: Theme.text-dim;
+                                font-size: 11px;
+                                wrap: word-wrap;
+                            }
+
+                            for ver[idx] in root.version-history : Rectangle {
+                                height: 56px;
+                                border-radius: 8px;
+                                background: #ffffff08;
+                                border-width: 1px;
+                                border-color: Theme.border-subtle;
+
+                                VerticalLayout {
+                                    padding: 6px;
+                                    padding-left: 8px;
+                                    padding-right: 8px;
+                                    spacing: 4px;
+
+                                    Text {
+                                        text: ver.label;
+                                        color: Theme.text-primary;
+                                        font-size: 11px;
+                                        font-weight: 500;
+                                        overflow: elide;
+                                    }
+
+                                    Text {
+                                        text: ver.timestamp;
+                                        color: Theme.text-dim;
+                                        font-size: 10px;
+                                    }
+
+                                    HorizontalLayout {
+                                        spacing: 4px;
+                                        alignment: end;
+
+                                        TouchArea {
+                                            width: 36px;
+                                            height: 18px;
+                                            clicked => { root.view-version(ver.index); }
+                                            Rectangle {
+                                                width: 36px; height: 18px;
+                                                border-radius: 9px;
+                                                background: parent.has-hover ? Theme.hover-fill-strong : Theme.hover-fill;
+                                                Text {
+                                                    text: "View";
+                                                    color: Theme.cyan;
+                                                    font-size: 9px;
+                                                    font-weight: 500;
+                                                    horizontal-alignment: center;
+                                                    vertical-alignment: center;
+                                                }
+                                            }
+                                        }
+
+                                        TouchArea {
+                                            width: 52px;
+                                            height: 18px;
+                                            clicked => { root.restore-version(ver.index); }
+                                            Rectangle {
+                                                width: 52px; height: 18px;
+                                                border-radius: 9px;
+                                                background: parent.has-hover ? Theme.hover-fill-strong : Theme.hover-fill;
+                                                Text {
+                                                    text: "Restore";
+                                                    color: Theme.amber;
+                                                    font-size: 9px;
+                                                    font-weight: 500;
+                                                    horizontal-alignment: center;
+                                                    vertical-alignment: center;
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }

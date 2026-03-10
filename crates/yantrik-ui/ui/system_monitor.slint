@@ -72,8 +72,29 @@ export component SystemMonitor inherits Rectangle {
     in-out property <int> sort-column: 0;  // 0=CPU, 1=MEM
     callback sort-by-column(int);
 
+    // Process search
+    in-out property <string> process-search: "";
+    callback process-search-changed(string);
+
+    // Process actions
+    in-out property <int> selected-process-pid: -1;
+    callback kill-process(int);
+    callback force-kill-process(int);
+
     // Uptime
     in property <string> uptime-text: "";
+
+    // Health Score
+    in property <string> health-status: "Healthy";  // "Healthy", "Degraded", "Critical"
+    in property <float> health-score: 100.0;  // 0-100
+    in property <string> health-summary: "";  // "All systems nominal" or issue description
+
+    // AI Assist
+    in property <bool> ai-is-working: false;
+    in property <string> ai-response: "";
+    in-out property <bool> ai-panel-open: false;
+    callback ai-explain-pressed();
+    callback ai-dismiss();
 
     callback back-pressed();
 
@@ -114,6 +135,44 @@ export component SystemMonitor inherits Rectangle {
 
                 Rectangle { horizontal-stretch: 1; }
 
+                // AI Explain button
+                TouchArea {
+                    width: ai-btn-content.preferred-width + 16px;
+                    height: 28px;
+                    clicked => {
+                        if root.ai-panel-open {
+                            root.ai-dismiss();
+                            root.ai-panel-open = false;
+                        } else {
+                            root.ai-explain-pressed();
+                            root.ai-panel-open = true;
+                        }
+                    }
+                    ai-btn-content := Rectangle {
+                        height: 28px;
+                        border-radius: 14px;
+                        background: root.ai-is-working ? Theme.accent : Theme.bg-card;
+                        HorizontalLayout {
+                            padding-left: 10px;
+                            padding-right: 10px;
+                            spacing: 4px;
+                            alignment: center;
+                            Text {
+                                text: root.ai-is-working ? "\u{2B50}" : "\u{2728}";
+                                font-size: 12px;
+                                vertical-alignment: center;
+                            }
+                            Text {
+                                text: root.ai-is-working ? "Analyzing..." : "AI Explain";
+                                color: root.ai-is-working ? #ffffff : Theme.text-secondary;
+                                font-size: 11px;
+                                font-weight: 500;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                }
+
                 // Uptime badge
                 if root.uptime-text != "" : Rectangle {
                     height: 24px;
@@ -128,6 +187,151 @@ export component SystemMonitor inherits Rectangle {
                         horizontal-alignment: center;
                         vertical-alignment: center;
                     }
+                }
+            }
+        }
+
+        // AI Response Panel
+        if root.ai-panel-open && root.ai-response != "" : Rectangle {
+            height: ai-resp-layout.preferred-height + 16px;
+            background: #1a2332;
+            border-width: 1px;
+            border-color: Theme.accent.transparentize(70%);
+
+            ai-resp-layout := VerticalLayout {
+                padding: 12px;
+                spacing: 8px;
+
+                HorizontalLayout {
+                    spacing: 6px;
+                    Text {
+                        text: "\u{2728}";
+                        font-size: 12px;
+                        vertical-alignment: center;
+                    }
+                    Text {
+                        text: "AI Analysis";
+                        color: Theme.accent;
+                        font-size: 12px;
+                        font-weight: 600;
+                        vertical-alignment: center;
+                    }
+                    Rectangle { horizontal-stretch: 1; }
+                    TouchArea {
+                        width: 24px;
+                        height: 24px;
+                        clicked => {
+                            root.ai-dismiss();
+                            root.ai-panel-open = false;
+                        }
+                        Text {
+                            text: "\u{2715}";
+                            color: Theme.text-dim;
+                            font-size: 14px;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+
+                Text {
+                    text: root.ai-response;
+                    color: Theme.text-primary;
+                    font-size: 13px;
+                    wrap: word-wrap;
+                }
+            }
+        }
+
+        // ── Health Score Card ──
+        Rectangle {
+            height: 48px;
+            background: Theme.bg-surface;
+
+            // Bottom border
+            Rectangle {
+                y: parent.height - 1px;
+                height: 1px;
+                background: Theme.separator;
+            }
+
+            HorizontalLayout {
+                padding-left: 14px;
+                padding-right: 14px;
+                spacing: 16px;
+                alignment: stretch;
+
+                // Left: status dot + status text
+                HorizontalLayout {
+                    spacing: 8px;
+                    horizontal-stretch: 0;
+                    alignment: center;
+
+                    Rectangle {
+                        width: 10px;
+                        height: 10px;
+                        y: (parent.height - 10px) / 2;
+                        border-radius: 5px;
+                        background: root.health-status == "Critical" ? Theme.color-emotional :
+                                   root.health-status == "Degraded" ? Theme.amber : #2e9b47;
+                        animate background { duration: 300ms; }
+                    }
+
+                    Text {
+                        text: root.health-status;
+                        color: root.health-status == "Critical" ? Theme.color-emotional :
+                               root.health-status == "Degraded" ? Theme.amber : #2e9b47;
+                        font-size: 13px;
+                        font-weight: 600;
+                        vertical-alignment: center;
+                        animate color { duration: 300ms; }
+                    }
+                }
+
+                // Center: score percentage + thin progress bar
+                HorizontalLayout {
+                    horizontal-stretch: 1;
+                    spacing: 10px;
+                    alignment: center;
+
+                    Text {
+                        text: Math.round(root.health-score) + "%";
+                        color: root.health-status == "Critical" ? Theme.color-emotional :
+                               root.health-status == "Degraded" ? Theme.amber : #2e9b47;
+                        font-size: 14px;
+                        font-weight: 700;
+                        vertical-alignment: center;
+                        min-width: 36px;
+                        animate color { duration: 300ms; }
+                    }
+
+                    Rectangle {
+                        horizontal-stretch: 1;
+                        height: 4px;
+                        border-radius: 2px;
+                        background: Theme.bg-deep;
+
+                        Rectangle {
+                            width: max(0px, parent.width * root.health-score / 100);
+                            height: 100%;
+                            border-radius: 2px;
+                            background: root.health-status == "Critical" ? Theme.color-emotional :
+                                       root.health-status == "Degraded" ? Theme.amber : #2e9b47;
+                            animate width { duration: 300ms; }
+                            animate background { duration: 300ms; }
+                        }
+                    }
+                }
+
+                // Right: summary text
+                Text {
+                    text: root.health-summary;
+                    color: Theme.text-dim;
+                    font-size: 11px;
+                    horizontal-stretch: 0;
+                    vertical-alignment: center;
+                    overflow: elide;
+                    max-width: 260px;
                 }
             }
         }
@@ -703,11 +907,90 @@ export component SystemMonitor inherits Rectangle {
 
                             Rectangle { horizontal-stretch: 1; }
 
+                            // Action buttons (visible when a process is selected)
+                            if root.selected-process-pid >= 0 : HorizontalLayout {
+                                spacing: 6px;
+
+                                ta-end := TouchArea {
+                                    width: 56px;
+                                    height: 28px;
+                                    clicked => { root.kill-process(root.selected-process-pid); }
+                                    Rectangle {
+                                        width: 100%; height: 100%;
+                                        border-radius: 8px;
+                                        background: ta-end.has-hover ? Theme.hover-fill-strong : Theme.bg-elevated;
+                                        animate background { duration: 120ms; }
+                                        Text {
+                                            text: "End";
+                                            color: Theme.text-primary;
+                                            font-size: 11px;
+                                            font-weight: 500;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                }
+
+                                ta-fkill := TouchArea {
+                                    width: 72px;
+                                    height: 28px;
+                                    clicked => { root.force-kill-process(root.selected-process-pid); }
+                                    Rectangle {
+                                        width: 100%; height: 100%;
+                                        border-radius: 8px;
+                                        background: ta-fkill.has-hover ? #cc3333 : #992222;
+                                        animate background { duration: 120ms; }
+                                        Text {
+                                            text: "Force Kill";
+                                            color: #ffffff;
+                                            font-size: 11px;
+                                            font-weight: 500;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                }
+                            }
+
                             Text {
                                 text: root.processes.length + " shown";
                                 color: Theme.text-dim;
                                 font-size: 10px;
                                 vertical-alignment: center;
+                            }
+                        }
+
+                        // Search bar
+                        Rectangle {
+                            height: 30px;
+                            background: #0a091080;
+                            border-width: 1px;
+                            border-color: Theme.border-subtle;
+                            border-radius: 8px;
+
+                            HorizontalLayout {
+                                padding-left: 10px;
+                                padding-right: 8px;
+                                spacing: 6px;
+
+                                Text {
+                                    text: "\u{1F50D}";
+                                    font-size: 12px;
+                                    vertical-alignment: center;
+                                    width: 18px;
+                                }
+
+                                proc-search-input := TextInput {
+                                    vertical-alignment: center;
+                                    font-size: 12px;
+                                    color: Theme.text-primary;
+                                    horizontal-stretch: 1;
+                                    text: root.process-search;
+                                    edited => {
+                                        root.process-search = self.text;
+                                        root.process-search-changed(self.text);
+                                    }
+                                }
                             }
                         }
 
@@ -807,58 +1090,77 @@ export component SystemMonitor inherits Rectangle {
                             font-size: Theme.font-small;
                         }
 
-                        for proc in root.processes : HorizontalLayout {
-                            spacing: 8px;
+                        for proc in root.processes : Rectangle {
                             height: 26px;
+                            border-radius: 4px;
+                            background: root.selected-process-pid == proc.pid ? Theme.hover-fill-strong : transparent;
+                            animate background { duration: 120ms; }
 
-                            Text {
-                                text: proc.pid;
-                                color: Theme.text-dim;
-                                font-size: 10px;
-                                min-width: 52px;
-                                vertical-alignment: center;
+                            TouchArea {
+                                width: 100%; height: 100%;
+                                clicked => {
+                                    if root.selected-process-pid == proc.pid {
+                                        root.selected-process-pid = -1;
+                                    } else {
+                                        root.selected-process-pid = proc.pid;
+                                    }
+                                }
                             }
 
-                            Text {
-                                text: proc.name;
-                                color: Theme.text-primary;
-                                font-size: Theme.font-small;
-                                horizontal-stretch: 1;
-                                overflow: elide;
-                                vertical-alignment: center;
-                            }
+                            HorizontalLayout {
+                                spacing: 8px;
+                                padding-left: 4px;
+                                padding-right: 4px;
 
-                            Text {
-                                text: Math.round(proc.cpu-percent * 10) / 10 + "%";
-                                color: proc.cpu-percent > 80 ? Theme.color-emotional :
-                                       proc.cpu-percent > 50 ? Theme.amber : Theme.text-secondary;
-                                font-size: Theme.font-small;
-                                font-weight: 500;
-                                min-width: 56px;
-                                horizontal-alignment: right;
-                                vertical-alignment: center;
-                            }
+                                Text {
+                                    text: proc.pid;
+                                    color: Theme.text-dim;
+                                    font-size: 10px;
+                                    min-width: 52px;
+                                    vertical-alignment: center;
+                                }
 
-                            Text {
-                                text: Math.round(proc.mem-percent * 10) / 10 + "%";
-                                color: proc.mem-percent > 80 ? Theme.color-emotional :
-                                       proc.mem-percent > 50 ? Theme.amber : Theme.text-secondary;
-                                font-size: Theme.font-small;
-                                font-weight: 500;
-                                min-width: 56px;
-                                horizontal-alignment: right;
-                                vertical-alignment: center;
-                            }
+                                Text {
+                                    text: proc.name;
+                                    color: Theme.text-primary;
+                                    font-size: Theme.font-small;
+                                    horizontal-stretch: 1;
+                                    overflow: elide;
+                                    vertical-alignment: center;
+                                }
 
-                            Text {
-                                text: proc.status;
-                                color: proc.status == "R" ? Theme.cyan :
-                                       proc.status == "S" ? Theme.text-dim :
-                                       proc.status == "Z" ? Theme.color-emotional : Theme.text-dim;
-                                font-size: 10px;
-                                min-width: 44px;
-                                horizontal-alignment: right;
-                                vertical-alignment: center;
+                                Text {
+                                    text: Math.round(proc.cpu-percent * 10) / 10 + "%";
+                                    color: proc.cpu-percent > 80 ? Theme.color-emotional :
+                                           proc.cpu-percent > 50 ? Theme.amber : Theme.text-secondary;
+                                    font-size: Theme.font-small;
+                                    font-weight: 500;
+                                    min-width: 56px;
+                                    horizontal-alignment: right;
+                                    vertical-alignment: center;
+                                }
+
+                                Text {
+                                    text: Math.round(proc.mem-percent * 10) / 10 + "%";
+                                    color: proc.mem-percent > 80 ? Theme.color-emotional :
+                                           proc.mem-percent > 50 ? Theme.amber : Theme.text-secondary;
+                                    font-size: Theme.font-small;
+                                    font-weight: 500;
+                                    min-width: 56px;
+                                    horizontal-alignment: right;
+                                    vertical-alignment: center;
+                                }
+
+                                Text {
+                                    text: proc.status;
+                                    color: proc.status == "R" ? Theme.cyan :
+                                           proc.status == "S" ? Theme.text-dim :
+                                           proc.status == "Z" ? Theme.color-emotional : Theme.text-dim;
+                                    font-size: 10px;
+                                    min-width: 44px;
+                                    horizontal-alignment: right;
+                                    vertical-alignment: center;
+                                }
                             }
                         }
                     }

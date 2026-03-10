@@ -4,6 +4,7 @@
 //! New features add fields here instead of touching main.rs.
 
 use std::cell::RefCell;
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -21,6 +22,8 @@ use crate::frecency::FrecencyStore;
 use crate::i18n::I18n;
 use crate::notifications;
 use crate::system_context;
+use crate::wire::app_framework::{AppState, BackgroundJobManager};
+use crate::wire::entity_bridge::SharedEntityGraph;
 use crate::wire::image_viewer::ImageViewerState;
 use crate::terminal::TerminalHandle;
 use crate::wire::media_player::MpvHandle;
@@ -53,6 +56,8 @@ pub struct AppContext {
     pub voice_config: VoiceConfig,
     pub image_viewer_state: Rc<RefCell<ImageViewerState>>,
     pub editor_file_path: Rc<RefCell<String>>,
+    pub editor_tabs: Rc<RefCell<Option<Rc<RefCell<Vec<crate::wire::text_editor::TabState>>>>>>,
+    pub editor_active_tab: Rc<RefCell<Option<Rc<RefCell<usize>>>>>,
     pub media_player: Rc<RefCell<Option<MpvHandle>>>,
     pub frecency: Rc<RefCell<FrecencyStore>>,
     pub browser_history_back: Rc<RefCell<Vec<String>>>,
@@ -61,13 +66,18 @@ pub struct AppContext {
     pub browser_sort_ascending: Rc<RefCell<bool>>,
     pub browser_filter: Rc<RefCell<String>>,
     pub summary_timer: Rc<RefCell<Option<Timer>>>,
+    pub browser_multi_selection: Rc<RefCell<BTreeSet<usize>>>,
     pub telegram: Option<Arc<crate::telegram::TelegramHandle>>,
     pub terminals: Rc<RefCell<Vec<TerminalHandle>>>,
     pub terminal_active: Rc<RefCell<usize>>,
+    pub terminal_split_handle: Rc<RefCell<Option<Rc<RefCell<Option<TerminalHandle>>>>>>,
     pub user_name: String,
     pub config_path: Option<PathBuf>,
     pub skill_registry: Rc<RefCell<SkillRegistry>>,
     pub i18n: I18n,
+    pub entity_graph: SharedEntityGraph,
+    pub app_state: AppState,
+    pub job_manager: BackgroundJobManager,
 }
 
 impl AppContext {
@@ -332,6 +342,54 @@ impl AppContext {
             }
         };
 
+        // Initialize entity graph (cross-app object model)
+        let entity_graph: SharedEntityGraph = {
+            let home = std::env::var("HOME").unwrap_or_else(|_| "/root".to_string());
+            let graph_path = format!("{}/.config/yantrik/entity_graph.db", home);
+            match yantrik_os::EntityGraph::open(&graph_path) {
+                Ok(g) => {
+                    tracing::info!(path = %graph_path, "Entity graph initialized");
+                    Arc::new(std::sync::Mutex::new(g))
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "Failed to open entity graph — using in-memory");
+                    Arc::new(std::sync::Mutex::new(
+                        yantrik_os::EntityGraph::in_memory().unwrap(),
+                    ))
+                }
+            }
+        };
+
+        // Initialize AppState (persistent KV store)
+        let app_state = {
+            let home = std::env::var("HOME").unwrap_or_else(|_| "/root".to_string());
+            let state_path = format!("{}/.config/yantrik/app_state.db", home);
+            match AppState::open(&state_path) {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::warn!(error = %e, "Failed to open app_state — using in-memory");
+                    AppState::in_memory().unwrap()
+                }
+            }
+        };
+
+        // Initialize background job manager
+        let job_manager = {
+            let bus = event_bus.clone();
+            BackgroundJobManager::start(move |job_id, app, result| {
+                tracing::info!(job_id = %job_id, app = %app, "Background job completed");
+                let _ = bus.emit(
+                    yantrik_os::EventKind::ToolCompleted {
+                        tool_name: format!("bg_job:{app}:{job_id}"),
+                        outcome: yantrik_os::ToolOutcome::Verified,
+                        duration_ms: 0,
+                        result_preview: result.chars().take(200).collect(),
+                    },
+                    yantrik_os::EventSource::Background,
+                );
+            })
+        };
+
         Self {
             bridge,
             event_bus,
@@ -350,6 +408,8 @@ impl AppContext {
             voice_config,
             image_viewer_state: Rc::new(RefCell::new(ImageViewerState::default())),
             editor_file_path: Rc::new(RefCell::new(String::new())),
+            editor_tabs: Rc::new(RefCell::new(None)),
+            editor_active_tab: Rc::new(RefCell::new(None)),
             media_player: Rc::new(RefCell::new(None)),
             frecency: Rc::new(RefCell::new(FrecencyStore::load())),
             browser_history_back: Rc::new(RefCell::new(Vec::new())),
@@ -358,13 +418,18 @@ impl AppContext {
             browser_sort_ascending: Rc::new(RefCell::new(true)),
             browser_filter: Rc::new(RefCell::new(String::new())),
             summary_timer: Rc::new(RefCell::new(None)),
+            browser_multi_selection: Rc::new(RefCell::new(BTreeSet::new())),
             telegram,
             terminals: Rc::new(RefCell::new(Vec::new())),
             terminal_active: Rc::new(RefCell::new(0)),
+            terminal_split_handle: Rc::new(RefCell::new(None)),
             user_name,
             config_path,
             skill_registry,
             i18n: I18n::load(&I18n::detect_locale()),
+            entity_graph,
+            app_state,
+            job_manager,
         }
     }
 }

@@ -12,6 +12,7 @@ pub struct DirEntry {
     pub size_text: String,
     pub modified_text: String,
     pub icon_char: String,
+    pub selected: bool,
 }
 
 /// Expand ~ to $HOME.
@@ -103,6 +104,7 @@ pub fn list_dir_full(
                 size_text,
                 modified_text,
                 icon_char,
+                selected: false,
             }
         })
         .collect();
@@ -589,6 +591,79 @@ fn read_preview(path: &Path, max_lines: usize) -> String {
         .map(|l| if l.len() > 120 { format!("{}...", &l[..117]) } else { l })
         .collect();
     lines.join("\n")
+}
+
+/// Create a new empty file.
+pub fn create_file(dir: &str, name: &str) -> Result<(), String> {
+    if name.is_empty() || name.contains('/') || name.contains('\0') {
+        return Err("Invalid file name".to_string());
+    }
+    let expanded = expand_home(dir);
+    let target = expanded.join(name);
+    if target.exists() {
+        return Err("Already exists".to_string());
+    }
+    std::fs::File::create(&target).map(|_| ()).map_err(|e| e.to_string())
+}
+
+/// Compress a file or directory into a .tar.gz archive.
+pub fn compress_entry(dir: &str, name: &str) -> Result<(), String> {
+    let expanded = expand_home(dir);
+    let target = expanded.join(name);
+    if !target.exists() {
+        return Err("File not found".to_string());
+    }
+    let archive_name = format!("{}.tar.gz", name);
+    let result = std::process::Command::new("tar")
+        .args(["czf", &archive_name, name])
+        .current_dir(&expanded)
+        .output();
+    match result {
+        Ok(o) if o.status.success() => Ok(()),
+        Ok(o) => Err(String::from_utf8_lossy(&o.stderr).to_string()),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/// Get the full path of a file for clipboard copy.
+pub fn get_full_path(dir: &str, name: &str) -> String {
+    let expanded = expand_home(dir);
+    let path = expanded.join(name);
+    path.display().to_string()
+}
+
+/// Calculate total size of a list of files in a directory.
+pub fn calculate_selection_size(dir: &str, names: &[String]) -> String {
+    let expanded = expand_home(dir);
+    let total: u64 = names
+        .iter()
+        .filter_map(|name| {
+            let path = expanded.join(name);
+            std::fs::metadata(&path).ok().map(|m| {
+                if m.is_dir() {
+                    dir_size_recursive(&path)
+                } else {
+                    m.len()
+                }
+            })
+        })
+        .sum();
+    format_size(total)
+}
+
+fn dir_size_recursive(path: &Path) -> u64 {
+    let mut total = 0u64;
+    if let Ok(entries) = std::fs::read_dir(path) {
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.is_dir() {
+                total += dir_size_recursive(&p);
+            } else if let Ok(m) = std::fs::metadata(&p) {
+                total += m.len();
+            }
+        }
+    }
+    total
 }
 
 /// Detect the project type of a directory by checking for marker files.

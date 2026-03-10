@@ -231,8 +231,9 @@ pub fn anti_repetition_instruction(recent_messages: &[String], avg_user_msg_leng
          do NOT start with similar words, use similar structure, or repeat themes:\n",
     );
     for (i, msg) in last_n.iter().enumerate() {
-        let truncated = if msg.len() > 80 {
-            format!("{}...", &msg[..80])
+        let truncated = if msg.chars().count() > 80 {
+            let s: String = msg.chars().take(80).collect();
+            format!("{}...", s)
         } else {
             msg.to_string()
         };

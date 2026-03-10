@@ -38,6 +38,7 @@ mailparse = "0.15"
 html2text = "0.12"
 rusqlite = { version = "0.32", features = ["bundled"] }
 libc = "0.2"
+kamadak-exif = "0.5"
 
 [features]
 default = ["claude-cli"]

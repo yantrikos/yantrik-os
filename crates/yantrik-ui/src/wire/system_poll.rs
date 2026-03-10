@@ -311,6 +311,9 @@ pub fn wire(ui: &App, ctx: &AppContext) {
                     ("media",         |t| t.get_dock_media(),    "\u{266A}"),
                     ("calendar",      |t| t.get_dock_calendar(), "\u{25A6}"),
                     ("launchpad",     |t| t.get_dock_apps(),     "\u{229E}"),
+                    ("spreadsheet",   |t| t.get_dock_ysheets(),  "YS"),
+                    ("documents",     |t| t.get_dock_ydoc(),     "YD"),
+                    ("presentation",  |t| t.get_dock_yslides(),  "YP"),
                     ("settings",      |t| t.get_dock_settings(), "\u{2699}"),
                 ];
                 let dock: Vec<DockItem> = dock_defs

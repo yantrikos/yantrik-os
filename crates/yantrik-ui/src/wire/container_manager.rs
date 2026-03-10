@@ -321,7 +321,7 @@ struct StateSnapshot {
 // Wire function
 // ═══════════════════════════════════════════════════════════════════════
 
-pub fn wire(ui: &App, _ctx: &AppContext) {
+pub fn wire(ui: &App, ctx: &AppContext) {
     let state = Arc::new(Mutex::new(ContainerState::new()));
 
     // Initial refresh in background
@@ -578,4 +578,46 @@ pub fn wire(ui: &App, _ctx: &AppContext) {
             });
         });
     }
+
+    // ── AI Summarize Logs callback ──
+    let bridge = ctx.bridge.clone();
+    let ai_state = super::ai_assist::AiAssistState::new();
+    let ui_weak = ui.as_weak();
+    let ai_st = ai_state.clone();
+    ui.on_ct_ai_summarize_logs(move || {
+        let Some(ui) = ui_weak.upgrade() else { return };
+        let logs = ui.get_ct_log_text().to_string();
+        let container = ui.get_ct_log_container_name().to_string();
+        if logs.is_empty() { return; }
+
+        // Take last 2000 chars of logs to avoid prompt overflow
+        let log_tail = if logs.len() > 2000 {
+            &logs[logs.len() - 2000..]
+        } else {
+            &logs
+        };
+
+        let prompt = super::ai_assist::container_log_prompt(&container, log_tail);
+
+        super::ai_assist::ai_request(
+            &ui.as_weak(),
+            &bridge,
+            &ai_st,
+            super::ai_assist::AiAssistRequest {
+                prompt,
+                timeout_secs: 30,
+                set_working: Box::new(|ui, v| ui.set_ct_ai_is_working(v)),
+                set_response: Box::new(|ui, s| ui.set_ct_ai_response(s.into())),
+                get_response: Box::new(|ui| ui.get_ct_ai_response().to_string()),
+            },
+        );
+    });
+
+    // ── AI Dismiss ──
+    let ui_weak = ui.as_weak();
+    ui.on_ct_ai_dismiss(move || {
+        if let Some(ui) = ui_weak.upgrade() {
+            ui.set_ct_ai_panel_open(false);
+        }
+    });
 }

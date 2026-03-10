@@ -9,6 +9,7 @@ use slint::{ComponentHandle, Model, ModelRc, SharedString, Timer, TimerMode, Vec
 
 use crate::app_context::AppContext;
 use crate::bridge::MemoryResult;
+use crate::wire::entity_bridge::SharedEntityGraph;
 use crate::{focus, lens, onboarding, App, LensResult};
 
 /// Look up the selected result from the current UI results by action_id.
@@ -44,6 +45,7 @@ fn wire_query(ui: &App, ctx: &AppContext) {
     let snapshot = ctx.system_snapshot.clone();
     let frecency = ctx.frecency.clone();
     let bridge = ctx.bridge.clone();
+    let entity_graph = ctx.entity_graph.clone();
 
     // Shared state for async memory search
     let memory_rx: Rc<RefCell<Option<Receiver<Vec<MemoryResult>>>>> = Rc::new(RefCell::new(None));
@@ -104,6 +106,15 @@ fn wire_query(ui: &App, ctx: &AppContext) {
             lens::apply_smart_ranking(&mut results, &query, &frecency_ref, &snap.running_processes);
             drop(frecency_ref);
             drop(snap);
+
+            // Entity graph search (synchronous, fast — FTS5)
+            if query.len() >= 2 {
+                let graph_results = entity_graph_search(&entity_graph, &query);
+                if !graph_results.is_empty() {
+                    results.push(lens::lr_divider("── OBJECTS ──"));
+                    results.extend(graph_results);
+                }
+            }
 
             ui.set_lens_results(ModelRc::new(VecModel::from(results)));
 
@@ -331,6 +342,38 @@ fn wire_result_selected(ui: &App, ctx: &AppContext) {
                     ui.set_lens_open(false);
                 }
             }
+            lens::LensAction::NavigateScreen(screen) => {
+                if let Some(ui) = ui_weak.upgrade() {
+                    ui.set_lens_open(false);
+                    ui.set_current_screen(screen);
+                    ui.invoke_navigate(screen);
+                }
+            }
+            lens::LensAction::OpenObject { source_app, source_id } => {
+                if let Some(ui) = ui_weak.upgrade() {
+                    ui.set_lens_open(false);
+                    let screen = match source_app.as_str() {
+                        "email" => 17,
+                        "calendar" => 18,
+                        "notes" => 15,
+                        "files" => 8,
+                        "spreadsheet" => 29,
+                        "document" => 30,
+                        "presentation" => 31,
+                        "snippets" => 25,
+                        _ => 1,
+                    };
+                    ui.set_current_screen(screen);
+                    ui.invoke_navigate(screen);
+                }
+            }
+            lens::LensAction::OpenCommandPalette => {
+                if let Some(ui) = ui_weak.upgrade() {
+                    ui.set_lens_open(false);
+                    ui.set_command_palette_open(true);
+                    ui.invoke_open_command_palette();
+                }
+            }
             lens::LensAction::CloseLens => {
                 if let Some(ui) = ui_weak.upgrade() {
                     ui.set_lens_open(false);
@@ -408,4 +451,35 @@ fn wire_open_close(ui: &App, ctx: &AppContext) {
             ui.set_lens_chat_mode(false);
         }
     });
+}
+
+/// Search the entity graph and return LensResult items.
+fn entity_graph_search(graph: &SharedEntityGraph, query: &str) -> Vec<LensResult> {
+    let g = match graph.lock() {
+        Ok(g) => g,
+        Err(_) => return Vec::new(),
+    };
+
+    let objects = match g.search(query, 5) {
+        Ok(objs) => objs,
+        Err(_) => return Vec::new(),
+    };
+
+    objects
+        .into_iter()
+        .map(|obj| {
+            let subtitle = format!("{} · {}", obj.kind.label(), obj.source_app);
+            let action_id = format!("object:{}:{}", obj.source_app, obj.source_id);
+            LensResult {
+                result_type: SharedString::from("object"),
+                title: SharedString::from(&obj.title),
+                subtitle: SharedString::from(subtitle),
+                icon_char: SharedString::from(obj.kind.icon()),
+                action_id: SharedString::from(action_id),
+                score: 0.5,
+                is_loading: false,
+                inline_value: SharedString::default(),
+            }
+        })
+        .collect()
 }

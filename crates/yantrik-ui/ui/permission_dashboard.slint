@@ -27,6 +27,21 @@ export struct PermFileData {
     perms: string,
     size-text: string,
     risk: string,
+    numeric-perms: string,
+    owner-rwx: string,
+    group-rwx: string,
+    other-rwx: string,
+    recommended-perms: string,
+    // Pre-computed boolean flags for rwx grid display
+    owner-r: bool,
+    owner-w: bool,
+    owner-x: bool,
+    group-r: bool,
+    group-w: bool,
+    group-x: bool,
+    other-r: bool,
+    other-w: bool,
+    other-x: bool,
 }
 
 // ── Tab button component ──
@@ -96,6 +111,61 @@ component RiskBadge inherits Rectangle {
     }
 }
 
+// ── Risk summary card ──
+
+component RiskSummaryCard inherits Rectangle {
+    in property <string> label;
+    in property <int> count;
+    in property <color> badge-color;
+    in property <color> badge-bg;
+    width: 140px;
+    height: 64px;
+    border-radius: 10px;
+    background: Theme.bg-elevated;
+    border-width: 1px;
+    border-color: Theme.border-subtle;
+
+    HorizontalLayout {
+        padding: 12px;
+        spacing: 10px;
+        alignment: start;
+
+        Rectangle {
+            width: 38px;
+            height: 38px;
+            border-radius: 8px;
+            background: badge-bg;
+            vertical-stretch: 0;
+
+            Text {
+                text: count;
+                color: badge-color;
+                font-size: 18px;
+                font-weight: 700;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+
+        VerticalLayout {
+            alignment: center;
+            spacing: 2px;
+
+            Text {
+                text: label;
+                color: Theme.text-secondary;
+                font-size: Theme.font-small;
+                font-weight: 600;
+            }
+            Text {
+                text: count == 1 ? "file" : "files";
+                color: Theme.text-dim;
+                font-size: 10px;
+            }
+        }
+    }
+}
+
 // ── Action button component ──
 
 component PermActionButton inherits TouchArea {
@@ -126,6 +196,339 @@ component PermActionButton inherits TouchArea {
     }
 }
 
+// ── Detail panel for selected file ──
+
+component FileDetailPanel inherits Rectangle {
+    in property <PermFileData> file;
+    in property <bool> show-fix: false;
+    callback fix-clicked();
+
+    background: Theme.bg-elevated;
+    border-radius: 10px;
+    border-width: 1px;
+    border-color: Theme.border-subtle;
+
+    VerticalLayout {
+        padding: 16px;
+        spacing: 10px;
+
+        // Header
+        HorizontalLayout {
+            spacing: 8px;
+            alignment: start;
+
+            Text {
+                text: "\u{1F4C4} File Detail";
+                color: Theme.accent;
+                font-size: Theme.font-title;
+                font-weight: 600;
+                vertical-alignment: center;
+            }
+
+            Rectangle { horizontal-stretch: 1; }
+
+            RiskBadge {
+                risk: file.risk;
+            }
+        }
+
+        // Full path
+        HorizontalLayout {
+            spacing: 6px;
+            Text {
+                text: "Path:";
+                color: Theme.text-dim;
+                font-size: Theme.font-small;
+                font-weight: 600;
+                width: 60px;
+                vertical-alignment: center;
+            }
+            Text {
+                text: file.path;
+                color: Theme.text-primary;
+                font-size: Theme.font-small;
+                font-family: "monospace";
+                vertical-alignment: center;
+                overflow: elide;
+                horizontal-stretch: 1;
+            }
+        }
+
+        // Owner / Group / Numeric Perms row
+        HorizontalLayout {
+            spacing: 16px;
+
+            HorizontalLayout {
+                spacing: 6px;
+                Text {
+                    text: "Owner:";
+                    color: Theme.text-dim;
+                    font-size: Theme.font-small;
+                    font-weight: 600;
+                    vertical-alignment: center;
+                }
+                Text {
+                    text: file.owner;
+                    color: Theme.text-primary;
+                    font-size: Theme.font-small;
+                    vertical-alignment: center;
+                }
+            }
+
+            HorizontalLayout {
+                spacing: 6px;
+                Text {
+                    text: "Group:";
+                    color: Theme.text-dim;
+                    font-size: Theme.font-small;
+                    font-weight: 600;
+                    vertical-alignment: center;
+                }
+                Text {
+                    text: file.group-name;
+                    color: Theme.text-primary;
+                    font-size: Theme.font-small;
+                    vertical-alignment: center;
+                }
+            }
+
+            HorizontalLayout {
+                spacing: 6px;
+                Text {
+                    text: "Mode:";
+                    color: Theme.text-dim;
+                    font-size: Theme.font-small;
+                    font-weight: 600;
+                    vertical-alignment: center;
+                }
+                Text {
+                    text: file.numeric-perms;
+                    color: Theme.accent;
+                    font-size: Theme.font-small;
+                    font-family: "monospace";
+                    font-weight: 700;
+                    vertical-alignment: center;
+                }
+            }
+
+            HorizontalLayout {
+                spacing: 6px;
+                Text {
+                    text: "Size:";
+                    color: Theme.text-dim;
+                    font-size: Theme.font-small;
+                    font-weight: 600;
+                    vertical-alignment: center;
+                }
+                Text {
+                    text: file.size-text;
+                    color: Theme.text-secondary;
+                    font-size: Theme.font-small;
+                    vertical-alignment: center;
+                }
+            }
+        }
+
+        // rwx breakdown table
+        Rectangle {
+            height: 80px;
+            background: Theme.bg-card;
+            border-radius: 8px;
+            border-width: 1px;
+            border-color: Theme.border-subtle;
+
+            VerticalLayout {
+                padding: 8px;
+                spacing: 4px;
+
+                // Header row
+                HorizontalLayout {
+                    spacing: 8px;
+                    Text {
+                        text: "";
+                        horizontal-stretch: 1;
+                        font-size: Theme.font-small;
+                    }
+                    Text {
+                        text: "Read";
+                        color: Theme.text-dim;
+                        font-size: Theme.font-small;
+                        font-weight: 600;
+                        horizontal-stretch: 1;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                    Text {
+                        text: "Write";
+                        color: Theme.text-dim;
+                        font-size: Theme.font-small;
+                        font-weight: 600;
+                        horizontal-stretch: 1;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                    Text {
+                        text: "Execute";
+                        color: Theme.text-dim;
+                        font-size: Theme.font-small;
+                        font-weight: 600;
+                        horizontal-stretch: 1;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+
+                // Owner row
+                HorizontalLayout {
+                    spacing: 8px;
+                    Text {
+                        text: "Owner";
+                        color: Theme.text-secondary;
+                        font-size: Theme.font-small;
+                        font-weight: 600;
+                        horizontal-stretch: 1;
+                        vertical-alignment: center;
+                    }
+                    Text {
+                        text: file.owner-r ? "\u{2705}" : "\u{274C}";
+                        font-size: 12px;
+                        horizontal-stretch: 1;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                    Text {
+                        text: file.owner-w ? "\u{2705}" : "\u{274C}";
+                        font-size: 12px;
+                        horizontal-stretch: 1;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                    Text {
+                        text: file.owner-x ? "\u{2705}" : "\u{274C}";
+                        font-size: 12px;
+                        horizontal-stretch: 1;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+
+                // Group row
+                HorizontalLayout {
+                    spacing: 8px;
+                    Text {
+                        text: "Group";
+                        color: Theme.text-secondary;
+                        font-size: Theme.font-small;
+                        font-weight: 600;
+                        horizontal-stretch: 1;
+                        vertical-alignment: center;
+                    }
+                    Text {
+                        text: file.group-r ? "\u{2705}" : "\u{274C}";
+                        font-size: 12px;
+                        horizontal-stretch: 1;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                    Text {
+                        text: file.group-w ? "\u{2705}" : "\u{274C}";
+                        font-size: 12px;
+                        horizontal-stretch: 1;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                    Text {
+                        text: file.group-x ? "\u{2705}" : "\u{274C}";
+                        font-size: 12px;
+                        horizontal-stretch: 1;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+
+                // Other row
+                HorizontalLayout {
+                    spacing: 8px;
+                    Text {
+                        text: "Other";
+                        color: Theme.text-secondary;
+                        font-size: Theme.font-small;
+                        font-weight: 600;
+                        horizontal-stretch: 1;
+                        vertical-alignment: center;
+                    }
+                    Text {
+                        text: file.other-r ? "\u{2705}" : "\u{274C}";
+                        font-size: 12px;
+                        horizontal-stretch: 1;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                    Text {
+                        text: file.other-w ? "\u{2705}" : "\u{274C}";
+                        font-size: 12px;
+                        horizontal-stretch: 1;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                    Text {
+                        text: file.other-x ? "\u{2705}" : "\u{274C}";
+                        font-size: 12px;
+                        horizontal-stretch: 1;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+        }
+
+        // Remediation preview + Fix button
+        if show-fix && file.recommended-perms != "" : HorizontalLayout {
+            spacing: 12px;
+            alignment: start;
+
+            Rectangle {
+                horizontal-stretch: 1;
+                height: 32px;
+                border-radius: 8px;
+                background: #e8b44c15;
+                border-width: 1px;
+                border-color: #e8b44c40;
+
+                HorizontalLayout {
+                    padding-left: 12px;
+                    padding-right: 12px;
+                    spacing: 6px;
+                    alignment: center;
+
+                    Text {
+                        text: "Recommended:";
+                        color: Theme.text-dim;
+                        font-size: Theme.font-small;
+                        font-weight: 600;
+                        vertical-alignment: center;
+                    }
+                    Text {
+                        text: "Change " + file.numeric-perms + " \u{2192} " + file.recommended-perms;
+                        color: #e8b44c;
+                        font-size: Theme.font-small;
+                        font-family: "monospace";
+                        font-weight: 600;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+
+            PermActionButton {
+                label: "Apply Fix";
+                primary: true;
+                width: 100px;
+                clicked => { root.fix-clicked(); }
+            }
+        }
+    }
+}
+
 // ── Main component ──
 
 export component PermissionDashboardScreen inherits Rectangle {
@@ -148,11 +551,57 @@ export component PermissionDashboardScreen inherits Rectangle {
     // Scanning state
     in property <bool> perm-scanning: false;
 
+    // Risk summary counts
+    in property <int> perm-high-risk-count: 0;
+    in property <int> perm-medium-risk-count: 0;
+    in property <int> perm-low-risk-count: 0;
+
+    // Scan scope
+    in-out property <string> perm-scan-path: "/";
+    in property <string> perm-scan-status: "";
+
+    // Search / filter
+    in-out property <string> perm-search-text: "";
+
+    // Selected file detail
+    in property <PermFileData> perm-selected-file: {
+        path: "", owner: "", group-name: "", perms: "", size-text: "",
+        risk: "", numeric-perms: "", owner-rwx: "", group-rwx: "",
+        other-rwx: "", recommended-perms: "",
+        owner-r: false, owner-w: false, owner-x: false,
+        group-r: false, group-w: false, group-x: false,
+        other-r: false, other-w: false, other-x: false
+    };
+    in property <bool> perm-has-selected-file: false;
+
+    // Export
+    in property <string> perm-export-status: "";
+
+    // ACL panel
+    in property <string> perm-acl-output: "";
+    in-out property <bool> perm-acl-panel-open: false;
+    in-out property <string> perm-acl-target-path: "";
+    in-out property <string> perm-acl-set-spec: "";
+    callback perm-view-acl(string);
+    callback perm-set-acl(string, string);  // (path, acl_spec)
+
     // Callbacks
     callback perm-tab(int);
     callback perm-refresh();
     callback perm-fix(string);
     callback perm-select-user(int);
+    callback perm-select-file(int, int);  // (tab-index, file-index)
+    callback perm-scan-dir(string);
+    callback perm-export-report();
+    callback perm-search(string);
+    callback perm-fix-permission(string);  // fix with recommended perms
+
+    // AI Assist
+    in property <bool> ai-is-working: false;
+    in property <string> ai-response: "";
+    in-out property <bool> ai-panel-open: false;
+    callback ai-explain-pressed();
+    callback ai-dismiss();
 
     // Background nebula
     Rectangle {
@@ -168,6 +617,128 @@ export component PermissionDashboardScreen inherits Rectangle {
 
     VerticalLayout {
         spacing: 0px;
+
+        // ── Risk summary cards + scan controls ──
+        Rectangle {
+            height: 90px;
+            background: Theme.bg-surface;
+            border-width: 0px;
+
+            HorizontalLayout {
+                padding: 12px;
+                spacing: 12px;
+                alignment: start;
+
+                // Risk summary cards
+                RiskSummaryCard {
+                    label: "High Risk";
+                    count: root.perm-high-risk-count;
+                    badge-color: #e86b6b;
+                    badge-bg: #e86b6b20;
+                }
+                RiskSummaryCard {
+                    label: "Medium Risk";
+                    count: root.perm-medium-risk-count;
+                    badge-color: #e8b44c;
+                    badge-bg: #e8b44c20;
+                }
+                RiskSummaryCard {
+                    label: "Low Risk";
+                    count: root.perm-low-risk-count;
+                    badge-color: #6cd480;
+                    badge-bg: #6cd48020;
+                }
+
+                // Spacer
+                Rectangle { horizontal-stretch: 1; }
+
+                // Scan path input + scan button + export
+                VerticalLayout {
+                    alignment: center;
+                    spacing: 6px;
+
+                    HorizontalLayout {
+                        spacing: 8px;
+
+                        // Scan path input
+                        Rectangle {
+                            width: 220px;
+                            height: 30px;
+                            border-radius: 8px;
+                            background: Theme.bg-card;
+                            border-width: 1px;
+                            border-color: scan-path-input.has-focus ? Theme.accent : Theme.border-subtle;
+
+                            HorizontalLayout {
+                                padding-left: 10px;
+                                padding-right: 10px;
+                                alignment: center;
+
+                                scan-path-input := TextInput {
+                                    horizontal-stretch: 1;
+                                    text <=> root.perm-scan-path;
+                                    font-size: Theme.font-small;
+                                    color: Theme.text-primary;
+                                    accepted => {
+                                        root.perm-scan-dir(root.perm-scan-path);
+                                    }
+                                }
+                            }
+                        }
+
+                        // Scan button
+                        PermActionButton {
+                            label: root.perm-scanning ? "Scanning..." : "Scan";
+                            primary: true;
+                            width: 80px;
+                            clicked => {
+                                root.perm-scan-dir(root.perm-scan-path);
+                            }
+                        }
+
+                        // Export button
+                        PermActionButton {
+                            label: "Export";
+                            primary: false;
+                            width: 70px;
+                            clicked => {
+                                root.perm-export-report();
+                            }
+                        }
+
+                        // ACL panel toggle
+                        PermActionButton {
+                            label: root.perm-acl-panel-open ? "Close ACL" : "ACL";
+                            primary: root.perm-acl-panel-open;
+                            width: 80px;
+                            clicked => {
+                                root.perm-acl-panel-open = !root.perm-acl-panel-open;
+                                // Auto-populate path from selected file if available
+                                if root.perm-acl-panel-open && root.perm-has-selected-file {
+                                    root.perm-acl-target-path = root.perm-selected-file.path;
+                                }
+                            }
+                        }
+                    }
+
+                    // Status text (scan status or export status)
+                    if root.perm-scan-status != "" || root.perm-export-status != "" : Text {
+                        text: root.perm-export-status != "" ? root.perm-export-status : root.perm-scan-status;
+                        color: Theme.text-dim;
+                        font-size: 10px;
+                        horizontal-alignment: right;
+                    }
+                }
+            }
+
+            // Bottom separator
+            Rectangle {
+                y: parent.height - 1px;
+                width: 100%;
+                height: 1px;
+                background: Theme.border-subtle;
+            }
+        }
 
         // ── Tab bar ──
         Rectangle {
@@ -213,6 +784,83 @@ export component PermissionDashboardScreen inherits Rectangle {
                 // Spacer
                 Rectangle { horizontal-stretch: 1; }
 
+                // Search input
+                Rectangle {
+                    width: 200px;
+                    height: 30px;
+                    border-radius: 8px;
+                    background: Theme.bg-card;
+                    border-width: 1px;
+                    border-color: search-input.has-focus ? Theme.accent : Theme.border-subtle;
+
+                    HorizontalLayout {
+                        padding-left: 10px;
+                        padding-right: 10px;
+                        spacing: 6px;
+                        alignment: center;
+
+                        Text {
+                            text: "\u{1F50D}";
+                            font-size: 12px;
+                            vertical-alignment: center;
+                        }
+
+                        search-input := TextInput {
+                            horizontal-stretch: 1;
+                            text <=> root.perm-search-text;
+                            font-size: Theme.font-small;
+                            color: Theme.text-primary;
+                            accepted => {
+                                root.perm-search(root.perm-search-text);
+                            }
+                            edited => {
+                                root.perm-search(root.perm-search-text);
+                            }
+                        }
+                    }
+                }
+
+                // AI Explain button
+                TouchArea {
+                    width: ai-perm-btn.preferred-width + 16px;
+                    height: 32px;
+                    clicked => {
+                        if root.ai-panel-open {
+                            root.ai-dismiss();
+                            root.ai-panel-open = false;
+                        } else {
+                            root.ai-explain-pressed();
+                            root.ai-panel-open = true;
+                        }
+                    }
+                    ai-perm-btn := Rectangle {
+                        height: 32px;
+                        border-radius: Theme.radius-pill;
+                        background: root.ai-is-working ? Theme.accent
+                            : (parent.has-hover ? Theme.hover-fill-strong : Theme.bg-elevated);
+                        border-width: 1px;
+                        border-color: Theme.border-subtle;
+                        HorizontalLayout {
+                            padding-left: 10px;
+                            padding-right: 10px;
+                            spacing: 4px;
+                            alignment: center;
+                            Text {
+                                text: root.ai-is-working ? "\u{2B50}" : "\u{2728}";
+                                font-size: 12px;
+                                vertical-alignment: center;
+                            }
+                            Text {
+                                text: root.ai-is-working ? "Analyzing..." : "AI Explain";
+                                color: root.ai-is-working ? #ffffff : Theme.text-secondary;
+                                font-size: 11px;
+                                font-weight: 500;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                }
+
                 // Refresh button
                 PermActionButton {
                     label: root.perm-scanning ? "Scanning..." : "Refresh";
@@ -231,6 +879,67 @@ export component PermissionDashboardScreen inherits Rectangle {
                 width: 100%;
                 height: 1px;
                 background: Theme.border-subtle;
+            }
+        }
+
+        // ── AI Response Panel ──
+        if root.ai-panel-open && root.ai-response != "" : Rectangle {
+            max-height: 160px;
+            background: #1a2332;
+            border-width: 1px;
+            border-color: Theme.accent.transparentize(70%);
+
+            Flickable {
+                viewport-height: ai-perm-resp.preferred-height + 16px;
+
+                ai-perm-resp := VerticalLayout {
+                    padding: 12px;
+                    spacing: 8px;
+
+                    HorizontalLayout {
+                        spacing: 6px;
+                        Text {
+                            text: "\u{2728}";
+                            font-size: 12px;
+                            vertical-alignment: center;
+                        }
+                        Text {
+                            text: "AI Analysis";
+                            color: Theme.accent;
+                            font-size: 12px;
+                            font-weight: 600;
+                            vertical-alignment: center;
+                        }
+                        Rectangle { horizontal-stretch: 1; }
+                        TouchArea {
+                            width: 24px;
+                            height: 24px;
+                            clicked => {
+                                root.ai-panel-open = false;
+                                root.ai-dismiss();
+                            }
+                            Rectangle {
+                                width: 24px; height: 24px;
+                                border-radius: 12px;
+                                background: parent.has-hover ? Theme.hover-fill : transparent;
+                                Text {
+                                    text: "\u{2715}";
+                                    font-size: 11px;
+                                    color: Theme.text-dim;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+                    }
+
+                    Text {
+                        text: root.ai-response;
+                        color: Theme.text-primary;
+                        font-size: 12px;
+                        wrap: word-wrap;
+                    }
+                }
             }
         }
 
@@ -626,63 +1335,89 @@ export component PermissionDashboardScreen inherits Rectangle {
                     }
                 }
 
-                // File list
-                Flickable {
-                    viewport-height: perm-suid-files.length * 38px;
+                // File list + detail split
+                HorizontalLayout {
+                    spacing: 0px;
 
-                    VerticalLayout {
-                        spacing: 0px;
+                    // File list
+                    Flickable {
+                        horizontal-stretch: root.perm-has-selected-file ? 3 : 1;
+                        viewport-height: perm-suid-files.length * 38px;
 
-                        for file[idx] in root.perm-suid-files : Rectangle {
-                            height: 38px;
-                            background: idx == 0 ? transparent : transparent;
+                        VerticalLayout {
+                            spacing: 0px;
 
-                            HorizontalLayout {
-                                padding-left: 16px;
-                                padding-right: 16px;
-                                spacing: 8px;
+                            for file[idx] in root.perm-suid-files : TouchArea {
+                                height: 38px;
+                                clicked => { root.perm-select-file(1, idx); }
 
-                                RiskBadge {
-                                    risk: file.risk;
-                                    width: 60px;
-                                }
-                                Text {
-                                    text: file.path;
-                                    color: Theme.text-primary;
-                                    font-size: Theme.font-small;
-                                    horizontal-stretch: 4;
-                                    vertical-alignment: center;
-                                    overflow: elide;
-                                }
-                                Text {
-                                    text: file.owner;
-                                    color: file.risk == "high" ? Theme.color-emotional : Theme.text-secondary;
-                                    font-size: Theme.font-small;
-                                    horizontal-stretch: 1;
-                                    vertical-alignment: center;
-                                }
-                                Text {
-                                    text: file.perms;
-                                    color: Theme.text-secondary;
-                                    font-size: Theme.font-small;
-                                    font-family: "monospace";
-                                    horizontal-stretch: 2;
-                                    vertical-alignment: center;
-                                }
-                                Text {
-                                    text: file.size-text;
-                                    color: Theme.text-dim;
-                                    font-size: Theme.font-small;
-                                    horizontal-stretch: 1;
-                                    vertical-alignment: center;
+                                Rectangle {
+                                    background: parent.has-hover ? Theme.hover-fill : transparent;
+
+                                    HorizontalLayout {
+                                        padding-left: 16px;
+                                        padding-right: 16px;
+                                        spacing: 8px;
+
+                                        RiskBadge {
+                                            risk: file.risk;
+                                            width: 60px;
+                                        }
+                                        Text {
+                                            text: file.path;
+                                            color: Theme.text-primary;
+                                            font-size: Theme.font-small;
+                                            horizontal-stretch: 4;
+                                            vertical-alignment: center;
+                                            overflow: elide;
+                                        }
+                                        Text {
+                                            text: file.owner;
+                                            color: file.risk == "high" ? Theme.color-emotional : Theme.text-secondary;
+                                            font-size: Theme.font-small;
+                                            horizontal-stretch: 1;
+                                            vertical-alignment: center;
+                                        }
+                                        Text {
+                                            text: file.perms;
+                                            color: Theme.text-secondary;
+                                            font-size: Theme.font-small;
+                                            font-family: "monospace";
+                                            horizontal-stretch: 2;
+                                            vertical-alignment: center;
+                                        }
+                                        Text {
+                                            text: file.size-text;
+                                            color: Theme.text-dim;
+                                            font-size: Theme.font-small;
+                                            horizontal-stretch: 1;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+
+                                    Rectangle {
+                                        y: parent.height - 1px;
+                                        width: 100%;
+                                        height: 1px;
+                                        background: Theme.border-subtle;
+                                    }
                                 }
                             }
+                        }
+                    }
 
-                            Rectangle {
-                                y: parent.height - 1px;
-                                width: 100%;
-                                height: 1px;
-                                background: Theme.border-subtle;
+                    // Detail panel
+                    if root.perm-has-selected-file && root.active-tab == 1 : Rectangle {
+                        horizontal-stretch: 2;
+                        background: Theme.bg-deep;
+
+                        VerticalLayout {
+                            padding: 12px;
+
+                            FileDetailPanel {
+                                file: root.perm-selected-file;
+                                show-fix: root.perm-selected-file.recommended-perms != "";
+                                fix-clicked => { root.perm-fix-permission(root.perm-selected-file.path); }
                             }
                         }
                     }
@@ -777,59 +1512,268 @@ export component PermissionDashboardScreen inherits Rectangle {
                     }
                 }
 
-                // World-writable list
-                Flickable {
-                    viewport-height: perm-world-writable.length * 40px;
+                // World-writable list + detail split
+                HorizontalLayout {
+                    spacing: 0px;
 
-                    VerticalLayout {
-                        spacing: 0px;
+                    // File list
+                    Flickable {
+                        horizontal-stretch: root.perm-has-selected-file ? 3 : 1;
+                        viewport-height: perm-world-writable.length * 40px;
 
-                        for file[idx] in root.perm-world-writable : Rectangle {
-                            height: 40px;
+                        VerticalLayout {
+                            spacing: 0px;
 
-                            HorizontalLayout {
-                                padding-left: 16px;
-                                padding-right: 16px;
-                                spacing: 8px;
+                            for file[idx] in root.perm-world-writable : TouchArea {
+                                height: 40px;
+                                clicked => { root.perm-select-file(2, idx); }
 
-                                Text {
-                                    text: file.path;
-                                    color: Theme.text-primary;
-                                    font-size: Theme.font-small;
-                                    horizontal-stretch: 5;
-                                    vertical-alignment: center;
-                                    overflow: elide;
-                                }
-                                Text {
-                                    text: file.owner;
-                                    color: Theme.text-secondary;
-                                    font-size: Theme.font-small;
-                                    horizontal-stretch: 1;
-                                    vertical-alignment: center;
-                                }
-                                Text {
-                                    text: file.perms;
-                                    color: Theme.color-conflict;
-                                    font-size: Theme.font-small;
-                                    font-family: "monospace";
-                                    horizontal-stretch: 2;
-                                    vertical-alignment: center;
-                                }
+                                Rectangle {
+                                    background: parent.has-hover ? Theme.hover-fill : transparent;
 
-                                // Fix button
-                                PermActionButton {
-                                    label: "Fix";
-                                    primary: true;
-                                    horizontal-stretch: 1;
-                                    clicked => { root.perm-fix(file.path); }
+                                    HorizontalLayout {
+                                        padding-left: 16px;
+                                        padding-right: 16px;
+                                        spacing: 8px;
+
+                                        Text {
+                                            text: file.path;
+                                            color: Theme.text-primary;
+                                            font-size: Theme.font-small;
+                                            horizontal-stretch: 5;
+                                            vertical-alignment: center;
+                                            overflow: elide;
+                                        }
+                                        Text {
+                                            text: file.owner;
+                                            color: Theme.text-secondary;
+                                            font-size: Theme.font-small;
+                                            horizontal-stretch: 1;
+                                            vertical-alignment: center;
+                                        }
+                                        Text {
+                                            text: file.perms;
+                                            color: Theme.color-conflict;
+                                            font-size: Theme.font-small;
+                                            font-family: "monospace";
+                                            horizontal-stretch: 2;
+                                            vertical-alignment: center;
+                                        }
+
+                                        // Fix button
+                                        PermActionButton {
+                                            label: "Fix";
+                                            primary: true;
+                                            horizontal-stretch: 1;
+                                            clicked => { root.perm-fix(file.path); }
+                                        }
+                                    }
+
+                                    Rectangle {
+                                        y: parent.height - 1px;
+                                        width: 100%;
+                                        height: 1px;
+                                        background: Theme.border-subtle;
+                                    }
                                 }
                             }
+                        }
+                    }
 
-                            Rectangle {
-                                y: parent.height - 1px;
-                                width: 100%;
-                                height: 1px;
-                                background: Theme.border-subtle;
+                    // Detail panel
+                    if root.perm-has-selected-file && root.active-tab == 2 : Rectangle {
+                        horizontal-stretch: 2;
+                        background: Theme.bg-deep;
+
+                        VerticalLayout {
+                            padding: 12px;
+
+                            FileDetailPanel {
+                                file: root.perm-selected-file;
+                                show-fix: root.perm-selected-file.recommended-perms != "";
+                                fix-clicked => { root.perm-fix-permission(root.perm-selected-file.path); }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── ACL Panel (toggleable overlay, right side) ──
+        if root.perm-acl-panel-open : Rectangle {
+            width: 330px;
+            background: Theme.bg-card;
+            border-radius: Theme.radius-card;
+            border-width: 1px;
+            border-color: Theme.accent.transparentize(70%);
+
+            VerticalLayout {
+                padding: 14px;
+                spacing: 10px;
+
+                // Header
+                HorizontalLayout {
+                    height: 28px;
+                    spacing: 8px;
+
+                    Text {
+                        text: "\u{1F512} ACL Manager";
+                        font-size: Theme.font-body;
+                        font-weight: 600;
+                        color: Theme.text-primary;
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                    }
+
+                    TouchArea {
+                        width: 24px;
+                        height: 24px;
+                        clicked => { root.perm-acl-panel-open = false; }
+                        Rectangle {
+                            width: 24px; height: 24px;
+                            border-radius: 12px;
+                            background: parent.has-hover ? Theme.hover-fill-strong : transparent;
+                            Text {
+                                text: "\u{2715}";
+                                font-size: 11px;
+                                color: Theme.text-dim;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                }
+
+                // Target path display
+                Rectangle {
+                    height: 36px;
+                    background: Theme.bg-deep;
+                    border-radius: 8px;
+
+                    HorizontalLayout {
+                        padding-left: 10px;
+                        padding-right: 10px;
+                        spacing: 6px;
+
+                        Text {
+                            text: "Path:";
+                            font-size: Theme.font-small;
+                            color: Theme.text-dim;
+                            vertical-alignment: center;
+                        }
+                        Text {
+                            text: root.perm-acl-target-path != "" ? root.perm-acl-target-path : "(none)";
+                            font-size: Theme.font-small;
+                            color: Theme.text-primary;
+                            vertical-alignment: center;
+                            overflow: elide;
+                            horizontal-stretch: 1;
+                        }
+                    }
+                }
+
+                // View ACL button
+                Rectangle {
+                    height: 34px;
+                    background: acl-view-ta.has-hover ? Theme.accent : Theme.accent-dim;
+                    border-radius: Theme.radius-pill;
+
+                    Text {
+                        text: "View ACL";
+                        font-size: Theme.font-body;
+                        color: #ffffff;
+                        font-weight: 600;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+
+                    acl-view-ta := TouchArea {
+                        clicked => {
+                            if root.perm-acl-target-path != "" {
+                                root.perm-view-acl(root.perm-acl-target-path);
+                            }
+                        }
+                    }
+                }
+
+                // ACL output
+                Rectangle {
+                    background: Theme.bg-deep;
+                    border-radius: 8px;
+                    vertical-stretch: 1;
+
+                    Flickable {
+                        viewport-height: acl-output-txt.preferred-height + 16px;
+
+                        acl-output-txt := Text {
+                            x: 8px;
+                            width: parent.width - 16px;
+                            text: root.perm-acl-output != "" ? root.perm-acl-output : "No ACL data. Click 'View ACL' to load.";
+                            font-size: 11px;
+                            font-family: "monospace";
+                            color: root.perm-acl-output != "" ? Theme.text-primary : Theme.text-dim;
+                            wrap: word-wrap;
+                        }
+                    }
+                }
+
+                // Set ACL section
+                Rectangle {
+                    height: 1px;
+                    background: Theme.border-subtle;
+                }
+
+                Text {
+                    text: "Set ACL";
+                    font-size: Theme.font-small;
+                    font-weight: 600;
+                    color: Theme.text-dim;
+                }
+
+                // ACL spec input
+                Rectangle {
+                    height: 36px;
+                    background: Theme.bg-deep;
+                    border-radius: 8px;
+                    border-width: 1px;
+                    border-color: Theme.border-subtle;
+
+                    acl-spec-input := TextInput {
+                        x: 10px;
+                        width: parent.width - 20px;
+                        height: parent.height;
+                        text <=> root.perm-acl-set-spec;
+                        font-size: Theme.font-small;
+                        color: Theme.text-primary;
+                        input-type: text;
+                    }
+                }
+
+                Text {
+                    text: "e.g. u:user:rw, g:group:r, o::r";
+                    font-size: 10px;
+                    color: Theme.text-dim;
+                }
+
+                // Apply ACL button
+                Rectangle {
+                    height: 34px;
+                    background: acl-set-ta.has-hover ? #e89840 : #cc8030;
+                    border-radius: Theme.radius-pill;
+
+                    Text {
+                        text: "Apply ACL";
+                        font-size: Theme.font-body;
+                        color: #ffffff;
+                        font-weight: 600;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+
+                    acl-set-ta := TouchArea {
+                        clicked => {
+                            if root.perm-acl-target-path != "" && root.perm-acl-set-spec != "" {
+                                root.perm-set-acl(root.perm-acl-target-path, root.perm-acl-set-spec);
                             }
                         }
                     }

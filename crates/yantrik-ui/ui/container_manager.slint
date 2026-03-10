@@ -418,6 +418,13 @@ export component ContainerManagerScreen inherits Rectangle {
     callback ct-remove-volume(string);
     callback ct-refresh();
 
+    // AI Assist
+    in property <bool> ai-is-working: false;
+    in property <string> ai-response: "";
+    in-out property <bool> ai-panel-open: false;
+    callback ai-summarize-logs();
+    callback ai-dismiss();
+
     VerticalLayout {
         spacing: 0px;
 
@@ -478,6 +485,48 @@ export component ContainerManagerScreen inherits Rectangle {
                         font-size: Theme.font-small;
                         font-weight: 600;
                         vertical-alignment: center;
+                    }
+
+                    // AI Summarize button (only when logs are showing)
+                    TouchArea {
+                        width: ai-ct-btn.preferred-width + 16px;
+                        height: 32px;
+                        clicked => {
+                            if root.ai-panel-open {
+                                root.ai-dismiss();
+                                root.ai-panel-open = false;
+                            } else if root.log-text != "" {
+                                root.ai-summarize-logs();
+                                root.ai-panel-open = true;
+                            }
+                        }
+                        ai-ct-btn := Rectangle {
+                            height: 32px;
+                            border-radius: Theme.radius-card;
+                            background: root.ai-is-working ? Theme.accent
+                                : (root.log-text != "" ? Theme.bg-elevated : Theme.hover-fill);
+                            border-width: 1px;
+                            border-color: Theme.border-subtle;
+                            HorizontalLayout {
+                                padding-left: 10px;
+                                padding-right: 10px;
+                                spacing: 4px;
+                                alignment: center;
+                                Text {
+                                    text: root.ai-is-working ? "\u{2B50}" : "\u{2728}";
+                                    font-size: 12px;
+                                    vertical-alignment: center;
+                                }
+                                Text {
+                                    text: root.ai-is-working ? "Analyzing..." : "AI Logs";
+                                    color: root.ai-is-working ? #ffffff
+                                        : (root.log-text != "" ? Theme.text-secondary : Theme.text-dim);
+                                    font-size: 11px;
+                                    font-weight: 500;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
                     }
 
                     ActionButton {
@@ -936,6 +985,67 @@ export component ContainerManagerScreen inherits Rectangle {
                 Rectangle {
                     height: 1px;
                     background: Theme.border-subtle;
+                }
+
+                // AI Response Panel (inside logs overlay)
+                if root.ai-panel-open && root.ai-response != "" : Rectangle {
+                    max-height: 160px;
+                    background: #1a2332;
+                    border-width: 1px;
+                    border-color: Theme.accent.transparentize(70%);
+
+                    Flickable {
+                        viewport-height: ai-ct-resp.preferred-height + 16px;
+
+                        ai-ct-resp := VerticalLayout {
+                            padding: 12px;
+                            spacing: 8px;
+
+                            HorizontalLayout {
+                                spacing: 6px;
+                                Text {
+                                    text: "\u{2728}";
+                                    font-size: 12px;
+                                    vertical-alignment: center;
+                                }
+                                Text {
+                                    text: "AI Log Analysis";
+                                    color: Theme.accent;
+                                    font-size: 12px;
+                                    font-weight: 600;
+                                    vertical-alignment: center;
+                                }
+                                Rectangle { horizontal-stretch: 1; }
+                                TouchArea {
+                                    width: 24px;
+                                    height: 24px;
+                                    clicked => {
+                                        root.ai-panel-open = false;
+                                        root.ai-dismiss();
+                                    }
+                                    Rectangle {
+                                        width: 24px; height: 24px;
+                                        border-radius: 12px;
+                                        background: parent.has-hover ? Theme.hover-fill : transparent;
+                                        Text {
+                                            text: "\u{2715}";
+                                            font-size: 11px;
+                                            color: Theme.text-dim;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                }
+                            }
+
+                            Text {
+                                text: root.ai-response;
+                                color: Theme.text-primary;
+                                font-size: 12px;
+                                wrap: word-wrap;
+                            }
+                        }
+                    }
                 }
 
                 // Log content

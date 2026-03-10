@@ -84,6 +84,12 @@ pub enum LensAction {
     OpenFileBrowser,
     /// Copy text to the clipboard (used by calculator results).
     CopyToClipboard(String),
+    /// Navigate to a specific screen by ID.
+    NavigateScreen(i32),
+    /// Open an entity graph object in its source app.
+    OpenObject { source_app: String, source_id: String },
+    /// Open the command palette.
+    OpenCommandPalette,
     /// Close the Lens, nothing else.
     #[allow(dead_code)]
     CloseLens,
@@ -150,6 +156,19 @@ pub fn resolve_action(action_id: &str, installed_apps: &[DesktopEntry]) -> LensA
         LensAction::OpenSettings
     } else if action_id == "navigate:files" {
         LensAction::OpenFileBrowser
+    } else if action_id.starts_with("object:") {
+        // Format: "object:source_app:source_id"
+        let rest = &action_id[7..];
+        if let Some((app, sid)) = rest.split_once(':') {
+            LensAction::OpenObject {
+                source_app: app.to_string(),
+                source_id: sid.to_string(),
+            }
+        } else {
+            LensAction::Noop
+        }
+    } else if action_id == "command-palette" {
+        LensAction::OpenCommandPalette
     } else {
         LensAction::Noop
     }

@@ -5,14 +5,14 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Duration;
 
-use slint::{ComponentHandle, ModelRc, SharedString, Timer, TimerMode, VecModel};
+use slint::{ComponentHandle, Model, ModelRc, SharedString, Timer, TimerMode, VecModel};
 
 use crate::app_context::{self, AppContext};
 use crate::mime_dispatch::{self, FileAction};
 use crate::app_context::FileClipOp;
 use crate::{
     bridge, cards, filebrowser, focus, lock, notifications, onboarding, App, BreadcrumbSegment,
-    FileDetailData, FileEntry, MemoryItem,
+    FileDetailData, FileEntry, FileTabData, MemoryItem,
 };
 
 /// Wire all miscellaneous callbacks.
@@ -260,7 +260,8 @@ fn wire_file_browser(ui: &App, ctx: &AppContext) {
     let ui_weak = ui.as_weak();
     let bp = browser_path.clone();
     let iv_state = ctx.image_viewer_state.clone();
-    let ed_path = ctx.editor_file_path.clone();
+    let ed_tabs = ctx.editor_tabs.clone();
+    let ed_active = ctx.editor_active_tab.clone();
     let mp_handle = ctx.media_player.clone();
     ui.on_file_open(move |name| {
         let name_str = name.to_string();
@@ -282,7 +283,7 @@ fn wire_file_browser(ui: &App, ctx: &AppContext) {
             }
             FileAction::TextEditor => {
                 if let Some(ui) = ui_weak.upgrade() {
-                    super::text_editor::load_file(&ui, &full, &ed_path);
+                    super::text_editor::load_file(&ui, &full, &ed_tabs, &ed_active);
                     ui.set_current_screen(12);
                     ui.invoke_navigate(12);
                 }
@@ -594,6 +595,256 @@ fn wire_file_browser(ui: &App, ctx: &AppContext) {
         tracing::info!(file = %detail.name, "AI file summary requested");
     });
 
+    // Create file
+    let bp = browser_path.clone();
+    let sh = show_hidden.clone();
+    let sf = sort_field.clone();
+    let sa = sort_ascending.clone();
+    let ft = filter_text.clone();
+    let ui_weak = ui.as_weak();
+    ui.on_file_create_file(move |name| {
+        let dir = bp.borrow().clone();
+        match filebrowser::create_file(&dir, &name.to_string()) {
+            Ok(()) => tracing::info!(name = %name, "File created"),
+            Err(e) => tracing::error!(name = %name, error = %e, "Create file failed"),
+        }
+        if let Some(ui) = ui_weak.upgrade() {
+            refresh_entries(&ui, &dir, *sh.borrow(), &sf.borrow(), *sa.borrow(), &ft.borrow());
+        }
+    });
+
+    // Multi-select clicked — toggle selection on a file entry
+    let ui_weak = ui.as_weak();
+    let multi_sel = ctx.browser_multi_selection.clone();
+    let bp = browser_path.clone();
+    ui.on_file_multi_select_clicked(move |idx, ctrl_held, shift_held| {
+        let idx = idx as usize;
+        if let Some(ui) = ui_weak.upgrade() {
+            let entries_model = ui.get_file_browser_entries();
+            let count = entries_model.row_count();
+            if idx >= count {
+                return;
+            }
+
+            let mut sel = multi_sel.borrow_mut();
+
+            if !ctrl_held && !shift_held {
+                // Normal click: clear all, select this one
+                sel.clear();
+                sel.insert(idx);
+            } else if ctrl_held {
+                // Ctrl+click: toggle this entry
+                if sel.contains(&idx) {
+                    sel.remove(&idx);
+                } else {
+                    sel.insert(idx);
+                }
+            } else if shift_held {
+                // Shift+click: range select from last anchor
+                let anchor = sel.iter().copied().min().unwrap_or(idx);
+                let (lo, hi) = if anchor <= idx { (anchor, idx) } else { (idx, anchor) };
+                for i in lo..=hi {
+                    sel.insert(i);
+                }
+            }
+
+            // Update the model's selected flags
+            let mut items: Vec<FileEntry> = Vec::with_capacity(count);
+            for i in 0..count {
+                let mut entry = entries_model.row_data(i).unwrap();
+                entry.selected = sel.contains(&i);
+                items.push(entry);
+            }
+
+            ui.set_file_browser_entries(ModelRc::new(VecModel::from(items)));
+            ui.set_file_selection_count(sel.len() as i32);
+
+            // Update selected-index for single selection (detail panel)
+            if sel.len() == 1 {
+                let single_idx = *sel.iter().next().unwrap();
+                ui.set_file_selected_index(single_idx as i32);
+            }
+
+            // Calculate selection size
+            let dir = bp.borrow().clone();
+            let names: Vec<String> = sel
+                .iter()
+                .filter_map(|&i| entries_model.row_data(i).map(|e| e.name.to_string()))
+                .collect();
+            let size_text = filebrowser::calculate_selection_size(&dir, &names);
+            ui.set_file_selection_size_text(SharedString::from(size_text));
+        }
+    });
+
+    // Select all
+    let ui_weak = ui.as_weak();
+    let multi_sel = ctx.browser_multi_selection.clone();
+    let bp = browser_path.clone();
+    ui.on_file_select_all(move || {
+        if let Some(ui) = ui_weak.upgrade() {
+            let entries_model = ui.get_file_browser_entries();
+            let count = entries_model.row_count();
+            let mut sel = multi_sel.borrow_mut();
+            sel.clear();
+
+            let mut items: Vec<FileEntry> = Vec::with_capacity(count);
+            for i in 0..count {
+                let mut entry = entries_model.row_data(i).unwrap();
+                entry.selected = true;
+                sel.insert(i);
+                items.push(entry);
+            }
+
+            let names: Vec<String> = items.iter().map(|e| e.name.to_string()).collect();
+            ui.set_file_browser_entries(ModelRc::new(VecModel::from(items)));
+            ui.set_file_selection_count(count as i32);
+
+            let dir = bp.borrow().clone();
+            let size_text = filebrowser::calculate_selection_size(&dir, &names);
+            ui.set_file_selection_size_text(SharedString::from(size_text));
+        }
+    });
+
+    // Clear selection
+    let ui_weak = ui.as_weak();
+    let multi_sel = ctx.browser_multi_selection.clone();
+    ui.on_file_clear_selection(move || {
+        multi_sel.borrow_mut().clear();
+        if let Some(ui) = ui_weak.upgrade() {
+            let entries_model = ui.get_file_browser_entries();
+            let count = entries_model.row_count();
+            let mut items: Vec<FileEntry> = Vec::with_capacity(count);
+            for i in 0..count {
+                let mut entry = entries_model.row_data(i).unwrap();
+                entry.selected = false;
+                items.push(entry);
+            }
+            ui.set_file_browser_entries(ModelRc::new(VecModel::from(items)));
+            ui.set_file_selection_count(0);
+            ui.set_file_selection_size_text("".into());
+        }
+    });
+
+    // Delete selected (multi-select batch delete)
+    let ui_weak = ui.as_weak();
+    let bp = browser_path.clone();
+    let sh = show_hidden.clone();
+    let sf = sort_field.clone();
+    let sa = sort_ascending.clone();
+    let ft = filter_text.clone();
+    let multi_sel = ctx.browser_multi_selection.clone();
+    ui.on_file_delete_selected(move || {
+        let dir = bp.borrow().clone();
+        let sel = multi_sel.borrow().clone();
+        if let Some(ui) = ui_weak.upgrade() {
+            let entries_model = ui.get_file_browser_entries();
+            for &idx in sel.iter().rev() {
+                if let Some(entry) = entries_model.row_data(idx) {
+                    match filebrowser::delete_entry(&dir, &entry.name.to_string()) {
+                        Ok(()) => tracing::info!(name = %entry.name, "Multi-select deleted"),
+                        Err(e) => tracing::error!(name = %entry.name, error = %e, "Multi-select delete failed"),
+                    }
+                }
+            }
+            multi_sel.borrow_mut().clear();
+            refresh_entries(&ui, &dir, *sh.borrow(), &sf.borrow(), *sa.borrow(), &ft.borrow());
+            ui.set_file_selection_count(0);
+            ui.set_file_selection_size_text("".into());
+        }
+    });
+
+    // Copy selected (multi-select: copies first selected to clipboard for now)
+    let bp = browser_path.clone();
+    let fc = file_clip.clone();
+    let ui_weak = ui.as_weak();
+    let multi_sel = ctx.browser_multi_selection.clone();
+    ui.on_file_copy_selected(move || {
+        let dir = bp.borrow().clone();
+        let sel = multi_sel.borrow().clone();
+        if let Some(ui) = ui_weak.upgrade() {
+            let entries_model = ui.get_file_browser_entries();
+            if let Some(&first) = sel.iter().next() {
+                if let Some(entry) = entries_model.row_data(first) {
+                    *fc.borrow_mut() = Some(FileClipOp::Copy {
+                        src_dir: dir,
+                        name: entry.name.to_string(),
+                    });
+                    ui.set_file_has_clipboard(true);
+                    tracing::info!(name = %entry.name, "Multi-select copy (first item)");
+                }
+            }
+        }
+    });
+
+    // Cut selected (multi-select: cuts first selected to clipboard)
+    let bp = browser_path.clone();
+    let fc = file_clip.clone();
+    let ui_weak = ui.as_weak();
+    let multi_sel = ctx.browser_multi_selection.clone();
+    ui.on_file_cut_selected(move || {
+        let dir = bp.borrow().clone();
+        let sel = multi_sel.borrow().clone();
+        if let Some(ui) = ui_weak.upgrade() {
+            let entries_model = ui.get_file_browser_entries();
+            if let Some(&first) = sel.iter().next() {
+                if let Some(entry) = entries_model.row_data(first) {
+                    *fc.borrow_mut() = Some(FileClipOp::Cut {
+                        src_dir: dir,
+                        name: entry.name.to_string(),
+                    });
+                    ui.set_file_has_clipboard(true);
+                    tracing::info!(name = %entry.name, "Multi-select cut (first item)");
+                }
+            }
+        }
+    });
+
+    // Context menu: Copy path
+    let bp = browser_path.clone();
+    ui.on_file_context_copy_path(move |name| {
+        let dir = bp.borrow().clone();
+        let full_path = filebrowser::get_full_path(&dir, &name.to_string());
+        // Write to system clipboard via xclip or xsel if available
+        let _ = std::process::Command::new("sh")
+            .args(["-c", &format!("echo -n '{}' | xclip -selection clipboard 2>/dev/null || echo -n '{}' | xsel --clipboard 2>/dev/null", full_path, full_path)])
+            .spawn();
+        tracing::info!(path = %full_path, "Path copied to clipboard");
+    });
+
+    // Context menu: Open terminal here
+    let bp = browser_path.clone();
+    ui.on_file_context_open_terminal(move || {
+        let dir = bp.borrow().clone();
+        let expanded = filebrowser::expand_home(&dir);
+        let dir_str = expanded.to_string_lossy().to_string();
+        // Try common terminal emulators
+        let _ = std::process::Command::new("sh")
+            .args(["-c", &format!(
+                "cd '{}' && (xterm -e sh 2>/dev/null || alacritty 2>/dev/null || foot 2>/dev/null || sh) &",
+                dir_str
+            )])
+            .spawn();
+        tracing::info!(dir = %dir_str, "Opening terminal in directory");
+    });
+
+    // Context menu: Compress
+    let bp = browser_path.clone();
+    let sh = show_hidden.clone();
+    let sf = sort_field.clone();
+    let sa = sort_ascending.clone();
+    let ft = filter_text.clone();
+    let ui_weak = ui.as_weak();
+    ui.on_file_context_compress(move |name| {
+        let dir = bp.borrow().clone();
+        match filebrowser::compress_entry(&dir, &name.to_string()) {
+            Ok(()) => tracing::info!(name = %name, "File compressed"),
+            Err(e) => tracing::error!(name = %name, error = %e, "Compress failed"),
+        }
+        if let Some(ui) = ui_weak.upgrade() {
+            refresh_entries(&ui, &dir, *sh.borrow(), &sf.borrow(), *sa.borrow(), &ft.borrow());
+        }
+    });
+
     // Ask AI — send file context to AI and stream response inline
     let ui_weak = ui.as_weak();
     let bp = browser_path.clone();
@@ -677,6 +928,264 @@ fn wire_file_browser(ui: &App, ctx: &AppContext) {
 
         tracing::info!(file = %name, "Ask AI from file browser");
     });
+
+    // ── V44: Tab management ──
+    let tab_paths: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+
+    // New tab — duplicate current path as a new tab
+    let ui_weak = ui.as_weak();
+    let bp = browser_path.clone();
+    let tp = tab_paths.clone();
+    ui.on_file_new_tab(move || {
+        let current = bp.borrow().clone();
+        tp.borrow_mut().push(current.clone());
+        if let Some(ui) = ui_weak.upgrade() {
+            update_tab_ui(&ui, &tp.borrow(), tp.borrow().len() - 1);
+        }
+        tracing::info!("New file browser tab opened");
+    });
+
+    // Switch tab — navigate to tab's stored path
+    let ui_weak = ui.as_weak();
+    let bp = browser_path.clone();
+    let sh = show_hidden.clone();
+    let tp = tab_paths.clone();
+    let hb = history_back.clone();
+    let hf = history_forward.clone();
+    let sf = sort_field.clone();
+    let sa = sort_ascending.clone();
+    let ft = filter_text.clone();
+    ui.on_file_switch_tab(move |idx| {
+        let idx = idx as usize;
+        let tabs = tp.borrow();
+        if idx < tabs.len() {
+            let path = tabs[idx].clone();
+            drop(tabs);
+            *bp.borrow_mut() = path.clone();
+            if let Some(ui) = ui_weak.upgrade() {
+                ui.set_file_browser_path(SharedString::from(&path));
+                refresh_entries(&ui, &path, *sh.borrow(), &sf.borrow(), *sa.borrow(), &ft.borrow());
+                update_nav_state(&ui, &hb, &hf);
+                update_free_space(&ui, &path);
+                update_tab_ui(&ui, &tp.borrow(), idx);
+            }
+        }
+    });
+
+    // Close tab
+    let ui_weak = ui.as_weak();
+    let tp = tab_paths.clone();
+    ui.on_file_close_tab(move |idx| {
+        let idx = idx as usize;
+        let mut tabs = tp.borrow_mut();
+        if idx < tabs.len() {
+            tabs.remove(idx);
+            let active = if tabs.is_empty() { 0 } else { idx.min(tabs.len() - 1) };
+            if let Some(ui) = ui_weak.upgrade() {
+                update_tab_ui(&ui, &tabs, active);
+            }
+            tracing::info!(idx, "File browser tab closed");
+        }
+    });
+
+    // ── V44: Quick Look ──
+    let ui_weak = ui.as_weak();
+    let bp = browser_path.clone();
+    ui.on_file_quick_look(move |idx| {
+        let idx = idx as usize;
+        if let Some(ui) = ui_weak.upgrade() {
+            let entries_model = ui.get_file_browser_entries();
+            if let Some(entry) = entries_model.row_data(idx) {
+                let name = entry.name.to_string();
+                let dir = bp.borrow().clone();
+                let full = filebrowser::expand_home(&dir).join(&name);
+
+                // Determine if text file by extension
+                let is_text = is_text_extension(&name);
+                let content = if is_text {
+                    // Read first 50 lines
+                    match std::fs::read_to_string(&full) {
+                        Ok(text) => {
+                            let lines: Vec<&str> = text.lines().take(50).collect();
+                            lines.join("\n")
+                        }
+                        Err(e) => format!("Could not read file: {}", e),
+                    }
+                } else {
+                    // Show file info
+                    let detail = filebrowser::get_file_details(&dir, &name);
+                    format!(
+                        "File: {}\nType: {}\nSize: {}\nModified: {}\nPath: {}\nPermissions: {}",
+                        detail.name, detail.file_type, detail.size_text,
+                        detail.modified_text, detail.path_text, detail.permissions
+                    )
+                };
+
+                ui.set_file_quick_look_name(SharedString::from(&name));
+                ui.set_file_quick_look_content(SharedString::from(&content));
+                ui.set_file_quick_look_open(true);
+                tracing::info!(file = %name, "Quick Look opened");
+            }
+        }
+    });
+
+    let ui_weak = ui.as_weak();
+    ui.on_file_close_quick_look(move || {
+        if let Some(ui) = ui_weak.upgrade() {
+            ui.set_file_quick_look_open(false);
+        }
+    });
+
+    // ── V44: Batch rename ──
+    let ui_weak = ui.as_weak();
+    let bp = browser_path.clone();
+    let sh = show_hidden.clone();
+    let sf = sort_field.clone();
+    let sa = sort_ascending.clone();
+    let ft = filter_text.clone();
+    let multi_sel = ctx.browser_multi_selection.clone();
+    ui.on_file_batch_rename_execute(move || {
+        if let Some(ui) = ui_weak.upgrade() {
+            let pattern = ui.get_file_batch_rename_pattern().to_string();
+            let replace = ui.get_file_batch_rename_replace().to_string();
+            if pattern.is_empty() {
+                return;
+            }
+
+            let dir = bp.borrow().clone();
+            let sel = multi_sel.borrow().clone();
+            let entries_model = ui.get_file_browser_entries();
+            let mut renamed = 0;
+
+            for &idx in &sel {
+                if let Some(entry) = entries_model.row_data(idx) {
+                    let old_name = entry.name.to_string();
+                    let new_name = old_name.replace(&pattern, &replace);
+                    if new_name != old_name && !new_name.is_empty() {
+                        match filebrowser::rename_entry(&dir, &old_name, &new_name) {
+                            Ok(()) => {
+                                renamed += 1;
+                                tracing::info!(old = %old_name, new = %new_name, "Batch renamed");
+                            }
+                            Err(e) => tracing::error!(old = %old_name, error = %e, "Batch rename failed"),
+                        }
+                    }
+                }
+            }
+
+            multi_sel.borrow_mut().clear();
+            refresh_entries(&ui, &dir, *sh.borrow(), &sf.borrow(), *sa.borrow(), &ft.borrow());
+            ui.set_file_selection_count(0);
+            ui.set_file_selection_size_text("".into());
+            tracing::info!(count = renamed, "Batch rename completed");
+        }
+    });
+
+    // ── V44: Trash ──
+    let trash_dir = {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+        std::path::PathBuf::from(home).join(".local/share/yantrik/trash")
+    };
+
+    let td = trash_dir.clone();
+    let ui_weak = ui.as_weak();
+    let bp = browser_path.clone();
+    let sh = show_hidden.clone();
+    let sf = sort_field.clone();
+    let sa = sort_ascending.clone();
+    let ft = filter_text.clone();
+    ui.on_file_toggle_trash(move || {
+        if let Some(ui) = ui_weak.upgrade() {
+            let entering = !ui.get_file_trash_mode();
+            ui.set_file_trash_mode(entering);
+
+            if entering {
+                // Create trash dir if needed
+                let _ = std::fs::create_dir_all(&td);
+
+                // List trash contents
+                let trash_path = td.to_string_lossy().to_string();
+                refresh_entries(&ui, &trash_path, true, "name", true, "");
+                ui.set_file_browser_path(SharedString::from("Trash"));
+                update_trash_count(&ui, &td);
+                tracing::info!("Entered trash view");
+            } else {
+                // Return to normal view
+                let path = bp.borrow().clone();
+                ui.set_file_browser_path(SharedString::from(&path));
+                refresh_entries(&ui, &path, *sh.borrow(), &sf.borrow(), *sa.borrow(), &ft.borrow());
+                tracing::info!("Exited trash view");
+            }
+        }
+    });
+
+    // Empty trash
+    let td = trash_dir.clone();
+    let ui_weak = ui.as_weak();
+    ui.on_file_empty_trash(move || {
+        if let Some(ui) = ui_weak.upgrade() {
+            if td.exists() {
+                match std::fs::remove_dir_all(&td) {
+                    Ok(()) => {
+                        let _ = std::fs::create_dir_all(&td);
+                        tracing::info!("Trash emptied");
+                    }
+                    Err(e) => tracing::error!(error = %e, "Failed to empty trash"),
+                }
+            }
+            let trash_path = td.to_string_lossy().to_string();
+            refresh_entries(&ui, &trash_path, true, "name", true, "");
+            update_trash_count(&ui, &td);
+        }
+    });
+
+    // Restore from trash
+    let td = trash_dir.clone();
+    let ui_weak = ui.as_weak();
+    let bp = browser_path.clone();
+    ui.on_file_restore_from_trash(move |idx| {
+        let idx = idx as usize;
+        if let Some(ui) = ui_weak.upgrade() {
+            let entries_model = ui.get_file_browser_entries();
+            if let Some(entry) = entries_model.row_data(idx) {
+                let name = entry.name.to_string();
+                let trash_file = td.join(&name);
+                let info_file = td.join(format!("{}.trashinfo", name));
+
+                // Read original path from .trashinfo, or fall back to home
+                let home_fallback = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+                let restore_dir = if info_file.exists() {
+                    std::fs::read_to_string(&info_file)
+                        .unwrap_or_else(|_| home_fallback.clone())
+                        .trim()
+                        .to_string()
+                } else {
+                    home_fallback
+                };
+
+                let restore_path = std::path::Path::new(&restore_dir).join(&name);
+                match std::fs::rename(&trash_file, &restore_path) {
+                    Ok(()) => {
+                        let _ = std::fs::remove_file(&info_file);
+                        tracing::info!(file = %name, to = %restore_dir, "Restored from trash");
+                    }
+                    Err(e) => tracing::error!(file = %name, error = %e, "Trash restore failed"),
+                }
+
+                // Refresh trash view
+                let trash_path = td.to_string_lossy().to_string();
+                refresh_entries(&ui, &trash_path, true, "name", true, "");
+                update_trash_count(&ui, &td);
+            }
+        }
+    });
+
+    // Initialize trash count on startup
+    {
+        let td = trash_dir.clone();
+        let _ = std::fs::create_dir_all(&td);
+        update_trash_count(ui, &td);
+    }
 }
 
 /// List a directory and push entries + breadcrumbs to the UI.
@@ -690,6 +1199,7 @@ fn refresh_entries(ui: &App, path: &str, show_hidden: bool, sort_field: &str, so
             size_text: e.size_text.into(),
             modified_text: e.modified_text.into(),
             icon_char: e.icon_char.into(),
+            selected: false,
         })
         .collect();
     ui.set_file_browser_entries(ModelRc::new(VecModel::from(items)));
@@ -738,6 +1248,65 @@ fn update_free_space(ui: &App, path: &str) {
         }
         _ => {}
     }
+}
+
+/// Update file browser tab UI from tab paths list.
+fn update_tab_ui(ui: &App, tabs: &[String], active_idx: usize) {
+    let tab_items: Vec<FileTabData> = tabs
+        .iter()
+        .enumerate()
+        .map(|(i, path)| {
+            let label = if path == "~" {
+                "Home".to_string()
+            } else {
+                path.rsplit('/').next().unwrap_or(path).to_string()
+            };
+            FileTabData {
+                path: SharedString::from(path.as_str()),
+                label: SharedString::from(label),
+                is_active: i == active_idx,
+            }
+        })
+        .collect();
+    ui.set_file_tabs(ModelRc::new(VecModel::from(tab_items)));
+    ui.set_file_active_tab(active_idx as i32);
+}
+
+/// Update trash count badge from trash directory.
+fn update_trash_count(ui: &App, trash_dir: &std::path::Path) {
+    let count = if trash_dir.exists() {
+        std::fs::read_dir(trash_dir)
+            .map(|rd| rd.filter(|e| {
+                e.as_ref()
+                    .map(|e| !e.file_name().to_string_lossy().ends_with(".trashinfo"))
+                    .unwrap_or(false)
+            }).count())
+            .unwrap_or(0)
+    } else {
+        0
+    };
+    ui.set_file_trash_count(count as i32);
+}
+
+/// Check if a filename has a text-like extension.
+fn is_text_extension(name: &str) -> bool {
+    let text_exts = [
+        "txt", "md", "rs", "py", "js", "ts", "jsx", "tsx", "html", "css",
+        "json", "yaml", "yml", "toml", "xml", "csv", "sh", "bash", "zsh",
+        "c", "cpp", "h", "hpp", "java", "go", "rb", "pl", "lua", "sql",
+        "conf", "cfg", "ini", "env", "log", "slint", "svelte", "vue",
+        "dockerfile", "makefile", "cmake", "gitignore", "editorconfig",
+    ];
+    let lower = name.to_lowercase();
+    // Check extension
+    if let Some(ext) = lower.rsplit('.').next() {
+        if text_exts.contains(&ext) {
+            return true;
+        }
+    }
+    // Check full name matches (no extension)
+    let basename = lower.rsplit('/').next().unwrap_or(&lower);
+    matches!(basename, "makefile" | "dockerfile" | "rakefile" | "gemfile" | "procfile" | "readme" | "license" | "changelog")
 }
 
 // ── Whisper cards ──

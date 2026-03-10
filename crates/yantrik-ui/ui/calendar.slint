@@ -1,4 +1,4 @@
-// Calendar — month view with event list sidebar.
+// Calendar — month, week, and day views with event list sidebar.
 // AI-integrated: natural language event creation, smart scheduling suggestions.
 
 import { Theme } from "theme.slint";
@@ -24,6 +24,28 @@ export struct CalendarDay {
     event-count: int,
 }
 
+export struct CalendarTimeEvent {
+    title: string,
+    start-hour: int,    // 0-23
+    start-min: int,     // 0-59
+    duration-min: int,  // in minutes
+    day-index: int,     // 0-6 (column)
+    color: color,
+}
+
+export struct CalendarAttendee {
+    name: string,
+    email: string,
+    rsvp-status: string,  // "accepted", "declined", "tentative", "pending"
+}
+
+export struct CalendarTemplate {
+    name: string,
+    title-template: string,
+    duration-min: int,
+    icon: string,
+}
+
 // ── Calendar Component ──
 
 export component CalendarScreen inherits Rectangle {
@@ -35,6 +57,19 @@ export component CalendarScreen inherits Rectangle {
     in property <[CalendarEvent]> events-today: [];
     in property <int> selected-day: 0;
     in property <bool> is-loading: false;
+
+    // View mode: 0=month, 1=week, 2=day
+    in-out property <int> view-mode: 0;
+    callback switch-view(int);
+
+    // Week view data
+    in property <[CalendarTimeEvent]> week-events: [];
+    in property <[string]> week-day-labels: [];
+    in property <int> current-hour: 0;
+
+    // Day view data
+    in property <[CalendarTimeEvent]> day-events: [];
+    in property <string> day-view-title: "";
 
     // Event form state
     in-out property <bool> show-event-form: false;
@@ -53,10 +88,37 @@ export component CalendarScreen inherits Rectangle {
     callback cancel-event-form();
     callback today-pressed();
 
+    // AI Assist
+    in property <bool> ai-is-working: false;
+    in property <string> ai-response: "";
+    in-out property <bool> ai-panel-open: false;
+    callback ai-explain-pressed();
+    callback ai-dismiss();
+
+    // Event templates & attendees
+    in property <[CalendarAttendee]> cal-event-attendees: [];
+    in property <[CalendarTemplate]> cal-templates: [
+        { name: "1-on-1", title-template: "1:1 with ", duration-min: 30, icon: "\u{1F464}" },
+        { name: "Standup", title-template: "Daily Standup", duration-min: 15, icon: "\u{2B06}" },
+        { name: "Team Meeting", title-template: "Team Meeting", duration-min: 60, icon: "\u{1F465}" },
+        { name: "Focus Time", title-template: "Focus Block", duration-min: 120, icon: "\u{1F3AF}" },
+    ];
+    in property <int> cal-reminder-minutes: 15;
+    in property <string> cal-timezone-display: "";
+    in-out property <bool> cal-template-panel-open: false;
+    in-out property <bool> cal-attendee-input-visible: false;
+    in-out property <string> cal-attendee-email-input: "";
+
+    callback cal-add-attendee(string, string);  // name, email
+    callback cal-remove-attendee(int);
+    callback cal-set-reminder(int);
+    callback cal-use-template(int);
+    callback cal-toggle-template-panel();
+
     HorizontalLayout {
         spacing: 0px;
 
-        // ── Left: Calendar grid ──
+        // ── Left: Calendar grid / week / day ──
         Rectangle {
             background: Theme.bg-surface;
             min-width: 480px;
@@ -65,7 +127,7 @@ export component CalendarScreen inherits Rectangle {
                 padding: 20px;
                 spacing: 16px;
 
-                // Month navigation header
+                // Navigation header
                 HorizontalLayout {
                     alignment: space-between;
                     height: 40px;
@@ -116,7 +178,7 @@ export component CalendarScreen inherits Rectangle {
                         }
 
                         Text {
-                            text: root.month-title;
+                            text: root.view-mode == 2 ? root.day-view-title : root.month-title;
                             color: Theme.text-primary;
                             font-size: 20px;
                             font-weight: 600;
@@ -126,6 +188,94 @@ export component CalendarScreen inherits Rectangle {
 
                     HorizontalLayout {
                         spacing: 8px;
+
+                        // View mode toggle (segmented control)
+                        Rectangle {
+                            width: 186px;
+                            height: 36px;
+                            border-radius: 8px;
+                            background: Theme.bg-card;
+                            clip: true;
+
+                            HorizontalLayout {
+                                spacing: 0px;
+
+                                // Month button
+                                Rectangle {
+                                    width: 62px;
+                                    height: 36px;
+                                    border-radius: 8px;
+                                    background: root.view-mode == 0 ? Theme.cyan : transparent;
+
+                                    TouchArea {
+                                        clicked => {
+                                            root.view-mode = 0;
+                                            root.switch-view(0);
+                                        }
+                                        mouse-cursor: pointer;
+                                    }
+
+                                    Text {
+                                        text: "Month";
+                                        color: root.view-mode == 0 ? Theme.bg-deep : Theme.text-secondary;
+                                        font-size: 11px;
+                                        font-weight: root.view-mode == 0 ? 600 : 400;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+                                }
+
+                                // Week button
+                                Rectangle {
+                                    width: 62px;
+                                    height: 36px;
+                                    border-radius: 8px;
+                                    background: root.view-mode == 1 ? Theme.cyan : transparent;
+
+                                    TouchArea {
+                                        clicked => {
+                                            root.view-mode = 1;
+                                            root.switch-view(1);
+                                        }
+                                        mouse-cursor: pointer;
+                                    }
+
+                                    Text {
+                                        text: "Week";
+                                        color: root.view-mode == 1 ? Theme.bg-deep : Theme.text-secondary;
+                                        font-size: 11px;
+                                        font-weight: root.view-mode == 1 ? 600 : 400;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+                                }
+
+                                // Day button
+                                Rectangle {
+                                    width: 62px;
+                                    height: 36px;
+                                    border-radius: 8px;
+                                    background: root.view-mode == 2 ? Theme.cyan : transparent;
+
+                                    TouchArea {
+                                        clicked => {
+                                            root.view-mode = 2;
+                                            root.switch-view(2);
+                                        }
+                                        mouse-cursor: pointer;
+                                    }
+
+                                    Text {
+                                        text: "Day";
+                                        color: root.view-mode == 2 ? Theme.bg-deep : Theme.text-secondary;
+                                        font-size: 11px;
+                                        font-weight: root.view-mode == 2 ? 600 : 400;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                            }
+                        }
 
                         Rectangle {
                             width: 70px;
@@ -145,6 +295,44 @@ export component CalendarScreen inherits Rectangle {
                                 font-weight: 500;
                                 horizontal-alignment: center;
                                 vertical-alignment: center;
+                            }
+                        }
+
+                        // AI Insights button
+                        TouchArea {
+                            width: ai-cal-btn.preferred-width + 16px;
+                            height: 36px;
+                            clicked => {
+                                if root.ai-panel-open {
+                                    root.ai-dismiss();
+                                    root.ai-panel-open = false;
+                                } else {
+                                    root.ai-explain-pressed();
+                                    root.ai-panel-open = true;
+                                }
+                            }
+                            ai-cal-btn := Rectangle {
+                                height: 36px;
+                                border-radius: 8px;
+                                background: root.ai-is-working ? Theme.accent : Theme.bg-card;
+                                HorizontalLayout {
+                                    padding-left: 10px;
+                                    padding-right: 10px;
+                                    spacing: 4px;
+                                    alignment: center;
+                                    Text {
+                                        text: root.ai-is-working ? "\u{2B50}" : "\u{2728}";
+                                        font-size: 12px;
+                                        vertical-alignment: center;
+                                    }
+                                    Text {
+                                        text: root.ai-is-working ? "..." : "AI";
+                                        color: root.ai-is-working ? #ffffff : Theme.text-secondary;
+                                        font-size: 11px;
+                                        font-weight: 500;
+                                        vertical-alignment: center;
+                                    }
+                                }
                             }
                         }
 
@@ -168,90 +356,485 @@ export component CalendarScreen inherits Rectangle {
                                 vertical-alignment: center;
                             }
                         }
-                    }
-                }
 
-                // Day-of-week headers
-                HorizontalLayout {
-                    spacing: 2px;
+                        // Template quick-create button
+                        Rectangle {
+                            width: 36px;
+                            height: 36px;
+                            border-radius: 8px;
+                            background: root.cal-template-panel-open ? Theme.accent : Theme.bg-card;
 
-                    for header in ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"] : Rectangle {
-                        height: 32px;
+                            TouchArea {
+                                clicked => { root.cal-toggle-template-panel(); }
+                                mouse-cursor: pointer;
+                            }
 
-                        Text {
-                            text: header;
-                            color: Theme.text-dim;
-                            font-size: 11px;
-                            font-weight: 600;
-                            horizontal-alignment: center;
-                            vertical-alignment: center;
+                            Text {
+                                text: "\u{2630}";
+                                color: root.cal-template-panel-open ? #ffffff : Theme.text-secondary;
+                                font-size: 14px;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
                         }
                     }
                 }
 
-                // Calendar grid (6 rows x 7 cols = 42 cells)
-                VerticalLayout {
-                    spacing: 2px;
-
-                    for row in 6 : HorizontalLayout {
-                        spacing: 2px;
-
-                        for col in 7 : Rectangle {
-                            property <int> cell-idx: row * 7 + col;
-                            property <CalendarDay> cell-day: root.days.length > cell-idx
-                                ? root.days[cell-idx]
-                                : { day-number: 0, is-today: false, is-selected: false, is-current-month: false, has-events: false, event-count: 0 };
-
-                            height: 64px;
-                            border-radius: 8px;
-                            background: cell-day.is-selected ? Theme.cyan.with-alpha(0.15)
-                                : cell-day.is-today ? Theme.bg-card
-                                : transparent;
-                            border-width: cell-day.is-today ? 1px : 0;
-                            border-color: cell-day.is-today ? Theme.cyan.with-alpha(0.4) : transparent;
-
-                            if cell-day.day-number > 0 : TouchArea {
-                                clicked => { root.day-clicked(cell-day.day-number); }
-                                mouse-cursor: pointer;
+                // AI Response Panel
+                if root.ai-panel-open && root.ai-response != "" : Rectangle {
+                    max-height: 140px;
+                    background: #1a2332;
+                    border-width: 1px;
+                    border-color: Theme.accent.transparentize(70%);
+                    Flickable {
+                        viewport-height: ai-cal-resp.preferred-height + 16px;
+                        ai-cal-resp := VerticalLayout {
+                            padding: 12px;
+                            spacing: 8px;
+                            HorizontalLayout {
+                                spacing: 6px;
+                                Text { text: "\u{2728}"; font-size: 12px; vertical-alignment: center; }
+                                Text { text: "AI Insights"; color: Theme.accent; font-size: 12px; font-weight: 600; vertical-alignment: center; }
+                                Rectangle { horizontal-stretch: 1; }
+                                TouchArea {
+                                    width: 24px; height: 24px;
+                                    clicked => { root.ai-panel-open = false; root.ai-dismiss(); }
+                                    Rectangle {
+                                        width: 24px; height: 24px; border-radius: 12px;
+                                        background: parent.has-hover ? Theme.hover-fill : transparent;
+                                        Text { text: "\u{2715}"; font-size: 11px; color: Theme.text-dim; horizontal-alignment: center; vertical-alignment: center; }
+                                    }
+                                }
                             }
+                            Text { text: root.ai-response; color: Theme.text-primary; font-size: 12px; wrap: word-wrap; }
+                        }
+                    }
+                }
 
-                            VerticalLayout {
-                                padding: 6px;
-                                spacing: 4px;
+                // ── Event Templates Panel ──
+                if root.cal-template-panel-open : Rectangle {
+                    height: tpl-layout.preferred-height + 24px;
+                    border-radius: 8px;
+                    background: #ffffff08;
+                    border-width: 1px;
+                    border-color: Theme.accent.transparentize(80%);
 
-                                if cell-day.day-number > 0 : Text {
-                                    text: cell-day.day-number;
-                                    color: cell-day.is-selected ? Theme.cyan
-                                        : cell-day.is-today ? Theme.text-primary
-                                        : cell-day.is-current-month ? Theme.text-secondary
-                                        : Theme.text-dim;
-                                    font-size: 13px;
-                                    font-weight: cell-day.is-today || cell-day.is-selected ? 700 : 400;
-                                    horizontal-alignment: center;
+                    tpl-layout := VerticalLayout {
+                        padding: 12px;
+                        spacing: 8px;
+
+                        HorizontalLayout {
+                            spacing: 6px;
+                            Text {
+                                text: "Quick Templates";
+                                color: Theme.text-primary;
+                                font-size: 12px;
+                                font-weight: 600;
+                                vertical-alignment: center;
+                            }
+                            Rectangle { horizontal-stretch: 1; }
+                            TouchArea {
+                                width: 24px; height: 24px;
+                                clicked => { root.cal-template-panel-open = false; }
+                                Rectangle {
+                                    width: 24px; height: 24px; border-radius: 12px;
+                                    background: parent.has-hover ? Theme.hover-fill : transparent;
+                                    Text { text: "\u{2715}"; font-size: 11px; color: Theme.text-dim; horizontal-alignment: center; vertical-alignment: center; }
+                                }
+                            }
+                        }
+
+                        HorizontalLayout {
+                            spacing: 8px;
+
+                            for idx in root.cal-templates.length : Rectangle {
+                                property <CalendarTemplate> tpl: root.cal-templates[idx];
+                                min-width: 100px;
+                                height: 56px;
+                                border-radius: 8px;
+                                background: tpl-touch.has-hover ? Theme.bg-card : #ffffff08;
+                                border-width: 1px;
+                                border-color: tpl-touch.has-hover ? Theme.accent.transparentize(60%) : transparent;
+
+                                tpl-touch := TouchArea {
+                                    clicked => { root.cal-use-template(idx); }
+                                    mouse-cursor: pointer;
                                 }
 
-                                // Event indicator dots
-                                if cell-day.has-events : HorizontalLayout {
+                                VerticalLayout {
+                                    padding: 8px;
+                                    spacing: 4px;
                                     alignment: center;
-                                    spacing: 3px;
 
+                                    HorizontalLayout {
+                                        spacing: 4px;
+                                        alignment: center;
+                                        Text {
+                                            text: tpl.icon;
+                                            font-size: 14px;
+                                            vertical-alignment: center;
+                                        }
+                                        Text {
+                                            text: tpl.name;
+                                            color: Theme.text-primary;
+                                            font-size: 11px;
+                                            font-weight: 600;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+
+                                    Text {
+                                        text: tpl.duration-min + " min";
+                                        color: Theme.text-dim;
+                                        font-size: 10px;
+                                        horizontal-alignment: center;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // ═══════════════════════════════════════
+                // MONTH VIEW (view-mode == 0)
+                // ═══════════════════════════════════════
+                if root.view-mode == 0 : VerticalLayout {
+                    spacing: 2px;
+
+                    // Day-of-week headers
+                    HorizontalLayout {
+                        spacing: 2px;
+
+                        for header in ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"] : Rectangle {
+                            height: 32px;
+
+                            Text {
+                                text: header;
+                                color: Theme.text-dim;
+                                font-size: 11px;
+                                font-weight: 600;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+
+                    // Calendar grid (6 rows x 7 cols = 42 cells)
+                    VerticalLayout {
+                        spacing: 2px;
+
+                        for row in 6 : HorizontalLayout {
+                            spacing: 2px;
+
+                            for col in 7 : Rectangle {
+                                property <int> cell-idx: row * 7 + col;
+                                property <CalendarDay> cell-day: root.days.length > cell-idx
+                                    ? root.days[cell-idx]
+                                    : { day-number: 0, is-today: false, is-selected: false, is-current-month: false, has-events: false, event-count: 0 };
+
+                                height: 64px;
+                                border-radius: 8px;
+                                background: cell-day.is-selected ? Theme.cyan.with-alpha(0.15)
+                                    : cell-day.is-today ? Theme.bg-card
+                                    : transparent;
+                                border-width: cell-day.is-today ? 1px : 0;
+                                border-color: cell-day.is-today ? Theme.cyan.with-alpha(0.4) : transparent;
+
+                                if cell-day.day-number > 0 : TouchArea {
+                                    clicked => { root.day-clicked(cell-day.day-number); }
+                                    mouse-cursor: pointer;
+                                }
+
+                                VerticalLayout {
+                                    padding: 6px;
+                                    spacing: 4px;
+
+                                    if cell-day.day-number > 0 : Text {
+                                        text: cell-day.day-number;
+                                        color: cell-day.is-selected ? Theme.cyan
+                                            : cell-day.is-today ? Theme.text-primary
+                                            : cell-day.is-current-month ? Theme.text-secondary
+                                            : Theme.text-dim;
+                                        font-size: 13px;
+                                        font-weight: cell-day.is-today || cell-day.is-selected ? 700 : 400;
+                                        horizontal-alignment: center;
+                                    }
+
+                                    // Event indicator dots
+                                    if cell-day.has-events : HorizontalLayout {
+                                        alignment: center;
+                                        spacing: 3px;
+
+                                        Rectangle {
+                                            width: 5px;
+                                            height: 5px;
+                                            border-radius: 2.5px;
+                                            background: Theme.cyan;
+                                        }
+                                        if cell-day.event-count > 1 : Rectangle {
+                                            width: 5px;
+                                            height: 5px;
+                                            border-radius: 2.5px;
+                                            background: Theme.amber;
+                                        }
+                                        if cell-day.event-count > 2 : Rectangle {
+                                            width: 5px;
+                                            height: 5px;
+                                            border-radius: 2.5px;
+                                            background: Theme.text-dim;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // ═══════════════════════════════════════
+                // WEEK VIEW (view-mode == 1)
+                // ═══════════════════════════════════════
+                if root.view-mode == 1 : VerticalLayout {
+                    spacing: 0px;
+
+                    // Day column headers with date labels
+                    HorizontalLayout {
+                        spacing: 0px;
+                        height: 36px;
+
+                        // Spacer for hour column
+                        Rectangle {
+                            width: 50px;
+                            height: 36px;
+                        }
+
+                        for idx in 7 : Rectangle {
+                            height: 36px;
+                            border-width: 1px;
+                            border-color: Theme.hover-fill;
+
+                            Text {
+                                text: root.week-day-labels.length > idx ? root.week-day-labels[idx] : "";
+                                color: Theme.text-secondary;
+                                font-size: 11px;
+                                font-weight: 600;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+
+                    // Scrollable time grid
+                    Flickable {
+                        viewport-height: 1440px; // 24 hours * 60px
+
+                        Rectangle {
+                            width: 100%;
+                            height: 1440px;
+
+                            // Hour rows (background lines)
+                            for hour in 24 : Rectangle {
+                                y: hour * 60px;
+                                width: 100%;
+                                height: 60px;
+
+                                // Hour label
+                                Rectangle {
+                                    x: 0;
+                                    y: 0;
+                                    width: 50px;
+                                    height: 60px;
+
+                                    Text {
+                                        text: hour < 10 ? "0" + hour : hour;
+                                        color: Theme.text-dim;
+                                        font-size: 11px;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: top;
+                                    }
+                                }
+
+                                // Grid line
+                                Rectangle {
+                                    x: 50px;
+                                    y: 0;
+                                    width: parent.width - 50px;
+                                    height: 1px;
+                                    background: Theme.hover-fill;
+                                }
+
+                                // Day column dividers
+                                for col in 6 : Rectangle {
+                                    x: 50px + (col + 1) * ((parent.width - 50px) / 7);
+                                    y: 0;
+                                    width: 1px;
+                                    height: 60px;
+                                    background: Theme.hover-fill;
+                                }
+                            }
+
+                            // Current hour indicator line
+                            Rectangle {
+                                x: 50px;
+                                y: root.current-hour * 60px;
+                                width: parent.width - 50px;
+                                height: 2px;
+                                background: Theme.cyan;
+                            }
+                            // Current hour dot
+                            Rectangle {
+                                x: 44px;
+                                y: root.current-hour * 60px - 4px;
+                                width: 10px;
+                                height: 10px;
+                                border-radius: 5px;
+                                background: Theme.cyan;
+                            }
+
+                            // Week events
+                            for ev in root.week-events : Rectangle {
+                                property <length> col-width: (parent.width - 50px) / 7;
+                                x: 50px + ev.day-index * col-width + 2px;
+                                y: ev.start-hour * 60px + ev.start-min * 1px;
+                                width: col-width - 4px;
+                                height: Math.max(ev.duration-min * 1px, 20px);
+                                border-radius: 4px;
+                                background: ev.color.with-alpha(0.85);
+                                clip: true;
+
+                                VerticalLayout {
+                                    padding: 4px;
+                                    spacing: 1px;
+
+                                    Text {
+                                        text: ev.title;
+                                        color: #ffffff;
+                                        font-size: 10px;
+                                        font-weight: 600;
+                                        overflow: elide;
+                                    }
+                                    Text {
+                                        text: (ev.start-hour < 10 ? "0" : "") + ev.start-hour + ":" + (ev.start-min < 10 ? "0" : "") + ev.start-min;
+                                        color: #ffffffcc;
+                                        font-size: 9px;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // ═══════════════════════════════════════
+                // DAY VIEW (view-mode == 2)
+                // ═══════════════════════════════════════
+                if root.view-mode == 2 : VerticalLayout {
+                    spacing: 0px;
+
+                    // Scrollable time grid — single day
+                    Flickable {
+                        viewport-height: 1440px; // 24 hours * 60px
+
+                        Rectangle {
+                            width: 100%;
+                            height: 1440px;
+
+                            // Hour rows
+                            for hour in 24 : Rectangle {
+                                y: hour * 60px;
+                                width: 100%;
+                                height: 60px;
+
+                                // Hour label
+                                Rectangle {
+                                    x: 0;
+                                    y: 0;
+                                    width: 50px;
+                                    height: 60px;
+
+                                    Text {
+                                        text: hour < 10 ? "0" + hour : hour;
+                                        color: Theme.text-dim;
+                                        font-size: 11px;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: top;
+                                    }
+                                }
+
+                                // Grid line
+                                Rectangle {
+                                    x: 50px;
+                                    y: 0;
+                                    width: parent.width - 50px;
+                                    height: 1px;
+                                    background: Theme.hover-fill;
+                                }
+
+                                // Half-hour line (subtle)
+                                Rectangle {
+                                    x: 50px;
+                                    y: 30px;
+                                    width: parent.width - 50px;
+                                    height: 1px;
+                                    background: Theme.hover-fill.with-alpha(0.5);
+                                }
+                            }
+
+                            // Current hour indicator line
+                            Rectangle {
+                                x: 50px;
+                                y: root.current-hour * 60px;
+                                width: parent.width - 50px;
+                                height: 2px;
+                                background: Theme.cyan;
+                            }
+                            // Current hour dot
+                            Rectangle {
+                                x: 44px;
+                                y: root.current-hour * 60px - 4px;
+                                width: 10px;
+                                height: 10px;
+                                border-radius: 5px;
+                                background: Theme.cyan;
+                            }
+
+                            // Day events (only day-index == 0)
+                            for ev in root.day-events : Rectangle {
+                                x: 54px;
+                                y: ev.start-hour * 60px + ev.start-min * 1px;
+                                width: parent.width - 58px;
+                                height: Math.max(ev.duration-min * 1px, 24px);
+                                border-radius: 6px;
+                                background: ev.color.with-alpha(0.85);
+                                clip: true;
+
+                                HorizontalLayout {
+                                    padding: 8px;
+                                    spacing: 12px;
+                                    alignment: start;
+
+                                    // Color accent strip
                                     Rectangle {
-                                        width: 5px;
-                                        height: 5px;
-                                        border-radius: 2.5px;
-                                        background: Theme.cyan;
+                                        width: 3px;
+                                        height: parent.height - 8px;
+                                        border-radius: 1.5px;
+                                        background: #ffffff60;
                                     }
-                                    if cell-day.event-count > 1 : Rectangle {
-                                        width: 5px;
-                                        height: 5px;
-                                        border-radius: 2.5px;
-                                        background: Theme.amber;
-                                    }
-                                    if cell-day.event-count > 2 : Rectangle {
-                                        width: 5px;
-                                        height: 5px;
-                                        border-radius: 2.5px;
-                                        background: Theme.text-dim;
+
+                                    VerticalLayout {
+                                        spacing: 2px;
+                                        alignment: center;
+
+                                        Text {
+                                            text: ev.title;
+                                            color: #ffffff;
+                                            font-size: 13px;
+                                            font-weight: 600;
+                                            overflow: elide;
+                                        }
+                                        Text {
+                                            text: (ev.start-hour < 10 ? "0" : "") + ev.start-hour + ":" + (ev.start-min < 10 ? "0" : "") + ev.start-min;
+                                            color: #ffffffcc;
+                                            font-size: 11px;
+                                        }
                                     }
                                 }
                             }
@@ -410,6 +993,207 @@ export component CalendarScreen inherits Rectangle {
                                     color: Theme.text-primary;
                                     font-size: 13px;
                                     wrap: word-wrap;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Timezone display
+                if root.cal-timezone-display != "" : Text {
+                    text: "\u{1F310} " + root.cal-timezone-display;
+                    color: Theme.text-dim;
+                    font-size: 10px;
+                }
+
+                // ── Reminder selector ──
+                VerticalLayout {
+                    spacing: 4px;
+
+                    Text {
+                        text: "Reminder";
+                        color: Theme.text-dim;
+                        font-size: 11px;
+                    }
+
+                    HorizontalLayout {
+                        spacing: 4px;
+
+                        for rm in [
+                            { label: "None", mins: 0 },
+                            { label: "5m", mins: 5 },
+                            { label: "15m", mins: 15 },
+                            { label: "30m", mins: 30 },
+                            { label: "1h", mins: 60 },
+                        ] : Rectangle {
+                            height: 28px;
+                            min-width: 38px;
+                            border-radius: 6px;
+                            background: root.cal-reminder-minutes == rm.mins ? Theme.accent : #ffffff08;
+
+                            TouchArea {
+                                clicked => { root.cal-set-reminder(rm.mins); }
+                                mouse-cursor: pointer;
+                            }
+
+                            Text {
+                                text: rm.label;
+                                color: root.cal-reminder-minutes == rm.mins ? #ffffff : Theme.text-secondary;
+                                font-size: 10px;
+                                font-weight: root.cal-reminder-minutes == rm.mins ? 600 : 400;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                }
+
+                // ── Attendees section ──
+                VerticalLayout {
+                    spacing: 4px;
+
+                    HorizontalLayout {
+                        spacing: 6px;
+
+                        Text {
+                            text: "Attendees";
+                            color: Theme.text-dim;
+                            font-size: 11px;
+                            vertical-alignment: center;
+                        }
+                        Rectangle { horizontal-stretch: 1; }
+                        Rectangle {
+                            width: 24px;
+                            height: 24px;
+                            border-radius: 6px;
+                            background: root.cal-attendee-input-visible ? Theme.accent : Theme.bg-card;
+
+                            TouchArea {
+                                clicked => { root.cal-attendee-input-visible = !root.cal-attendee-input-visible; }
+                                mouse-cursor: pointer;
+                            }
+
+                            Text {
+                                text: "+";
+                                color: root.cal-attendee-input-visible ? #ffffff : Theme.text-secondary;
+                                font-size: 13px;
+                                font-weight: 600;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+
+                    // Add attendee input
+                    if root.cal-attendee-input-visible : HorizontalLayout {
+                        spacing: 6px;
+
+                        Rectangle {
+                            horizontal-stretch: 1;
+                            height: 32px;
+                            border-radius: 8px;
+                            background: Theme.bg-card;
+
+                            HorizontalLayout {
+                                padding-left: 10px;
+                                padding-right: 10px;
+
+                                TextInput {
+                                    text <=> root.cal-attendee-email-input;
+                                    color: Theme.text-primary;
+                                    font-size: 12px;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+
+                        Rectangle {
+                            width: 48px;
+                            height: 32px;
+                            border-radius: 8px;
+                            background: Theme.accent;
+
+                            TouchArea {
+                                clicked => {
+                                    root.cal-add-attendee(root.cal-attendee-email-input, root.cal-attendee-email-input);
+                                    root.cal-attendee-email-input = "";
+                                }
+                                mouse-cursor: pointer;
+                            }
+
+                            Text {
+                                text: "Add";
+                                color: #ffffff;
+                                font-size: 11px;
+                                font-weight: 600;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+
+                    // Attendee chips
+                    for idx in root.cal-event-attendees.length : HorizontalLayout {
+                        property <CalendarAttendee> att: root.cal-event-attendees[idx];
+                        spacing: 0px;
+                        height: 28px;
+
+                        Rectangle {
+                            horizontal-stretch: 1;
+                            height: 28px;
+                            border-radius: 6px;
+                            background: #ffffff08;
+                            border-width: 1px;
+                            border-color: att.rsvp-status == "accepted" ? #4ade8040
+                                : att.rsvp-status == "declined" ? #ef444440
+                                : att.rsvp-status == "tentative" ? #f59e0b40
+                                : #ffffff10;
+
+                            HorizontalLayout {
+                                padding-left: 8px;
+                                padding-right: 4px;
+                                spacing: 4px;
+                                alignment: start;
+
+                                // RSVP status dot
+                                Rectangle {
+                                    width: 6px;
+                                    height: 6px;
+                                    border-radius: 3px;
+                                    y: parent.height / 2 - 3px;
+                                    background: att.rsvp-status == "accepted" ? #4ade80
+                                        : att.rsvp-status == "declined" ? #ef4444
+                                        : att.rsvp-status == "tentative" ? #f59e0b
+                                        : Theme.text-dim;
+                                }
+
+                                Text {
+                                    text: att.email;
+                                    color: Theme.text-secondary;
+                                    font-size: 10px;
+                                    overflow: elide;
+                                    vertical-alignment: center;
+                                }
+
+                                Rectangle { horizontal-stretch: 1; }
+
+                                // Remove button
+                                TouchArea {
+                                    width: 20px;
+                                    height: 20px;
+                                    clicked => { root.cal-remove-attendee(idx); }
+                                    mouse-cursor: pointer;
+                                    Rectangle {
+                                        width: 20px; height: 20px; border-radius: 10px;
+                                        background: parent.has-hover ? Theme.hover-fill : transparent;
+                                        Text {
+                                            text: "\u{2715}";
+                                            font-size: 9px;
+                                            color: Theme.text-dim;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+                                        }
+                                    }
                                 }
                             }
                         }

@@ -29,6 +29,22 @@ export component TerminalScreen inherits Rectangle {
     in property <int> active-tab: 0;
     in property <[TerminalTabData]> tabs: [];
 
+    // Search state
+    in-out property <bool> show-search: false;
+    in-out property <string> search-query: "";
+    in property <int> search-match-count: 0;
+    in property <int> search-current-match: 0;
+
+    // Split pane state
+    in property <bool> terminal-split-active: false;
+    in property <string> terminal-split-output: "";
+    in property <int> terminal-split-cursor-row: 0;
+    in property <int> terminal-split-cursor-col: 0;
+
+    // Profile state
+    in property <string> terminal-profile-name: "Default";
+    in-out property <bool> terminal-show-profiles: false;
+
     // Callbacks to Rust
     callback terminal-key-pressed(KeyEvent) -> EventResult;
     callback request-ai-help();
@@ -37,6 +53,13 @@ export component TerminalScreen inherits Rectangle {
     callback switch-tab(int);
     callback new-tab();
     callback close-tab(int);
+    callback search-query-changed(string);
+    callback search-next();
+    callback search-prev();
+    callback terminal-split-toggle();
+    callback terminal-switch-pane(int);
+    callback terminal-split-input(string);
+    callback terminal-set-profile(string);
 
     VerticalLayout {
         spacing: 0px;
@@ -81,26 +104,213 @@ export component TerminalScreen inherits Rectangle {
                     }
                 }
 
-                // Right: restart button (when dead)
-                if !root.is-alive : TouchArea {
-                    width: 80px;
-                    height: 28px;
-                    clicked => { root.restart-terminal(); }
+                // Right: toolbar buttons
+                HorizontalLayout {
+                    spacing: 6px;
+                    alignment: end;
 
+                    // Profile selector
                     Rectangle {
+                        width: profile-name-text.preferred-width + 20px;
+                        height: 28px;
+
+                        profile-ta := TouchArea {
+                            width: parent.width;
+                            height: parent.height;
+                            clicked => { root.terminal-show-profiles = !root.terminal-show-profiles; }
+
+                            Rectangle {
+                                width: parent.width;
+                                height: 28px;
+                                border-radius: 6px;
+                                background: root.terminal-show-profiles
+                                    ? Theme.hover-fill-strong
+                                    : (profile-ta.has-hover ? Theme.hover-fill : transparent);
+                                border-width: 1px;
+                                border-color: root.terminal-show-profiles ? Theme.cyan-dim : Theme.border-subtle;
+
+                                profile-name-text := Text {
+                                    text: root.terminal-profile-name;
+                                    color: root.terminal-show-profiles ? Theme.cyan : Theme.text-secondary;
+                                    font-size: 11px;
+                                    font-weight: root.terminal-show-profiles ? 600 : 400;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+
+                        // Profile dropdown
+                        if root.terminal-show-profiles : Rectangle {
+                            x: 0px;
+                            y: parent.height + 4px;
+                            width: 120px;
+                            height: 96px;
+                            border-radius: 8px;
+                            background: @linear-gradient(135deg, #18172ae0 0%, #0e0d14c0 100%);
+                            border-width: 1px;
+                            border-color: Theme.cyan-dim;
+
+                            VerticalLayout {
+                                padding: 4px;
+                                spacing: 2px;
+
+                                // Default profile
+                                prof-default-ta := TouchArea {
+                                    height: 28px;
+                                    clicked => {
+                                        root.terminal-set-profile("Default");
+                                        root.terminal-show-profiles = false;
+                                    }
+                                    Rectangle {
+                                        height: 28px;
+                                        border-radius: 6px;
+                                        background: root.terminal-profile-name == "Default"
+                                            ? Theme.tint-cyan
+                                            : (prof-default-ta.has-hover ? Theme.hover-fill : transparent);
+                                        HorizontalLayout {
+                                            padding-left: 10px;
+                                            Text {
+                                                text: "Default";
+                                                color: root.terminal-profile-name == "Default" ? Theme.cyan : Theme.text-secondary;
+                                                font-size: 12px;
+                                                font-weight: root.terminal-profile-name == "Default" ? 600 : 400;
+                                                vertical-alignment: center;
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // Root profile
+                                prof-root-ta := TouchArea {
+                                    height: 28px;
+                                    clicked => {
+                                        root.terminal-set-profile("Root");
+                                        root.terminal-show-profiles = false;
+                                    }
+                                    Rectangle {
+                                        height: 28px;
+                                        border-radius: 6px;
+                                        background: root.terminal-profile-name == "Root"
+                                            ? Theme.tint-cyan
+                                            : (prof-root-ta.has-hover ? Theme.hover-fill : transparent);
+                                        HorizontalLayout {
+                                            padding-left: 10px;
+                                            Text {
+                                                text: "Root";
+                                                color: root.terminal-profile-name == "Root" ? Theme.cyan : Theme.text-secondary;
+                                                font-size: 12px;
+                                                font-weight: root.terminal-profile-name == "Root" ? 600 : 400;
+                                                vertical-alignment: center;
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // Dev profile
+                                prof-dev-ta := TouchArea {
+                                    height: 28px;
+                                    clicked => {
+                                        root.terminal-set-profile("Dev");
+                                        root.terminal-show-profiles = false;
+                                    }
+                                    Rectangle {
+                                        height: 28px;
+                                        border-radius: 6px;
+                                        background: root.terminal-profile-name == "Dev"
+                                            ? Theme.tint-cyan
+                                            : (prof-dev-ta.has-hover ? Theme.hover-fill : transparent);
+                                        HorizontalLayout {
+                                            padding-left: 10px;
+                                            Text {
+                                                text: "Dev";
+                                                color: root.terminal-profile-name == "Dev" ? Theme.cyan : Theme.text-secondary;
+                                                font-size: 12px;
+                                                font-weight: root.terminal-profile-name == "Dev" ? 600 : 400;
+                                                vertical-alignment: center;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Split pane toggle button
+                    split-btn-ta := TouchArea {
+                        width: 56px;
+                        height: 28px;
+                        clicked => { root.terminal-split-toggle(); }
+
+                        Rectangle {
+                            width: 56px;
+                            height: 28px;
+                            border-radius: 6px;
+                            background: root.terminal-split-active
+                                ? Theme.hover-fill-strong
+                                : (split-btn-ta.has-hover ? Theme.hover-fill : transparent);
+                            border-width: 1px;
+                            border-color: root.terminal-split-active ? Theme.cyan-dim : Theme.border-subtle;
+
+                            Text {
+                                text: "Split";
+                                color: root.terminal-split-active ? Theme.cyan : Theme.text-secondary;
+                                font-size: 12px;
+                                font-weight: root.terminal-split-active ? 600 : 400;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+
+                    // Search button
+                    search-btn-ta := TouchArea {
+                        width: 56px;
+                        height: 28px;
+                        clicked => { root.show-search = !root.show-search; }
+
+                        Rectangle {
+                            width: 56px;
+                            height: 28px;
+                            border-radius: 6px;
+                            background: root.show-search
+                                ? Theme.hover-fill-strong
+                                : (search-btn-ta.has-hover ? Theme.hover-fill : transparent);
+                            border-width: 1px;
+                            border-color: root.show-search ? Theme.cyan-dim : Theme.border-subtle;
+
+                            Text {
+                                text: "Search";
+                                color: root.show-search ? Theme.cyan : Theme.text-secondary;
+                                font-size: 12px;
+                                font-weight: root.show-search ? 600 : 400;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+
+                    // Restart button (when dead)
+                    if !root.is-alive : TouchArea {
                         width: 80px;
                         height: 28px;
-                        border-radius: 6px;
-                        background: parent.has-hover ? Theme.hover-fill-strong : Theme.hover-fill;
-                        border-width: 1px;
-                        border-color: Theme.border-subtle;
+                        clicked => { root.restart-terminal(); }
 
-                        Text {
-                            text: "Restart";
-                            color: Theme.cyan;
-                            font-size: 12px;
-                            horizontal-alignment: center;
-                            vertical-alignment: center;
+                        Rectangle {
+                            width: 80px;
+                            height: 28px;
+                            border-radius: 6px;
+                            background: parent.has-hover ? Theme.hover-fill-strong : Theme.hover-fill;
+                            border-width: 1px;
+                            border-color: Theme.border-subtle;
+
+                            Text {
+                                text: "Restart";
+                                color: Theme.cyan;
+                                font-size: 12px;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
                         }
                     }
                 }
@@ -222,50 +432,287 @@ export component TerminalScreen inherits Rectangle {
         // Tab bar separator
         Rectangle { height: 1px; background: Theme.separator; }
 
-        // ── Terminal output area ──
-        Rectangle {
-            background: #0c0c10;
+        // ── Search bar ──
+        if root.show-search : Rectangle {
+            height: search-bar-layout.preferred-height;
+            background: @linear-gradient(135deg, #12111ae0 0%, #0c0b10c0 100%);
+            border-width: 1px;
+            border-color: Theme.cyan-dim;
+
+            search-bar-layout := HorizontalLayout {
+                padding: 8px;
+                padding-left: 12px;
+                padding-right: 12px;
+                spacing: 6px;
+
+                // Search icon
+                Text {
+                    text: "\u{26B2}";
+                    color: Theme.cyan;
+                    font-size: 14px;
+                    vertical-alignment: center;
+                    width: 18px;
+                }
+
+                // Search input
+                Rectangle {
+                    horizontal-stretch: 1;
+                    height: 30px;
+                    border-radius: 8px;
+                    background: #0a091080;
+                    border-width: 1px;
+                    border-color: root.search-query != "" && root.search-match-count > 0
+                        ? Theme.cyan-dim
+                        : (root.search-query != "" ? Theme.color-emotional : Theme.border-subtle);
+
+                    search-input := TextInput {
+                        x: 10px;
+                        y: (parent.height - self.preferred-height) / 2;
+                        width: parent.width - 20px;
+                        color: Theme.text-primary;
+                        font-size: 13px;
+                        text <=> root.search-query;
+                        input-type: text;
+                        single-line: true;
+                        accepted => { root.search-next(); }
+                        edited => { root.search-query-changed(self.text); }
+                    }
+                }
+
+                // Match count badge
+                if root.search-query != "" : Rectangle {
+                    width: search-match-text.preferred-width + 16px;
+                    height: 24px;
+                    border-radius: 12px;
+                    background: root.search-match-count > 0 ? Theme.tint-cyan : #ff444430;
+
+                    search-match-text := Text {
+                        text: root.search-match-count > 0
+                            ? "\{root.search-current-match} of \{root.search-match-count}"
+                            : "0";
+                        color: root.search-match-count > 0 ? Theme.cyan : Theme.color-emotional;
+                        font-size: 11px;
+                        font-weight: 500;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+
+                // Prev match
+                search-prev-ta := TouchArea {
+                    width: 28px;
+                    height: 28px;
+                    clicked => { root.search-prev(); }
+
+                    Rectangle {
+                        width: 28px;
+                        height: 28px;
+                        border-radius: 6px;
+                        background: search-prev-ta.has-hover ? Theme.hover-fill-strong : transparent;
+
+                        Text {
+                            text: "\u{25B2}";
+                            color: Theme.text-secondary;
+                            font-size: 10px;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+
+                // Next match
+                search-next-ta := TouchArea {
+                    width: 28px;
+                    height: 28px;
+                    clicked => { root.search-next(); }
+
+                    Rectangle {
+                        width: 28px;
+                        height: 28px;
+                        border-radius: 6px;
+                        background: search-next-ta.has-hover ? Theme.hover-fill-strong : transparent;
+
+                        Text {
+                            text: "\u{25BC}";
+                            color: Theme.text-secondary;
+                            font-size: 10px;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+
+                // Close search bar
+                search-close-ta := TouchArea {
+                    width: 24px;
+                    height: 24px;
+                    clicked => {
+                        root.show-search = false;
+                        root.search-query = "";
+                        root.search-query-changed("");
+                    }
+
+                    Rectangle {
+                        width: 24px;
+                        height: 24px;
+                        border-radius: 6px;
+                        background: search-close-ta.has-hover ? Theme.hover-fill-strong : transparent;
+
+                        Text {
+                            text: "×";
+                            color: Theme.text-dim;
+                            font-size: 16px;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+            }
+        }
+
+        if root.show-search : Rectangle { height: 1px; background: Theme.separator; }
+
+        // ── Terminal output area (with optional split) ──
+        HorizontalLayout {
+            spacing: 0px;
             vertical-stretch: 1;
 
-            Flickable {
-                x: 0px;
-                y: 0px;
-                width: parent.width;
-                height: parent.height;
-                viewport-width: self.width;
-                viewport-height: Math.max(term-text.preferred-height + 16px, self.height);
+            // Primary pane
+            Rectangle {
+                background: #0c0c10;
+                horizontal-stretch: 1;
+                border-width: root.terminal-split-active ? 1px : 0px;
+                border-color: Theme.cyan-dim;
 
-                // Auto-scroll to bottom when content changes
-                // (viewport-y tracks how far we've scrolled)
-
-                fs := FocusScope {
+                Flickable {
                     x: 0px;
                     y: 0px;
                     width: parent.width;
-                    height: parent.viewport-height;
-                    enabled: true;
+                    height: parent.height;
+                    viewport-width: self.width;
+                    viewport-height: Math.max(term-text.preferred-height + 16px, self.height);
 
-                    key-pressed(event) => {
-                        return root.terminal-key-pressed(event);
+                    fs := FocusScope {
+                        x: 0px;
+                        y: 0px;
+                        width: parent.width;
+                        height: parent.viewport-height;
+                        enabled: true;
+
+                        key-pressed(event) => {
+                            // Ctrl+F toggles search bar
+                            if (event.modifiers.control && (event.text == "f" || event.text == "F" || event.text == "\u{0006}")) {
+                                root.show-search = !root.show-search;
+                                if (!root.show-search) {
+                                    root.search-query = "";
+                                    root.search-query-changed("");
+                                }
+                                return accept;
+                            }
+                            // Escape closes search bar if open
+                            if (event.text == Key.Escape && root.show-search) {
+                                root.show-search = false;
+                                root.search-query = "";
+                                root.search-query-changed("");
+                                return accept;
+                            }
+                            return root.terminal-key-pressed(event);
+                        }
+
+                        // Click to focus (switches to pane 0)
+                        TouchArea {
+                            width: 100%;
+                            height: 100%;
+                            clicked => {
+                                fs.focus();
+                                if root.terminal-split-active { root.terminal-switch-pane(0); }
+                            }
+                        }
+
+                        term-text := Text {
+                            x: 8px;
+                            y: 8px;
+                            width: parent.width - 16px;
+                            text: root.terminal-output;
+                            color: #c8c8d0;
+                            font-family: "monospace";
+                            font-size: 14px;
+                            wrap: no-wrap;
+                            overflow: elide;
+                        }
                     }
+                }
+            }
 
-                    // Click to focus
-                    TouchArea {
-                        width: 100%;
-                        height: 100%;
-                        clicked => { fs.focus(); }
-                    }
+            // Split pane divider
+            if root.terminal-split-active : Rectangle {
+                width: 2px;
+                background: Theme.cyan-dim;
+            }
 
-                    term-text := Text {
-                        x: 8px;
-                        y: 8px;
-                        width: parent.width - 16px;
-                        text: root.terminal-output;
-                        color: #c8c8d0;
-                        font-family: "monospace";
-                        font-size: 14px;
-                        wrap: no-wrap;
-                        overflow: elide;
+            // Secondary pane (only visible when split is active)
+            if root.terminal-split-active : Rectangle {
+                background: #0c0c10;
+                horizontal-stretch: 1;
+                border-width: 1px;
+                border-color: transparent;
+
+                Flickable {
+                    x: 0px;
+                    y: 0px;
+                    width: parent.width;
+                    height: parent.height;
+                    viewport-width: self.width;
+                    viewport-height: Math.max(split-term-text.preferred-height + 16px, self.height);
+
+                    split-fs := FocusScope {
+                        x: 0px;
+                        y: 0px;
+                        width: parent.width;
+                        height: parent.viewport-height;
+                        enabled: true;
+
+                        key-pressed(event) => {
+                            // Forward key input to split pane
+                            if (event.modifiers.control && (event.text == "f" || event.text == "F" || event.text == "\u{0006}")) {
+                                root.show-search = !root.show-search;
+                                if (!root.show-search) {
+                                    root.search-query = "";
+                                    root.search-query-changed("");
+                                }
+                                return accept;
+                            }
+                            if (event.text == Key.Escape && root.show-search) {
+                                root.show-search = false;
+                                root.search-query = "";
+                                root.search-query-changed("");
+                                return accept;
+                            }
+                            root.terminal-split-input(event.text);
+                            return accept;
+                        }
+
+                        // Click to focus (switches to pane 1)
+                        TouchArea {
+                            width: 100%;
+                            height: 100%;
+                            clicked => {
+                                split-fs.focus();
+                                root.terminal-switch-pane(1);
+                            }
+                        }
+
+                        split-term-text := Text {
+                            x: 8px;
+                            y: 8px;
+                            width: parent.width - 16px;
+                            text: root.terminal-split-output;
+                            color: #c8c8d0;
+                            font-family: "monospace";
+                            font-size: 14px;
+                            wrap: no-wrap;
+                            overflow: elide;
+                        }
                     }
                 }
             }

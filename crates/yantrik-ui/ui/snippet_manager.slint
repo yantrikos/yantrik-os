@@ -1,5 +1,5 @@
 // Code Snippet Manager — screen 25
-// 2-panel: snippet list + detail/editor. SQLite-backed, tag filtering, search.
+// 3-panel: collections sidebar + snippet list + detail/editor. SQLite-backed, tag filtering, search.
 // Wrapped in WindowFrame by app.slint — no internal window header needed.
 
 import { Theme } from "theme.slint";
@@ -14,11 +14,29 @@ export struct SnippetData {
     preview: string,
     date-text: string,
     is-selected: bool,
+    is-favorite: bool,
+    created-date: string,
+    last-used-date: string,
+    use-count: int,
+    collection-id: int,
 }
 
 export struct TagChip {
     name: string,
     is-active: bool,
+}
+
+export struct CollectionData {
+    id: int,
+    name: string,
+    snippet-count: int,
+    is-builtin: bool,
+    is-selected: bool,
+    icon: string,
+}
+
+export struct LanguageOption {
+    name: string,
 }
 
 export component SnippetManagerScreen inherits Rectangle {
@@ -27,6 +45,9 @@ export component SnippetManagerScreen inherits Rectangle {
     in property <[SnippetData]> snippets: [];
     in property <[TagChip]> tag-chips: [];
     in property <int> snippet-count: 0;
+    in property <[CollectionData]> collections: [];
+    in property <[LanguageOption]> language-options: [];
+    in property <int> match-count: -1;
 
     // Detail panel state
     in property <int> detail-id: -1;
@@ -34,8 +55,22 @@ export component SnippetManagerScreen inherits Rectangle {
     in-out property <string> detail-language: "";
     in-out property <string> detail-code: "";
     in-out property <string> detail-tags: "";
+    in property <bool> detail-is-favorite: false;
+    in property <string> detail-created-date: "";
+    in property <string> detail-last-used-date: "";
+    in property <int> detail-use-count: 0;
 
     in-out property <string> search-query: "";
+
+    // Copy feedback
+    in property <bool> copy-feedback-visible: false;
+
+    // Language dropdown state
+    in-out property <bool> lang-dropdown-open: false;
+
+    // Collection rename state
+    in-out property <bool> rename-mode: false;
+    in-out property <string> rename-text: "";
 
     callback snip-search(string);
     callback snip-select(int);
@@ -44,9 +79,258 @@ export component SnippetManagerScreen inherits Rectangle {
     callback snip-delete(int);
     callback snip-copy(int);
     callback snip-tag-filter(string);
+    callback snip-toggle-favorite(int);
+
+    // Collection callbacks
+    callback collection-select(int);
+    callback collection-create(string);
+    callback collection-rename(int, string);
+    callback collection-delete(int);
+
+    // Import/Export callbacks
+    callback snip-export-all();
+    callback snip-import();
+
+    // Language select
+    callback snip-set-language(string);
+
+    // Version history
+    in property <[string]> snip-version-list: [];
+    in-out property <bool> snip-version-panel-open: false;
+    in property <string> snip-version-content: "";
+    callback snip-view-version(int);
+    callback snip-restore-version(int);
+
+    // AI Assist
+    in property <bool> ai-is-working: false;
+    in property <string> ai-response: "";
+    in-out property <bool> ai-panel-open: false;
+    callback ai-explain-pressed();
+    callback ai-dismiss();
 
     HorizontalLayout {
-        // ── Left Panel: Search + Tags + Snippet List ──
+        // ── Collections Sidebar ──
+        Rectangle {
+            width: 180px;
+            background: Theme.bg-deep;
+
+            VerticalLayout {
+                padding: 8px;
+                spacing: 4px;
+
+                // Sidebar header
+                HorizontalLayout {
+                    padding-left: 8px;
+                    padding-right: 4px;
+                    height: 32px;
+                    spacing: 4px;
+
+                    Text {
+                        text: "Collections";
+                        font-size: Theme.font-small;
+                        color: Theme.text-dim;
+                        font-weight: 700;
+                        letter-spacing: 0.5px;
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                    }
+
+                    // Add collection button
+                    TouchArea {
+                        width: 24px;
+                        height: 24px;
+                        clicked => {
+                            root.collection-create("New Collection");
+                        }
+                        Rectangle {
+                            width: 24px; height: 24px;
+                            border-radius: 12px;
+                            background: parent.has-hover ? Theme.hover-fill : transparent;
+                            Text {
+                                text: "+";
+                                font-size: 16px;
+                                color: Theme.text-secondary;
+                                font-weight: 700;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                }
+
+                // Collection items
+                ListView {
+                    vertical-stretch: 1;
+
+                    for coll[idx] in root.collections : Rectangle {
+                        height: 34px;
+                        background: coll.is-selected ? Theme.bg-selected
+                            : coll-ta.has-hover ? Theme.hover-fill : transparent;
+                        border-radius: 8px;
+
+                        HorizontalLayout {
+                            padding-left: 10px;
+                            padding-right: 8px;
+                            spacing: 8px;
+                            alignment: center;
+
+                            Text {
+                                text: coll.icon;
+                                font-size: 13px;
+                                vertical-alignment: center;
+                                width: 20px;
+                            }
+
+                            if root.rename-mode && coll.is-selected && !coll.is-builtin : LineEdit {
+                                horizontal-stretch: 1;
+                                text <=> root.rename-text;
+                                font-size: Theme.font-small;
+                                accepted(text) => {
+                                    root.collection-rename(coll.id, text);
+                                    root.rename-mode = false;
+                                }
+                            }
+
+                            if !(root.rename-mode && coll.is-selected && !coll.is-builtin) : Text {
+                                text: coll.name;
+                                font-size: Theme.font-small;
+                                color: coll.is-selected ? Theme.text-primary : Theme.text-secondary;
+                                font-weight: coll.is-selected ? 600 : 400;
+                                overflow: elide;
+                                vertical-alignment: center;
+                                horizontal-stretch: 1;
+                            }
+
+                            // Snippet count badge
+                            if coll.snippet-count > 0 : Rectangle {
+                                width: coll-count-text.width + 10px;
+                                height: 18px;
+                                background: Theme.hover-fill;
+                                border-radius: 9px;
+
+                                coll-count-text := Text {
+                                    text: coll.snippet-count;
+                                    font-size: 10px;
+                                    color: Theme.text-dim;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+
+                        coll-ta := TouchArea {
+                            clicked => {
+                                root.collection-select(coll.id);
+                            }
+                            // Double-click to rename (only non-builtin)
+                            double-clicked => {
+                                if !coll.is-builtin {
+                                    root.rename-mode = true;
+                                    root.rename-text = coll.name;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Separator
+                Rectangle { height: 1px; background: Theme.separator; }
+
+                // Import/Export buttons
+                HorizontalLayout {
+                    spacing: 6px;
+                    height: 32px;
+                    padding-left: 4px;
+                    padding-right: 4px;
+
+                    // Export button
+                    TouchArea {
+                        horizontal-stretch: 1;
+                        height: 28px;
+                        clicked => { root.snip-export-all(); }
+                        Rectangle {
+                            width: 100%; height: 28px;
+                            border-radius: 8px;
+                            background: parent.has-hover ? Theme.hover-fill-strong : Theme.hover-fill;
+                            HorizontalLayout {
+                                alignment: center;
+                                spacing: 4px;
+                                Text {
+                                    text: "\u{2B06}";
+                                    font-size: 11px;
+                                    vertical-alignment: center;
+                                }
+                                Text {
+                                    text: "Export";
+                                    font-size: Theme.font-small;
+                                    color: Theme.text-secondary;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+                    }
+
+                    // Import button
+                    TouchArea {
+                        horizontal-stretch: 1;
+                        height: 28px;
+                        clicked => { root.snip-import(); }
+                        Rectangle {
+                            width: 100%; height: 28px;
+                            border-radius: 8px;
+                            background: parent.has-hover ? Theme.hover-fill-strong : Theme.hover-fill;
+                            HorizontalLayout {
+                                alignment: center;
+                                spacing: 4px;
+                                Text {
+                                    text: "\u{2B07}";
+                                    font-size: 11px;
+                                    vertical-alignment: center;
+                                }
+                                Text {
+                                    text: "Import";
+                                    font-size: Theme.font-small;
+                                    color: Theme.text-secondary;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Delete collection button (only for custom collections)
+                for coll in root.collections : TouchArea {
+                    visible: coll.is-selected && !coll.is-builtin;
+                    height: self.visible ? 28px : 0px;
+                    clicked => { root.collection-delete(coll.id); }
+                    Rectangle {
+                        width: 100%; height: 28px;
+                        border-radius: 8px;
+                        background: parent.has-hover ? #d4404020 : transparent;
+                        HorizontalLayout {
+                            alignment: center;
+                            spacing: 4px;
+                            Text {
+                                text: "\u{1F5D1}";
+                                font-size: 11px;
+                                vertical-alignment: center;
+                            }
+                            Text {
+                                text: "Delete Collection";
+                                font-size: Theme.font-small;
+                                color: Theme.text-dim;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── Vertical separator ──
+        Rectangle { width: 1px; background: Theme.separator; }
+
+        // ── Middle Panel: Search + Tags + Snippet List ──
         Rectangle {
             width: 280px;
             background: Theme.bg-surface;
@@ -82,6 +366,22 @@ export component SnippetManagerScreen inherits Rectangle {
                             font-size: Theme.font-body;
                             edited(text) => {
                                 root.snip-search(text);
+                            }
+                        }
+
+                        // Match count badge
+                        if root.match-count >= 0 : Rectangle {
+                            width: match-count-text.width + 10px;
+                            height: 18px;
+                            background: Theme.accent-glow;
+                            border-radius: 9px;
+
+                            match-count-text := Text {
+                                text: root.match-count;
+                                font-size: 10px;
+                                color: Theme.accent;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
                             }
                         }
                     }
@@ -151,7 +451,7 @@ export component SnippetManagerScreen inherits Rectangle {
                     vertical-stretch: 1;
 
                     for snip[idx] in root.snippets : Rectangle {
-                        height: 76px;
+                        height: 82px;
                         background: snip.is-selected ? Theme.bg-selected
                             : row-ta.has-hover ? Theme.hover-fill : transparent;
 
@@ -163,7 +463,15 @@ export component SnippetManagerScreen inherits Rectangle {
 
                             // Title row
                             HorizontalLayout {
-                                spacing: 8px;
+                                spacing: 6px;
+
+                                // Favorite indicator
+                                if snip.is-favorite : Text {
+                                    text: "\u{2605}";
+                                    font-size: 12px;
+                                    color: #e8b44c;
+                                    vertical-alignment: center;
+                                }
 
                                 Text {
                                     text: snip.title;
@@ -200,19 +508,35 @@ export component SnippetManagerScreen inherits Rectangle {
                                 overflow: elide;
                             }
 
-                            // Tags + date row
+                            // Tags row
+                            if snip.tags != "" : Rectangle {
+                                height: 18px;
+                                HorizontalLayout {
+                                    spacing: 4px;
+                                    Text {
+                                        text: "\u{1F3F7}";
+                                        font-size: 9px;
+                                        vertical-alignment: center;
+                                    }
+                                    Text {
+                                        text: snip.tags;
+                                        font-size: 10px;
+                                        color: Theme.accent-dim;
+                                        overflow: elide;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                            }
+
+                            // Date row
                             HorizontalLayout {
                                 spacing: 6px;
 
-                                if snip.tags != "" : Text {
-                                    text: snip.tags;
-                                    font-size: 10px;
-                                    color: Theme.text-dim;
-                                    overflow: elide;
+                                if snip.tags == "" : Rectangle {
                                     horizontal-stretch: 1;
                                 }
 
-                                if snip.tags == "" : Rectangle {
+                                if snip.tags != "" : Rectangle {
                                     horizontal-stretch: 1;
                                 }
 
@@ -313,24 +637,54 @@ export component SnippetManagerScreen inherits Rectangle {
                 padding: 20px;
                 spacing: 14px;
 
-                // Title input
-                Rectangle {
+                // Title + Favorite row
+                HorizontalLayout {
+                    spacing: 10px;
                     height: 40px;
-                    background: Theme.bg-input;
-                    border-radius: Theme.radius-card;
-                    border-width: 1px;
-                    border-color: title-field.has-focus ? Theme.accent : Theme.border-subtle;
 
-                    HorizontalLayout {
-                        padding-left: 12px;
-                        padding-right: 12px;
-                        alignment: center;
+                    // Title input
+                    Rectangle {
+                        horizontal-stretch: 1;
+                        height: 40px;
+                        background: Theme.bg-input;
+                        border-radius: Theme.radius-card;
+                        border-width: 1px;
+                        border-color: title-field.has-focus ? Theme.accent : Theme.border-subtle;
 
-                        title-field := LineEdit {
-                            horizontal-stretch: 1;
-                            text <=> root.detail-title;
-                            placeholder-text: "Snippet title...";
-                            font-size: Theme.font-title;
+                        HorizontalLayout {
+                            padding-left: 12px;
+                            padding-right: 12px;
+                            alignment: center;
+
+                            title-field := LineEdit {
+                                horizontal-stretch: 1;
+                                text <=> root.detail-title;
+                                placeholder-text: "Snippet title...";
+                                font-size: Theme.font-title;
+                            }
+                        }
+                    }
+
+                    // Favorite toggle button
+                    TouchArea {
+                        width: 40px;
+                        height: 40px;
+                        clicked => {
+                            root.snip-toggle-favorite(root.detail-id);
+                        }
+                        Rectangle {
+                            width: 40px; height: 40px;
+                            border-radius: Theme.radius-card;
+                            background: parent.has-hover ? Theme.hover-fill-strong : Theme.hover-fill;
+                            border-width: 1px;
+                            border-color: Theme.border-subtle;
+                            Text {
+                                text: root.detail-is-favorite ? "\u{2605}" : "\u{2606}";
+                                font-size: 18px;
+                                color: root.detail-is-favorite ? #e8b44c : Theme.text-dim;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
                         }
                     }
                 }
@@ -340,25 +694,104 @@ export component SnippetManagerScreen inherits Rectangle {
                     spacing: 10px;
                     height: 36px;
 
-                    // Language input
+                    // Language selector with dropdown
                     Rectangle {
                         width: 160px;
                         height: 36px;
-                        background: Theme.bg-input;
-                        border-radius: Theme.radius-card;
-                        border-width: 1px;
-                        border-color: lang-field.has-focus ? Theme.accent : Theme.border-subtle;
 
-                        HorizontalLayout {
-                            padding-left: 10px;
-                            padding-right: 10px;
-                            alignment: center;
+                        // Language input / button
+                        Rectangle {
+                            width: 160px;
+                            height: 36px;
+                            background: Theme.bg-input;
+                            border-radius: Theme.radius-card;
+                            border-width: 1px;
+                            border-color: lang-field.has-focus ? Theme.accent : Theme.border-subtle;
 
-                            lang-field := LineEdit {
-                                horizontal-stretch: 1;
-                                text <=> root.detail-language;
-                                placeholder-text: "Language";
-                                font-size: Theme.font-body;
+                            HorizontalLayout {
+                                padding-left: 10px;
+                                padding-right: 6px;
+                                spacing: 4px;
+                                alignment: center;
+
+                                lang-field := LineEdit {
+                                    horizontal-stretch: 1;
+                                    text <=> root.detail-language;
+                                    placeholder-text: "Language";
+                                    font-size: Theme.font-body;
+                                }
+
+                                // Dropdown toggle
+                                TouchArea {
+                                    width: 24px;
+                                    height: 24px;
+                                    clicked => {
+                                        root.lang-dropdown-open = !root.lang-dropdown-open;
+                                    }
+                                    Rectangle {
+                                        width: 24px; height: 24px;
+                                        border-radius: 12px;
+                                        background: parent.has-hover ? Theme.hover-fill : transparent;
+                                        Text {
+                                            text: root.lang-dropdown-open ? "\u{25B2}" : "\u{25BC}";
+                                            font-size: 10px;
+                                            color: Theme.text-dim;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Language dropdown menu
+                        if root.lang-dropdown-open : Rectangle {
+                            y: 38px;
+                            width: 160px;
+                            height: 200px;
+                            background: Theme.bg-elevated;
+                            border-radius: 8px;
+                            border-width: 1px;
+                            border-color: Theme.border-subtle;
+
+                            // Ensure dropdown appears on top
+                            Rectangle {
+                                width: 100%; height: 100%;
+                                clip: true;
+
+                                Flickable {
+                                    width: 100%;
+                                    height: 100%;
+
+                                    VerticalLayout {
+                                        padding: 4px;
+                                        spacing: 2px;
+
+                                        for lang-opt in root.language-options : TouchArea {
+                                            height: 26px;
+                                            clicked => {
+                                                root.snip-set-language(lang-opt.name);
+                                                root.lang-dropdown-open = false;
+                                            }
+                                            Rectangle {
+                                                width: 100%; height: 26px;
+                                                border-radius: 6px;
+                                                background: parent.has-hover ? Theme.hover-fill-strong : transparent;
+                                                HorizontalLayout {
+                                                    padding-left: 10px;
+                                                    alignment: center;
+                                                    Text {
+                                                        text: lang-opt.name;
+                                                        font-size: Theme.font-small;
+                                                        color: lang-opt.name == root.detail-language ? Theme.accent : Theme.text-primary;
+                                                        font-weight: lang-opt.name == root.detail-language ? 600 : 400;
+                                                        vertical-alignment: center;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -442,30 +875,32 @@ export component SnippetManagerScreen inherits Rectangle {
                         }
                     }
 
-                    // Copy button
+                    // Copy button with "Copied!" feedback
                     Rectangle {
                         width: 100px;
                         height: 38px;
-                        background: copy-ta.has-hover ? Theme.hover-fill-strong : Theme.hover-fill;
+                        background: root.copy-feedback-visible
+                            ? #2a8a3a
+                            : (copy-ta.has-hover ? Theme.hover-fill-strong : Theme.hover-fill);
                         border-radius: Theme.radius-pill;
-                        border-width: 1px;
+                        border-width: root.copy-feedback-visible ? 0px : 1px;
                         border-color: Theme.border-subtle;
 
                         HorizontalLayout {
                             alignment: center;
                             spacing: 6px;
 
-                            Text {
+                            if !root.copy-feedback-visible : Text {
                                 text: "\u{1F4CB}";
                                 font-size: 13px;
                                 vertical-alignment: center;
                             }
 
                             Text {
-                                text: "Copy";
+                                text: root.copy-feedback-visible ? "Copied!" : "Copy";
                                 font-size: Theme.font-body;
-                                color: Theme.text-secondary;
-                                font-weight: 500;
+                                color: root.copy-feedback-visible ? #ffffff : Theme.text-secondary;
+                                font-weight: root.copy-feedback-visible ? 600 : 500;
                                 vertical-alignment: center;
                             }
                         }
@@ -473,6 +908,78 @@ export component SnippetManagerScreen inherits Rectangle {
                         copy-ta := TouchArea {
                             clicked => {
                                 root.snip-copy(root.detail-id);
+                            }
+                        }
+                    }
+
+                    // AI Explain button
+                    TouchArea {
+                        width: 90px;
+                        height: 38px;
+                        clicked => {
+                            root.ai-explain-pressed();
+                            root.ai-panel-open = true;
+                        }
+                        Rectangle {
+                            width: 90px; height: 38px;
+                            border-radius: Theme.radius-pill;
+                            background: root.ai-is-working ? Theme.accent
+                                : (parent.has-hover ? Theme.hover-fill-strong : Theme.hover-fill);
+                            border-width: root.ai-is-working ? 0px : 1px;
+                            border-color: Theme.border-subtle;
+                            HorizontalLayout {
+                                padding-left: 8px;
+                                padding-right: 8px;
+                                spacing: 4px;
+                                alignment: center;
+                                Text {
+                                    text: "\u{2728}";
+                                    font-size: 12px;
+                                    vertical-alignment: center;
+                                }
+                                Text {
+                                    text: root.ai-is-working ? "..." : "AI Explain";
+                                    color: root.ai-is-working ? #ffffff : Theme.text-secondary;
+                                    font-size: Theme.font-body;
+                                    font-weight: 500;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+                    }
+
+                    // Version History button
+                    Rectangle {
+                        width: 110px;
+                        height: 38px;
+                        background: ver-ta.has-hover ? Theme.hover-fill-strong : Theme.bg-elevated;
+                        border-radius: Theme.radius-pill;
+                        border-width: 1px;
+                        border-color: root.snip-version-panel-open ? Theme.accent-dim : Theme.border-subtle;
+
+                        HorizontalLayout {
+                            padding-left: 10px;
+                            padding-right: 10px;
+                            spacing: 4px;
+                            alignment: center;
+
+                            Text {
+                                text: "\u{1F4C3}";
+                                font-size: 12px;
+                                vertical-alignment: center;
+                            }
+                            Text {
+                                text: "Versions";
+                                color: root.snip-version-panel-open ? Theme.accent : Theme.text-secondary;
+                                font-size: Theme.font-body;
+                                font-weight: 500;
+                                vertical-alignment: center;
+                            }
+                        }
+
+                        ver-ta := TouchArea {
+                            clicked => {
+                                root.snip-version-panel-open = !root.snip-version-panel-open;
                             }
                         }
                     }
@@ -501,6 +1008,282 @@ export component SnippetManagerScreen inherits Rectangle {
                                 root.snip-delete(root.detail-id);
                             }
                         }
+                    }
+                }
+
+                // ── Metadata footer ──
+                Rectangle {
+                    height: 28px;
+                    background: Theme.bg-deep;
+                    border-radius: 8px;
+
+                    HorizontalLayout {
+                        padding-left: 12px;
+                        padding-right: 12px;
+                        spacing: 16px;
+                        alignment: center;
+
+                        // Created date
+                        HorizontalLayout {
+                            spacing: 4px;
+                            Text {
+                                text: "Created:";
+                                font-size: 10px;
+                                color: Theme.text-dim;
+                                vertical-alignment: center;
+                            }
+                            Text {
+                                text: root.detail-created-date != "" ? root.detail-created-date : "—";
+                                font-size: 10px;
+                                color: Theme.text-secondary;
+                                vertical-alignment: center;
+                            }
+                        }
+
+                        // Last used date
+                        HorizontalLayout {
+                            spacing: 4px;
+                            Text {
+                                text: "Last used:";
+                                font-size: 10px;
+                                color: Theme.text-dim;
+                                vertical-alignment: center;
+                            }
+                            Text {
+                                text: root.detail-last-used-date != "" ? root.detail-last-used-date : "Never";
+                                font-size: 10px;
+                                color: Theme.text-secondary;
+                                vertical-alignment: center;
+                            }
+                        }
+
+                        // Use count
+                        HorizontalLayout {
+                            spacing: 4px;
+                            Text {
+                                text: "Uses:";
+                                font-size: 10px;
+                                color: Theme.text-dim;
+                                vertical-alignment: center;
+                            }
+                            Text {
+                                text: root.detail-use-count;
+                                font-size: 10px;
+                                color: Theme.text-secondary;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // ── AI Response Panel ──
+    Rectangle {
+        visible: root.ai-panel-open && root.ai-response != "";
+        max-height: 180px;
+        width: 100%;
+        background: #1a2332;
+        border-width: 1px;
+        border-color: Theme.accent.transparentize(70%);
+
+        Flickable {
+            viewport-height: ai-snip-resp.preferred-height + 16px;
+
+            ai-snip-resp := VerticalLayout {
+                padding: 12px;
+                spacing: 8px;
+
+                HorizontalLayout {
+                    spacing: 6px;
+                    Text {
+                        text: "\u{2728}";
+                        font-size: 12px;
+                        vertical-alignment: center;
+                    }
+                    Text {
+                        text: "AI Explanation";
+                        color: Theme.accent;
+                        font-size: 12px;
+                        font-weight: 600;
+                        vertical-alignment: center;
+                    }
+                    Rectangle { horizontal-stretch: 1; }
+
+                    // Dismiss button
+                    TouchArea {
+                        width: 24px;
+                        height: 24px;
+                        clicked => {
+                            root.ai-panel-open = false;
+                            root.ai-dismiss();
+                        }
+                        Rectangle {
+                            width: 24px; height: 24px;
+                            border-radius: 12px;
+                            background: parent.has-hover ? Theme.hover-fill : transparent;
+                            Text {
+                                text: "\u{2715}";
+                                font-size: 11px;
+                                color: Theme.text-dim;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                }
+
+                Text {
+                    text: root.ai-response;
+                    color: Theme.text-primary;
+                    font-size: 12px;
+                    wrap: word-wrap;
+                }
+            }
+        }
+    }
+
+    // ── Version History Panel (right side overlay) ──
+    if root.snip-version-panel-open : Rectangle {
+        x: parent.width - 280px;
+        y: 8px;
+        width: 270px;
+        height: parent.height - 44px;
+        background: Theme.bg-card;
+        border-radius: Theme.radius-card;
+        border-width: 1px;
+        border-color: Theme.accent.transparentize(70%);
+
+        VerticalLayout {
+            padding: 12px;
+            spacing: 8px;
+
+            // Header
+            HorizontalLayout {
+                height: 28px;
+                spacing: 8px;
+
+                Text {
+                    text: "\u{1F4C3} Version History";
+                    font-size: Theme.font-body;
+                    font-weight: 600;
+                    color: Theme.text-primary;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                }
+
+                TouchArea {
+                    width: 24px;
+                    height: 24px;
+                    clicked => { root.snip-version-panel-open = false; }
+                    Rectangle {
+                        width: 24px; height: 24px;
+                        border-radius: 12px;
+                        background: parent.has-hover ? Theme.hover-fill-strong : transparent;
+
+                        Text {
+                            text: "\u{2715}";
+                            font-size: 11px;
+                            color: Theme.text-dim;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+            }
+
+            // Version list
+            Flickable {
+                viewport-height: ver-list-col.preferred-height;
+
+                ver-list-col := VerticalLayout {
+                    spacing: 4px;
+
+                    if root.snip-version-list.length == 0 : Text {
+                        text: "No previous versions.";
+                        font-size: Theme.font-small;
+                        color: Theme.text-dim;
+                        horizontal-alignment: center;
+                    }
+
+                    for ver[idx] in root.snip-version-list : Rectangle {
+                        height: 44px;
+                        background: ver-item-ta.has-hover ? Theme.hover-fill : transparent;
+                        border-radius: 8px;
+
+                        ver-item-ta := TouchArea {
+                            clicked => { root.snip-view-version(idx); }
+                        }
+
+                        HorizontalLayout {
+                            padding-left: 10px;
+                            padding-right: 8px;
+                            spacing: 6px;
+
+                            VerticalLayout {
+                                spacing: 2px;
+                                horizontal-stretch: 1;
+                                alignment: center;
+
+                                Text {
+                                    text: "v" + (root.snip-version-list.length - idx);
+                                    font-size: Theme.font-body;
+                                    font-weight: 500;
+                                    color: Theme.text-primary;
+                                }
+
+                                Text {
+                                    text: ver;
+                                    font-size: 10px;
+                                    color: Theme.text-dim;
+                                }
+                            }
+
+                            // Restore button
+                            TouchArea {
+                                width: 56px;
+                                height: 24px;
+                                clicked => { root.snip-restore-version(idx); }
+
+                                Rectangle {
+                                    width: 56px; height: 24px;
+                                    border-radius: 12px;
+                                    background: parent.has-hover ? Theme.accent-dim : Theme.hover-fill;
+                                    border-width: 1px;
+                                    border-color: Theme.border-subtle;
+
+                                    Text {
+                                        text: "Restore";
+                                        font-size: 10px;
+                                        color: Theme.text-secondary;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Version content preview
+            if root.snip-version-content != "" : Rectangle {
+                background: Theme.bg-deep;
+                border-radius: 8px;
+                height: 120px;
+
+                Flickable {
+                    viewport-height: ver-preview-txt.preferred-height + 16px;
+
+                    ver-preview-txt := Text {
+                        x: 8px;
+                        width: parent.width - 16px;
+                        text: root.snip-version-content;
+                        font-size: 11px;
+                        font-family: "monospace";
+                        color: Theme.text-secondary;
+                        wrap: word-wrap;
                     }
                 }
             }
@@ -535,6 +1318,28 @@ export component SnippetManagerScreen inherits Rectangle {
                     font-size: Theme.font-small;
                     color: Theme.text-dim;
                     vertical-alignment: center;
+                }
+
+                if root.match-count >= 0 && root.search-query != "" : HorizontalLayout {
+                    spacing: 4px;
+                    Text {
+                        text: " \u{2022} ";
+                        font-size: Theme.font-small;
+                        color: Theme.text-dim;
+                        vertical-alignment: center;
+                    }
+                    Text {
+                        text: root.match-count;
+                        font-size: Theme.font-small;
+                        color: Theme.accent;
+                        vertical-alignment: center;
+                    }
+                    Text {
+                        text: "matches";
+                        font-size: Theme.font-small;
+                        color: Theme.text-dim;
+                        vertical-alignment: center;
+                    }
                 }
             }
 

@@ -59,6 +59,14 @@ export component PackageManager inherits Rectangle {
     callback cancel-changes();
     callback filter-changed(int);
 
+    // AI Assist
+    in property <bool> ai-is-working: false;
+    in property <string> ai-response: "";
+    in-out property <bool> ai-panel-open: false;
+    callback ai-explain-pressed();
+    callback ai-intent(string);
+    callback ai-dismiss();
+
     // ── Layout: header + list/detail + pending queue + status ──
     VerticalLayout {
         // ── Header Bar ──
@@ -225,6 +233,48 @@ export component PackageManager inherits Rectangle {
                     }
                 }
 
+                // AI Explain button
+                TouchArea {
+                    width: ai-pkg-btn.preferred-width + 16px;
+                    height: 32px;
+                    clicked => {
+                        if root.ai-panel-open {
+                            root.ai-dismiss();
+                            root.ai-panel-open = false;
+                        } else if root.detail-name != "" {
+                            root.ai-explain-pressed();
+                            root.ai-panel-open = true;
+                        }
+                    }
+                    ai-pkg-btn := Rectangle {
+                        height: 32px;
+                        border-radius: Theme.radius-pill;
+                        background: root.ai-is-working ? Theme.accent
+                            : (root.detail-name != "" ? Theme.bg-card : Theme.hover-fill);
+                        border-width: 1px;
+                        border-color: root.detail-name != "" ? Theme.border-subtle : transparent;
+                        HorizontalLayout {
+                            padding-left: 10px;
+                            padding-right: 10px;
+                            spacing: 4px;
+                            alignment: center;
+                            Text {
+                                text: root.ai-is-working ? "\u{2B50}" : "\u{2728}";
+                                font-size: 12px;
+                                vertical-alignment: center;
+                            }
+                            Text {
+                                text: root.ai-is-working ? "Analyzing..." : "AI Explain";
+                                color: root.ai-is-working ? #ffffff
+                                    : (root.detail-name != "" ? Theme.text-secondary : Theme.text-dim);
+                                font-size: 11px;
+                                font-weight: 500;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                }
+
                 // Refresh button
                 Rectangle {
                     width: 36px;
@@ -270,6 +320,67 @@ export component PackageManager inherits Rectangle {
 
         // ── Separator ──
         Rectangle { height: 1px; background: Theme.separator; }
+
+        // ── AI Response Panel ──
+        if root.ai-panel-open && root.ai-response != "" : Rectangle {
+            max-height: 180px;
+            background: #1a2332;
+            border-width: 1px;
+            border-color: Theme.accent.transparentize(70%);
+
+            Flickable {
+                viewport-height: ai-pkg-resp.preferred-height + 16px;
+
+                ai-pkg-resp := VerticalLayout {
+                    padding: 12px;
+                    spacing: 8px;
+
+                    HorizontalLayout {
+                        spacing: 6px;
+                        Text {
+                            text: "\u{2728}";
+                            font-size: 12px;
+                            vertical-alignment: center;
+                        }
+                        Text {
+                            text: "AI Analysis";
+                            color: Theme.accent;
+                            font-size: 12px;
+                            font-weight: 600;
+                            vertical-alignment: center;
+                        }
+                        Rectangle { horizontal-stretch: 1; }
+                        TouchArea {
+                            width: 24px;
+                            height: 24px;
+                            clicked => {
+                                root.ai-panel-open = false;
+                                root.ai-dismiss();
+                            }
+                            Rectangle {
+                                width: 24px; height: 24px;
+                                border-radius: 12px;
+                                background: parent.has-hover ? Theme.hover-fill : transparent;
+                                Text {
+                                    text: "\u{2715}";
+                                    font-size: 11px;
+                                    color: Theme.text-dim;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+                    }
+
+                    Text {
+                        text: root.ai-response;
+                        color: Theme.text-primary;
+                        font-size: 12px;
+                        wrap: word-wrap;
+                    }
+                }
+            }
+        }
 
         // ── Main Content: Package List + Detail Panel ──
         HorizontalLayout {

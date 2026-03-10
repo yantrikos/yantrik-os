@@ -1,0 +1,1538 @@
+// Presentation App (ySlides) — screen 31
+// Full-featured slide deck editor with layouts, themes, speaker notes,
+// presenter mode with timer, text formatting, file save/load, templates,
+// slide search, keyboard navigation, export.
+// Wrapped in WindowFrame by app.slint.
+
+import { Theme } from "theme.slint";
+import { ListView, ScrollView, LineEdit } from "std-widgets.slint";
+
+export struct SlideData {
+    title: string,
+    body: string,
+    notes: string,
+    layout: int,
+    slide-number: int,
+}
+
+export struct PresentTheme {
+    name: string,
+    bg-color: brush,
+    text-color: brush,
+    accent-color: brush,
+    is-active: bool,
+}
+
+component SlideToolBtn inherits Rectangle {
+    in property <string> label;
+    in property <bool> active: false;
+    in property <string> tooltip-text: "";
+    callback clicked();
+
+    width: 36px;
+    height: 36px;
+    border-radius: 6px;
+    background: active ? Theme.accent.transparentize(0.75) : (ta.has-hover ? Theme.hover-fill : transparent);
+    border-width: active ? 1px : 0px;
+    border-color: active ? Theme.accent.transparentize(0.5) : transparent;
+
+    ta := TouchArea { clicked => { root.clicked(); } }
+
+    Text {
+        text: root.label;
+        color: active ? Theme.accent : (ta.has-hover ? Theme.text-primary : Theme.text-secondary);
+        font-size: 14px;
+        font-weight: active ? 700 : 500;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}
+
+component SlideToolBtnWide inherits Rectangle {
+    in property <string> label;
+    in property <bool> active: false;
+    callback clicked();
+
+    width: 76px;
+    height: 36px;
+    border-radius: 6px;
+    background: active ? Theme.accent.transparentize(0.75) : (ta.has-hover ? Theme.hover-fill : transparent);
+    border-width: active ? 1px : 0px;
+    border-color: active ? Theme.accent.transparentize(0.5) : transparent;
+
+    ta := TouchArea { clicked => { root.clicked(); } }
+
+    Text {
+        text: root.label;
+        color: active ? Theme.accent : (ta.has-hover ? Theme.text-primary : Theme.text-secondary);
+        font-size: 12px;
+        font-weight: active ? 600 : 500;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}
+
+// Toolbar separator — thin vertical divider between control groups
+component ToolSep inherits Rectangle {
+    width: 1px;
+    height: 26px;
+    background: Theme.separator;
+}
+
+export component PresentationScreen inherits Rectangle {
+    background: transparent;
+
+    // Slide data
+    in property <[SlideData]> slides: [];
+    in-out property <int> current-slide-index: 0;
+    in property <int> slide-count: 1;
+    in-out property <int> current-layout: 0;
+    in property <[PresentTheme]> themes: [];
+    in-out property <bool> is-presenting: false;
+    in property <string> current-title: "Title Slide";
+    in property <string> current-body: "Click to add subtitle";
+    in-out property <string> current-notes: "";
+
+    // New properties
+    in property <string> timer-text: "00:00";
+    in property <string> next-title: "";
+    in property <string> next-body: "";
+    in property <string> presentation-title: "";
+    in property <string> slide-progress: "Slide 1 of 1";
+    in property <string> file-path: "";
+    in property <bool> is-modified: false;
+    in property <string> save-status: "";
+    in property <int> search-count: 0;
+    in-out property <string> search-query: "";
+    in-out property <bool> show-search: false;
+    in property <int> current-transition: 0;
+
+    // Template picker
+    in-out property <bool> show-templates: false;
+
+    // Template gallery
+    in-out property <bool> pres-template-gallery-open: false;
+    in property <[string]> pres-template-names: ["Minimal", "Corporate", "Creative", "Academic", "Pitch Deck"];
+
+    // Speaker notes toggle
+    in-out property <bool> pres-show-speaker-notes: false;
+    in-out property <string> pres-current-speaker-note: "";
+
+    // Layout names for display
+    property <[string]> layout-names: ["Title Slide", "Title + Content", "Two Column", "Section Header", "Blank", "Image + Text"];
+
+    // Callbacks — existing
+    callback add-slide();
+    callback delete-slide();
+    callback duplicate-slide();
+    callback move-slide-up();
+    callback move-slide-down();
+    callback select-slide(int);
+    callback set-layout(int);
+    callback set-theme(int);
+    callback toggle-present();
+    callback export-pdf();
+    callback title-edited(string);
+    callback body-edited(string);
+    callback notes-edited(string);
+    callback next-slide();
+    callback prev-slide();
+
+    // Callbacks — new
+    callback save-presentation();
+    callback load-presentation();
+    callback toggle-timer();
+    callback reset-timer();
+    callback key-pressed(string);
+    callback use-template(int);
+    callback export-markdown();
+    callback export-outline();
+    callback search-slides(string);
+    callback search-next();
+    callback set-transition(int);
+    callback undo();
+    callback redo();
+    callback generate-notes();
+    callback format-bold();
+    callback format-italic();
+    callback set-font-size(int);
+    callback set-text-color(int);
+    callback insert-object(string);
+
+    // AI Assist
+    in-out property <bool> show-ai-panel: false;
+    in property <bool> pres-ai-working: false;
+    in property <string> pres-ai-response: "";
+    in-out property <string> pres-ai-prompt: "";
+    callback pres-ai-submit(string);
+    callback pres-ai-apply();
+    callback pres-ai-dismiss();
+    callback pres-ai-generate-deck(string);
+    callback pres-ai-improve-slide();
+    callback pres-ai-generate-notes();
+    callback pres-ai-suggest-visuals();
+    callback pres-ai-insights();
+
+    // Template gallery + speaker notes callbacks
+    callback pres-open-template-gallery();
+    callback pres-select-template(int);
+    callback pres-save-speaker-note(string);
+
+    // ══════════════════════════════════════════
+    // Presenter mode: full-screen slide view
+    // ══════════════════════════════════════════
+    Rectangle {
+        visible: root.is-presenting;
+        width: 100%;
+        height: 100%;
+        background: themes.length > 0 ? themes[0].bg-color : #1a1a2e;
+
+        property <brush> slide-bg: themes.length > 0 ? themes[0].bg-color : #1a1a2e;
+        property <brush> slide-text: themes.length > 0 ? themes[0].text-color : #ffffff;
+        property <brush> slide-accent: themes.length > 0 ? themes[0].accent-color : #6c63ff;
+
+        // Main slide area (top 70%)
+        Rectangle {
+            width: 100%;
+            height: parent.height * 0.70;
+
+            // 16:9 slide centered
+            Rectangle {
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                width: min(parent.width - 40px, (parent.height - 20px) * 16 / 9);
+                height: self.width * 9 / 16;
+                background: slide-bg;
+                border-radius: 4px;
+                border-width: 1px;
+                border-color: #ffffff20;
+
+                // Title
+                Text {
+                    x: 40px;
+                    y: current-layout == 0 || current-layout == 3 ? parent.height * 0.35 : 30px;
+                    width: parent.width - 80px;
+                    text: current-title;
+                    color: slide-text;
+                    font-size: current-layout == 0 || current-layout == 3 ? 36px : 28px;
+                    font-weight: 700;
+                    horizontal-alignment: current-layout == 0 || current-layout == 3 ? center : left;
+                    overflow: elide;
+                }
+
+                // Body
+                Text {
+                    x: 40px;
+                    y: current-layout == 0 || current-layout == 3 ? parent.height * 0.55 : 80px;
+                    width: current-layout == 2 ? parent.width / 2 - 60px : parent.width - 80px;
+                    height: parent.height - (current-layout == 0 || current-layout == 3 ? parent.height * 0.55 : 80px) - 20px;
+                    text: current-body;
+                    color: slide-text;
+                    font-size: current-layout == 0 ? 18px : 16px;
+                    horizontal-alignment: current-layout == 0 || current-layout == 3 ? center : left;
+                    vertical-alignment: top;
+                    wrap: word-wrap;
+                    overflow: elide;
+                }
+            }
+
+            // Left/right click navigation
+            TouchArea {
+                width: parent.width / 2;
+                height: parent.height;
+                clicked => { root.prev-slide(); }
+            }
+            TouchArea {
+                x: parent.width / 2;
+                width: parent.width / 2;
+                height: parent.height;
+                clicked => { root.next-slide(); }
+            }
+        }
+
+        // Presenter bottom panel (30% — notes + next slide + controls)
+        Rectangle {
+            y: parent.height * 0.70;
+            width: 100%;
+            height: parent.height * 0.30;
+            background: #0a0a15;
+
+            // Top border
+            Rectangle { height: 1px; background: #ffffff20; }
+
+            HorizontalLayout {
+                padding: 12px;
+                spacing: 12px;
+
+                // Speaker notes
+                Rectangle {
+                    background: #1a1a2e;
+                    border-radius: 6px;
+
+                    VerticalLayout {
+                        padding: 10px;
+                        spacing: 4px;
+
+                        Text {
+                            text: "Speaker Notes";
+                            color: #ffffff80;
+                            font-size: 10px;
+                            font-weight: 700;
+                            letter-spacing: 0.5px;
+                        }
+
+                        ScrollView {
+                            Text {
+                                text: root.current-notes != "" ? root.current-notes : "(No notes for this slide)";
+                                color: root.current-notes != "" ? #ffffffcc : #ffffff40;
+                                font-size: 14px;
+                                wrap: word-wrap;
+                            }
+                        }
+                    }
+                }
+
+                // Next slide preview + controls
+                Rectangle {
+                    width: 280px;
+
+                    VerticalLayout {
+                        spacing: 8px;
+
+                        Text {
+                            text: "Next Slide";
+                            color: #ffffff60;
+                            font-size: 10px;
+                            font-weight: 700;
+                            letter-spacing: 0.5px;
+                        }
+
+                        // Mini next slide preview
+                        Rectangle {
+                            height: 80px;
+                            background: slide-bg;
+                            border-radius: 4px;
+                            border-width: 1px;
+                            border-color: #ffffff20;
+
+                            VerticalLayout {
+                                padding: 8px;
+                                spacing: 2px;
+
+                                Text {
+                                    text: root.next-title;
+                                    color: slide-text;
+                                    font-size: 10px;
+                                    font-weight: 600;
+                                    overflow: elide;
+                                }
+
+                                Text {
+                                    text: root.next-body;
+                                    color: slide-text;
+                                    font-size: 8px;
+                                    overflow: elide;
+                                    wrap: word-wrap;
+                                    opacity: 0.7;
+                                }
+                            }
+                        }
+
+                        // Timer
+                        Rectangle {
+                            height: 36px;
+                            background: #1a1a2e;
+                            border-radius: 6px;
+
+                            HorizontalLayout {
+                                padding-left: 12px;
+                                padding-right: 12px;
+                                spacing: 8px;
+
+                                Text {
+                                    text: root.timer-text;
+                                    color: #ffffff;
+                                    font-size: 20px;
+                                    font-weight: 700;
+                                    vertical-alignment: center;
+                                }
+
+                                Rectangle {}
+
+                                // Play/Pause timer
+                                Rectangle {
+                                    width: 28px;
+                                    height: 28px;
+                                    border-radius: 4px;
+                                    background: timer-ta.has-hover ? #ffffff20 : transparent;
+
+                                    timer-ta := TouchArea { clicked => { root.toggle-timer(); } }
+                                    Text { text: "▶"; color: #ffffffcc; font-size: 12px; horizontal-alignment: center; vertical-alignment: center; }
+                                }
+
+                                // Reset timer
+                                Rectangle {
+                                    width: 28px;
+                                    height: 28px;
+                                    border-radius: 4px;
+                                    background: reset-ta.has-hover ? #ffffff20 : transparent;
+
+                                    reset-ta := TouchArea { clicked => { root.reset-timer(); } }
+                                    Text { text: "↺"; color: #ffffffcc; font-size: 14px; horizontal-alignment: center; vertical-alignment: center; }
+                                }
+                            }
+                        }
+
+                        // Slide counter
+                        Text {
+                            text: root.slide-progress;
+                            color: #ffffffcc;
+                            font-size: 13px;
+                            font-weight: 600;
+                            horizontal-alignment: center;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Exit button (top-right)
+        Rectangle {
+            x: parent.width - 120px;
+            y: 10px;
+            width: 100px;
+            height: 36px;
+            background: #00000080;
+            border-radius: 6px;
+
+            Text {
+                text: "Exit (Esc)";
+                color: #ffffff;
+                font-size: 13px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+
+            TouchArea { clicked => { root.toggle-present(); } }
+        }
+    }
+
+    // ══════════════════════════════════════════
+    // Normal edit mode
+    // ══════════════════════════════════════════
+    Rectangle {
+        visible: !root.is-presenting;
+        width: 100%;
+        height: 100%;
+
+        VerticalLayout {
+            // ── Toolbar ──
+            Rectangle {
+                height: 48px;
+                background: Theme.bg-surface;
+                border-width: 0px;
+
+                HorizontalLayout {
+                    padding-left: 10px;
+                    padding-right: 10px;
+                    padding-top: 6px;
+                    padding-bottom: 6px;
+                    spacing: 4px;
+                    alignment: start;
+
+                    // ── File ──
+                    SlideToolBtnWide { label: "Save"; clicked => { root.save-presentation(); } }
+                    SlideToolBtnWide { label: "Open"; clicked => { root.load-presentation(); } }
+
+                    ToolSep {}
+
+                    // ── Slide management ──
+                    Rectangle {
+                        width: 88px;
+                        height: 36px;
+                        background: ta-new.has-hover ? Theme.hover-fill : transparent;
+                        border-radius: 6px;
+
+                        HorizontalLayout {
+                            padding-left: 10px;
+                            spacing: 6px;
+                            alignment: start;
+
+                            Text { text: "+"; color: Theme.accent; font-size: 16px; font-weight: 700; vertical-alignment: center; }
+                            Text { text: "Slide"; color: Theme.text-primary; font-size: 12px; font-weight: 500; vertical-alignment: center; }
+                        }
+
+                        ta-new := TouchArea { clicked => { root.add-slide(); } }
+                    }
+
+                    SlideToolBtn { label: "⎘"; clicked => { root.duplicate-slide(); } }
+                    SlideToolBtn { label: "✕"; clicked => { root.delete-slide(); } }
+                    SlideToolBtn { label: "↑"; clicked => { root.move-slide-up(); } }
+                    SlideToolBtn { label: "↓"; clicked => { root.move-slide-down(); } }
+
+                    ToolSep {}
+
+                    // ── Insert objects ──
+                    SlideToolBtnWide { label: "Text"; clicked => { root.insert-object("text"); } }
+                    SlideToolBtnWide { label: "Image"; clicked => { root.insert-object("image"); } }
+                    SlideToolBtnWide { label: "Shape"; clicked => { root.insert-object("shape"); } }
+                    SlideToolBtnWide { label: "Chart"; clicked => { root.insert-object("chart"); } }
+                    SlideToolBtnWide { label: "Table"; clicked => { root.insert-object("table"); } }
+                    SlideToolBtnWide { label: "Icon"; clicked => { root.insert-object("icon"); } }
+
+                    ToolSep {}
+
+                    // ── Text formatting ──
+                    SlideToolBtn { label: "B"; clicked => { root.format-bold(); } }
+                    SlideToolBtn { label: "I"; clicked => { root.format-italic(); } }
+
+                    ToolSep {}
+
+                    // ── Undo / Redo ──
+                    SlideToolBtn { label: "↶"; clicked => { root.undo(); } }
+                    SlideToolBtn { label: "↷"; clicked => { root.redo(); } }
+
+                    ToolSep {}
+
+                    // ── Layout selector ──
+                    Rectangle {
+                        width: 136px;
+                        height: 36px;
+                        background: ta-layout.has-hover ? Theme.hover-fill : Theme.bg-card;
+                        border-radius: 6px;
+                        border-width: 1px;
+                        border-color: Theme.border-subtle;
+
+                        HorizontalLayout {
+                            padding-left: 10px;
+                            padding-right: 10px;
+                            spacing: 6px;
+                            alignment: center;
+
+                            Text {
+                                text: "Layout:";
+                                color: Theme.text-dim;
+                                font-size: 10px;
+                                vertical-alignment: center;
+                            }
+
+                            Text {
+                                text: current-layout == 0 ? "Title"
+                                    : current-layout == 1 ? "Content"
+                                    : current-layout == 2 ? "Two Col"
+                                    : current-layout == 3 ? "Section"
+                                    : current-layout == 4 ? "Blank"
+                                    : "Img+Text";
+                                color: Theme.text-primary;
+                                font-size: 11px;
+                                font-weight: 500;
+                                vertical-alignment: center;
+                            }
+                        }
+
+                        ta-layout := TouchArea {
+                            clicked => { root.set-layout(mod(root.current-layout + 1, 6)); }
+                        }
+                    }
+
+                    ToolSep {}
+
+                    // ── Theme selector ──
+                    Rectangle {
+                        width: 96px;
+                        height: 36px;
+                        background: ta-theme.has-hover ? Theme.hover-fill : Theme.bg-card;
+                        border-radius: 6px;
+                        border-width: 1px;
+                        border-color: Theme.border-subtle;
+
+                        HorizontalLayout {
+                            padding-left: 8px;
+                            padding-right: 8px;
+                            spacing: 6px;
+                            alignment: center;
+
+                            // Color preview dot
+                            Rectangle {
+                                width: 14px;
+                                height: 14px;
+                                border-radius: 7px;
+                                background: themes.length > 0 ? themes[0].accent-color : #6c63ff;
+                                border-width: 1px;
+                                border-color: #ffffff30;
+                            }
+
+                            Text {
+                                text: "Theme";
+                                color: Theme.text-primary;
+                                font-size: 11px;
+                                font-weight: 500;
+                                vertical-alignment: center;
+                            }
+                        }
+
+                        ta-theme := TouchArea { clicked => { root.set-theme(0); } }
+                    }
+
+                    // ── Transition selector ──
+                    Rectangle {
+                        width: 120px;
+                        height: 36px;
+                        background: ta-trans.has-hover ? Theme.hover-fill : Theme.bg-card;
+                        border-radius: 6px;
+                        border-width: 1px;
+                        border-color: Theme.border-subtle;
+
+                        HorizontalLayout {
+                            padding-left: 10px;
+                            padding-right: 10px;
+                            spacing: 4px;
+                            alignment: center;
+
+                            Text {
+                                text: root.current-transition == 0 ? "Transition: None"
+                                    : root.current-transition == 1 ? "Transition: Fade"
+                                    : root.current-transition == 2 ? "Transition: Slide L"
+                                    : root.current-transition == 3 ? "Transition: Slide R"
+                                    : "Transition: Zoom";
+                                color: Theme.text-primary;
+                                font-size: 10px;
+                                font-weight: 500;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+
+                        ta-trans := TouchArea { clicked => { root.set-transition(mod(root.current-transition + 1, 5)); } }
+                    }
+
+                    ToolSep {}
+
+                    // ── Templates ──
+                    SlideToolBtnWide {
+                        label: "Template";
+                        active: root.show-templates;
+                        clicked => { root.show-templates = !root.show-templates; }
+                    }
+                    SlideToolBtnWide {
+                        label: "Gallery";
+                        active: root.pres-template-gallery-open;
+                        clicked => { root.pres-open-template-gallery(); }
+                    }
+
+                    ToolSep {}
+
+                    // ── Speaker notes toggle ──
+                    SlideToolBtnWide {
+                        label: "Notes";
+                        active: root.pres-show-speaker-notes;
+                        clicked => { root.pres-show-speaker-notes = !root.pres-show-speaker-notes; }
+                    }
+
+                    // ── Search ──
+                    SlideToolBtn {
+                        label: "🔍";
+                        active: root.show-search;
+                        clicked => { root.show-search = !root.show-search; }
+                    }
+
+                    ToolSep {}
+
+                    // ── Present button ──
+                    Rectangle {
+                        width: 96px;
+                        height: 36px;
+                        background: ta-present.has-hover ? #7c73ff : #6c63ff;
+                        border-radius: 6px;
+
+                        HorizontalLayout {
+                            padding-left: 12px;
+                            spacing: 6px;
+                            alignment: center;
+
+                            Text { text: "▶"; color: #ffffff; font-size: 12px; vertical-alignment: center; }
+                            Text { text: "Present"; color: #ffffff; font-size: 12px; font-weight: 600; vertical-alignment: center; }
+                        }
+
+                        ta-present := TouchArea { clicked => { root.toggle-present(); } }
+                    }
+
+                    // ── Export ──
+                    SlideToolBtnWide { label: "Export"; clicked => { root.export-pdf(); } }
+                    SlideToolBtnWide { label: "MD"; clicked => { root.export-markdown(); } }
+
+                    // ── AI Assist toggle ──
+                    SlideToolBtnWide {
+                        label: "AI Assist";
+                        width: 80px;
+                        active: root.show-ai-panel;
+                        clicked => { root.show-ai-panel = !root.show-ai-panel; }
+                    }
+                }
+            }
+
+            // Separator
+            Rectangle { height: 1px; background: Theme.separator; }
+
+            // ── Template picker dropdown ──
+            Rectangle {
+                height: root.show-templates ? 40px : 0px;
+                visible: root.show-templates;
+                background: Theme.bg-card;
+
+                HorizontalLayout {
+                    padding-left: 12px;
+                    spacing: 8px;
+                    alignment: start;
+
+                    Text { text: "Templates:"; color: Theme.text-primary; font-size: 12px; font-weight: 600; vertical-alignment: center; }
+
+                    SlideToolBtnWide { label: "Blank"; clicked => { root.use-template(0); root.show-templates = false; } }
+                    SlideToolBtnWide { label: "Status"; clicked => { root.use-template(1); root.show-templates = false; } }
+                    SlideToolBtnWide { label: "Proposal"; clicked => { root.use-template(2); root.show-templates = false; } }
+                    SlideToolBtnWide { label: "Team"; clicked => { root.use-template(3); root.show-templates = false; } }
+                    SlideToolBtnWide { label: "Quarterly"; clicked => { root.use-template(4); root.show-templates = false; } }
+                }
+
+                Rectangle { y: parent.height - 1px; height: 1px; background: Theme.separator; }
+            }
+
+            // ── Search bar ──
+            Rectangle {
+                height: root.show-search ? 36px : 0px;
+                visible: root.show-search;
+                background: Theme.bg-card;
+
+                HorizontalLayout {
+                    padding-left: 12px;
+                    padding-right: 12px;
+                    spacing: 8px;
+                    alignment: start;
+
+                    Text { text: "Search:"; color: Theme.text-primary; font-size: Theme.font-small; font-weight: 500; vertical-alignment: center; }
+
+                    search-input := LineEdit {
+                        width: 200px;
+                        text <=> root.search-query;
+                        placeholder-text: "Search slides...";
+                        accepted => { root.search-slides(root.search-query); }
+                    }
+
+                    SlideToolBtn { label: "↓"; clicked => { root.search-next(); } }
+
+                    Text {
+                        text: root.search-count > 0 ? root.search-count + " found" : "";
+                        color: Theme.text-dim;
+                        font-size: Theme.font-small;
+                        vertical-alignment: center;
+                    }
+                }
+
+                Rectangle { y: parent.height - 1px; height: 1px; background: Theme.separator; }
+            }
+
+            // ── Main area: sidebar + editor + notes ──
+            HorizontalLayout {
+                // ── Slide sidebar ──
+                Rectangle {
+                    width: 200px;
+                    background: Theme.bg-deep;
+                    border-width: 0px;
+
+                    VerticalLayout {
+                        padding: 10px;
+                        spacing: 0px;
+
+                        // Header row
+                        HorizontalLayout {
+                            height: 28px;
+                            spacing: 6px;
+
+                            Text {
+                                text: "SLIDES";
+                                color: Theme.text-secondary;
+                                font-size: 10px;
+                                font-weight: 700;
+                                letter-spacing: 1px;
+                                vertical-alignment: center;
+                            }
+
+                            Rectangle {}
+
+                            Text {
+                                text: root.slide-count + "";
+                                color: Theme.text-dim;
+                                font-size: 10px;
+                                vertical-alignment: center;
+                            }
+                        }
+
+                        ListView {
+                            for slide[idx] in root.slides : Rectangle {
+                                height: 116px;
+                                background: transparent;
+
+                                VerticalLayout {
+                                    padding-top: 5px;
+                                    padding-bottom: 5px;
+                                    padding-left: 6px;
+                                    padding-right: 6px;
+                                    spacing: 3px;
+
+                                    // Slide number badge
+                                    HorizontalLayout {
+                                        height: 16px;
+                                        spacing: 4px;
+
+                                        Rectangle {
+                                            width: 22px;
+                                            height: 16px;
+                                            border-radius: 4px;
+                                            background: idx == root.current-slide-index ? Theme.accent.transparentize(0.7) : transparent;
+
+                                            Text {
+                                                text: "" + (idx + 1);
+                                                color: idx == root.current-slide-index ? Theme.accent : Theme.text-dim;
+                                                font-size: 10px;
+                                                font-weight: idx == root.current-slide-index ? 700 : 400;
+                                                horizontal-alignment: center;
+                                                vertical-alignment: center;
+                                            }
+                                        }
+
+                                        Rectangle {}
+                                    }
+
+                                    // Thumbnail card
+                                    Rectangle {
+                                        height: 88px;
+                                        background: idx == root.current-slide-index ? Theme.bg-elevated : Theme.bg-surface;
+                                        border-radius: 6px;
+                                        border-width: idx == root.current-slide-index ? 2px : 1px;
+                                        border-color: idx == root.current-slide-index ? Theme.accent : Theme.border-subtle;
+                                        opacity: idx == root.current-slide-index ? 1.0 : 0.75;
+
+                                        // Active slide glow
+                                        Rectangle {
+                                            visible: idx == root.current-slide-index;
+                                            width: 100%;
+                                            height: 100%;
+                                            border-radius: 6px;
+                                            background: Theme.accent.transparentize(0.92);
+                                        }
+
+                                        VerticalLayout {
+                                            padding: 8px;
+                                            spacing: 3px;
+
+                                            Text {
+                                                text: slide.title;
+                                                color: idx == root.current-slide-index ? Theme.text-primary : Theme.text-secondary;
+                                                font-size: 9px;
+                                                font-weight: 600;
+                                                overflow: elide;
+                                            }
+
+                                            Text {
+                                                text: slide.body;
+                                                color: Theme.text-dim;
+                                                font-size: 8px;
+                                                overflow: elide;
+                                                wrap: word-wrap;
+                                            }
+                                        }
+
+                                        TouchArea {
+                                            clicked => { root.select-slide(idx); }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Inline add-slide button at bottom of rail
+                        Rectangle {
+                            height: 36px;
+
+                            Rectangle {
+                                x: 6px;
+                                y: 4px;
+                                width: parent.width - 12px;
+                                height: 28px;
+                                border-radius: 6px;
+                                border-width: 1px;
+                                border-color: add-rail-ta.has-hover ? Theme.accent.transparentize(0.5) : Theme.border-subtle;
+                                background: add-rail-ta.has-hover ? Theme.accent.transparentize(0.9) : transparent;
+
+                                HorizontalLayout {
+                                    alignment: center;
+                                    spacing: 4px;
+
+                                    Text {
+                                        text: "+";
+                                        color: add-rail-ta.has-hover ? Theme.accent : Theme.text-dim;
+                                        font-size: 14px;
+                                        font-weight: 600;
+                                        vertical-alignment: center;
+                                    }
+                                    Text {
+                                        text: "Add Slide";
+                                        color: add-rail-ta.has-hover ? Theme.text-primary : Theme.text-dim;
+                                        font-size: 10px;
+                                        vertical-alignment: center;
+                                    }
+                                }
+
+                                add-rail-ta := TouchArea { clicked => { root.add-slide(); } }
+                            }
+                        }
+                    }
+                }
+
+                // Separator
+                Rectangle { width: 1px; background: Theme.separator; }
+
+                // ── Center: slide editor + notes ──
+                VerticalLayout {
+                    spacing: 0px;
+
+                    // Slide editor area
+                    Rectangle {
+                        background: Theme.bg-deep;
+
+                        Rectangle {
+                            x: 24px;
+                            y: 16px;
+                            width: parent.width - 48px;
+                            height: parent.height - 32px;
+
+                            property <length> avail-w: self.width;
+                            property <length> avail-h: self.height;
+                            property <length> fit-w: min(avail-w, avail-h * 16 / 9);
+                            property <length> fit-h: fit-w * 9 / 16;
+
+                            // The actual slide
+                            Rectangle {
+                                x: (parent.width - self.width) / 2;
+                                y: (parent.height - self.height) / 2;
+                                width: parent.fit-w;
+                                height: parent.fit-h;
+                                background: themes.length > 0 ? themes[0].bg-color : #1a1a2e;
+                                border-radius: 6px;
+                                border-width: 1px;
+                                border-color: #00000040;
+
+                                property <brush> t-text: themes.length > 0 ? themes[0].text-color : #ffffff;
+                                property <brush> t-accent: themes.length > 0 ? themes[0].accent-color : #6c63ff;
+
+                                // Accent bar for Title Slide and Section Header
+                                Rectangle {
+                                    visible: current-layout == 0 || current-layout == 3;
+                                    x: parent.width * 0.3;
+                                    y: current-layout == 0 ? parent.height * 0.48 : parent.height * 0.45;
+                                    width: parent.width * 0.4;
+                                    height: 3px;
+                                    background: t-accent;
+                                    border-radius: 1px;
+                                }
+
+                                // Title input
+                                Rectangle {
+                                    visible: current-layout != 4;
+                                    x: current-layout == 0 || current-layout == 3 ? parent.width * 0.1 : 30px;
+                                    y: current-layout == 0 || current-layout == 3 ? parent.height * 0.25 : 20px;
+                                    width: current-layout == 0 || current-layout == 3 ? parent.width * 0.8 : parent.width - 60px;
+                                    height: current-layout == 0 ? parent.height * 0.2 : 40px;
+
+                                    title-input := TextInput {
+                                        width: 100%;
+                                        height: 100%;
+                                        text: root.current-title;
+                                        color: t-text;
+                                        font-size: current-layout == 0 || current-layout == 3 ? 24px : 20px;
+                                        font-weight: 700;
+                                        horizontal-alignment: current-layout == 0 || current-layout == 3 ? center : left;
+                                        vertical-alignment: center;
+                                        single-line: true;
+                                        accepted => { root.title-edited(self.text); }
+                                        edited => { root.title-edited(self.text); }
+                                    }
+                                }
+
+                                // Body input
+                                Rectangle {
+                                    visible: current-layout != 4;
+                                    x: current-layout == 0 || current-layout == 3 ? parent.width * 0.15 : 30px;
+                                    y: current-layout == 0 ? parent.height * 0.55 : current-layout == 3 ? parent.height * 0.52 : 70px;
+                                    width: current-layout == 2 ? parent.width * 0.45 - 30px
+                                         : current-layout == 5 ? parent.width * 0.55 - 30px
+                                         : current-layout == 0 || current-layout == 3 ? parent.width * 0.7 : parent.width - 60px;
+                                    height: current-layout == 0 || current-layout == 3 ? parent.height * 0.2 : parent.height - 90px;
+
+                                    body-input := TextInput {
+                                        width: 100%;
+                                        height: 100%;
+                                        text: root.current-body;
+                                        color: t-text;
+                                        font-size: current-layout == 0 ? 14px : 13px;
+                                        horizontal-alignment: current-layout == 0 || current-layout == 3 ? center : left;
+                                        vertical-alignment: top;
+                                        single-line: false;
+                                        wrap: word-wrap;
+                                        edited => { root.body-edited(self.text); }
+                                    }
+                                }
+
+                                // Two Column: right column placeholder
+                                Rectangle {
+                                    visible: current-layout == 2;
+                                    x: parent.width * 0.52;
+                                    y: 70px;
+                                    width: parent.width * 0.45 - 30px;
+                                    height: parent.height - 90px;
+                                    background: #ffffff08;
+                                    border-radius: 4px;
+                                    border-width: 1px;
+                                    border-color: #ffffff15;
+
+                                    Text {
+                                        text: "Column 2\n(use body text)";
+                                        color: t-text;
+                                        font-size: 11px;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                        opacity: 0.4;
+                                    }
+                                }
+
+                                // Image + Text: image placeholder
+                                Rectangle {
+                                    visible: current-layout == 5;
+                                    x: parent.width * 0.58;
+                                    y: 70px;
+                                    width: parent.width * 0.38;
+                                    height: parent.height - 90px;
+                                    background: #ffffff08;
+                                    border-radius: 4px;
+                                    border-width: 1px;
+                                    border-color: #ffffff15;
+
+                                    VerticalLayout {
+                                        alignment: center;
+                                        spacing: 4px;
+
+                                        Text {
+                                            text: "🖼";
+                                            font-size: 28px;
+                                            horizontal-alignment: center;
+                                            opacity: 0.3;
+                                        }
+                                        Text {
+                                            text: "Image placeholder";
+                                            color: t-text;
+                                            font-size: 10px;
+                                            horizontal-alignment: center;
+                                            opacity: 0.3;
+                                        }
+                                    }
+                                }
+
+                                // Blank layout watermark
+                                Rectangle {
+                                    visible: current-layout == 4;
+                                    width: 100%;
+                                    height: 100%;
+
+                                    Text {
+                                        text: "Blank Slide";
+                                        color: t-text;
+                                        font-size: 14px;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                        opacity: 0.15;
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Separator
+                    Rectangle { height: 1px; background: Theme.separator; }
+
+                    // ── Speaker notes + slide info ──
+                    Rectangle {
+                        height: 130px;
+                        background: Theme.bg-surface;
+
+                        // Top separator with accent hint
+                        Rectangle {
+                            height: 1px;
+                            background: Theme.separator;
+                        }
+
+                        VerticalLayout {
+                            padding: 0px;
+                            spacing: 0px;
+
+                            // Notes header bar
+                            Rectangle {
+                                height: 30px;
+                                background: Theme.bg-card;
+
+                                HorizontalLayout {
+                                    padding-left: 12px;
+                                    padding-right: 12px;
+                                    spacing: 8px;
+
+                                    Text {
+                                        text: "Speaker Notes";
+                                        color: Theme.text-primary;
+                                        font-size: 11px;
+                                        font-weight: 600;
+                                        vertical-alignment: center;
+                                    }
+
+                                    Rectangle {}
+
+                                    // Auto-generate notes button
+                                    Rectangle {
+                                        width: 76px;
+                                        height: 22px;
+                                        border-radius: 4px;
+                                        background: gen-ta.has-hover ? Theme.accent.transparentize(0.8) : transparent;
+                                        border-width: 1px;
+                                        border-color: Theme.accent.transparentize(0.6);
+
+                                        gen-ta := TouchArea { clicked => { root.generate-notes(); } }
+
+                                        Text {
+                                            text: "AI Generate";
+                                            font-size: 9px;
+                                            color: Theme.accent;
+                                            font-weight: 500;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+
+                                    // Slide info inline
+                                    ToolSep {}
+
+                                    Text {
+                                        text: root.slide-progress;
+                                        color: Theme.text-secondary;
+                                        font-size: 11px;
+                                        vertical-alignment: center;
+                                    }
+
+                                    Text {
+                                        text: current-layout == 0 ? "Title Slide"
+                                            : current-layout == 1 ? "Title + Content"
+                                            : current-layout == 2 ? "Two Column"
+                                            : current-layout == 3 ? "Section Header"
+                                            : current-layout == 4 ? "Blank"
+                                            : "Image + Text";
+                                        color: Theme.text-dim;
+                                        font-size: 10px;
+                                        vertical-alignment: center;
+                                    }
+
+                                    // Modified indicator
+                                    Rectangle {
+                                        visible: root.is-modified;
+                                        width: 64px;
+                                        height: 18px;
+                                        border-radius: 4px;
+                                        background: #e8a83825;
+
+                                        Text {
+                                            text: "Modified";
+                                            color: #e8a838;
+                                            font-size: 9px;
+                                            font-weight: 500;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+
+                                    Text {
+                                        visible: root.save-status != "";
+                                        text: root.save-status;
+                                        color: Theme.text-dim;
+                                        font-size: 9px;
+                                        vertical-alignment: center;
+                                        overflow: elide;
+                                    }
+                                }
+                            }
+
+                            // Notes input area
+                            Rectangle {
+                                background: Theme.bg-deep;
+                                border-width: 0px;
+
+                                notes-input := TextInput {
+                                    x: 12px;
+                                    y: 6px;
+                                    width: parent.width - 24px;
+                                    height: parent.height - 12px;
+                                    text: root.current-notes;
+                                    color: Theme.text-secondary;
+                                    font-size: 12px;
+                                    single-line: false;
+                                    wrap: word-wrap;
+                                    vertical-alignment: top;
+                                    edited => { root.notes-edited(self.text); }
+                                }
+
+                                // Placeholder when empty
+                                Text {
+                                    visible: root.current-notes == "";
+                                    x: 12px;
+                                    y: 6px;
+                                    text: "Add speaker notes for this slide...";
+                                    color: Theme.text-dim;
+                                    font-size: 12px;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // AI Assist Panel (right sidebar)
+    Rectangle {
+        visible: root.show-ai-panel;
+        x: parent.width - 280px;
+        y: 0px;
+        width: 280px;
+        height: parent.height;
+        background: Theme.bg-card;
+        border-width: 1px;
+        border-color: Theme.separator;
+
+        VerticalLayout {
+            padding: 10px;
+            spacing: 8px;
+
+            HorizontalLayout {
+                spacing: 6px;
+                height: 28px;
+
+                Text {
+                    text: "AI Assistant";
+                    color: Theme.accent;
+                    font-size: 13px;
+                    font-weight: 600;
+                    vertical-alignment: center;
+                }
+                Rectangle { }
+                Rectangle {
+                    width: 24px; height: 24px; border-radius: 4px;
+                    background: close-pres-ai-ta.has-hover ? Theme.hover-fill : transparent;
+                    close-pres-ai-ta := TouchArea { clicked => { root.show-ai-panel = false; } }
+                    Text { text: "x"; color: Theme.text-dim; font-size: 14px; horizontal-alignment: center; vertical-alignment: center; }
+                }
+            }
+
+            Rectangle { height: 1px; background: Theme.separator; }
+
+            Text { text: "Quick Actions"; color: Theme.text-secondary; font-size: 10px; }
+
+            HorizontalLayout {
+                spacing: 4px;
+
+                Rectangle {
+                    height: 28px;
+                    border-radius: 4px;
+                    background: gen-deck-ta.has-hover ? Theme.accent.transparentize(0.8) : Theme.bg-elevated;
+                    border-width: 1px;
+                    border-color: Theme.accent.transparentize(0.6);
+                    gen-deck-ta := TouchArea { clicked => { root.pres-ai-generate-deck(root.pres-ai-prompt); } }
+                    Text { text: "Gen Deck"; color: Theme.accent; font-size: 10px; horizontal-alignment: center; vertical-alignment: center; }
+                }
+
+                Rectangle {
+                    height: 28px;
+                    border-radius: 4px;
+                    background: improve-slide-ta.has-hover ? Theme.accent.transparentize(0.8) : Theme.bg-elevated;
+                    border-width: 1px;
+                    border-color: Theme.accent.transparentize(0.6);
+                    improve-slide-ta := TouchArea { clicked => { root.pres-ai-improve-slide(); } }
+                    Text { text: "Improve"; color: Theme.accent; font-size: 10px; horizontal-alignment: center; vertical-alignment: center; }
+                }
+            }
+
+            HorizontalLayout {
+                spacing: 4px;
+
+                Rectangle {
+                    height: 28px;
+                    border-radius: 4px;
+                    background: gen-notes-ta.has-hover ? Theme.accent.transparentize(0.8) : Theme.bg-elevated;
+                    border-width: 1px;
+                    border-color: Theme.accent.transparentize(0.6);
+                    gen-notes-ta := TouchArea { clicked => { root.pres-ai-generate-notes(); } }
+                    Text { text: "Notes"; color: Theme.accent; font-size: 10px; horizontal-alignment: center; vertical-alignment: center; }
+                }
+
+                Rectangle {
+                    height: 28px;
+                    border-radius: 4px;
+                    background: suggest-vis-ta.has-hover ? Theme.accent.transparentize(0.8) : Theme.bg-elevated;
+                    border-width: 1px;
+                    border-color: Theme.accent.transparentize(0.6);
+                    suggest-vis-ta := TouchArea { clicked => { root.pres-ai-suggest-visuals(); } }
+                    Text { text: "Visuals"; color: Theme.accent; font-size: 10px; horizontal-alignment: center; vertical-alignment: center; }
+                }
+            }
+
+            Rectangle {
+                height: 28px;
+                border-radius: 4px;
+                background: pres-insights-ta.has-hover ? #9b59b6cc : #9b59b680;
+                border-width: 1px;
+                border-color: #9b59b6;
+
+                pres-insights-ta := TouchArea { clicked => { root.pres-ai-insights(); } }
+                Text { text: "Contextual Insights"; color: #d2b4de; font-size: 10px; horizontal-alignment: center; vertical-alignment: center; }
+            }
+
+            Rectangle { height: 1px; background: Theme.separator; }
+
+            Text { text: "Ask AI"; color: Theme.text-secondary; font-size: 10px; }
+
+            Rectangle {
+                height: 60px;
+                border-radius: 6px;
+                background: Theme.bg-elevated;
+                border-width: 1px;
+                border-color: Theme.separator;
+
+                pres-ai-input := TextInput {
+                    x: 8px; y: 6px;
+                    width: parent.width - 16px;
+                    height: parent.height - 12px;
+                    color: Theme.text-primary;
+                    font-size: 11px;
+                    text: root.pres-ai-prompt;
+                    edited => { root.pres-ai-prompt = self.text; }
+                    accepted => { root.pres-ai-submit(self.text); }
+                }
+            }
+
+            Rectangle {
+                height: 28px;
+                border-radius: 4px;
+                background: root.pres-ai-working ? Theme.text-dim : (submit-pres-ai-ta.has-hover ? Theme.accent : Theme.accent.transparentize(0.2));
+                submit-pres-ai-ta := TouchArea {
+                    enabled: !root.pres-ai-working;
+                    clicked => { root.pres-ai-submit(root.pres-ai-prompt); }
+                }
+                Text {
+                    text: root.pres-ai-working ? "Thinking..." : "Ask";
+                    color: white;
+                    font-size: 11px;
+                    font-weight: 600;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+
+            Rectangle { height: 1px; background: Theme.separator; }
+
+            ScrollView {
+                Rectangle {
+                    background: transparent;
+                    Text {
+                        text: root.pres-ai-response;
+                        color: Theme.text-primary;
+                        font-size: 11px;
+                        wrap: word-wrap;
+                        width: parent.width;
+                    }
+                }
+            }
+
+            HorizontalLayout {
+                visible: root.pres-ai-response != "";
+                spacing: 6px;
+                height: 28px;
+
+                Rectangle {
+                    border-radius: 4px;
+                    background: pres-apply-ta.has-hover ? #2ecc71 : #2ecc71cc;
+                    pres-apply-ta := TouchArea { clicked => { root.pres-ai-apply(); } }
+                    Text { text: "Apply"; color: white; font-size: 11px; horizontal-alignment: center; vertical-alignment: center; }
+                }
+                Rectangle {
+                    border-radius: 4px;
+                    background: pres-dismiss-ta.has-hover ? #e74c3c : #e74c3ccc;
+                    pres-dismiss-ta := TouchArea { clicked => { root.pres-ai-dismiss(); } }
+                    Text { text: "Dismiss"; color: white; font-size: 11px; horizontal-alignment: center; vertical-alignment: center; }
+                }
+            }
+        }
+    }
+
+    // ── Template gallery overlay ──
+    Rectangle {
+        visible: root.pres-template-gallery-open;
+        width: 100%;
+        height: 100%;
+        background: #00000088;
+
+        // Backdrop click to close
+        TouchArea {
+            clicked => { root.pres-template-gallery-open = false; }
+        }
+
+        // Gallery card
+        Rectangle {
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            width: 420px;
+            height: 300px;
+            background: #1a1a2eee;
+            border-radius: 12px;
+            border-width: 1px;
+            border-color: #ffffff20;
+
+            // Prevent backdrop click from passing through
+            TouchArea {}
+
+            VerticalLayout {
+                padding: 20px;
+                spacing: 12px;
+
+                Text {
+                    text: "Template Gallery";
+                    color: Theme.accent;
+                    font-size: 16px;
+                    font-weight: 700;
+                    horizontal-alignment: center;
+                }
+
+                Text {
+                    text: "Select a template to apply a theme to your presentation";
+                    color: Theme.text-secondary;
+                    font-size: 11px;
+                    horizontal-alignment: center;
+                }
+
+                // Template grid
+                Rectangle {
+                    HorizontalLayout {
+                        padding: 8px;
+                        spacing: 10px;
+                        alignment: center;
+
+                        for tpl[idx] in root.pres-template-names: Rectangle {
+                            width: 70px;
+                            height: 90px;
+                            border-radius: 8px;
+                            background: tpl-ta.has-hover ? Theme.accent.transparentize(0.7) : #ffffff10;
+                            border-width: 1px;
+                            border-color: tpl-ta.has-hover ? Theme.accent.transparentize(0.4) : #ffffff10;
+
+                            tpl-ta := TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => {
+                                    root.pres-select-template(idx);
+                                    root.pres-template-gallery-open = false;
+                                }
+                            }
+
+                            VerticalLayout {
+                                padding: 8px;
+                                spacing: 6px;
+                                alignment: center;
+
+                                // Theme preview swatch
+                                Rectangle {
+                                    width: 40px;
+                                    height: 28px;
+                                    border-radius: 4px;
+                                    background: idx == 0 ? #1a1a2e
+                                        : idx == 1 ? #1e3a5f
+                                        : idx == 2 ? #5b2c6f
+                                        : idx == 3 ? #1a472a
+                                        : #2c2c54;
+                                    border-width: 1px;
+                                    border-color: #ffffff20;
+
+                                    Text {
+                                        text: "Aa";
+                                        color: idx == 0 ? #ffffff
+                                            : idx == 1 ? #e8e8e8
+                                            : idx == 2 ? #f0e68c
+                                            : idx == 3 ? #90ee90
+                                            : #ff6b6b;
+                                        font-size: 12px;
+                                        font-weight: 600;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+                                }
+
+                                Text {
+                                    text: tpl;
+                                    color: tpl-ta.has-hover ? Theme.accent : Theme.text-primary;
+                                    font-size: 10px;
+                                    font-weight: 500;
+                                    horizontal-alignment: center;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Close button
+                Rectangle {
+                    height: 32px;
+
+                    Rectangle {
+                        width: 80px;
+                        height: 28px;
+                        x: (parent.width - self.width) / 2;
+                        border-radius: 6px;
+                        background: close-ta.has-hover ? #ffffff20 : #ffffff10;
+
+                        close-ta := TouchArea { clicked => { root.pres-template-gallery-open = false; } }
+                        Text { text: "Close"; color: Theme.text-secondary; font-size: 11px; font-weight: 500; horizontal-alignment: center; vertical-alignment: center; }
+                    }
+                }
+            }
+        }
+    }
+
+    // Keyboard handler
+    key-handler := FocusScope {
+        width: 0px;
+        height: 0px;
+
+        key-pressed(event) => {
+            if event.text == "\u{001b}" {
+                if root.is-presenting {
+                    root.toggle-present();
+                }
+                root.show-templates = false;
+                root.show-search = false;
+                root.pres-template-gallery-open = false;
+            }
+            if root.is-presenting {
+                if event.text == Key.RightArrow || event.text == Key.DownArrow || event.text == " " || event.text == Key.PageDown {
+                    root.next-slide();
+                }
+                if event.text == Key.LeftArrow || event.text == Key.UpArrow || event.text == Key.PageUp {
+                    root.prev-slide();
+                }
+                if event.text == Key.Home { root.select-slide(0); }
+                if event.text == Key.End { root.select-slide(root.slide-count - 1); }
+            }
+            accept
+        }
+    }
+}

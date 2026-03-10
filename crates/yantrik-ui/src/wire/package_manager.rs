@@ -40,7 +40,7 @@ struct PkgDetail {
 }
 
 /// Wire package manager callbacks.
-pub fn wire(ui: &App, _ctx: &AppContext) {
+pub fn wire(ui: &App, ctx: &AppContext) {
     let pkg_cache: Rc<RefCell<Vec<PkgEntry>>> = Rc::new(RefCell::new(Vec::new()));
     let poll_timer: Rc<RefCell<Option<Timer>>> = Rc::new(RefCell::new(None));
 
@@ -381,6 +381,73 @@ pub fn wire(ui: &App, _ctx: &AppContext) {
             // No-op in direct-action mode
         });
     }
+
+    // ── AI Explain callback (explain selected package) ──
+    let bridge = ctx.bridge.clone();
+    let ai_state = super::ai_assist::AiAssistState::new();
+    let ui_weak = ui.as_weak();
+    let ai_st = ai_state.clone();
+    ui.on_pkg_ai_explain(move || {
+        let Some(ui) = ui_weak.upgrade() else { return };
+        let name = ui.get_pkg_detail_name().to_string();
+        if name.is_empty() { return; }
+
+        let version = ui.get_pkg_detail_version().to_string();
+        let desc = ui.get_pkg_detail_description().to_string();
+        let deps = ui.get_pkg_detail_dependencies().to_string();
+        let size = ui.get_pkg_detail_size().to_string();
+
+        let info = format!(
+            "Version: {}\nDescription: {}\nSize: {}\nDependencies: {}",
+            version, desc, size, deps
+        );
+        let prompt = super::ai_assist::package_explain_prompt(&name, &info);
+
+        super::ai_assist::ai_request(
+            &ui.as_weak(),
+            &bridge,
+            &ai_st,
+            super::ai_assist::AiAssistRequest {
+                prompt,
+                timeout_secs: 30,
+                set_working: Box::new(|ui, v| ui.set_pkg_ai_is_working(v)),
+                set_response: Box::new(|ui, s| ui.set_pkg_ai_response(s.into())),
+                get_response: Box::new(|ui| ui.get_pkg_ai_response().to_string()),
+            },
+        );
+    });
+
+    // ── AI Intent callback (natural language → package suggestion) ──
+    let bridge2 = ctx.bridge.clone();
+    let ai_st2 = ai_state.clone();
+    let ui_weak = ui.as_weak();
+    ui.on_pkg_ai_intent(move |query| {
+        let intent = query.to_string();
+        if intent.is_empty() { return; }
+
+        let prompt = super::ai_assist::intent_to_package_prompt(&intent);
+
+        super::ai_assist::ai_request(
+            &ui_weak,
+            &bridge2,
+            &ai_st2,
+            super::ai_assist::AiAssistRequest {
+                prompt,
+                timeout_secs: 30,
+                set_working: Box::new(|ui, v| ui.set_pkg_ai_is_working(v)),
+                set_response: Box::new(|ui, s| ui.set_pkg_ai_response(s.into())),
+                get_response: Box::new(|ui| ui.get_pkg_ai_response().to_string()),
+            },
+        );
+    });
+
+    // ── AI Dismiss ──
+    let ui_weak = ui.as_weak();
+    ui.on_pkg_ai_dismiss(move || {
+        if let Some(ui) = ui_weak.upgrade() {
+            ui.set_pkg_ai_panel_open(false);
+        }
+    });
 }
 
 /// Run a package action (install/remove/upgrade) in a background thread.

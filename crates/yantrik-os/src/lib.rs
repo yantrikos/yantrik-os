@@ -8,6 +8,7 @@
 
 pub mod events;
 pub mod event_bus;
+pub mod entity_graph;
 pub mod observer;
 pub mod screenshot;
 pub mod dbus_notif;
@@ -25,4 +26,5 @@ pub use event_bus::{
     CardAction, CommitmentAlertType, EventBus, EventKind, EventLog, EventLogEntry,
     EventSource, EventStats, ToolOutcome, TraceId, YantrikEvent,
 };
+pub use entity_graph::{EntityGraph, ObjectKind, RelationKind, Relation, UniversalObject};
 pub use observer::{SystemObserver, SystemObserverConfig};
