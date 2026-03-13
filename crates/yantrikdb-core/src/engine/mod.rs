@@ -8,7 +8,7 @@ mod learning;
 mod lifecycle;
 mod recall;
 mod record;
-mod stats;
+pub mod stats;
 mod storage;
 pub mod tenant;
 #[cfg(test)]

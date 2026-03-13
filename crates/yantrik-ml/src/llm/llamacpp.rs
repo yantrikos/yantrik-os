@@ -255,6 +255,7 @@ impl LlamaCppLLM {
                 .map_err(|e| anyhow::anyhow!("decode token: {e}"))?;
         }
 
+        let generated_text = super::strip_think_tags(&generated_text);
         let tool_calls = chat_template::parse_tool_calls(&generated_text);
 
         Ok(LLMResponse {
@@ -379,6 +380,7 @@ impl LlamaCppLLM {
             }
         }
 
+        let generated_text = super::strip_think_tags(&generated_text);
         let tool_calls = chat_template::parse_tool_calls(&generated_text);
 
         Ok(LLMResponse {

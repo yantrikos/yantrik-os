@@ -1,0 +1,325 @@
+[
+  {"name": "remember", "module": "memory", "family": "REMEMBER", "permission": "standard", "description": "Store a memory or fact about the user for future recall"},
+  {"name": "recall", "module": "memory", "family": "REMEMBER", "permission": "safe", "description": "Retrieve stored memories matching a query"},
+  {"name": "relate", "module": "memory", "family": "REMEMBER", "permission": "safe", "description": "Find relationships between stored memories and concepts"},
+  {"name": "set_reminder", "module": "memory", "family": "SCHEDULE", "permission": "standard", "description": "Set a time-based reminder for the user"},
+  {"name": "introspect", "module": "memory", "family": "REMEMBER", "permission": "safe", "description": "Reflect on stored knowledge and self-awareness"},
+  {"name": "form_opinion", "module": "memory", "family": "REMEMBER", "permission": "standard", "description": "Form and store an opinion based on accumulated knowledge"},
+  {"name": "create_inside_joke", "module": "memory", "family": "REMEMBER", "permission": "standard", "description": "Create and store a shared inside joke with the user"},
+  {"name": "check_bond", "module": "memory", "family": "REMEMBER", "permission": "safe", "description": "Check the current bond level and relationship status with the user"},
+
+  {"name": "open_url", "module": "desktop", "family": "BROWSE", "permission": "standard", "description": "Open a URL in the default browser"},
+  {"name": "read_clipboard", "module": "desktop", "family": "FILES", "permission": "safe", "description": "Read the current contents of the system clipboard"},
+  {"name": "write_clipboard", "module": "desktop", "family": "FILES", "permission": "standard", "description": "Write text to the system clipboard"},
+  {"name": "list_files", "module": "desktop", "family": "FILES", "permission": "safe", "description": "List files and directories at a given path"},
+  {"name": "read_file", "module": "desktop", "family": "FILES", "permission": "safe", "description": "Read the contents of a file"},
+  {"name": "run_command", "module": "desktop", "family": "SYSTEM", "permission": "sensitive", "description": "Execute a shell command on the system"},
+
+  {"name": "write_file", "module": "files", "family": "FILES", "permission": "standard", "description": "Write content to a file, creating it if necessary"},
+  {"name": "manage_files", "module": "files", "family": "FILES", "permission": "dangerous", "description": "Move, copy, rename, or delete files and directories"},
+  {"name": "search_files", "module": "files", "family": "FILES", "permission": "safe", "description": "Search for files matching a pattern or query"},
+  {"name": "file_info", "module": "files", "family": "FILES", "permission": "safe", "description": "Get metadata and information about a file"},
+
+  {"name": "kill_process", "module": "system", "family": "SYSTEM", "permission": "sensitive", "description": "Kill a running process by PID or name"},
+  {"name": "send_notification", "module": "system", "family": "COMMUNICATE", "permission": "standard", "description": "Send a desktop notification to the user"},
+  {"name": "system_control", "module": "system", "family": "SYSTEM", "permission": "dangerous", "description": "Control system power state (shutdown, reboot, suspend)"},
+
+  {"name": "download_file", "module": "network", "family": "BROWSE", "permission": "standard", "description": "Download a file from a URL to the local filesystem"},
+  {"name": "http_fetch", "module": "network", "family": "BROWSE", "permission": "safe", "description": "Fetch raw HTTP content from a URL"},
+  {"name": "web_fetch", "module": "network", "family": "BROWSE", "permission": "safe", "description": "AI-enhanced web fetch that extracts and summarizes content"},
+
+  {"name": "screenshot", "module": "media", "family": "SYSTEM", "permission": "safe", "description": "Capture a screenshot of the current display"},
+  {"name": "audio_control", "module": "media", "family": "SYSTEM", "permission": "standard", "description": "Control system audio volume and mute state"},
+  {"name": "audio_info", "module": "media", "family": "SYSTEM", "permission": "safe", "description": "Get information about audio devices and current state"},
+
+  {"name": "display_info", "module": "display", "family": "SYSTEM", "permission": "safe", "description": "Get information about connected displays"},
+  {"name": "set_resolution", "module": "display", "family": "SYSTEM", "permission": "sensitive", "description": "Change the display resolution"},
+
+  {"name": "archive_create", "module": "archive", "family": "FILES", "permission": "standard", "description": "Create a compressed archive from files or directories"},
+  {"name": "archive_extract", "module": "archive", "family": "FILES", "permission": "standard", "description": "Extract files from a compressed archive"},
+
+  {"name": "word_count", "module": "text", "family": "FILES", "permission": "safe", "description": "Count words, lines, and characters in text or a file"},
+  {"name": "diff_files", "module": "text", "family": "FILES", "permission": "safe", "description": "Show differences between two files"},
+  {"name": "hash_file", "module": "text", "family": "FILES", "permission": "safe", "description": "Compute a cryptographic hash of a file"},
+
+  {"name": "date_calc", "module": "time", "family": "SCHEDULE", "permission": "safe", "description": "Perform date arithmetic and calculations"},
+  {"name": "timer", "module": "time", "family": "SCHEDULE", "permission": "standard", "description": "Set a countdown timer"},
+
+  {"name": "list_processes", "module": "process", "family": "SYSTEM", "permission": "safe", "description": "List running processes with resource usage"},
+  {"name": "system_info", "module": "process", "family": "SYSTEM", "permission": "safe", "description": "Get system hardware and OS information"},
+
+  {"name": "wifi_scan", "module": "wifi", "family": "SYSTEM", "permission": "safe", "description": "Scan for available WiFi networks"},
+  {"name": "wifi_connect", "module": "wifi", "family": "SYSTEM", "permission": "standard", "description": "Connect to a WiFi network"},
+  {"name": "wifi_status", "module": "wifi", "family": "SYSTEM", "permission": "safe", "description": "Get the current WiFi connection status"},
+  {"name": "wifi_disconnect", "module": "wifi", "family": "SYSTEM", "permission": "standard", "description": "Disconnect from the current WiFi network"},
+
+  {"name": "bluetooth_scan", "module": "bluetooth", "family": "SYSTEM", "permission": "safe", "description": "Scan for nearby Bluetooth devices"},
+  {"name": "bluetooth_pair", "module": "bluetooth", "family": "SYSTEM", "permission": "standard", "description": "Pair with a Bluetooth device"},
+  {"name": "bluetooth_connect", "module": "bluetooth", "family": "SYSTEM", "permission": "standard", "description": "Connect to a paired Bluetooth device"},
+  {"name": "bluetooth_disconnect", "module": "bluetooth", "family": "SYSTEM", "permission": "standard", "description": "Disconnect from a Bluetooth device"},
+  {"name": "bluetooth_info", "module": "bluetooth", "family": "SYSTEM", "permission": "safe", "description": "Get information about Bluetooth adapter and connections"},
+
+  {"name": "package_search", "module": "package", "family": "SYSTEM", "permission": "safe", "description": "Search for available packages in repositories"},
+  {"name": "package_install", "module": "package", "family": "SYSTEM", "permission": "sensitive", "description": "Install a package from the repository"},
+  {"name": "package_remove", "module": "package", "family": "SYSTEM", "permission": "sensitive", "description": "Remove an installed package"},
+  {"name": "package_info", "module": "package", "family": "SYSTEM", "permission": "safe", "description": "Get detailed information about a package"},
+  {"name": "package_list", "module": "package", "family": "SYSTEM", "permission": "safe", "description": "List installed packages"},
+
+  {"name": "service_list", "module": "service", "family": "SYSTEM", "permission": "safe", "description": "List system services and their states"},
+  {"name": "service_control", "module": "service", "family": "SYSTEM", "permission": "sensitive", "description": "Start, stop, or restart a system service"},
+  {"name": "service_status", "module": "service", "family": "SYSTEM", "permission": "safe", "description": "Get the status of a specific system service"},
+
+  {"name": "base64_encode", "module": "encoding", "family": "FILES", "permission": "safe", "description": "Encode data to base64 format"},
+  {"name": "base64_decode", "module": "encoding", "family": "FILES", "permission": "safe", "description": "Decode base64 encoded data"},
+  {"name": "url_encode", "module": "encoding", "family": "FILES", "permission": "safe", "description": "URL-encode or decode a string"},
+  {"name": "json_format", "module": "encoding", "family": "FILES", "permission": "safe", "description": "Format, validate, or minify JSON data"},
+
+  {"name": "disk_usage", "module": "disk", "family": "SYSTEM", "permission": "safe", "description": "Show disk space usage for mounted filesystems"},
+  {"name": "mount_info", "module": "disk", "family": "SYSTEM", "permission": "safe", "description": "Show mounted filesystems and mount points"},
+  {"name": "dir_size", "module": "disk", "family": "SYSTEM", "permission": "safe", "description": "Calculate the total size of a directory"},
+
+  {"name": "set_wallpaper", "module": "wallpaper", "family": "SYSTEM", "permission": "standard", "description": "Set the desktop wallpaper image"},
+
+  {"name": "git_status", "module": "git", "family": "FILES", "permission": "safe", "description": "Show the working tree status of a git repository"},
+  {"name": "git_log", "module": "git", "family": "FILES", "permission": "safe", "description": "Show the commit log history"},
+  {"name": "git_diff", "module": "git", "family": "FILES", "permission": "safe", "description": "Show changes between commits or working tree"},
+  {"name": "git_clone", "module": "git", "family": "FILES", "permission": "standard", "description": "Clone a git repository to a local directory"},
+  {"name": "git_branch", "module": "git", "family": "FILES", "permission": "safe", "description": "List, create, or switch git branches"},
+  {"name": "git_commit", "module": "git", "family": "FILES", "permission": "standard", "description": "Create a git commit with staged changes"},
+  {"name": "git_show", "module": "git", "family": "FILES", "permission": "safe", "description": "Show details of a specific git commit"},
+  {"name": "git_stash", "module": "git", "family": "FILES", "permission": "standard", "description": "Stash or restore uncommitted changes"},
+  {"name": "git_diff_file", "module": "git", "family": "FILES", "permission": "safe", "description": "Show the diff for a specific file"},
+
+  {"name": "get_weather", "module": "weather", "family": "WORLD", "permission": "safe", "description": "Get current weather and forecast for a location"},
+
+  {"name": "calculate", "module": "calculator", "family": "WORLD", "permission": "safe", "description": "Evaluate a mathematical expression"},
+  {"name": "unit_convert", "module": "calculator", "family": "WORLD", "permission": "safe", "description": "Convert between units of measurement"},
+
+  {"name": "list_windows", "module": "window", "family": "SYSTEM", "permission": "safe", "description": "List open windows on the desktop"},
+  {"name": "focus_window", "module": "window", "family": "SYSTEM", "permission": "standard", "description": "Bring a window to the foreground and focus it"},
+  {"name": "close_window", "module": "window", "family": "SYSTEM", "permission": "sensitive", "description": "Close a specific window"},
+
+  {"name": "firewall_status", "module": "firewall", "family": "SYSTEM", "permission": "safe", "description": "Check if the firewall is enabled and its current state"},
+  {"name": "firewall_list_rules", "module": "firewall", "family": "SYSTEM", "permission": "safe", "description": "List all current firewall rules"},
+  {"name": "firewall_allow_port", "module": "firewall", "family": "SYSTEM", "permission": "dangerous", "description": "Add a firewall rule to allow traffic on a port"},
+  {"name": "firewall_block_port", "module": "firewall", "family": "SYSTEM", "permission": "dangerous", "description": "Add a firewall rule to block traffic on a port"},
+  {"name": "firewall_block_ip", "module": "firewall", "family": "SYSTEM", "permission": "dangerous", "description": "Add a firewall rule to block traffic from an IP address"},
+  {"name": "firewall_enable", "module": "firewall", "family": "SYSTEM", "permission": "dangerous", "description": "Enable the system firewall"},
+  {"name": "firewall_disable", "module": "firewall", "family": "SYSTEM", "permission": "dangerous", "description": "Disable the system firewall"},
+
+  {"name": "antivirus_scan", "module": "antivirus", "family": "SYSTEM", "permission": "standard", "description": "Run an antivirus scan on a file or directory"},
+  {"name": "antivirus_status", "module": "antivirus", "family": "SYSTEM", "permission": "safe", "description": "Check the antivirus engine status and definitions"},
+  {"name": "antivirus_update", "module": "antivirus", "family": "SYSTEM", "permission": "standard", "description": "Update antivirus definitions"},
+  {"name": "antivirus_quarantine", "module": "antivirus", "family": "SYSTEM", "permission": "sensitive", "description": "Manage quarantined files"},
+
+  {"name": "network_interfaces", "module": "networking", "family": "SYSTEM", "permission": "safe", "description": "List network interfaces and their configuration"},
+  {"name": "network_ping", "module": "networking", "family": "SYSTEM", "permission": "safe", "description": "Ping a host to check connectivity"},
+  {"name": "network_traceroute", "module": "networking", "family": "SYSTEM", "permission": "safe", "description": "Trace the network route to a host"},
+  {"name": "network_ports", "module": "networking", "family": "SYSTEM", "permission": "safe", "description": "List open network ports and listening services"},
+  {"name": "network_dns", "module": "networking", "family": "SYSTEM", "permission": "safe", "description": "Look up DNS records for a domain"},
+  {"name": "network_dns_set", "module": "networking", "family": "SYSTEM", "permission": "sensitive", "description": "Set the DNS server configuration"},
+  {"name": "network_vpn_status", "module": "networking", "family": "SYSTEM", "permission": "safe", "description": "Check the VPN connection status"},
+
+  {"name": "read_terminal_buffer", "module": "terminal", "family": "SYSTEM", "permission": "safe", "description": "Read the current content of the terminal buffer"},
+
+  {"name": "save_workspace", "module": "workspace", "family": "REMEMBER", "permission": "standard", "description": "Save the current workspace state for later restoration"},
+  {"name": "recall_workspace", "module": "workspace", "family": "REMEMBER", "permission": "safe", "description": "Restore a previously saved workspace state"},
+
+  {"name": "search_fix_history", "module": "knowledge", "family": "REMEMBER", "permission": "safe", "description": "Search the history of past fixes and solutions"},
+  {"name": "search_by_timeframe", "module": "knowledge", "family": "REMEMBER", "permission": "safe", "description": "Search knowledge base entries within a time range"},
+  {"name": "summarize_work_session", "module": "knowledge", "family": "REMEMBER", "permission": "safe", "description": "Generate a summary of a work session"},
+
+  {"name": "detect_terminal_errors", "module": "terminal_analysis", "family": "SYSTEM", "permission": "safe", "description": "Detect and parse errors from terminal output"},
+  {"name": "search_terminal_history", "module": "terminal_analysis", "family": "SYSTEM", "permission": "safe", "description": "Search through terminal command history"},
+  {"name": "explain_last_error", "module": "terminal_analysis", "family": "SYSTEM", "permission": "safe", "description": "Explain the most recent terminal error in plain language"},
+
+  {"name": "detect_projects", "module": "project", "family": "WORLD", "permission": "safe", "description": "Auto-detect development projects in a directory"},
+  {"name": "set_active_project", "module": "project", "family": "WORLD", "permission": "standard", "description": "Set the currently active project context"},
+  {"name": "get_project_context", "module": "project", "family": "WORLD", "permission": "safe", "description": "Get context information about the active project"},
+
+  {"name": "docker_ps", "module": "docker", "family": "SYSTEM", "permission": "safe", "description": "List running Docker containers"},
+  {"name": "docker_images", "module": "docker", "family": "SYSTEM", "permission": "safe", "description": "List Docker images on the system"},
+  {"name": "docker_logs", "module": "docker", "family": "SYSTEM", "permission": "safe", "description": "View logs from a Docker container"},
+  {"name": "docker_start", "module": "docker", "family": "SYSTEM", "permission": "sensitive", "description": "Start a stopped Docker container"},
+  {"name": "docker_stop", "module": "docker", "family": "SYSTEM", "permission": "sensitive", "description": "Stop a running Docker container"},
+  {"name": "docker_exec", "module": "docker", "family": "SYSTEM", "permission": "sensitive", "description": "Execute a command inside a running Docker container"},
+
+  {"name": "ssh_list_hosts", "module": "ssh", "family": "SYSTEM", "permission": "safe", "description": "List configured SSH hosts"},
+  {"name": "ssh_check_host", "module": "ssh", "family": "SYSTEM", "permission": "safe", "description": "Check if an SSH host is reachable"},
+  {"name": "ssh_run", "module": "ssh", "family": "SYSTEM", "permission": "sensitive", "description": "Run a command on a remote host via SSH"},
+
+  {"name": "generate_fix_summary", "module": "artifacts", "family": "REMEMBER", "permission": "standard", "description": "Generate a summary artifact for a completed fix"},
+  {"name": "list_fixes", "module": "artifacts", "family": "REMEMBER", "permission": "safe", "description": "List all recorded fix artifacts"},
+  {"name": "read_fix", "module": "artifacts", "family": "REMEMBER", "permission": "safe", "description": "Read the details of a specific fix artifact"},
+
+  {"name": "ha_get_state", "module": "home_assistant", "family": "WORLD", "permission": "safe", "description": "Get the current state of a Home Assistant entity"},
+  {"name": "ha_call_service", "module": "home_assistant", "family": "WORLD", "permission": "standard", "description": "Call a Home Assistant service to control devices"},
+  {"name": "ha_list_entities", "module": "home_assistant", "family": "WORLD", "permission": "safe", "description": "List all available Home Assistant entities"},
+
+  {"name": "launch_browser", "module": "browser", "family": "BROWSE", "permission": "standard", "description": "Launch a browser instance for automated browsing"},
+  {"name": "browse", "module": "browser", "family": "BROWSE", "permission": "safe", "description": "Navigate to a URL in the browser"},
+  {"name": "browser_read", "module": "browser", "family": "BROWSE", "permission": "safe", "description": "Read the current page content from the browser"},
+  {"name": "browser_click", "module": "browser", "family": "BROWSE", "permission": "standard", "description": "Click an element on the current browser page"},
+  {"name": "browser_type", "module": "browser", "family": "BROWSE", "permission": "standard", "description": "Type text into a form field in the browser"},
+  {"name": "browser_screenshot", "module": "browser", "family": "BROWSE", "permission": "safe", "description": "Take a screenshot of the current browser page"},
+  {"name": "browser_tabs", "module": "browser", "family": "BROWSE", "permission": "safe", "description": "List open browser tabs"},
+  {"name": "browser_search", "module": "browser", "family": "BROWSE", "permission": "safe", "description": "Perform a web search using the browser"},
+
+  {"name": "browser_cleanup", "module": "browser_lifecycle", "family": "BROWSE", "permission": "standard", "description": "Clean up browser resources and close instances"},
+  {"name": "browser_status", "module": "browser_lifecycle", "family": "BROWSE", "permission": "safe", "description": "Check the status of the browser instance"},
+
+  {"name": "discover_tools", "module": "discovery", "family": "WORLD", "permission": "safe", "description": "Discover available tools and their capabilities"},
+
+  {"name": "run_background", "module": "background_tasks", "family": "DELEGATE", "permission": "standard", "description": "Run a task in the background without blocking"},
+  {"name": "list_background_tasks", "module": "background_tasks", "family": "DELEGATE", "permission": "safe", "description": "List all running background tasks"},
+  {"name": "check_background_task", "module": "background_tasks", "family": "DELEGATE", "permission": "safe", "description": "Check the status and output of a background task"},
+  {"name": "stop_background_task", "module": "background_tasks", "family": "DELEGATE", "permission": "standard", "description": "Stop a running background task"},
+
+  {"name": "schedule_task", "module": "scheduler", "family": "SCHEDULE", "permission": "standard", "description": "Schedule a task to run at a specific time or interval"},
+  {"name": "list_scheduled", "module": "scheduler", "family": "SCHEDULE", "permission": "safe", "description": "List all scheduled tasks"},
+  {"name": "cancel_scheduled", "module": "scheduler", "family": "SCHEDULE", "permission": "standard", "description": "Cancel a scheduled task"},
+
+  {"name": "memory_cleanup", "module": "memory_hygiene", "family": "REMEMBER", "permission": "standard", "description": "Clean up stale or duplicate memories"},
+  {"name": "memory_stats_detailed", "module": "memory_hygiene", "family": "REMEMBER", "permission": "safe", "description": "Get detailed statistics about the memory store"},
+
+  {"name": "clipboard_history", "module": "clipboard", "family": "FILES", "permission": "safe", "description": "View the clipboard history"},
+  {"name": "clipboard_analyze", "module": "clipboard", "family": "FILES", "permission": "safe", "description": "Analyze clipboard content for type and structure"},
+  {"name": "clipboard_fetch_url", "module": "clipboard", "family": "FILES", "permission": "safe", "description": "Fetch and preview a URL found in clipboard"},
+  {"name": "clipboard_transform", "module": "clipboard", "family": "FILES", "permission": "standard", "description": "Transform clipboard content (format, convert, etc.)"},
+  {"name": "text_action", "module": "clipboard", "family": "FILES", "permission": "standard", "description": "Perform text actions on clipboard or selected text"},
+
+  {"name": "create_automation", "module": "automation", "family": "DELEGATE", "permission": "standard", "description": "Create a new automation rule with triggers and actions"},
+  {"name": "list_automations", "module": "automation", "family": "DELEGATE", "permission": "safe", "description": "List all configured automations"},
+  {"name": "run_automation", "module": "automation", "family": "DELEGATE", "permission": "standard", "description": "Manually trigger an automation"},
+  {"name": "delete_automation", "module": "automation", "family": "DELEGATE", "permission": "standard", "description": "Delete an automation rule"},
+  {"name": "toggle_automation", "module": "automation", "family": "DELEGATE", "permission": "standard", "description": "Enable or disable an automation"},
+
+  {"name": "queue_task", "module": "task_queue", "family": "DELEGATE", "permission": "standard", "description": "Add a task to the processing queue"},
+  {"name": "list_queue", "module": "task_queue", "family": "DELEGATE", "permission": "safe", "description": "List tasks in the queue"},
+  {"name": "process_queue", "module": "task_queue", "family": "DELEGATE", "permission": "standard", "description": "Process pending tasks in the queue"},
+
+  {"name": "run_recipe", "module": "recipe", "family": "DELEGATE", "permission": "standard", "description": "Execute a predefined multi-step recipe"},
+  {"name": "list_recipes", "module": "recipe", "family": "DELEGATE", "permission": "safe", "description": "List available recipes"},
+
+  {"name": "claude_think", "module": "claude", "family": "DELEGATE", "permission": "standard", "description": "Use Claude for extended reasoning and analysis"},
+  {"name": "claude_code", "module": "claude", "family": "DELEGATE", "permission": "standard", "description": "Use Claude Code for code generation and review"},
+
+  {"name": "vault_store", "module": "vault", "family": "REMEMBER", "permission": "standard", "description": "Store a secret or sensitive value in the encrypted vault"},
+  {"name": "vault_retrieve", "module": "vault", "family": "REMEMBER", "permission": "standard", "description": "Retrieve a secret from the encrypted vault"},
+  {"name": "vault_list", "module": "vault", "family": "REMEMBER", "permission": "safe", "description": "List keys stored in the vault"},
+  {"name": "vault_delete", "module": "vault", "family": "REMEMBER", "permission": "standard", "description": "Delete a secret from the vault"},
+
+  {"name": "code_review", "module": "coder", "family": "FILES", "permission": "safe", "description": "Perform an AI-powered code review"},
+  {"name": "code_explain", "module": "coder", "family": "FILES", "permission": "safe", "description": "Explain what a piece of code does"},
+  {"name": "code_generate", "module": "coder", "family": "FILES", "permission": "standard", "description": "Generate code based on a description"},
+
+  {"name": "spawn_agents", "module": "spawn_agents", "family": "DELEGATE", "permission": "standard", "description": "Spawn parallel sub-agents to handle multiple tasks"},
+
+  {"name": "edit_file", "module": "edit", "family": "FILES", "permission": "standard", "description": "Make targeted edits to a file with search and replace"},
+
+  {"name": "grep", "module": "grep", "family": "FILES", "permission": "safe", "description": "Search file contents using regular expressions"},
+
+  {"name": "glob", "module": "glob", "family": "FILES", "permission": "safe", "description": "Find files matching a glob pattern"},
+
+  {"name": "track_loop", "module": "open_loops", "family": "REMEMBER", "permission": "standard", "description": "Track an open loop or pending item that needs follow-up"},
+  {"name": "check_loops", "module": "open_loops", "family": "REMEMBER", "permission": "safe", "description": "Check all open loops and their status"},
+  {"name": "resolve_loop", "module": "open_loops", "family": "REMEMBER", "permission": "standard", "description": "Mark an open loop as resolved"},
+
+  {"name": "email_check", "module": "email", "family": "COMMUNICATE", "permission": "safe", "description": "Check for new emails"},
+  {"name": "email_list", "module": "email", "family": "COMMUNICATE", "permission": "safe", "description": "List emails in a mailbox folder"},
+  {"name": "email_read", "module": "email", "family": "COMMUNICATE", "permission": "safe", "description": "Read the full content of a specific email"},
+  {"name": "email_send", "module": "email", "family": "COMMUNICATE", "permission": "standard", "description": "Compose and send an email"},
+  {"name": "email_reply", "module": "email", "family": "COMMUNICATE", "permission": "standard", "description": "Reply to an existing email"},
+  {"name": "email_search", "module": "email", "family": "COMMUNICATE", "permission": "safe", "description": "Search emails by query"},
+
+  {"name": "calendar_today", "module": "calendar", "family": "SCHEDULE", "permission": "safe", "description": "Get today's calendar events"},
+  {"name": "calendar_list_events", "module": "calendar", "family": "SCHEDULE", "permission": "safe", "description": "List calendar events within a date range"},
+  {"name": "calendar_create_event", "module": "calendar", "family": "SCHEDULE", "permission": "standard", "description": "Create a new calendar event"},
+  {"name": "calendar_update_event", "module": "calendar", "family": "SCHEDULE", "permission": "standard", "description": "Update an existing calendar event"},
+  {"name": "calendar_delete_event", "module": "calendar", "family": "SCHEDULE", "permission": "standard", "description": "Delete a calendar event"},
+
+  {"name": "vision_analyze", "module": "vision", "family": "BROWSE", "permission": "safe", "description": "Analyze an image using vision AI to extract information"},
+  {"name": "vision_describe", "module": "vision", "family": "BROWSE", "permission": "safe", "description": "Generate a natural language description of an image"},
+
+  {"name": "canvas_draw", "module": "canvas", "family": "WORLD", "permission": "standard", "description": "Draw or create visual content on a canvas"},
+  {"name": "canvas_edit", "module": "canvas", "family": "WORLD", "permission": "standard", "description": "Edit existing canvas content"},
+
+  {"name": "telegram_send", "module": "telegram", "family": "COMMUNICATE", "permission": "standard", "description": "Send a message via Telegram"},
+
+  {"name": "whatsapp_send", "module": "whatsapp", "family": "COMMUNICATE", "permission": "standard", "description": "Send a message via WhatsApp"},
+
+  {"name": "github_repo_info", "module": "github", "family": "WORLD", "permission": "safe", "description": "Get information about a GitHub repository"},
+  {"name": "github_issues", "module": "github", "family": "WORLD", "permission": "safe", "description": "List issues for a GitHub repository"},
+  {"name": "github_prs", "module": "github", "family": "WORLD", "permission": "safe", "description": "List pull requests for a GitHub repository"},
+  {"name": "github_create_issue", "module": "github", "family": "WORLD", "permission": "standard", "description": "Create a new issue on a GitHub repository"},
+
+  {"name": "life_search", "module": "life_assistant", "family": "WORLD", "permission": "safe", "description": "Search for real-world information and recommendations"},
+  {"name": "recall_preferences", "module": "life_assistant", "family": "WORLD", "permission": "safe", "description": "Recall stored user preferences and habits"},
+  {"name": "save_user_fact", "module": "life_assistant", "family": "WORLD", "permission": "standard", "description": "Save a fact about the user for personalization"},
+  {"name": "search_sources", "module": "life_assistant", "family": "WORLD", "permission": "safe", "description": "Search multiple sources for information"},
+  {"name": "extract_search_results", "module": "life_assistant", "family": "WORLD", "permission": "safe", "description": "Extract and summarize results from a search"},
+
+  {"name": "analyze_disk", "module": "system", "family": "SYSTEM", "permission": "safe", "description": "Analyze disk usage patterns"},
+  {"name": "battery_forecast", "module": "system", "family": "SYSTEM", "permission": "safe", "description": "Predict battery life remaining"},
+  {"name": "diagnose_process", "module": "system", "family": "SYSTEM", "permission": "safe", "description": "Diagnose why a process is misbehaving"},
+  {"name": "network_diagnose", "module": "networking", "family": "SYSTEM", "permission": "safe", "description": "Diagnose network connectivity issues"},
+  {"name": "purge_system_noise", "module": "system", "family": "SYSTEM", "permission": "sensitive", "description": "Clean up system noise and temporary files"},
+
+  {"name": "browser_click_element", "module": "browser", "family": "BROWSE", "permission": "standard", "description": "Click a specific element on page by selector"},
+  {"name": "browser_click_xy", "module": "browser", "family": "BROWSE", "permission": "standard", "description": "Click at specific x,y coordinates"},
+  {"name": "browser_scroll", "module": "browser", "family": "BROWSE", "permission": "standard", "description": "Scroll the browser page"},
+  {"name": "browser_see", "module": "browser", "family": "BROWSE", "permission": "safe", "description": "Get visual description of current browser page"},
+  {"name": "browser_snapshot", "module": "browser", "family": "BROWSE", "permission": "safe", "description": "Take a snapshot of the browser page"},
+  {"name": "browser_type_element", "module": "browser", "family": "BROWSE", "permission": "standard", "description": "Type text into a specific element"},
+  {"name": "browser_type_xy", "module": "browser", "family": "BROWSE", "permission": "standard", "description": "Type text at specific x,y coordinates"},
+  {"name": "web_search", "module": "browser", "family": "BROWSE", "permission": "safe", "description": "Search the web using a search engine"},
+  {"name": "analyze_screen", "module": "browser", "family": "BROWSE", "permission": "safe", "description": "Analyze what is on screen using vision"},
+
+  {"name": "smart_rename", "module": "files", "family": "FILES", "permission": "standard", "description": "AI-powered file renaming"},
+  {"name": "script_delete", "module": "scripting", "family": "FILES", "permission": "sensitive", "description": "Delete a script file"},
+  {"name": "script_list", "module": "scripting", "family": "FILES", "permission": "safe", "description": "List available scripts"},
+  {"name": "script_patch", "module": "scripting", "family": "FILES", "permission": "standard", "description": "Patch or modify a script"},
+  {"name": "script_read", "module": "scripting", "family": "FILES", "permission": "safe", "description": "Read a script file"},
+  {"name": "script_run", "module": "scripting", "family": "FILES", "permission": "sensitive", "description": "Execute a script"},
+  {"name": "script_write", "module": "scripting", "family": "FILES", "permission": "standard", "description": "Write a new script"},
+
+  {"name": "forget_memory", "module": "memory", "family": "REMEMBER", "permission": "standard", "description": "Forget a specific memory"},
+  {"name": "forget_topic", "module": "memory", "family": "REMEMBER", "permission": "standard", "description": "Forget all memories about a topic"},
+  {"name": "memory_stats", "module": "memory", "family": "REMEMBER", "permission": "safe", "description": "Get memory statistics"},
+  {"name": "relate_entities", "module": "memory", "family": "REMEMBER", "permission": "standard", "description": "Create relationship between memory entities"},
+  {"name": "resolve_conflicts", "module": "memory", "family": "REMEMBER", "permission": "standard", "description": "Resolve conflicting memories"},
+  {"name": "review_memories", "module": "memory", "family": "REMEMBER", "permission": "safe", "description": "Review and audit stored memories"},
+  {"name": "update_memory", "module": "memory", "family": "REMEMBER", "permission": "standard", "description": "Update an existing memory"},
+  {"name": "focus_context", "module": "memory", "family": "REMEMBER", "permission": "safe", "description": "Get focused context for current task"},
+
+  {"name": "create_recipe", "module": "recipe", "family": "DELEGATE", "permission": "standard", "description": "Create a new automation recipe"},
+  {"name": "cancel_task", "module": "task_queue", "family": "DELEGATE", "permission": "standard", "description": "Cancel a running background task"},
+  {"name": "complete_task", "module": "task_queue", "family": "DELEGATE", "permission": "standard", "description": "Mark a task as complete"},
+  {"name": "list_tasks", "module": "task_queue", "family": "DELEGATE", "permission": "safe", "description": "List current tasks"},
+  {"name": "update_task", "module": "task_queue", "family": "DELEGATE", "permission": "standard", "description": "Update a task"},
+
+  {"name": "cancel_schedule", "module": "scheduler", "family": "SCHEDULE", "permission": "standard", "description": "Cancel a scheduled task"},
+  {"name": "create_schedule", "module": "scheduler", "family": "SCHEDULE", "permission": "standard", "description": "Create a new scheduled task"},
+  {"name": "list_schedules", "module": "scheduler", "family": "SCHEDULE", "permission": "safe", "description": "List all scheduled tasks"},
+  {"name": "update_schedule", "module": "scheduler", "family": "SCHEDULE", "permission": "standard", "description": "Update an existing schedule"},
+
+  {"name": "github_profile", "module": "github", "family": "WORLD", "permission": "safe", "description": "Get GitHub user profile"},
+  {"name": "github_repos", "module": "github", "family": "WORLD", "permission": "safe", "description": "List GitHub repositories"},
+  {"name": "github_stars", "module": "github", "family": "WORLD", "permission": "safe", "description": "Get starred repos"},
+  {"name": "describe_image", "module": "vision", "family": "WORLD", "permission": "safe", "description": "Describe an image using vision"},
+  {"name": "edit_diagram", "module": "canvas", "family": "WORLD", "permission": "standard", "description": "Edit an existing diagram"},
+  {"name": "generate_diagram", "module": "canvas", "family": "WORLD", "permission": "standard", "description": "Generate a diagram from description"},
+
+  {"name": "apply_workspace_template", "module": "workspace", "family": "REMEMBER", "permission": "standard", "description": "Apply a saved workspace template"},
+  {"name": "list_workspace_templates", "module": "workspace", "family": "REMEMBER", "permission": "safe", "description": "List available workspace templates"},
+  {"name": "save_workspace_template", "module": "workspace", "family": "REMEMBER", "permission": "standard", "description": "Save current workspace as template"},
+
+  {"name": "show_open_loops", "module": "open_loops", "family": "REMEMBER", "permission": "safe", "description": "Show all open loops and unresolved items"},
+  {"name": "snooze_loop", "module": "open_loops", "family": "REMEMBER", "permission": "standard", "description": "Snooze an open loop for later"},
+
+  {"name": "vault_generate_password", "module": "vault", "family": "REMEMBER", "permission": "safe", "description": "Generate a secure password"},
+  {"name": "vault_get", "module": "vault", "family": "REMEMBER", "permission": "safe", "description": "Get a value from the vault"},
+  {"name": "vault_set_pin", "module": "vault", "family": "REMEMBER", "permission": "sensitive", "description": "Set or change the vault PIN"},
+
+  {"name": "code_execute", "module": "coder", "family": "FILES", "permission": "sensitive", "description": "Execute code in a sandboxed environment"}
+]

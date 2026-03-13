@@ -10,6 +10,7 @@ use std::io::{BufRead, BufReader};
 use anyhow::{Context, Result};
 
 use crate::chat_template;
+use crate::llm::strip_think_tags;
 use crate::traits::LLMBackend;
 use crate::types::{ApiToolCall, ApiToolCallFunction, ChatMessage, GenerationConfig, LLMResponse, ToolCall};
 
@@ -168,7 +169,8 @@ impl ApiLLM {
         let json: serde_json::Value = resp_body.read_json()?;
 
         let message = &json["message"];
-        let text = message["content"].as_str().unwrap_or("").to_string();
+        let raw_text = message["content"].as_str().unwrap_or("").to_string();
+        let text = strip_think_tags(&raw_text);
 
         let eval_count = json["eval_count"].as_u64().unwrap_or(0) as usize;
         let prompt_eval_count = json["prompt_eval_count"].as_u64().unwrap_or(0) as usize;
@@ -208,6 +210,8 @@ impl ApiLLM {
         let mut stop_reason = "stop".to_string();
         let mut eval_count = 0usize;
         let mut api_tool_calls = Vec::new();
+        let mut in_think = false;
+        let mut think_buf = String::new();
 
         for line_result in reader.lines() {
             let line: String = line_result.context("reading Ollama stream line")?;
@@ -220,11 +224,49 @@ impl ApiLLM {
                 Err(_) => continue,
             };
 
-            // Extract content token
+            // Extract content token with think-tag filtering
             if let Some(content) = chunk["message"]["content"].as_str() {
                 if !content.is_empty() {
-                    on_token(content);
-                    full_text.push_str(content);
+                    if in_think {
+                        think_buf.push_str(content);
+                        if think_buf.contains("</think>") {
+                            // Thinking block complete — discard it, emit any text after </think>
+                            if let Some(after) = think_buf.split("</think>").last() {
+                                let after = after.trim_start();
+                                if !after.is_empty() {
+                                    on_token(after);
+                                    full_text.push_str(after);
+                                }
+                            }
+                            in_think = false;
+                            think_buf.clear();
+                        }
+                    } else if content.contains("<think>") {
+                        // Start of think block — buffer any partial content after <think>
+                        if let Some(before) = content.split("<think>").next() {
+                            if !before.is_empty() {
+                                on_token(before);
+                                full_text.push_str(before);
+                            }
+                        }
+                        let after_tag = content.splitn(2, "<think>").nth(1).unwrap_or("");
+                        think_buf.push_str(after_tag);
+                        if think_buf.contains("</think>") {
+                            if let Some(after) = think_buf.split("</think>").last() {
+                                let after = after.trim_start();
+                                if !after.is_empty() {
+                                    on_token(after);
+                                    full_text.push_str(after);
+                                }
+                            }
+                            think_buf.clear();
+                        } else {
+                            in_think = true;
+                        }
+                    } else {
+                        on_token(content);
+                        full_text.push_str(content);
+                    }
                 }
             }
 
@@ -241,6 +283,9 @@ impl ApiLLM {
                 }
             }
         }
+
+        // Final safety: strip any remaining think tags from assembled text
+        let full_text = strip_think_tags(&full_text);
 
         let tool_calls = if !api_tool_calls.is_empty() {
             api_tool_calls.iter().filter_map(ToolCall::from_api).collect()
@@ -379,10 +424,9 @@ impl LLMBackend for ApiLLM {
 
         let message = &json["choices"][0]["message"];
 
-        let text = message["content"]
-            .as_str()
-            .unwrap_or("")
-            .to_string();
+        let text = strip_think_tags(
+            message["content"].as_str().unwrap_or("")
+        );
 
         let prompt_tokens = json["usage"]["prompt_tokens"]
             .as_u64()
@@ -436,6 +480,8 @@ impl LLMBackend for ApiLLM {
 
         let mut full_text = String::new();
         let mut stop_reason = "stop".to_string();
+        let mut in_think = false;
+        let mut think_buf = String::new();
 
         let mut tc_ids: HashMap<usize, String> = HashMap::new();
         let mut tc_names: HashMap<usize, String> = HashMap::new();
@@ -462,8 +508,44 @@ impl LLMBackend for ApiLLM {
             let delta = &chunk["choices"][0]["delta"];
 
             if let Some(content) = delta["content"].as_str() {
-                on_token(content);
-                full_text.push_str(content);
+                if in_think {
+                    think_buf.push_str(content);
+                    if think_buf.contains("</think>") {
+                        if let Some(after) = think_buf.split("</think>").last() {
+                            let after = after.trim_start();
+                            if !after.is_empty() {
+                                on_token(after);
+                                full_text.push_str(after);
+                            }
+                        }
+                        in_think = false;
+                        think_buf.clear();
+                    }
+                } else if content.contains("<think>") {
+                    if let Some(before) = content.split("<think>").next() {
+                        if !before.is_empty() {
+                            on_token(before);
+                            full_text.push_str(before);
+                        }
+                    }
+                    let after_tag = content.splitn(2, "<think>").nth(1).unwrap_or("");
+                    think_buf.push_str(after_tag);
+                    if think_buf.contains("</think>") {
+                        if let Some(after) = think_buf.split("</think>").last() {
+                            let after = after.trim_start();
+                            if !after.is_empty() {
+                                on_token(after);
+                                full_text.push_str(after);
+                            }
+                        }
+                        think_buf.clear();
+                    } else {
+                        in_think = true;
+                    }
+                } else {
+                    on_token(content);
+                    full_text.push_str(content);
+                }
             }
 
             if let Some(tool_calls) = delta["tool_calls"].as_array() {
@@ -502,6 +584,8 @@ impl LLMBackend for ApiLLM {
                 });
             }
         }
+
+        let full_text = strip_think_tags(&full_text);
 
         let tool_calls = if !api_tool_calls.is_empty() {
             api_tool_calls

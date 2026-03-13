@@ -25,3 +25,22 @@ pub use self::fallback::{FallbackLLM, FallbackConfig};
 /// Backward-compatible alias for `CandleLLM`.
 #[cfg(feature = "candle-llm")]
 pub type LLMEngine = CandleLLM;
+
+/// Strip `<think>...</think>` blocks from model output (Qwen 3.5, DeepSeek, etc.).
+///
+/// Used by all backends as a safety net — even when `think: false` is sent,
+/// some models still emit thinking tags.
+pub fn strip_think_tags(text: &str) -> String {
+    let mut result = text.to_string();
+    while let Some(start) = result.find("<think>") {
+        if let Some(end) = result.find("</think>") {
+            let tag_end = end + "</think>".len();
+            result = format!("{}{}", &result[..start], result[tag_end..].trim_start());
+        } else {
+            // Unclosed <think> — strip from <think> to end
+            result.truncate(start);
+            break;
+        }
+    }
+    result.trim().to_string()
+}

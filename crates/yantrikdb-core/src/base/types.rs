@@ -393,6 +393,16 @@ pub struct ThinkConfig {
     pub consolidation_min_cluster: usize,
     pub min_active_memories: i64,
     pub run_personality: bool,
+    /// Run retention cleanup (prune oplog, trigger_log, tombstoned memories).
+    /// Defaults to true. Runs every think cycle but the actual deletion
+    /// only affects entries older than the configured retention periods.
+    pub run_retention: bool,
+    /// Days to keep oplog entries. Default: 7.
+    pub oplog_keep_days: f64,
+    /// Days to keep completed trigger_log entries. Default: 7.
+    pub trigger_keep_days: f64,
+    /// Days to keep tombstoned memories before permanent deletion. Default: 30.
+    pub tombstone_keep_days: f64,
 }
 
 impl Default for ThinkConfig {
@@ -409,6 +419,10 @@ impl Default for ThinkConfig {
             consolidation_min_cluster: 2,
             min_active_memories: 10,
             run_personality: true,
+            run_retention: true,
+            oplog_keep_days: 7.0,
+            trigger_keep_days: 7.0,
+            tombstone_keep_days: 30.0,
         }
     }
 }

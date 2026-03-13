@@ -16,6 +16,7 @@ pub use vector::hnsw;
 // ── Convenience re-exports ──
 pub use engine::YantrikDB;
 pub use engine::tenant::{TenantManager, TenantConfig};
+pub use engine::stats::RetentionResult;
 pub use error::YantrikDbError;
 pub use types::*;
 pub use consolidate::{consolidate, find_consolidation_candidates};
