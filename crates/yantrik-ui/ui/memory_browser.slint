@@ -84,6 +84,7 @@ export component MemoryBrowser inherits Rectangle {
                     background: Theme.bg-card;
                     horizontal-stretch: 1;
                     height: 36px;
+                    clip: true;
 
                     HorizontalLayout {
                         padding-left: 12px;
@@ -132,9 +133,9 @@ export component MemoryBrowser inherits Rectangle {
                             height: 18px;
                             width: type-text.preferred-width + 12px;
                             border-radius: 4px;
-                            background: mem.memory-type == "episodic" ? #d4a57420 :
-                                        mem.memory-type == "semantic" ? #7aa5a520 :
-                                        #a07a5020;
+                            background: mem.memory-type == "episodic" ? Theme.amber-glow :
+                                        mem.memory-type == "semantic" ? Theme.cyan-glow :
+                                        Theme.amber-dim;
 
                             type-text := Text {
                                 text: mem.memory-type;

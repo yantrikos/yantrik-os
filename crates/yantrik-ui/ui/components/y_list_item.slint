@@ -1,0 +1,146 @@
+// YListItem — universal list row component.
+// Icon/avatar + title + subtitle + metadata + trailing badge/action.
+// Used across email, files, settings, notes, system monitor, downloads, networks.
+import { Theme } from "../theme.slint";
+
+export component YListItem inherits Rectangle {
+    in property <string> icon: "";
+    in property <string> icon-char: "";      // single char avatar fallback
+    in property <color>  icon-bg: Theme.bg-elevated;
+    in property <string> title: "";
+    in property <string> subtitle: "";
+    in property <string> metadata: "";       // right-aligned (date, size, etc.)
+    in property <string> badge: "";          // trailing badge text
+    in property <color>  badge-color: Theme.accent;
+    in property <bool>   selected: false;
+    in property <bool>   disabled: false;
+    in property <bool>   show-checkbox: false;
+    in property <bool>   checked: false;
+    in property <bool>   unread: false;      // bold title + accent dot
+    callback clicked();
+    callback context-menu();
+    callback check-toggled(bool);
+
+    property <bool> hovered: ta.has-hover && !root.disabled;
+
+    height: 52px;
+    background: root.selected ? Theme.bg-selected
+              : root.hovered ? Theme.hover-fill
+              : transparent;
+    border-radius: Theme.r-sm;
+    opacity: root.disabled ? 0.5 : 1.0;
+
+    animate background { duration: Theme.dur-fast; }
+
+    ta := TouchArea {
+        mouse-cursor: root.disabled ? default : pointer;
+        clicked => { root.clicked(); }
+    }
+
+    HorizontalLayout {
+        padding-left: Theme.sp-3;
+        padding-right: Theme.sp-3;
+        spacing: Theme.sp-3;
+
+        // Checkbox
+        if root.show-checkbox : TouchArea {
+            width: 20px;
+            height: 20px;
+            y: (parent.height - 20px) / 2;
+            mouse-cursor: pointer;
+            clicked => { root.check-toggled(!root.checked); }
+
+            Rectangle {
+                width: 16px; height: 16px;
+                border-radius: Theme.r-sm;
+                border-width: 1px;
+                border-color: root.checked ? Theme.accent : Theme.text-dim;
+                background: root.checked ? Theme.accent : transparent;
+                x: 2px; y: 2px;
+
+                if root.checked : Text {
+                    text: "✓";
+                    color: Theme.text-on-accent;
+                    font-size: 10px;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+        }
+
+        // Icon/avatar
+        if root.icon != "" || root.icon-char != "" : Rectangle {
+            width: 36px;
+            height: 36px;
+            y: (parent.height - 36px) / 2;
+            border-radius: 18px;
+            background: root.icon-bg;
+
+            Text {
+                text: root.icon != "" ? root.icon : root.icon-char;
+                color: Theme.text-secondary;
+                font-size: root.icon != "" ? 18px : Theme.fs-body;
+                font-weight: 600;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+
+        // Unread dot
+        if root.unread : Rectangle {
+            width: 6px;
+            height: 6px;
+            y: (parent.height - 6px) / 2;
+            border-radius: 3px;
+            background: Theme.accent;
+        }
+
+        // Text content
+        VerticalLayout {
+            horizontal-stretch: 1;
+            alignment: center;
+            spacing: 2px;
+
+            Text {
+                text: root.title;
+                color: Theme.text-primary;
+                font-size: Theme.fs-body;
+                font-weight: root.unread ? Theme.fw-headline : Theme.fw-body;
+                overflow: elide;
+            }
+
+            if root.subtitle != "" : Text {
+                text: root.subtitle;
+                color: Theme.text-secondary;
+                font-size: Theme.fs-caption;
+                overflow: elide;
+            }
+        }
+
+        // Metadata
+        if root.metadata != "" : Text {
+            text: root.metadata;
+            color: Theme.text-dim;
+            font-size: Theme.fs-caption;
+            vertical-alignment: center;
+        }
+
+        // Badge
+        if root.badge != "" : Rectangle {
+            width: badge-text.preferred-width + Theme.sp-3;
+            height: 20px;
+            y: (parent.height - 20px) / 2;
+            border-radius: Theme.r-pill;
+            background: root.badge-color;
+
+            badge-text := Text {
+                text: root.badge;
+                color: Theme.text-on-accent;
+                font-size: 10px;
+                font-weight: 600;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+    }
+}

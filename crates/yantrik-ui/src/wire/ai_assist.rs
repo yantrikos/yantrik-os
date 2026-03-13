@@ -432,72 +432,291 @@ pub fn doc_translate_prompt(content: &str, target_language: &str) -> String {
     )
 }
 
-/// Build a presentation deck generation prompt for ySlides.
-pub fn pres_generate_deck_prompt(topic: &str) -> String {
+/// Build a JSON-based deck generation prompt.
+pub fn pres_generate_deck_json_prompt(topic: &str, instruction: &str) -> String {
+    let extra = if instruction.is_empty() { String::new() } else { format!("\nAdditional instructions: {}", instruction) };
     format!(
-        "Generate a presentation outline on this topic:\n\n\
-         ## Topic\n{}\n\n\
-         Create 5-8 slides. For each slide, provide:\n\
-         SLIDE: [slide number]\n\
-         TITLE: [slide title]\n\
-         BODY: [main content, 2-4 bullet points]\n\
-         NOTES: [speaker notes, 1-2 sentences]\n\n\
-         Rules:\n\
-         - First slide = title slide with subtitle\n\
-         - Last slide = summary/Q&A\n\
-         - Keep bullet points concise (under 15 words each)\n\
-         - Speaker notes should add context not on the slide\n\
-         - Use the exact format above so it can be parsed",
-        topic
+        r#"Generate a presentation deck on this topic. Return ONLY valid JSON, no other text.{}
+
+Topic: {}
+
+Output JSON schema:
+{{
+  "title": "deck title",
+  "slides": [
+    {{
+      "title": "slide title",
+      "bullets": ["bullet 1", "bullet 2", "bullet 3"],
+      "speaker_notes": "what to say for this slide",
+      "slide_type": "title_slide|title_and_content|two_column|section_header|blank"
+    }}
+  ]
+}}
+
+Rules:
+- Generate 5-8 slides
+- First slide: title_slide with subtitle in bullets[0]
+- Last slide: summary or Q&A
+- Each slide: 3-6 bullets, max 15 words each
+- Speaker notes: 2-3 conversational sentences, not a script
+- No markdown in bullets
+- Output ONLY the JSON object"#,
+        extra, topic
     )
 }
 
-/// Build a slide improvement prompt for ySlides.
-pub fn pres_improve_slide_prompt(title: &str, body: &str, notes: &str) -> String {
+/// Build a JSON-based slide improvement prompt.
+pub fn pres_improve_slide_json_prompt(title: &str, bullets: &[String], notes: &str, deck_title: &str, instruction: &str) -> String {
+    let bullets_json: Vec<String> = bullets.iter().map(|b| format!("\"{}\"", b.replace('"', "\\\""))).collect();
+    let extra = if instruction.is_empty() { String::new() } else { format!("\nInstruction: {}", instruction) };
     format!(
-        "Improve this presentation slide:\n\n\
-         Title: {}\nBody: {}\nNotes: {}\n\n\
-         Suggest improvements:\n\
-         - Better title (more engaging)\n\
-         - Clearer bullet points\n\
-         - Additional talking points for notes\n\
-         - Visual suggestions (chart, image, diagram ideas)\n\n\
-         Format your response as:\n\
-         TITLE: [improved title]\n\
-         BODY: [improved body]\n\
-         NOTES: [improved notes]\n\
-         VISUAL: [visual suggestion]",
-        title, body, notes
+        r#"Improve this presentation slide. Return ONLY valid JSON, no other text.{}
+
+Deck: {}
+Current slide:
+{{
+  "title": "{}",
+  "bullets": [{}],
+  "speaker_notes": "{}"
+}}
+
+Output the improved slide as JSON:
+{{
+  "title": "improved title",
+  "bullets": ["improved bullet 1", "improved bullet 2"],
+  "speaker_notes": "improved notes",
+  "slide_type": "title_and_content"
+}}
+
+Rules:
+- Make title more engaging and specific
+- Simplify bullets: max 6, each under 15 words
+- No markdown or special formatting in bullets
+- Speaker notes: 2-3 conversational sentences
+- Preserve the core meaning
+- Output ONLY the JSON object"#,
+        extra, deck_title, title.replace('"', "\\\""),
+        bullets_json.join(", "),
+        notes.replace('"', "\\\"")
     )
 }
 
-/// Build a speaker notes generation prompt for ySlides.
-pub fn pres_notes_prompt(title: &str, body: &str) -> String {
+/// Build a JSON-based speaker notes generation prompt.
+pub fn pres_generate_notes_json_prompt(title: &str, bullets: &[String], deck_title: &str) -> String {
+    let bullets_json: Vec<String> = bullets.iter().map(|b| format!("\"{}\"", b.replace('"', "\\\""))).collect();
     format!(
-        "Generate detailed speaker notes for this presentation slide:\n\n\
-         Title: {}\nContent: {}\n\n\
-         Write 3-5 sentences that:\n\
-         - Expand on the bullet points with examples or data\n\
-         - Include transition phrases to the next topic\n\
-         - Add context the audience should understand\n\
-         - Suggest when to pause for questions\n\n\
-         Output ONLY the speaker notes text, no labels.",
-        title, body
+        r#"Generate speaker notes for this slide. Return ONLY valid JSON, no other text.
+
+Deck: {}
+Slide:
+{{
+  "title": "{}",
+  "bullets": [{}]
+}}
+
+Output JSON:
+{{
+  "title": "{}",
+  "bullets": [{}],
+  "speaker_notes": "detailed speaker notes here",
+  "slide_type": "title_and_content"
+}}
+
+Rules:
+- Speaker notes: 3-5 conversational sentences
+- Expand on bullet points with examples or context
+- Include transition to next topic
+- Do NOT change title or bullets — copy them exactly
+- Output ONLY the JSON object"#,
+        deck_title, title.replace('"', "\\\""),
+        bullets_json.join(", "),
+        title.replace('"', "\\\""),
+        bullets_json.join(", ")
     )
 }
 
-/// Build a visual suggestion prompt for ySlides.
-pub fn pres_visuals_prompt(title: &str, body: &str) -> String {
+/// Build a JSON-based simplify prompt.
+pub fn pres_simplify_json_prompt(title: &str, bullets: &[String], notes: &str, audience: &str) -> String {
+    let bullets_json: Vec<String> = bullets.iter().map(|b| format!("\"{}\"", b.replace('"', "\\\""))).collect();
+    let aud = if audience.is_empty() { "general audience" } else { audience };
     format!(
-        "Suggest visuals for this presentation slide:\n\n\
-         Title: {}\nContent: {}\n\n\
-         Recommend:\n\
-         - Type of visual (chart, diagram, image, icon set)\n\
-         - What it should show\n\
-         - Layout suggestion (full-slide, side-by-side, background)\n\
-         - Color scheme recommendation\n\n\
-         Keep it under 100 words. Be specific and practical.",
-        title, body
+        r#"Simplify this slide for the target audience. Return ONLY valid JSON, no other text.
+
+Target audience: {}
+Current slide:
+{{
+  "title": "{}",
+  "bullets": [{}],
+  "speaker_notes": "{}"
+}}
+
+Output the simplified slide as JSON:
+{{
+  "title": "simplified title",
+  "bullets": ["simplified bullet 1", "simplified bullet 2"],
+  "speaker_notes": "simplified notes",
+  "slide_type": "title_and_content"
+}}
+
+Rules:
+- Reduce jargon for the target audience
+- Use shorter, simpler sentences
+- Max 5 bullets, each under 12 words
+- Speaker notes should explain in plain language
+- Output ONLY the JSON object"#,
+        aud, title.replace('"', "\\\""),
+        bullets_json.join(", "),
+        notes.replace('"', "\\\"")
+    )
+}
+
+/// Build a JSON-based split slide prompt.
+pub fn pres_split_slide_json_prompt(title: &str, bullets: &[String], notes: &str) -> String {
+    let bullets_json: Vec<String> = bullets.iter().map(|b| format!("\"{}\"", b.replace('"', "\\\""))).collect();
+    format!(
+        r#"This slide has too much content. Split it into 2-3 focused slides. Return ONLY valid JSON, no other text.
+
+Current slide:
+{{
+  "title": "{}",
+  "bullets": [{}],
+  "speaker_notes": "{}"
+}}
+
+Output JSON — an object with a "slides" array:
+{{
+  "slides": [
+    {{
+      "title": "first sub-topic title",
+      "bullets": ["bullet 1", "bullet 2"],
+      "speaker_notes": "notes for first slide",
+      "slide_type": "title_and_content"
+    }},
+    {{
+      "title": "second sub-topic title",
+      "bullets": ["bullet 1", "bullet 2"],
+      "speaker_notes": "notes for second slide",
+      "slide_type": "title_and_content"
+    }}
+  ]
+}}
+
+Rules:
+- Split into 2-3 slides, each with a clear focus
+- Each slide: 3-5 bullets max
+- Preserve all original content
+- Add speaker notes per slide
+- Output ONLY the JSON object"#,
+        title.replace('"', "\\\""),
+        bullets_json.join(", "),
+        notes.replace('"', "\\\"")
+    )
+}
+
+/// Build a JSON-based layout suggestion prompt.
+pub fn pres_suggest_layout_json_prompt(title: &str, bullets: &[String], notes: &str) -> String {
+    let bullets_json: Vec<String> = bullets.iter().map(|b| format!("\"{}\"", b.replace('"', "\\\""))).collect();
+    format!(
+        r#"Suggest the best slide layout for this content. Return ONLY valid JSON, no other text.
+
+Available layouts: title_slide, title_and_content, two_column, section_header, blank, image_and_text
+
+Current slide:
+{{
+  "title": "{}",
+  "bullets": [{}],
+  "speaker_notes": "{}"
+}}
+
+Output the slide with suggested layout:
+{{
+  "title": "{}",
+  "bullets": [{}],
+  "speaker_notes": "{}",
+  "slide_type": "suggested_layout_name"
+}}
+
+Rules:
+- Choose the most appropriate layout from the available options
+- Do NOT change title, bullets, or notes — copy them exactly
+- Only change the slide_type field
+- Output ONLY the JSON object"#,
+        title.replace('"', "\\\""),
+        bullets_json.join(", "),
+        notes.replace('"', "\\\""),
+        title.replace('"', "\\\""),
+        bullets_json.join(", "),
+        notes.replace('"', "\\\"")
+    )
+}
+
+/// Build a JSON-based "structure text into slides" prompt.
+pub fn pres_structure_text_json_prompt(text: &str, instruction: &str) -> String {
+    let extra = if instruction.is_empty() { String::new() } else { format!("\nAdditional instructions: {}", instruction) };
+    format!(
+        r#"Structure this text into presentation slides. Return ONLY valid JSON, no other text.{}
+
+Source text:
+{}
+
+Output JSON schema:
+{{
+  "title": "presentation title",
+  "slides": [
+    {{
+      "title": "slide title",
+      "bullets": ["key point 1", "key point 2"],
+      "speaker_notes": "expanded context",
+      "slide_type": "title_slide|title_and_content|section_header"
+    }}
+  ]
+}}
+
+Rules:
+- One clear idea per slide
+- First slide: title_slide with overview
+- 3-8 slides depending on content length
+- Each slide: 3-6 bullets, max 15 words each
+- Capture ALL key points from source text
+- Speaker notes provide expanded detail from source
+- Output ONLY the JSON object"#,
+        extra, if text.len() > 4000 { &text[..4000] } else { text }
+    )
+}
+
+/// Build a batch speaker notes generation prompt.
+pub fn pres_generate_all_notes_json_prompt(slides: &[(String, Vec<String>)]) -> String {
+    let slides_json: Vec<String> = slides.iter().map(|(title, bullets)| {
+        let bj: Vec<String> = bullets.iter().map(|b| format!("\"{}\"", b.replace('"', "\\\""))).collect();
+        format!("    {{ \"title\": \"{}\", \"bullets\": [{}] }}", title.replace('"', "\\\""), bj.join(", "))
+    }).collect();
+    format!(
+        r#"Generate speaker notes for ALL slides in this deck. Return ONLY valid JSON, no other text.
+
+Slides:
+[
+{}
+]
+
+Output JSON — a "slides" array with notes added:
+{{
+  "slides": [
+    {{
+      "title": "exact slide title",
+      "bullets": ["exact bullets"],
+      "speaker_notes": "generated speaker notes",
+      "slide_type": "title_and_content"
+    }}
+  ]
+}}
+
+Rules:
+- Generate 2-3 sentence speaker notes per slide
+- Notes should expand on bullets with examples/context
+- Include transitions between slides
+- Do NOT change titles or bullets — copy them exactly
+- Output ONLY the JSON object"#,
+        slides_json.join(",\n")
     )
 }
 

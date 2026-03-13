@@ -56,15 +56,15 @@ component PermTabButton inherits TouchArea {
         background: active ? Theme.bg-elevated : (parent.has-hover ? Theme.hover-fill : transparent);
 
         HorizontalLayout {
-            spacing: 8px;
-            padding-left: 16px;
-            padding-right: 16px;
+            spacing: Theme.sp-2;
+            padding-left: Theme.sp-4;
+            padding-right: Theme.sp-4;
             alignment: center;
 
             Text {
                 text: icon;
                 color: active ? Theme.accent : Theme.text-secondary;
-                font-size: 16px;
+                font-size: Theme.fs-headline;
                 vertical-alignment: center;
             }
             Text {
@@ -92,18 +92,18 @@ component RiskBadge inherits Rectangle {
     in property <string> risk;
     width: 60px;
     height: 22px;
-    border-radius: 6px;
-    background: risk == "high" ? #e86b6b30
-              : risk == "medium" ? #e8b44c30
-              : #6cd48030;
+    border-radius: Theme.r-sm;
+    background: risk == "high" ? Theme.color-danger-dim
+              : risk == "medium" ? Theme.color-warning-dim
+              : Theme.color-success-dim;
 
     Text {
         text: risk == "high" ? "HIGH"
             : risk == "medium" ? "MED"
             : "LOW";
-        color: risk == "high" ? #e86b6b
-             : risk == "medium" ? #e8b44c
-             : #6cd480;
+        color: risk == "high" ? Theme.color-danger
+             : risk == "medium" ? Theme.color-warning
+             : Theme.color-success;
         font-size: Theme.font-small;
         font-weight: 700;
         horizontal-alignment: center;
@@ -120,27 +120,27 @@ component RiskSummaryCard inherits Rectangle {
     in property <color> badge-bg;
     width: 140px;
     height: 64px;
-    border-radius: 10px;
+    border-radius: Theme.r-lg;
     background: Theme.bg-elevated;
     border-width: 1px;
     border-color: Theme.border-subtle;
 
     HorizontalLayout {
-        padding: 12px;
+        padding: Theme.sp-3;
         spacing: 10px;
         alignment: start;
 
         Rectangle {
             width: 38px;
             height: 38px;
-            border-radius: 8px;
+            border-radius: Theme.r-md;
             background: badge-bg;
             vertical-stretch: 0;
 
             Text {
                 text: count;
                 color: badge-color;
-                font-size: 18px;
+                font-size: 18px;  // No exact token — intentionally larger than fs-headline
                 font-weight: 700;
                 horizontal-alignment: center;
                 vertical-alignment: center;
@@ -160,7 +160,7 @@ component RiskSummaryCard inherits Rectangle {
             Text {
                 text: count == 1 ? "file" : "files";
                 color: Theme.text-dim;
-                font-size: 10px;
+                font-size: Theme.fs-micro;
             }
         }
     }
@@ -174,15 +174,15 @@ component PermActionButton inherits TouchArea {
     height: 32px;
 
     Rectangle {
-        border-radius: 8px;
+        border-radius: Theme.r-md;
         background: primary ? Theme.accent
                   : (parent.has-hover ? Theme.hover-fill-strong : Theme.bg-elevated);
         border-width: 1px;
         border-color: primary ? Theme.accent-dim : Theme.border-subtle;
 
         HorizontalLayout {
-            padding-left: 12px;
-            padding-right: 12px;
+            padding-left: Theme.sp-3;
+            padding-right: Theme.sp-3;
             alignment: center;
 
             Text {
@@ -204,17 +204,17 @@ component FileDetailPanel inherits Rectangle {
     callback fix-clicked();
 
     background: Theme.bg-elevated;
-    border-radius: 10px;
+    border-radius: Theme.r-lg;
     border-width: 1px;
     border-color: Theme.border-subtle;
 
     VerticalLayout {
-        padding: 16px;
+        padding: Theme.sp-4;
         spacing: 10px;
 
         // Header
         HorizontalLayout {
-            spacing: 8px;
+            spacing: Theme.sp-2;
             alignment: start;
 
             Text {
@@ -256,7 +256,7 @@ component FileDetailPanel inherits Rectangle {
 
         // Owner / Group / Numeric Perms row
         HorizontalLayout {
-            spacing: 16px;
+            spacing: Theme.sp-4;
 
             HorizontalLayout {
                 spacing: 6px;
@@ -333,17 +333,17 @@ component FileDetailPanel inherits Rectangle {
         Rectangle {
             height: 80px;
             background: Theme.bg-card;
-            border-radius: 8px;
+            border-radius: Theme.r-md;
             border-width: 1px;
             border-color: Theme.border-subtle;
 
             VerticalLayout {
-                padding: 8px;
-                spacing: 4px;
+                padding: Theme.sp-2;
+                spacing: Theme.sp-1;
 
                 // Header row
                 HorizontalLayout {
-                    spacing: 8px;
+                    spacing: Theme.sp-2;
                     Text {
                         text: "";
                         horizontal-stretch: 1;
@@ -380,7 +380,7 @@ component FileDetailPanel inherits Rectangle {
 
                 // Owner row
                 HorizontalLayout {
-                    spacing: 8px;
+                    spacing: Theme.sp-2;
                     Text {
                         text: "Owner";
                         color: Theme.text-secondary;
@@ -391,21 +391,21 @@ component FileDetailPanel inherits Rectangle {
                     }
                     Text {
                         text: file.owner-r ? "\u{2705}" : "\u{274C}";
-                        font-size: 12px;
+                        font-size: Theme.fs-caption;
                         horizontal-stretch: 1;
                         horizontal-alignment: center;
                         vertical-alignment: center;
                     }
                     Text {
                         text: file.owner-w ? "\u{2705}" : "\u{274C}";
-                        font-size: 12px;
+                        font-size: Theme.fs-caption;
                         horizontal-stretch: 1;
                         horizontal-alignment: center;
                         vertical-alignment: center;
                     }
                     Text {
                         text: file.owner-x ? "\u{2705}" : "\u{274C}";
-                        font-size: 12px;
+                        font-size: Theme.fs-caption;
                         horizontal-stretch: 1;
                         horizontal-alignment: center;
                         vertical-alignment: center;
@@ -414,7 +414,7 @@ component FileDetailPanel inherits Rectangle {
 
                 // Group row
                 HorizontalLayout {
-                    spacing: 8px;
+                    spacing: Theme.sp-2;
                     Text {
                         text: "Group";
                         color: Theme.text-secondary;
@@ -425,21 +425,21 @@ component FileDetailPanel inherits Rectangle {
                     }
                     Text {
                         text: file.group-r ? "\u{2705}" : "\u{274C}";
-                        font-size: 12px;
+                        font-size: Theme.fs-caption;
                         horizontal-stretch: 1;
                         horizontal-alignment: center;
                         vertical-alignment: center;
                     }
                     Text {
                         text: file.group-w ? "\u{2705}" : "\u{274C}";
-                        font-size: 12px;
+                        font-size: Theme.fs-caption;
                         horizontal-stretch: 1;
                         horizontal-alignment: center;
                         vertical-alignment: center;
                     }
                     Text {
                         text: file.group-x ? "\u{2705}" : "\u{274C}";
-                        font-size: 12px;
+                        font-size: Theme.fs-caption;
                         horizontal-stretch: 1;
                         horizontal-alignment: center;
                         vertical-alignment: center;
@@ -448,7 +448,7 @@ component FileDetailPanel inherits Rectangle {
 
                 // Other row
                 HorizontalLayout {
-                    spacing: 8px;
+                    spacing: Theme.sp-2;
                     Text {
                         text: "Other";
                         color: Theme.text-secondary;
@@ -459,21 +459,21 @@ component FileDetailPanel inherits Rectangle {
                     }
                     Text {
                         text: file.other-r ? "\u{2705}" : "\u{274C}";
-                        font-size: 12px;
+                        font-size: Theme.fs-caption;
                         horizontal-stretch: 1;
                         horizontal-alignment: center;
                         vertical-alignment: center;
                     }
                     Text {
                         text: file.other-w ? "\u{2705}" : "\u{274C}";
-                        font-size: 12px;
+                        font-size: Theme.fs-caption;
                         horizontal-stretch: 1;
                         horizontal-alignment: center;
                         vertical-alignment: center;
                     }
                     Text {
                         text: file.other-x ? "\u{2705}" : "\u{274C}";
-                        font-size: 12px;
+                        font-size: Theme.fs-caption;
                         horizontal-stretch: 1;
                         horizontal-alignment: center;
                         vertical-alignment: center;
@@ -484,20 +484,20 @@ component FileDetailPanel inherits Rectangle {
 
         // Remediation preview + Fix button
         if show-fix && file.recommended-perms != "" : HorizontalLayout {
-            spacing: 12px;
+            spacing: Theme.sp-3;
             alignment: start;
 
             Rectangle {
                 horizontal-stretch: 1;
                 height: 32px;
-                border-radius: 8px;
-                background: #e8b44c15;
+                border-radius: Theme.r-md;
+                background: Theme.color-warning-dim;
                 border-width: 1px;
-                border-color: #e8b44c40;
+                border-color: Theme.color-warning-dim;
 
                 HorizontalLayout {
-                    padding-left: 12px;
-                    padding-right: 12px;
+                    padding-left: Theme.sp-3;
+                    padding-right: Theme.sp-3;
                     spacing: 6px;
                     alignment: center;
 
@@ -510,7 +510,7 @@ component FileDetailPanel inherits Rectangle {
                     }
                     Text {
                         text: "Change " + file.numeric-perms + " \u{2192} " + file.recommended-perms;
-                        color: #e8b44c;
+                        color: Theme.color-warning;
                         font-size: Theme.font-small;
                         font-family: "monospace";
                         font-weight: 600;
@@ -610,7 +610,7 @@ export component PermissionDashboardScreen inherits Rectangle {
         width: 500px;
         height: 400px;
         background: @radial-gradient(circle,
-            #5ac8d406 0%,
+            Theme.accent-dim 0%,
             transparent 60%
         );
     }
@@ -625,28 +625,28 @@ export component PermissionDashboardScreen inherits Rectangle {
             border-width: 0px;
 
             HorizontalLayout {
-                padding: 12px;
-                spacing: 12px;
+                padding: Theme.sp-3;
+                spacing: Theme.sp-3;
                 alignment: start;
 
                 // Risk summary cards
                 RiskSummaryCard {
                     label: "High Risk";
                     count: root.perm-high-risk-count;
-                    badge-color: #e86b6b;
-                    badge-bg: #e86b6b20;
+                    badge-color: Theme.color-danger;
+                    badge-bg: Theme.color-danger-dim;
                 }
                 RiskSummaryCard {
                     label: "Medium Risk";
                     count: root.perm-medium-risk-count;
-                    badge-color: #e8b44c;
-                    badge-bg: #e8b44c20;
+                    badge-color: Theme.color-warning;
+                    badge-bg: Theme.color-warning-dim;
                 }
                 RiskSummaryCard {
                     label: "Low Risk";
                     count: root.perm-low-risk-count;
-                    badge-color: #6cd480;
-                    badge-bg: #6cd48020;
+                    badge-color: Theme.color-success;
+                    badge-bg: Theme.color-success-dim;
                 }
 
                 // Spacer
@@ -658,16 +658,17 @@ export component PermissionDashboardScreen inherits Rectangle {
                     spacing: 6px;
 
                     HorizontalLayout {
-                        spacing: 8px;
+                        spacing: Theme.sp-2;
 
                         // Scan path input
                         Rectangle {
                             width: 220px;
                             height: 30px;
-                            border-radius: 8px;
+                            border-radius: Theme.r-md;
                             background: Theme.bg-card;
                             border-width: 1px;
                             border-color: scan-path-input.has-focus ? Theme.accent : Theme.border-subtle;
+                            clip: true;
 
                             HorizontalLayout {
                                 padding-left: 10px;
@@ -725,7 +726,7 @@ export component PermissionDashboardScreen inherits Rectangle {
                     if root.perm-scan-status != "" || root.perm-export-status != "" : Text {
                         text: root.perm-export-status != "" ? root.perm-export-status : root.perm-scan-status;
                         color: Theme.text-dim;
-                        font-size: 10px;
+                        font-size: Theme.fs-micro;
                         horizontal-alignment: right;
                     }
                 }
@@ -788,10 +789,11 @@ export component PermissionDashboardScreen inherits Rectangle {
                 Rectangle {
                     width: 200px;
                     height: 30px;
-                    border-radius: 8px;
+                    border-radius: Theme.r-md;
                     background: Theme.bg-card;
                     border-width: 1px;
                     border-color: search-input.has-focus ? Theme.accent : Theme.border-subtle;
+                    clip: true;
 
                     HorizontalLayout {
                         padding-left: 10px;
@@ -801,7 +803,7 @@ export component PermissionDashboardScreen inherits Rectangle {
 
                         Text {
                             text: "\u{1F50D}";
-                            font-size: 12px;
+                            font-size: Theme.fs-caption;
                             vertical-alignment: center;
                         }
 
@@ -843,17 +845,17 @@ export component PermissionDashboardScreen inherits Rectangle {
                         HorizontalLayout {
                             padding-left: 10px;
                             padding-right: 10px;
-                            spacing: 4px;
+                            spacing: Theme.sp-1;
                             alignment: center;
                             Text {
                                 text: root.ai-is-working ? "\u{2B50}" : "\u{2728}";
-                                font-size: 12px;
+                                font-size: Theme.fs-caption;
                                 vertical-alignment: center;
                             }
                             Text {
                                 text: root.ai-is-working ? "Analyzing..." : "AI Explain";
-                                color: root.ai-is-working ? #ffffff : Theme.text-secondary;
-                                font-size: 11px;
+                                color: root.ai-is-working ? Theme.text-on-accent : Theme.text-secondary;
+                                font-size: Theme.fs-micro;
                                 font-weight: 500;
                                 vertical-alignment: center;
                             }
@@ -870,7 +872,7 @@ export component PermissionDashboardScreen inherits Rectangle {
                 }
 
                 // Right padding
-                Rectangle { width: 16px; }
+                Rectangle { width: Theme.sp-4; }
             }
 
             // Bottom separator
@@ -885,28 +887,28 @@ export component PermissionDashboardScreen inherits Rectangle {
         // ── AI Response Panel ──
         if root.ai-panel-open && root.ai-response != "" : Rectangle {
             max-height: 160px;
-            background: #1a2332;
+            background: Theme.bg-elevated;
             border-width: 1px;
             border-color: Theme.accent.transparentize(70%);
 
             Flickable {
-                viewport-height: ai-perm-resp.preferred-height + 16px;
+                viewport-height: ai-perm-resp.preferred-height + Theme.sp-4;
 
                 ai-perm-resp := VerticalLayout {
-                    padding: 12px;
-                    spacing: 8px;
+                    padding: Theme.sp-3;
+                    spacing: Theme.sp-2;
 
                     HorizontalLayout {
                         spacing: 6px;
                         Text {
                             text: "\u{2728}";
-                            font-size: 12px;
+                            font-size: Theme.fs-caption;
                             vertical-alignment: center;
                         }
                         Text {
                             text: "AI Analysis";
                             color: Theme.accent;
-                            font-size: 12px;
+                            font-size: Theme.fs-caption;
                             font-weight: 600;
                             vertical-alignment: center;
                         }
@@ -920,11 +922,11 @@ export component PermissionDashboardScreen inherits Rectangle {
                             }
                             Rectangle {
                                 width: 24px; height: 24px;
-                                border-radius: 12px;
+                                border-radius: Theme.r-lg;
                                 background: parent.has-hover ? Theme.hover-fill : transparent;
                                 Text {
                                     text: "\u{2715}";
-                                    font-size: 11px;
+                                    font-size: Theme.fs-micro;
                                     color: Theme.text-dim;
                                     horizontal-alignment: center;
                                     vertical-alignment: center;
@@ -936,7 +938,7 @@ export component PermissionDashboardScreen inherits Rectangle {
                     Text {
                         text: root.ai-response;
                         color: Theme.text-primary;
-                        font-size: 12px;
+                        font-size: Theme.fs-caption;
                         wrap: word-wrap;
                     }
                 }
@@ -963,10 +965,10 @@ export component PermissionDashboardScreen inherits Rectangle {
                         background: Theme.bg-elevated;
 
                         HorizontalLayout {
-                            padding-left: 16px;
-                            padding-right: 16px;
+                            padding-left: Theme.sp-4;
+                            padding-right: Theme.sp-4;
                             alignment: start;
-                            spacing: 8px;
+                            spacing: Theme.sp-2;
 
                             Text {
                                 text: "\u{1F464} System Users";
@@ -985,9 +987,9 @@ export component PermissionDashboardScreen inherits Rectangle {
                         border-width: 0px;
 
                         HorizontalLayout {
-                            padding-left: 16px;
-                            padding-right: 16px;
-                            spacing: 8px;
+                            padding-left: Theme.sp-4;
+                            padding-right: Theme.sp-4;
+                            spacing: Theme.sp-2;
 
                             Text {
                                 text: "Username";
@@ -1049,9 +1051,9 @@ export component PermissionDashboardScreen inherits Rectangle {
                                               : transparent;
 
                                     HorizontalLayout {
-                                        padding-left: 16px;
-                                        padding-right: 16px;
-                                        spacing: 8px;
+                                        padding-left: Theme.sp-4;
+                                        padding-right: Theme.sp-4;
+                                        spacing: Theme.sp-2;
 
                                         Text {
                                             text: user.username;
@@ -1112,10 +1114,10 @@ export component PermissionDashboardScreen inherits Rectangle {
                         background: Theme.bg-elevated;
 
                         HorizontalLayout {
-                            padding-left: 16px;
-                            padding-right: 16px;
+                            padding-left: Theme.sp-4;
+                            padding-right: Theme.sp-4;
                             alignment: start;
-                            spacing: 8px;
+                            spacing: Theme.sp-2;
 
                             Text {
                                 text: "\u{1F465} Groups";
@@ -1133,9 +1135,9 @@ export component PermissionDashboardScreen inherits Rectangle {
                         background: Theme.bg-card;
 
                         HorizontalLayout {
-                            padding-left: 16px;
-                            padding-right: 16px;
-                            spacing: 8px;
+                            padding-left: Theme.sp-4;
+                            padding-right: Theme.sp-4;
+                            spacing: Theme.sp-2;
 
                             Text {
                                 text: "Group";
@@ -1190,9 +1192,9 @@ export component PermissionDashboardScreen inherits Rectangle {
                                 height: 36px;
 
                                 HorizontalLayout {
-                                    padding-left: 16px;
-                                    padding-right: 16px;
-                                    spacing: 8px;
+                                    padding-left: Theme.sp-4;
+                                    padding-right: Theme.sp-4;
+                                    spacing: Theme.sp-2;
 
                                     Text {
                                         text: group.name;
@@ -1253,8 +1255,8 @@ export component PermissionDashboardScreen inherits Rectangle {
                     background: Theme.bg-elevated;
 
                     HorizontalLayout {
-                        padding-left: 16px;
-                        padding-right: 16px;
+                        padding-left: Theme.sp-4;
+                        padding-right: Theme.sp-4;
                         alignment: space-between;
 
                         Text {
@@ -1281,9 +1283,9 @@ export component PermissionDashboardScreen inherits Rectangle {
                     background: Theme.bg-card;
 
                     HorizontalLayout {
-                        padding-left: 16px;
-                        padding-right: 16px;
-                        spacing: 8px;
+                        padding-left: Theme.sp-4;
+                        padding-right: Theme.sp-4;
+                        spacing: Theme.sp-2;
 
                         Text {
                             text: "Risk";
@@ -1355,9 +1357,9 @@ export component PermissionDashboardScreen inherits Rectangle {
                                     background: parent.has-hover ? Theme.hover-fill : transparent;
 
                                     HorizontalLayout {
-                                        padding-left: 16px;
-                                        padding-right: 16px;
-                                        spacing: 8px;
+                                        padding-left: Theme.sp-4;
+                                        padding-right: Theme.sp-4;
+                                        spacing: Theme.sp-2;
 
                                         RiskBadge {
                                             risk: file.risk;
@@ -1412,7 +1414,7 @@ export component PermissionDashboardScreen inherits Rectangle {
                         background: Theme.bg-deep;
 
                         VerticalLayout {
-                            padding: 12px;
+                            padding: Theme.sp-3;
 
                             FileDetailPanel {
                                 file: root.perm-selected-file;
@@ -1438,8 +1440,8 @@ export component PermissionDashboardScreen inherits Rectangle {
                     background: Theme.bg-elevated;
 
                     HorizontalLayout {
-                        padding-left: 16px;
-                        padding-right: 16px;
+                        padding-left: Theme.sp-4;
+                        padding-right: Theme.sp-4;
                         alignment: space-between;
 
                         Text {
@@ -1466,9 +1468,9 @@ export component PermissionDashboardScreen inherits Rectangle {
                     background: Theme.bg-card;
 
                     HorizontalLayout {
-                        padding-left: 16px;
-                        padding-right: 16px;
-                        spacing: 8px;
+                        padding-left: Theme.sp-4;
+                        padding-right: Theme.sp-4;
+                        spacing: Theme.sp-2;
 
                         Text {
                             text: "Path";
@@ -1532,9 +1534,9 @@ export component PermissionDashboardScreen inherits Rectangle {
                                     background: parent.has-hover ? Theme.hover-fill : transparent;
 
                                     HorizontalLayout {
-                                        padding-left: 16px;
-                                        padding-right: 16px;
-                                        spacing: 8px;
+                                        padding-left: Theme.sp-4;
+                                        padding-right: Theme.sp-4;
+                                        spacing: Theme.sp-2;
 
                                         Text {
                                             text: file.path;
@@ -1586,7 +1588,7 @@ export component PermissionDashboardScreen inherits Rectangle {
                         background: Theme.bg-deep;
 
                         VerticalLayout {
-                            padding: 12px;
+                            padding: Theme.sp-3;
 
                             FileDetailPanel {
                                 file: root.perm-selected-file;
@@ -1608,13 +1610,13 @@ export component PermissionDashboardScreen inherits Rectangle {
             border-color: Theme.accent.transparentize(70%);
 
             VerticalLayout {
-                padding: 14px;
+                padding: Theme.sp-4;
                 spacing: 10px;
 
                 // Header
                 HorizontalLayout {
                     height: 28px;
-                    spacing: 8px;
+                    spacing: Theme.sp-2;
 
                     Text {
                         text: "\u{1F512} ACL Manager";
@@ -1631,11 +1633,11 @@ export component PermissionDashboardScreen inherits Rectangle {
                         clicked => { root.perm-acl-panel-open = false; }
                         Rectangle {
                             width: 24px; height: 24px;
-                            border-radius: 12px;
+                            border-radius: Theme.r-lg;
                             background: parent.has-hover ? Theme.hover-fill-strong : transparent;
                             Text {
                                 text: "\u{2715}";
-                                font-size: 11px;
+                                font-size: Theme.fs-micro;
                                 color: Theme.text-dim;
                                 horizontal-alignment: center;
                                 vertical-alignment: center;
@@ -1648,7 +1650,7 @@ export component PermissionDashboardScreen inherits Rectangle {
                 Rectangle {
                     height: 36px;
                     background: Theme.bg-deep;
-                    border-radius: 8px;
+                    border-radius: Theme.r-md;
 
                     HorizontalLayout {
                         padding-left: 10px;
@@ -1681,7 +1683,7 @@ export component PermissionDashboardScreen inherits Rectangle {
                     Text {
                         text: "View ACL";
                         font-size: Theme.font-body;
-                        color: #ffffff;
+                        color: Theme.text-on-accent;
                         font-weight: 600;
                         horizontal-alignment: center;
                         vertical-alignment: center;
@@ -1699,7 +1701,7 @@ export component PermissionDashboardScreen inherits Rectangle {
                 // ACL output
                 Rectangle {
                     background: Theme.bg-deep;
-                    border-radius: 8px;
+                    border-radius: Theme.r-md;
                     vertical-stretch: 1;
 
                     Flickable {
@@ -1709,7 +1711,7 @@ export component PermissionDashboardScreen inherits Rectangle {
                             x: 8px;
                             width: parent.width - 16px;
                             text: root.perm-acl-output != "" ? root.perm-acl-output : "No ACL data. Click 'View ACL' to load.";
-                            font-size: 11px;
+                            font-size: Theme.fs-micro;
                             font-family: "monospace";
                             color: root.perm-acl-output != "" ? Theme.text-primary : Theme.text-dim;
                             wrap: word-wrap;
@@ -1733,8 +1735,8 @@ export component PermissionDashboardScreen inherits Rectangle {
                 // ACL spec input
                 Rectangle {
                     height: 36px;
-                    background: Theme.bg-deep;
-                    border-radius: 8px;
+                    background: Theme.bg-deep; clip: true;
+                    border-radius: Theme.r-md;
                     border-width: 1px;
                     border-color: Theme.border-subtle;
 
@@ -1751,20 +1753,20 @@ export component PermissionDashboardScreen inherits Rectangle {
 
                 Text {
                     text: "e.g. u:user:rw, g:group:r, o::r";
-                    font-size: 10px;
+                    font-size: Theme.fs-micro;
                     color: Theme.text-dim;
                 }
 
                 // Apply ACL button
                 Rectangle {
                     height: 34px;
-                    background: acl-set-ta.has-hover ? #e89840 : #cc8030;
+                    background: acl-set-ta.has-hover ? Theme.color-warning : Theme.amber;
                     border-radius: Theme.radius-pill;
 
                     Text {
                         text: "Apply ACL";
                         font-size: Theme.font-body;
-                        color: #ffffff;
+                        color: Theme.text-on-accent;
                         font-weight: 600;
                         horizontal-alignment: center;
                         vertical-alignment: center;

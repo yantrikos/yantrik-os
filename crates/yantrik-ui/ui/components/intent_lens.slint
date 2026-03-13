@@ -57,7 +57,6 @@ export component IntentLens inherits Rectangle {
     width: 100%;
     height: 100%;
     background: transparent;
-    visible: is-open;
 
     // Holographic scan phase
     property <float> lens-glow-phase: 0;
@@ -70,7 +69,9 @@ export component IntentLens inherits Rectangle {
     }
 
     // Click-outside area (left side only, not covering the panel)
-    TouchArea {
+    // Wrapped in `if` so the TouchArea is removed from the tree when closed,
+    // preventing it from swallowing clicks meant for the dock/desktop.
+    if root.is-open : TouchArea {
         x: 0;
         y: 0;
         width: root.width - Theme.chat-panel-width;
@@ -86,16 +87,15 @@ export component IntentLens inherits Rectangle {
         height: root.height;
         border-radius: 0;
         clip: true;
-        opacity: root.is-open ? 1.0 : 0.0;
+        visible: root.is-open;
 
         animate x { duration: 200ms; easing: ease-out; }
-        animate opacity { duration: 150ms; easing: ease-out; }
 
         // Glass background — semi-transparent for side panel
         background: @linear-gradient(180deg,
-            #0c0b10e8 0%,
-            #080810e0 50%,
-            #0c0b10e8 100%
+            Theme.bg-deep.transparentize(9%) 0%,
+            Theme.bg-deep.transparentize(12%) 50%,
+            Theme.bg-deep.transparentize(9%) 100%
         );
 
         // Left edge glow (panel border)
@@ -104,16 +104,16 @@ export component IntentLens inherits Rectangle {
             width: 1px;
             height: 100%;
             background: @linear-gradient(180deg,
-                #5ac8d440 0%,
-                #5ac8d420 30%,
-                #d4a57420 70%,
-                #5ac8d440 100%
+                Theme.cyan-glow 0%,
+                Theme.cyan.transparentize(87%) 30%,
+                Theme.amber.transparentize(87%) 70%,
+                Theme.cyan-glow 100%
             );
         }
 
         // Deep shadow on left side
         drop-shadow-blur: 30px;
-        drop-shadow-color: #00000060;
+        drop-shadow-color: Theme.overlay-backdrop;
         drop-shadow-offset-x: -8px;
 
         // Block click-through to the outside TouchArea
@@ -169,6 +169,7 @@ export component IntentLens inherits Rectangle {
                         horizontal-stretch: 1;
                         height: Theme.lens-input-height;
                         forward-focus: lens-input;
+                        clip: true;
 
                         lens-input := TextInput {
                             y: (parent.height - self.preferred-height) / 2;
@@ -383,7 +384,7 @@ export component IntentLens inherits Rectangle {
                                     background: Theme.color-answer;
                                     opacity: 0.2;
                                     drop-shadow-blur: 8px;
-                                    drop-shadow-color: #4ab8f030;
+                                    drop-shadow-color: Theme.holo-blue.transparentize(81%);
 
                                     Text {
                                         text: result.icon-char;
@@ -864,6 +865,7 @@ export component IntentLens inherits Rectangle {
                             border-width: 1px;
                             border-color: chat-input.has-focus ? Theme.cyan-dim : Theme.border-subtle;
                             forward-focus: chat-input;
+                            clip: true;
 
                             animate border-color { duration: 200ms; }
 

@@ -1,7 +1,8 @@
 // Onboarding — "Hey. I'm Yantrik."
-// First-boot experience with interest discovery + profile setup.
+// First-boot experience with interest discovery + profile setup + AI provider setup.
 // Phases: orb kindle → greeting → name input → interest chips →
-//         location + notification pref → instruction → ready.
+//         location + notification pref → AI hardware scan → AI mode select →
+//         AI provider setup → AI test → instruction → ready.
 
 import { Theme } from "theme.slint";
 import { Orb } from "components/orb.slint";
@@ -18,19 +19,19 @@ component InterestChip inherits Rectangle {
     height: 34px;
     border-radius: 17px;
     border-width: 1px;
-    border-color: selected ? Theme.cyan : #ffffff20;
-    background: selected ? Theme.cyan-glow : #ffffff08;
-    animate background { duration: 200ms; }
-    animate border-color { duration: 200ms; }
+    border-color: selected ? Theme.cyan : Theme.border-default;
+    background: selected ? Theme.cyan-glow : Theme.hover-fill;
+    animate background { duration: Theme.dur-normal; }
+    animate border-color { duration: Theme.dur-normal; }
 
     chip-text := Text {
         text: label;
         color: selected ? Theme.cyan-light : Theme.text-secondary;
-        font-size: 13px;
+        font-size: Theme.font-label;
         font-weight: selected ? 600 : 400;
         horizontal-alignment: center;
         vertical-alignment: center;
-        animate color { duration: 200ms; }
+        animate color { duration: Theme.dur-normal; }
     }
 
     TouchArea {
@@ -51,16 +52,16 @@ component PillButton inherits Rectangle {
     width: 160px;
     height: 42px;
     border-radius: 21px;
-    background: enabled ? Theme.cyan-glow : #ffffff05;
+    background: enabled ? Theme.cyan-glow : Theme.hover-fill;
     border-width: 1px;
-    border-color: enabled ? Theme.cyan : #ffffff10;
+    border-color: enabled ? Theme.cyan : Theme.border-subtle;
     opacity: enabled ? 1.0 : 0.4;
-    animate opacity { duration: 200ms; }
+    animate opacity { duration: Theme.dur-normal; }
 
     Text {
         text: label;
         color: enabled ? Theme.cyan : Theme.text-dim;
-        font-size: 14px;
+        font-size: Theme.fs-body;
         font-weight: 600;
         horizontal-alignment: center;
         vertical-alignment: center;
@@ -81,15 +82,16 @@ component OnboardField inherits Rectangle {
 
     width: 280px;
     height: 36px;
-    border-radius: 8px;
-    background: #ffffff0a;
+    border-radius: Theme.r-md;
+    background: Theme.border-default;
     border-width: 1px;
-    border-color: #ffffff18;
+    border-color: Theme.border-strong;
+    clip: true;
 
     TextInput {
         text <=> root.value;
         color: root.text-color;
-        font-size: 15px;
+        font-size: Theme.fs-headline;
         horizontal-alignment: center;
         vertical-alignment: center;
     }
@@ -104,18 +106,18 @@ component NotifOption inherits Rectangle {
     callback selected();
 
     height: 52px;
-    border-radius: 10px;
+    border-radius: Theme.r-md;
     border-width: 1px;
-    border-color: active ? Theme.cyan : #ffffff12;
-    background: active ? Theme.cyan-glow : #ffffff06;
-    animate background { duration: 200ms; }
-    animate border-color { duration: 200ms; }
+    border-color: active ? Theme.cyan : Theme.border-default;
+    background: active ? Theme.cyan-glow : Theme.border-subtle;
+    animate background { duration: Theme.dur-normal; }
+    animate border-color { duration: Theme.dur-normal; }
 
     HorizontalLayout {
-        padding-left: 16px;
-        padding-right: 16px;
+        padding-left: Theme.sp-4;
+        padding-right: Theme.sp-4;
         alignment: start;
-        spacing: 12px;
+        spacing: Theme.sp-3;
 
         // Radio dot
         VerticalLayout {
@@ -125,7 +127,7 @@ component NotifOption inherits Rectangle {
                 height: 16px;
                 border-radius: 8px;
                 border-width: 1.5px;
-                border-color: active ? Theme.cyan : #ffffff30;
+                border-color: active ? Theme.cyan : Theme.border-strong;
                 Rectangle {
                     x: 4px;
                     y: 4px;
@@ -133,7 +135,7 @@ component NotifOption inherits Rectangle {
                     height: 8px;
                     border-radius: 4px;
                     background: active ? Theme.cyan : transparent;
-                    animate background { duration: 200ms; }
+                    animate background { duration: Theme.dur-normal; }
                 }
             }
         }
@@ -144,13 +146,13 @@ component NotifOption inherits Rectangle {
             Text {
                 text: label;
                 color: active ? Theme.text-primary : Theme.text-secondary;
-                font-size: 13px;
+                font-size: Theme.font-label;
                 font-weight: 500;
             }
             Text {
                 text: desc;
                 color: Theme.text-dim;
-                font-size: 11px;
+                font-size: Theme.fs-micro;
             }
         }
     }
@@ -167,6 +169,30 @@ export component OnboardingScreen inherits Rectangle {
     callback set-profile(/* interests */ string, /* home_loc */ string,
                          /* notif_pref */ string);
 
+    // AI setup callbacks
+    callback ai-mode-selected(string);       // "local", "cloud", "later"
+    callback ai-provider-selected(string);   // provider type: "ollama", "openai", "anthropic", "google", "deepseek", "openrouter"
+    callback ai-api-key-submitted(string, string);  // (provider_type, api_key)
+    callback ai-test-connection();
+    callback ai-skip-setup();
+
+    // AI setup input properties (set from wire)
+    in property <bool> ai-hw-cpu-ok: false;
+    in property <bool> ai-hw-ram-ok: false;
+    in property <bool> ai-hw-gpu-ok: false;
+    in property <bool> ai-hw-disk-ok: false;
+    in property <bool> ai-hw-network-ok: false;
+    in property <bool> ai-hw-runtime-ok: false;
+    in property <string> ai-hw-cpu-label: "";
+    in property <string> ai-hw-ram-label: "";
+    in property <string> ai-hw-gpu-label: "";
+    in property <string> ai-hw-disk-label: "";
+    in property <string> ai-hw-recommend: "local";  // "local" or "cloud"
+    in property <string> ai-test-status: "";         // "", "testing", "success", "error: ..."
+    in property <string> ai-test-model: "";
+    in property <int> ai-test-latency-ms: 0;
+    in property <string> ai-test-privacy: "local";
+
     in-out property <string> companion-name: "Yantrik";
 
     background: Theme.bg-deep;
@@ -174,7 +200,8 @@ export component OnboardingScreen inherits Rectangle {
 
     // Phase tracking:
     // 0=dim, 1=orb kindles, 2=greeting, 3=name-input,
-    // 4=interests, 5=location+notif, 6=instruction, 7=ready
+    // 4=interests, 5=location+notif, 6=hw-scan, 7=ai-mode-select,
+    // 8=ai-provider-setup, 9=ai-test, 10=instruction, 11=ready
     property <int> phase: 0;
     property <float> timer-elapsed: 0;
     property <string> input-user-name: "";
@@ -209,14 +236,31 @@ export component OnboardingScreen inherits Rectangle {
     // Notification preference: "morning_brief" | "realtime" | "minimal"
     property <string> notif-pref: "morning_brief";
 
+    // AI setup state
+    property <string> ai-mode: "";               // "local", "cloud", "later"
+    property <string> ai-selected-provider: "";   // "ollama", "openai", "anthropic", "google", "deepseek", "openrouter"
+    property <string> ai-api-key-input: "";
+    property <float> hw-scan-progress: 0;
+    property <int> hw-scan-step: 0;
+
     Timer {
         interval: 16ms;
-        running: phase < 3;
+        running: phase < 3 || phase == 6;
         triggered => {
             timer-elapsed += 0.016;
             if timer-elapsed > 0.5 && phase == 0 { phase = 1; }
             if timer-elapsed > 2.0 && phase == 1 { phase = 2; }
             if timer-elapsed > 4.0 && phase == 2 { phase = 3; }
+            // Hardware scan animation — advance steps every 400ms
+            if phase == 6 {
+                hw-scan-progress = min(1.0, hw-scan-progress + 0.008);
+                if hw-scan-progress > 0.15 && hw-scan-step < 1 { hw-scan-step = 1; }
+                if hw-scan-progress > 0.30 && hw-scan-step < 2 { hw-scan-step = 2; }
+                if hw-scan-progress > 0.45 && hw-scan-step < 3 { hw-scan-step = 3; }
+                if hw-scan-progress > 0.60 && hw-scan-step < 4 { hw-scan-step = 4; }
+                if hw-scan-progress > 0.75 && hw-scan-step < 5 { hw-scan-step = 5; }
+                if hw-scan-progress > 0.90 && hw-scan-step < 6 { hw-scan-step = 6; }
+            }
         }
     }
 
@@ -231,7 +275,7 @@ export component OnboardingScreen inherits Rectangle {
 
     Rectangle {
         width: 100%; height: 100%;
-        background: @radial-gradient(circle, #0a0a1800 0%, #06060e60 50%, #030306a0 100%);
+        background: @radial-gradient(circle, Theme.bg-deep.transparentize(100%) 0%, Theme.bg-deep.transparentize(60%) 50%, Theme.bg-deep.transparentize(30%) 100%);
     }
 
     // ── Scrollable content ────────────────────────────────────────
@@ -242,10 +286,10 @@ export component OnboardingScreen inherits Rectangle {
 
         VerticalLayout {
             alignment: center;
-            spacing: 20px;
-            padding-left: 40px;
-            padding-right: 40px;
-            padding-top: 40px;
+            spacing: Theme.sp-5;
+            padding-left: Theme.sp-8;
+            padding-right: Theme.sp-8;
+            padding-top: Theme.sp-8;
             padding-bottom: 60px;
 
             // ── Orb (kindles at phase 1) ──────────────────────────
@@ -269,6 +313,10 @@ export component OnboardingScreen inherits Rectangle {
                 text: phase < 4 ? "Hey. I'm " + root.companion-name + "."
                     : phase == 4 ? "What are you into?"
                     : phase == 5 ? "Almost there."
+                    : phase == 6 ? "Scanning your hardware..."
+                    : phase == 7 ? "How should I think?"
+                    : phase == 8 ? "Set up your AI provider."
+                    : phase == 9 ? "Testing your AI..."
                     : "You're all set.";
                 color: Theme.cyan;
                 font-size: phase < 4 ? 28px : 22px;
@@ -283,14 +331,14 @@ export component OnboardingScreen inherits Rectangle {
             // ── Phase 3: Name input ──────────────────────────────
 
             if phase == 3: VerticalLayout {
-                spacing: 16px;
+                spacing: Theme.sp-4;
                 opacity: 1.0;
                 animate opacity { duration: 800ms; easing: ease-out; }
 
                 Text {
                     text: "What should I call you?";
                     color: Theme.text-secondary;
-                    font-size: 14px;
+                    font-size: Theme.fs-body;
                     horizontal-alignment: center;
                     letter-spacing: 1px;
                 }
@@ -306,7 +354,7 @@ export component OnboardingScreen inherits Rectangle {
                 Text {
                     text: "And what would you like to call me?";
                     color: Theme.text-secondary;
-                    font-size: 14px;
+                    font-size: Theme.fs-body;
                     horizontal-alignment: center;
                     letter-spacing: 1px;
                 }
@@ -334,13 +382,13 @@ export component OnboardingScreen inherits Rectangle {
             // ── Phase 4: Interest selection ──────────────────────
 
             if phase == 4: VerticalLayout {
-                spacing: 16px;
+                spacing: Theme.sp-4;
                 animate opacity { duration: 600ms; easing: ease-out; }
 
                 Text {
                     text: "Pick 3–10 topics you care about.";
                     color: Theme.text-secondary;
-                    font-size: 13px;
+                    font-size: Theme.font-label;
                     horizontal-alignment: center;
                     letter-spacing: 0.5px;
                 }
@@ -348,14 +396,14 @@ export component OnboardingScreen inherits Rectangle {
                 Text {
                     text: interest-count + " selected";
                     color: interest-count >= 3 ? Theme.cyan : Theme.text-dim;
-                    font-size: 12px;
+                    font-size: Theme.fs-caption;
                     horizontal-alignment: center;
                 }
 
                 // Row 1
                 HorizontalLayout {
                     alignment: center;
-                    spacing: 8px;
+                    spacing: Theme.sp-2;
                     InterestChip { label: "Technology"; selected <=> root.int-technology; }
                     InterestChip { label: "Finance"; selected <=> root.int-finance; }
                     InterestChip { label: "Science"; selected <=> root.int-science; }
@@ -364,7 +412,7 @@ export component OnboardingScreen inherits Rectangle {
                 // Row 2
                 HorizontalLayout {
                     alignment: center;
-                    spacing: 8px;
+                    spacing: Theme.sp-2;
                     InterestChip { label: "Sports"; selected <=> root.int-sports; }
                     InterestChip { label: "Music"; selected <=> root.int-music; }
                     InterestChip { label: "Gaming"; selected <=> root.int-gaming; }
@@ -373,7 +421,7 @@ export component OnboardingScreen inherits Rectangle {
                 // Row 3
                 HorizontalLayout {
                     alignment: center;
-                    spacing: 8px;
+                    spacing: Theme.sp-2;
                     InterestChip { label: "Health & Fitness"; selected <=> root.int-health; }
                     InterestChip { label: "Food & Cooking"; selected <=> root.int-food; }
                     InterestChip { label: "Travel"; selected <=> root.int-travel; }
@@ -381,7 +429,7 @@ export component OnboardingScreen inherits Rectangle {
                 // Row 4
                 HorizontalLayout {
                     alignment: center;
-                    spacing: 8px;
+                    spacing: Theme.sp-2;
                     InterestChip { label: "Politics"; selected <=> root.int-politics; }
                     InterestChip { label: "Fashion"; selected <=> root.int-fashion; }
                     InterestChip { label: "Cars & Auto"; selected <=> root.int-auto; }
@@ -389,7 +437,7 @@ export component OnboardingScreen inherits Rectangle {
 
                 HorizontalLayout {
                     alignment: center;
-                    padding-top: 8px;
+                    padding-top: Theme.sp-2;
                     PillButton {
                         label: "Next →";
                         enabled: interest-count >= 3;
@@ -401,23 +449,23 @@ export component OnboardingScreen inherits Rectangle {
             // ── Phase 5: Location + notification pref ────────────
 
             if phase == 5: VerticalLayout {
-                spacing: 20px;
+                spacing: Theme.sp-5;
                 animate opacity { duration: 600ms; easing: ease-out; }
 
                 // Location
                 VerticalLayout {
-                    spacing: 10px;
+                    spacing: Theme.sp-3;
                     Text {
                         text: "Where are you based?";
                         color: Theme.text-secondary;
-                        font-size: 14px;
+                        font-size: Theme.fs-body;
                         horizontal-alignment: center;
                         letter-spacing: 1px;
                     }
                     Text {
                         text: "City or region — for weather, events, and local context.";
                         color: Theme.text-dim;
-                        font-size: 11px;
+                        font-size: Theme.fs-micro;
                         horizontal-alignment: center;
                     }
                     HorizontalLayout {
@@ -431,11 +479,11 @@ export component OnboardingScreen inherits Rectangle {
 
                 // Notification preference
                 VerticalLayout {
-                    spacing: 10px;
+                    spacing: Theme.sp-3;
                     Text {
                         text: "How should I reach out?";
                         color: Theme.text-secondary;
-                        font-size: 14px;
+                        font-size: Theme.fs-body;
                         horizontal-alignment: center;
                         letter-spacing: 1px;
                     }
@@ -444,7 +492,7 @@ export component OnboardingScreen inherits Rectangle {
                         alignment: center;
                         VerticalLayout {
                             width: 320px;
-                            spacing: 8px;
+                            spacing: Theme.sp-2;
 
                             NotifOption {
                                 label: "Morning Brief";
@@ -472,9 +520,9 @@ export component OnboardingScreen inherits Rectangle {
 
                 HorizontalLayout {
                     alignment: center;
-                    padding-top: 4px;
+                    padding-top: Theme.sp-1;
                     PillButton {
-                        label: "Finish →";
+                        label: "Next →";
                         clicked => {
                             // Build interest string: comma-separated selected interests
                             root.set-profile(
@@ -482,22 +530,781 @@ export component OnboardingScreen inherits Rectangle {
                                 root.input-home-location,
                                 root.notif-pref,
                             );
+                            root.hw-scan-progress = 0;
+                            root.hw-scan-step = 0;
                             root.phase = 6;
                         }
                     }
                 }
             }
 
-            // ── Phase 6: Instruction + ready ─────────────────────
+            // ── Phase 6: Hardware Scan ─────────────────────────
 
-            if phase >= 6: VerticalLayout {
-                spacing: 12px;
+            if phase == 6: VerticalLayout {
+                spacing: Theme.sp-4;
+                animate opacity { duration: 600ms; easing: ease-out; }
+
+                // Progress bar
+                HorizontalLayout {
+                    alignment: center;
+                    Rectangle {
+                        width: 300px;
+                        height: 4px;
+                        border-radius: 2px;
+                        background: Theme.hover-fill-strong;
+                        Rectangle {
+                            width: parent.width * root.hw-scan-progress;
+                            height: 4px;
+                            border-radius: 2px;
+                            background: Theme.cyan;
+                            drop-shadow-blur: 6px;
+                            drop-shadow-color: Theme.cyan-glow;
+                            animate width { duration: Theme.dur-normal; }
+                        }
+                    }
+                }
+
+                // Checklist items
+                HorizontalLayout {
+                    alignment: center;
+                    VerticalLayout {
+                        width: 280px;
+                        spacing: Theme.sp-2;
+
+                        // CPU
+                        HorizontalLayout {
+                            spacing: Theme.sp-3;
+                            Text {
+                                text: root.hw-scan-step >= 1 ? "\u{2713}" : "\u{25CB}";
+                                color: root.hw-scan-step >= 1 ? Theme.color-success : Theme.text-dim;
+                                font-size: Theme.fs-body;
+                                width: 20px;
+                                vertical-alignment: center;
+                            }
+                            Text {
+                                text: "CPU";
+                                color: root.hw-scan-step >= 1 ? Theme.text-primary : Theme.text-dim;
+                                font-size: Theme.fs-body;
+                                horizontal-stretch: 1;
+                                vertical-alignment: center;
+                            }
+                            Text {
+                                text: root.ai-hw-cpu-label;
+                                color: Theme.text-dim;
+                                font-size: Theme.fs-caption;
+                                vertical-alignment: center;
+                                opacity: root.hw-scan-step >= 1 ? 1.0 : 0;
+                            }
+                        }
+
+                        // RAM
+                        HorizontalLayout {
+                            spacing: Theme.sp-3;
+                            Text {
+                                text: root.hw-scan-step >= 2 ? "\u{2713}" : "\u{25CB}";
+                                color: root.hw-scan-step >= 2 ? Theme.color-success : Theme.text-dim;
+                                font-size: Theme.fs-body;
+                                width: 20px;
+                                vertical-alignment: center;
+                            }
+                            Text {
+                                text: "RAM";
+                                color: root.hw-scan-step >= 2 ? Theme.text-primary : Theme.text-dim;
+                                font-size: Theme.fs-body;
+                                horizontal-stretch: 1;
+                                vertical-alignment: center;
+                            }
+                            Text {
+                                text: root.ai-hw-ram-label;
+                                color: Theme.text-dim;
+                                font-size: Theme.fs-caption;
+                                vertical-alignment: center;
+                                opacity: root.hw-scan-step >= 2 ? 1.0 : 0;
+                            }
+                        }
+
+                        // GPU
+                        HorizontalLayout {
+                            spacing: Theme.sp-3;
+                            Text {
+                                text: root.hw-scan-step >= 3 ? "\u{2713}" : "\u{25CB}";
+                                color: root.hw-scan-step >= 3 ? (root.ai-hw-gpu-ok ? Theme.color-success : Theme.amber) : Theme.text-dim;
+                                font-size: Theme.fs-body;
+                                width: 20px;
+                                vertical-alignment: center;
+                            }
+                            Text {
+                                text: "GPU";
+                                color: root.hw-scan-step >= 3 ? Theme.text-primary : Theme.text-dim;
+                                font-size: Theme.fs-body;
+                                horizontal-stretch: 1;
+                                vertical-alignment: center;
+                            }
+                            Text {
+                                text: root.ai-hw-gpu-label;
+                                color: Theme.text-dim;
+                                font-size: Theme.fs-caption;
+                                vertical-alignment: center;
+                                opacity: root.hw-scan-step >= 3 ? 1.0 : 0;
+                            }
+                        }
+
+                        // Disk
+                        HorizontalLayout {
+                            spacing: Theme.sp-3;
+                            Text {
+                                text: root.hw-scan-step >= 4 ? "\u{2713}" : "\u{25CB}";
+                                color: root.hw-scan-step >= 4 ? Theme.color-success : Theme.text-dim;
+                                font-size: Theme.fs-body;
+                                width: 20px;
+                                vertical-alignment: center;
+                            }
+                            Text {
+                                text: "Disk";
+                                color: root.hw-scan-step >= 4 ? Theme.text-primary : Theme.text-dim;
+                                font-size: Theme.fs-body;
+                                horizontal-stretch: 1;
+                                vertical-alignment: center;
+                            }
+                            Text {
+                                text: root.ai-hw-disk-label;
+                                color: Theme.text-dim;
+                                font-size: Theme.fs-caption;
+                                vertical-alignment: center;
+                                opacity: root.hw-scan-step >= 4 ? 1.0 : 0;
+                            }
+                        }
+
+                        // Network
+                        HorizontalLayout {
+                            spacing: Theme.sp-3;
+                            Text {
+                                text: root.hw-scan-step >= 5 ? "\u{2713}" : "\u{25CB}";
+                                color: root.hw-scan-step >= 5 ? Theme.color-success : Theme.text-dim;
+                                font-size: Theme.fs-body;
+                                width: 20px;
+                                vertical-alignment: center;
+                            }
+                            Text {
+                                text: "Network";
+                                color: root.hw-scan-step >= 5 ? Theme.text-primary : Theme.text-dim;
+                                font-size: Theme.fs-body;
+                                horizontal-stretch: 1;
+                                vertical-alignment: center;
+                            }
+                        }
+
+                        // Local Runtimes
+                        HorizontalLayout {
+                            spacing: Theme.sp-3;
+                            Text {
+                                text: root.hw-scan-step >= 6 ? "\u{2713}" : "\u{25CB}";
+                                color: root.hw-scan-step >= 6 ? (root.ai-hw-runtime-ok ? Theme.color-success : Theme.text-dim) : Theme.text-dim;
+                                font-size: Theme.fs-body;
+                                width: 20px;
+                                vertical-alignment: center;
+                            }
+                            Text {
+                                text: "Local Runtimes";
+                                color: root.hw-scan-step >= 6 ? Theme.text-primary : Theme.text-dim;
+                                font-size: Theme.fs-body;
+                                horizontal-stretch: 1;
+                                vertical-alignment: center;
+                            }
+                            Text {
+                                text: root.ai-hw-runtime-ok ? "Ollama detected" : "Not found";
+                                color: root.ai-hw-runtime-ok ? Theme.color-success : Theme.text-dim;
+                                font-size: Theme.fs-caption;
+                                vertical-alignment: center;
+                                opacity: root.hw-scan-step >= 6 ? 1.0 : 0;
+                            }
+                        }
+                    }
+                }
+
+                // Summary card (appears after scan complete)
+                if root.hw-scan-step >= 6 : HorizontalLayout {
+                    alignment: center;
+                    padding-top: Theme.sp-3;
+                    Rectangle {
+                        width: 300px;
+                        height: summary-col.preferred-height;
+                        border-radius: Theme.r-lg;
+                        background: Theme.hover-fill;
+                        border-width: 1px;
+                        border-color: Theme.cyan-glow;
+
+                        summary-col := VerticalLayout {
+                            padding: Theme.sp-4;
+                            spacing: Theme.sp-2;
+                            Text {
+                                text: root.ai-hw-gpu-ok ? "GPU available — local inference recommended"
+                                    : "No GPU — cloud provider recommended";
+                                color: Theme.cyan;
+                                font-size: Theme.fs-body;
+                                font-weight: 500;
+                                horizontal-alignment: center;
+                            }
+                        }
+                    }
+                }
+
+                // Next button (appears after scan)
+                if root.hw-scan-step >= 6 : HorizontalLayout {
+                    alignment: center;
+                    padding-top: Theme.sp-2;
+                    PillButton {
+                        label: "Next →";
+                        clicked => { root.phase = 7; }
+                    }
+                }
+            }
+
+            // ── Phase 7: AI Mode Selection (3 cards) ────────────
+
+            if phase == 7: VerticalLayout {
+                spacing: Theme.sp-5;
+                animate opacity { duration: 600ms; easing: ease-out; }
+
+                Text {
+                    text: "Choose how your AI companion operates.";
+                    color: Theme.text-secondary;
+                    font-size: Theme.fs-body;
+                    horizontal-alignment: center;
+                }
+
+                // Three mode cards
+                HorizontalLayout {
+                    alignment: center;
+                    spacing: Theme.sp-4;
+
+                    // Local First card
+                    TouchArea {
+                        width: 170px;
+                        height: 180px;
+                        clicked => {
+                            root.ai-mode = "local";
+                            root.ai-mode-selected("local");
+                            root.phase = 8;
+                        }
+                        Rectangle {
+                            border-radius: Theme.r-lg;
+                            background: root.ai-mode == "local" ? Theme.cyan-glow : Theme.hover-fill;
+                            border-width: 1px;
+                            border-color: root.ai-hw-recommend == "local" ? Theme.cyan : Theme.border-strong;
+                            animate background { duration: Theme.dur-normal; }
+
+                            VerticalLayout {
+                                padding: Theme.sp-4;
+                                spacing: Theme.sp-3;
+                                alignment: center;
+
+                                // Recommend badge
+                                if root.ai-hw-recommend == "local" : HorizontalLayout {
+                                    alignment: center;
+                                    Rectangle {
+                                        width: rec-local-txt.preferred-width + 16px;
+                                        height: 20px;
+                                        border-radius: 10px;
+                                        background: Theme.tint-cyan;
+                                        border-width: 1px;
+                                        border-color: Theme.cyan-dim;
+                                        rec-local-txt := Text {
+                                            text: "Recommended";
+                                            color: Theme.cyan;
+                                            font-size: 9px;
+                                            font-weight: 600;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                }
+
+                                Text {
+                                    text: "\u{1F512}";
+                                    font-size: 28px;
+                                    horizontal-alignment: center;
+                                }
+                                Text {
+                                    text: "Local First";
+                                    color: Theme.text-primary;
+                                    font-size: Theme.fs-headline;
+                                    font-weight: 600;
+                                    horizontal-alignment: center;
+                                }
+                                Text {
+                                    text: "Private. Runs on your hardware. Needs GPU.";
+                                    color: Theme.text-dim;
+                                    font-size: Theme.fs-caption;
+                                    horizontal-alignment: center;
+                                    wrap: word-wrap;
+                                }
+                            }
+                        }
+                    }
+
+                    // Cloud Powered card
+                    TouchArea {
+                        width: 170px;
+                        height: 180px;
+                        clicked => {
+                            root.ai-mode = "cloud";
+                            root.ai-mode-selected("cloud");
+                            root.phase = 8;
+                        }
+                        Rectangle {
+                            border-radius: Theme.r-lg;
+                            background: root.ai-mode == "cloud" ? Theme.cyan-glow : Theme.hover-fill;
+                            border-width: 1px;
+                            border-color: root.ai-hw-recommend == "cloud" ? Theme.cyan : Theme.border-strong;
+                            animate background { duration: Theme.dur-normal; }
+
+                            VerticalLayout {
+                                padding: Theme.sp-4;
+                                spacing: Theme.sp-3;
+                                alignment: center;
+
+                                if root.ai-hw-recommend == "cloud" : HorizontalLayout {
+                                    alignment: center;
+                                    Rectangle {
+                                        width: rec-cloud-txt.preferred-width + 16px;
+                                        height: 20px;
+                                        border-radius: 10px;
+                                        background: Theme.tint-cyan;
+                                        border-width: 1px;
+                                        border-color: Theme.cyan-dim;
+                                        rec-cloud-txt := Text {
+                                            text: "Recommended";
+                                            color: Theme.cyan;
+                                            font-size: 9px;
+                                            font-weight: 600;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                }
+
+                                Text {
+                                    text: "\u{26A1}";
+                                    font-size: 28px;
+                                    horizontal-alignment: center;
+                                }
+                                Text {
+                                    text: "Cloud Powered";
+                                    color: Theme.text-primary;
+                                    font-size: Theme.fs-headline;
+                                    font-weight: 600;
+                                    horizontal-alignment: center;
+                                }
+                                Text {
+                                    text: "Fast. Powerful models. Needs API key.";
+                                    color: Theme.text-dim;
+                                    font-size: Theme.fs-caption;
+                                    horizontal-alignment: center;
+                                    wrap: word-wrap;
+                                }
+                            }
+                        }
+                    }
+
+                    // Configure Later card
+                    TouchArea {
+                        width: 170px;
+                        height: 180px;
+                        clicked => {
+                            root.ai-mode = "later";
+                            root.ai-mode-selected("later");
+                            root.phase = 10;  // Skip to instruction
+                        }
+                        Rectangle {
+                            border-radius: Theme.r-lg;
+                            background: Theme.hover-fill;
+                            border-width: 1px;
+                            border-color: Theme.border-strong;
+                            animate background { duration: Theme.dur-normal; }
+
+                            VerticalLayout {
+                                padding: Theme.sp-4;
+                                spacing: Theme.sp-3;
+                                alignment: center;
+
+                                Text {
+                                    text: "\u{23F3}";
+                                    font-size: 28px;
+                                    horizontal-alignment: center;
+                                }
+                                Text {
+                                    text: "Configure Later";
+                                    color: Theme.text-primary;
+                                    font-size: Theme.fs-headline;
+                                    font-weight: 600;
+                                    horizontal-alignment: center;
+                                }
+                                Text {
+                                    text: "Use bundled fallback model. Set up anytime in Settings.";
+                                    color: Theme.text-dim;
+                                    font-size: Theme.fs-caption;
+                                    horizontal-alignment: center;
+                                    wrap: word-wrap;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ── Phase 8: Provider Setup ──────────────────────────
+
+            if phase == 8: VerticalLayout {
+                spacing: Theme.sp-4;
+                animate opacity { duration: 600ms; easing: ease-out; }
+
+                // Local path: Ollama detection
+                if root.ai-mode == "local" : VerticalLayout {
+                    spacing: Theme.sp-4;
+
+                    HorizontalLayout {
+                        alignment: center;
+                        Rectangle {
+                            width: 320px;
+                            height: ollama-col.preferred-height;
+                            border-radius: Theme.r-lg;
+                            background: Theme.hover-fill;
+                            border-width: 1px;
+                            border-color: root.ai-hw-runtime-ok ? Theme.color-success.transparentize(75%) : Theme.amber-dim;
+
+                            ollama-col := VerticalLayout {
+                                padding: Theme.sp-5;
+                                spacing: Theme.sp-3;
+
+                                HorizontalLayout {
+                                    spacing: Theme.sp-2;
+                                    Text {
+                                        text: root.ai-hw-runtime-ok ? "\u{2713}" : "\u{2717}";
+                                        color: root.ai-hw-runtime-ok ? Theme.color-success : Theme.amber;
+                                        font-size: Theme.fs-headline;
+                                        vertical-alignment: center;
+                                    }
+                                    Text {
+                                        text: root.ai-hw-runtime-ok ? "Ollama detected" : "Ollama not found";
+                                        color: Theme.text-primary;
+                                        font-size: Theme.fs-headline;
+                                        font-weight: 600;
+                                        vertical-alignment: center;
+                                    }
+                                }
+
+                                if !root.ai-hw-runtime-ok : Text {
+                                    text: "Install Ollama from ollama.com, then come back here or configure in Settings later.";
+                                    color: Theme.text-dim;
+                                    font-size: Theme.fs-caption;
+                                    wrap: word-wrap;
+                                }
+
+                                if root.ai-hw-runtime-ok : Text {
+                                    text: "Connected to local Ollama instance. Models will be auto-detected.";
+                                    color: Theme.text-dim;
+                                    font-size: Theme.fs-caption;
+                                    wrap: word-wrap;
+                                }
+                            }
+                        }
+                    }
+
+                    HorizontalLayout {
+                        alignment: center;
+                        spacing: Theme.sp-3;
+
+                        PillButton {
+                            label: root.ai-hw-runtime-ok ? "Test Connection →" : "Skip for now →";
+                            clicked => {
+                                if root.ai-hw-runtime-ok {
+                                    root.ai-selected-provider = "ollama";
+                                    root.ai-provider-selected("ollama");
+                                    root.ai-test-connection();
+                                    root.phase = 9;
+                                } else {
+                                    root.phase = 10;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Cloud path: Provider cards
+                if root.ai-mode == "cloud" : VerticalLayout {
+                    spacing: Theme.sp-4;
+
+                    Text {
+                        text: "Select a provider and enter your API key.";
+                        color: Theme.text-secondary;
+                        font-size: Theme.fs-body;
+                        horizontal-alignment: center;
+                    }
+
+                    // Provider selection grid
+                    HorizontalLayout {
+                        alignment: center;
+                        spacing: Theme.sp-2;
+
+                        for prov-item in [
+                            { label: "OpenAI", value: "openai" },
+                            { label: "Anthropic", value: "anthropic" },
+                            { label: "Google", value: "google" },
+                            { label: "DeepSeek", value: "deepseek" },
+                            { label: "OpenRouter", value: "openrouter" }
+                        ] : TouchArea {
+                            width: 100px;
+                            height: 56px;
+                            clicked => {
+                                root.ai-selected-provider = prov-item.value;
+                            }
+                            Rectangle {
+                                border-radius: Theme.r-md;
+                                background: root.ai-selected-provider == prov-item.value ? Theme.cyan-glow : Theme.hover-fill;
+                                border-width: 1px;
+                                border-color: root.ai-selected-provider == prov-item.value ? Theme.cyan : Theme.border-strong;
+                                animate background { duration: Theme.dur-fast; }
+                                animate border-color { duration: Theme.dur-fast; }
+
+                                Text {
+                                    text: prov-item.label;
+                                    color: root.ai-selected-provider == prov-item.value ? Theme.cyan : Theme.text-secondary;
+                                    font-size: Theme.fs-body;
+                                    font-weight: root.ai-selected-provider == prov-item.value ? 600 : 400;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+                    }
+
+                    // API Key input
+                    if root.ai-selected-provider != "" : VerticalLayout {
+                        spacing: Theme.sp-3;
+
+                        HorizontalLayout {
+                            alignment: center;
+                            VerticalLayout {
+                                width: 320px;
+                                spacing: Theme.sp-1;
+
+                                Text {
+                                    text: "API Key";
+                                    color: Theme.text-secondary;
+                                    font-size: Theme.fs-caption;
+                                }
+
+                                Rectangle {
+                                    height: 36px;
+                                    border-radius: Theme.r-md;
+                                    background: Theme.border-default;
+                                    border-width: 1px;
+                                    border-color: Theme.border-strong;
+                                    clip: true;
+
+                                    onboard-key-input := TextInput {
+                                        x: Theme.sp-3;
+                                        width: parent.width - Theme.sp-6;
+                                        height: 100%;
+                                        color: Theme.text-primary;
+                                        font-size: Theme.fs-body;
+                                        input-type: password;
+                                        vertical-alignment: center;
+                                        accepted => {
+                                            root.ai-api-key-input = self.text;
+                                        }
+                                        edited => {
+                                            root.ai-api-key-input = self.text;
+                                        }
+                                    }
+
+                                    if onboard-key-input.text == "" : Text {
+                                        x: Theme.sp-3;
+                                        text: "sk-... or your API key";
+                                        color: Theme.text-dim;
+                                        font-size: Theme.fs-body;
+                                        vertical-alignment: center;
+                                        opacity: 0.5;
+                                    }
+                                }
+                            }
+                        }
+
+                        HorizontalLayout {
+                            alignment: center;
+                            spacing: Theme.sp-3;
+
+                            PillButton {
+                                label: "Validate & Test →";
+                                enabled: root.ai-api-key-input != "";
+                                clicked => {
+                                    root.ai-provider-selected(root.ai-selected-provider);
+                                    root.ai-api-key-submitted(root.ai-selected-provider, root.ai-api-key-input);
+                                    root.ai-test-connection();
+                                    root.phase = 9;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ── Phase 9: Test + Confirmation ─────────────────────
+
+            if phase == 9: VerticalLayout {
+                spacing: Theme.sp-5;
+                animate opacity { duration: 600ms; easing: ease-out; }
+
+                HorizontalLayout {
+                    alignment: center;
+                    VerticalLayout {
+                        width: 340px;
+                        spacing: Theme.sp-4;
+
+                        // Test status card
+                        Rectangle {
+                            height: test-card-col.preferred-height;
+                            border-radius: Theme.r-lg;
+                            background: root.ai-test-status == "success" ? Theme.color-success.transparentize(94%)
+                                      : root.ai-test-status == "testing" ? Theme.hover-fill
+                                      : Theme.color-danger.transparentize(94%);
+                            border-width: 1px;
+                            border-color: root.ai-test-status == "success" ? Theme.color-success.transparentize(81%)
+                                        : root.ai-test-status == "testing" ? Theme.border-strong
+                                        : Theme.color-danger.transparentize(81%);
+
+                            test-card-col := VerticalLayout {
+                                padding: Theme.sp-5;
+                                spacing: Theme.sp-3;
+
+                                // Status indicator
+                                HorizontalLayout {
+                                    alignment: center;
+                                    spacing: Theme.sp-2;
+
+                                    Text {
+                                        text: root.ai-test-status == "success" ? "\u{2713}"
+                                            : root.ai-test-status == "testing" ? "\u{25CB}"
+                                            : "\u{2717}";
+                                        color: root.ai-test-status == "success" ? Theme.color-success
+                                             : root.ai-test-status == "testing" ? Theme.amber
+                                             : Theme.color-emotional;
+                                        font-size: 24px;
+                                    }
+
+                                    Text {
+                                        text: root.ai-test-status == "success" ? "Your AI is ready!"
+                                            : root.ai-test-status == "testing" ? "Sending test prompt..."
+                                            : "Connection failed";
+                                        color: root.ai-test-status == "success" ? Theme.color-success
+                                             : root.ai-test-status == "testing" ? Theme.amber
+                                             : Theme.color-emotional;
+                                        font-size: Theme.fs-headline;
+                                        font-weight: 600;
+                                    }
+                                }
+
+                                // Metrics (shown on success)
+                                if root.ai-test-status == "success" : VerticalLayout {
+                                    spacing: Theme.sp-2;
+                                    Rectangle { height: 1px; background: Theme.separator; }
+
+                                    HorizontalLayout {
+                                        Text {
+                                            text: "Model";
+                                            color: Theme.text-dim;
+                                            font-size: Theme.fs-caption;
+                                            horizontal-stretch: 1;
+                                        }
+                                        Text {
+                                            text: root.ai-test-model;
+                                            color: Theme.accent;
+                                            font-size: Theme.fs-caption;
+                                            font-weight: 500;
+                                        }
+                                    }
+                                    HorizontalLayout {
+                                        Text {
+                                            text: "Latency";
+                                            color: Theme.text-dim;
+                                            font-size: Theme.fs-caption;
+                                            horizontal-stretch: 1;
+                                        }
+                                        Text {
+                                            text: root.ai-test-latency-ms + "ms";
+                                            color: root.ai-test-latency-ms < 300 ? Theme.color-success : Theme.amber;
+                                            font-size: Theme.fs-caption;
+                                            font-weight: 500;
+                                        }
+                                    }
+                                    HorizontalLayout {
+                                        Text {
+                                            text: "Privacy";
+                                            color: Theme.text-dim;
+                                            font-size: Theme.fs-caption;
+                                            horizontal-stretch: 1;
+                                        }
+                                        Text {
+                                            text: root.ai-test-privacy == "local" ? "\u{1F512} Local only" : "\u{2601} Cloud";
+                                            color: root.ai-test-privacy == "local" ? Theme.color-success : Theme.holo-blue;
+                                            font-size: Theme.fs-caption;
+                                            font-weight: 500;
+                                        }
+                                    }
+                                }
+
+                                // Error message + fallback button
+                                if root.ai-test-status != "" && root.ai-test-status != "success" && root.ai-test-status != "testing" : VerticalLayout {
+                                    spacing: Theme.sp-2;
+                                    Text {
+                                        text: root.ai-test-status;
+                                        color: Theme.text-dim;
+                                        font-size: Theme.fs-caption;
+                                        wrap: word-wrap;
+                                    }
+                                }
+                            }
+                        }
+
+                        // Action buttons
+                        HorizontalLayout {
+                            alignment: center;
+                            spacing: Theme.sp-3;
+
+                            if root.ai-test-status == "success" : PillButton {
+                                label: "Continue →";
+                                clicked => { root.phase = 10; }
+                            }
+
+                            if root.ai-test-status != "" && root.ai-test-status != "success" && root.ai-test-status != "testing" : PillButton {
+                                label: "Use offline fallback →";
+                                clicked => {
+                                    root.ai-mode = "later";
+                                    root.ai-skip-setup();
+                                    root.phase = 10;
+                                }
+                            }
+
+                            if root.ai-test-status != "" && root.ai-test-status != "success" && root.ai-test-status != "testing" : PillButton {
+                                label: "← Retry";
+                                clicked => { root.phase = 8; }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ── Phase 10: Instruction + ready ─────────────────────
+
+            if phase >= 10: VerticalLayout {
+                spacing: Theme.sp-3;
                 animate opacity { duration: 1200ms; easing: ease-out; }
 
                 Text {
                     text: "Press Super to talk to me about anything.";
                     color: Theme.text-dim;
-                    font-size: 14px;
+                    font-size: Theme.fs-body;
                     letter-spacing: 1px;
                     horizontal-alignment: center;
                     opacity: 0.7;
@@ -506,7 +1313,7 @@ export component OnboardingScreen inherits Rectangle {
                 Text {
                     text: "or tap the orb";
                     color: Theme.text-dim;
-                    font-size: 11px;
+                    font-size: Theme.fs-micro;
                     letter-spacing: 2px;
                     horizontal-alignment: center;
                     opacity: 0.4;
@@ -515,8 +1322,8 @@ export component OnboardingScreen inherits Rectangle {
         }
     }
 
-    // Ready orb tap area (only after profile set)
-    if phase >= 6: TouchArea {
+    // Ready orb tap area (only after instruction shown)
+    if phase >= 10: TouchArea {
         width: 100%;
         height: 100%;
         clicked => { root.ready(); }
@@ -533,11 +1340,11 @@ export component OnboardingScreen inherits Rectangle {
         Text {
             text: "Skip";
             color: Theme.text-dim;
-            font-size: 11px;
+            font-size: Theme.fs-micro;
             horizontal-alignment: right;
             vertical-alignment: center;
-            opacity: phase >= 3 ? 0.4 : 0;
-            animate opacity { duration: 600ms; }
+            opacity: phase >= 3 && phase < 10 ? 0.4 : 0;
+            animate opacity { duration: Theme.dur-slow; }
         }
     }
 

@@ -41,15 +41,15 @@ component TabButton inherits TouchArea {
         background: active ? Theme.bg-elevated : (parent.has-hover ? Theme.hover-fill : transparent);
 
         HorizontalLayout {
-            spacing: 8px;
-            padding-left: 16px;
-            padding-right: 16px;
+            spacing: Theme.sp-2;
+            padding-left: Theme.sp-4;
+            padding-right: Theme.sp-4;
             alignment: center;
 
             Text {
                 text: icon;
                 color: active ? Theme.accent : Theme.text-secondary;
-                font-size: 16px;
+                font-size: Theme.fs-body;
                 vertical-alignment: center;
             }
             Text {
@@ -82,22 +82,22 @@ component ActionButton inherits TouchArea {
     Rectangle {
         border-radius: Theme.radius-card;
         background: primary ? Theme.accent
-                  : danger ? #a04040
+                  : danger ? Theme.color-danger-dim
                   : (parent.has-hover ? Theme.hover-fill-strong : Theme.bg-elevated);
         border-width: 1px;
         border-color: primary ? Theme.accent-dim
-                    : danger ? #c04040
+                    : danger ? Theme.color-danger
                     : Theme.border-subtle;
 
         HorizontalLayout {
-            padding-left: 14px;
-            padding-right: 14px;
+            padding-left: Theme.sp-3;
+            padding-right: Theme.sp-3;
             alignment: center;
 
             Text {
                 text: label;
-                color: primary ? #ffffff
-                     : danger ? #ffcccc
+                color: primary ? Theme.text-on-accent
+                     : danger ? Theme.color-danger
                      : Theme.text-primary;
                 font-size: Theme.font-small;
                 font-weight: 500;
@@ -113,27 +113,27 @@ component StatusBadge inherits Rectangle {
     in property <string> status;  // "running", "stopped", "paused", "restarting"
     width: 80px;
     height: 24px;
-    border-radius: 12px;
-    background: status == "running" ? #22c55e20
-              : status == "paused" ? #eab30820
-              : status == "restarting" ? #3b82f620
-              : #ef444420;
+    border-radius: Theme.r-pill;
+    background: status == "running" ? Theme.color-success-dim
+              : status == "paused" ? Theme.color-warning-dim
+              : status == "restarting" ? Theme.accent-dim
+              : Theme.color-danger-dim;
     border-width: 1px;
-    border-color: status == "running" ? #22c55e40
-               : status == "paused" ? #eab30840
-               : status == "restarting" ? #3b82f640
-               : #ef444440;
+    border-color: status == "running" ? Theme.color-success.transparentize(60%)
+               : status == "paused" ? Theme.color-warning.transparentize(60%)
+               : status == "restarting" ? Theme.accent.transparentize(60%)
+               : Theme.color-danger.transparentize(60%);
 
     Text {
         text: status == "running" ? "Running"
             : status == "paused" ? "Paused"
             : status == "restarting" ? "Restarting"
             : "Stopped";
-        color: status == "running" ? #22c55e
-             : status == "paused" ? #eab308
-             : status == "restarting" ? #3b82f6
-             : #ef4444;
-        font-size: 11px;
+        color: status == "running" ? Theme.color-success
+             : status == "paused" ? Theme.color-warning
+             : status == "restarting" ? Theme.accent
+             : Theme.color-danger;
+        font-size: Theme.fs-micro;
         font-weight: 600;
         horizontal-alignment: center;
         vertical-alignment: center;
@@ -146,7 +146,7 @@ component ContainerRow inherits Rectangle {
     in property <ContainerData> data;
     height: 72px;
     background: ta.has-hover ? Theme.hover-fill : transparent;
-    border-radius: 8px;
+    border-radius: Theme.r-md;
 
     callback start-clicked();
     callback stop-clicked();
@@ -156,18 +156,18 @@ component ContainerRow inherits Rectangle {
 
     ta := TouchArea {
         HorizontalLayout {
-            padding-left: 16px;
-            padding-right: 16px;
-            spacing: 12px;
+            padding-left: Theme.sp-4;
+            padding-right: Theme.sp-4;
+            spacing: Theme.sp-3;
             alignment: start;
 
             // Container info
             VerticalLayout {
-                spacing: 2px;
+                spacing: Theme.sp-1;
                 horizontal-stretch: 1;
 
                 HorizontalLayout {
-                    spacing: 8px;
+                    spacing: Theme.sp-2;
 
                     Text {
                         text: data.name;
@@ -190,25 +190,25 @@ component ContainerRow inherits Rectangle {
                 }
 
                 HorizontalLayout {
-                    spacing: 16px;
+                    spacing: Theme.sp-4;
 
                     if data.ports != "" : Text {
                         text: data.ports;
                         color: Theme.accent;
-                        font-size: 11px;
+                        font-size: Theme.fs-micro;
                     }
 
                     Text {
                         text: data.status-text;
                         color: Theme.text-dim;
-                        font-size: 11px;
+                        font-size: Theme.fs-micro;
                     }
                 }
             }
 
             // Action buttons
             HorizontalLayout {
-                spacing: 6px;
+                spacing: Theme.sp-1;
                 alignment: center;
 
                 if data.status == "running" || data.status == "restarting" : ActionButton {
@@ -253,19 +253,19 @@ component ImageRow inherits Rectangle {
     in property <ImageData> data;
     height: 56px;
     background: ta.has-hover ? Theme.hover-fill : transparent;
-    border-radius: 8px;
+    border-radius: Theme.r-md;
 
     callback remove-clicked();
 
     ta := TouchArea {
         HorizontalLayout {
-            padding-left: 16px;
-            padding-right: 16px;
-            spacing: 12px;
+            padding-left: Theme.sp-4;
+            padding-right: Theme.sp-4;
+            spacing: Theme.sp-3;
 
             // Image info
             VerticalLayout {
-                spacing: 2px;
+                spacing: Theme.sp-1;
                 horizontal-stretch: 1;
 
                 Text {
@@ -277,24 +277,24 @@ component ImageRow inherits Rectangle {
                 }
 
                 HorizontalLayout {
-                    spacing: 16px;
+                    spacing: Theme.sp-4;
 
                     Text {
                         text: "ID: " + data.id;
                         color: Theme.text-dim;
-                        font-size: 11px;
+                        font-size: Theme.fs-micro;
                     }
 
                     Text {
                         text: data.size-text;
                         color: Theme.text-secondary;
-                        font-size: 11px;
+                        font-size: Theme.fs-micro;
                     }
 
                     Text {
                         text: data.created;
                         color: Theme.text-dim;
-                        font-size: 11px;
+                        font-size: Theme.fs-micro;
                     }
                 }
             }
@@ -315,18 +315,18 @@ component VolumeRow inherits Rectangle {
     in property <VolumeData> data;
     height: 56px;
     background: ta.has-hover ? Theme.hover-fill : transparent;
-    border-radius: 8px;
+    border-radius: Theme.r-md;
 
     callback remove-clicked();
 
     ta := TouchArea {
         HorizontalLayout {
-            padding-left: 16px;
-            padding-right: 16px;
-            spacing: 12px;
+            padding-left: Theme.sp-4;
+            padding-right: Theme.sp-4;
+            spacing: Theme.sp-3;
 
             VerticalLayout {
-                spacing: 2px;
+                spacing: Theme.sp-1;
                 horizontal-stretch: 1;
 
                 Text {
@@ -338,25 +338,25 @@ component VolumeRow inherits Rectangle {
                 }
 
                 HorizontalLayout {
-                    spacing: 16px;
+                    spacing: Theme.sp-4;
 
                     Text {
                         text: "Driver: " + data.driver;
                         color: Theme.text-secondary;
-                        font-size: 11px;
+                        font-size: Theme.fs-micro;
                     }
 
                     if data.mount-point != "" : Text {
                         text: data.mount-point;
                         color: Theme.text-dim;
-                        font-size: 11px;
+                        font-size: Theme.fs-micro;
                         overflow: elide;
                     }
 
                     if data.size-text != "" : Text {
                         text: data.size-text;
                         color: Theme.text-dim;
-                        font-size: 11px;
+                        font-size: Theme.fs-micro;
                     }
                 }
             }
@@ -475,8 +475,8 @@ export component ContainerManagerScreen inherits Rectangle {
 
                 // Runtime label + refresh
                 HorizontalLayout {
-                    spacing: 8px;
-                    padding-right: 16px;
+                    spacing: Theme.sp-2;
+                    padding-right: Theme.sp-4;
                     alignment: center;
 
                     Text {
@@ -514,14 +514,14 @@ export component ContainerManagerScreen inherits Rectangle {
                                 alignment: center;
                                 Text {
                                     text: root.ai-is-working ? "\u{2B50}" : "\u{2728}";
-                                    font-size: 12px;
+                                    font-size: Theme.fs-caption;
                                     vertical-alignment: center;
                                 }
                                 Text {
                                     text: root.ai-is-working ? "Analyzing..." : "AI Logs";
-                                    color: root.ai-is-working ? #ffffff
+                                    color: root.ai-is-working ? Theme.text-on-accent
                                         : (root.log-text != "" ? Theme.text-secondary : Theme.text-dim);
-                                    font-size: 11px;
+                                    font-size: Theme.fs-micro;
                                     font-weight: 500;
                                     vertical-alignment: center;
                                 }
@@ -558,26 +558,26 @@ export component ContainerManagerScreen inherits Rectangle {
                 border-width: 0px;
 
                 HorizontalLayout {
-                    padding-left: 16px;
-                    padding-right: 16px;
-                    spacing: 24px;
+                    padding-left: Theme.sp-4;
+                    padding-right: Theme.sp-4;
+                    spacing: Theme.sp-6;
                     alignment: start;
 
                     // Running
                     HorizontalLayout {
-                        spacing: 6px;
+                        spacing: Theme.sp-1;
 
                         Rectangle {
                             width: 8px;
                             height: 8px;
                             border-radius: 4px;
-                            background: #22c55e;
+                            background: Theme.color-success;
                             y: 20px;
                         }
 
                         Text {
                             text: running-count + " running";
-                            color: #22c55e;
+                            color: Theme.color-success;
                             font-size: Theme.font-small;
                             font-weight: 500;
                             vertical-alignment: center;
@@ -586,19 +586,19 @@ export component ContainerManagerScreen inherits Rectangle {
 
                     // Stopped
                     HorizontalLayout {
-                        spacing: 6px;
+                        spacing: Theme.sp-1;
 
                         Rectangle {
                             width: 8px;
                             height: 8px;
                             border-radius: 4px;
-                            background: #ef4444;
+                            background: Theme.color-danger;
                             y: 20px;
                         }
 
                         Text {
                             text: stopped-count + " stopped";
-                            color: #ef4444;
+                            color: Theme.color-danger;
                             font-size: Theme.font-small;
                             font-weight: 500;
                             vertical-alignment: center;
@@ -618,16 +618,17 @@ export component ContainerManagerScreen inherits Rectangle {
 
                     // Run New container
                     HorizontalLayout {
-                        spacing: 8px;
+                        spacing: Theme.sp-2;
                         alignment: center;
 
                         Rectangle {
                             width: 200px;
                             height: 32px;
-                            border-radius: 8px;
+                            border-radius: Theme.r-md;
                             background: Theme.bg-input;
                             border-width: 1px;
                             border-color: Theme.border-subtle;
+                            clip: true;
 
                             run-input := TextInput {
                                 x: 10px;
@@ -724,9 +725,9 @@ export component ContainerManagerScreen inherits Rectangle {
                 border-width: 0px;
 
                 HorizontalLayout {
-                    padding-left: 16px;
-                    padding-right: 16px;
-                    spacing: 8px;
+                    padding-left: Theme.sp-4;
+                    padding-right: Theme.sp-4;
+                    spacing: Theme.sp-2;
                     alignment: start;
 
                     Text {
@@ -742,10 +743,11 @@ export component ContainerManagerScreen inherits Rectangle {
                     Rectangle {
                         width: 280px;
                         height: 32px;
-                        border-radius: 8px;
+                        border-radius: Theme.r-md;
                         background: Theme.bg-input;
                         border-width: 1px;
                         border-color: Theme.border-subtle;
+                        clip: true;
 
                         pull-input := TextInput {
                             x: 10px;
@@ -834,9 +836,9 @@ export component ContainerManagerScreen inherits Rectangle {
                 border-width: 0px;
 
                 HorizontalLayout {
-                    padding-left: 16px;
-                    padding-right: 16px;
-                    spacing: 8px;
+                    padding-left: Theme.sp-4;
+                    padding-right: Theme.sp-4;
+                    spacing: Theme.sp-2;
                     alignment: start;
 
                     Text {
@@ -851,10 +853,11 @@ export component ContainerManagerScreen inherits Rectangle {
                     Rectangle {
                         width: 220px;
                         height: 32px;
-                        border-radius: 8px;
+                        border-radius: Theme.r-md;
                         background: Theme.bg-input;
                         border-width: 1px;
                         border-color: Theme.border-subtle;
+                        clip: true;
 
                         vol-input := TextInput {
                             x: 10px;
@@ -934,7 +937,7 @@ export component ContainerManagerScreen inherits Rectangle {
 
     // ── Logs overlay ──
     if show-logs : Rectangle {
-        background: #000000a0;
+        background: Theme.overlay-backdrop;
 
         TouchArea {
             clicked => { show-logs = false; }
@@ -960,9 +963,9 @@ export component ContainerManagerScreen inherits Rectangle {
                     border-radius: Theme.radius-card;
 
                     HorizontalLayout {
-                        padding-left: 16px;
-                        padding-right: 16px;
-                        spacing: 12px;
+                        padding-left: Theme.sp-4;
+                        padding-right: Theme.sp-4;
+                        spacing: Theme.sp-3;
 
                         Text {
                             text: "Logs: " + log-container-name;
@@ -990,7 +993,7 @@ export component ContainerManagerScreen inherits Rectangle {
                 // AI Response Panel (inside logs overlay)
                 if root.ai-panel-open && root.ai-response != "" : Rectangle {
                     max-height: 160px;
-                    background: #1a2332;
+                    background: Theme.bg-elevated;
                     border-width: 1px;
                     border-color: Theme.accent.transparentize(70%);
 
@@ -1002,16 +1005,16 @@ export component ContainerManagerScreen inherits Rectangle {
                             spacing: 8px;
 
                             HorizontalLayout {
-                                spacing: 6px;
+                                spacing: Theme.sp-1;
                                 Text {
                                     text: "\u{2728}";
-                                    font-size: 12px;
+                                    font-size: Theme.fs-caption;
                                     vertical-alignment: center;
                                 }
                                 Text {
                                     text: "AI Log Analysis";
                                     color: Theme.accent;
-                                    font-size: 12px;
+                                    font-size: Theme.fs-caption;
                                     font-weight: 600;
                                     vertical-alignment: center;
                                 }
@@ -1029,7 +1032,7 @@ export component ContainerManagerScreen inherits Rectangle {
                                         background: parent.has-hover ? Theme.hover-fill : transparent;
                                         Text {
                                             text: "\u{2715}";
-                                            font-size: 11px;
+                                            font-size: Theme.fs-micro;
                                             color: Theme.text-dim;
                                             horizontal-alignment: center;
                                             vertical-alignment: center;
@@ -1041,7 +1044,7 @@ export component ContainerManagerScreen inherits Rectangle {
                             Text {
                                 text: root.ai-response;
                                 color: Theme.text-primary;
-                                font-size: 12px;
+                                font-size: Theme.fs-caption;
                                 wrap: word-wrap;
                             }
                         }
@@ -1058,8 +1061,8 @@ export component ContainerManagerScreen inherits Rectangle {
 
                         Text {
                             text: log-text;
-                            color: #a0e8a0;
-                            font-size: 12px;
+                            color: Theme.color-success;
+                            font-size: Theme.fs-caption;
                             font-family: "monospace";
                             wrap: word-wrap;
                         }

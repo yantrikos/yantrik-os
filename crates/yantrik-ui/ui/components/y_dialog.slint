@@ -1,0 +1,88 @@
+// YDialog — modal dialog with backdrop, title/body/footer.
+// Supports standard and destructive confirmation variants.
+import { Theme } from "../theme.slint";
+import { YButton } from "y_button.slint";
+
+export component YDialog inherits Rectangle {
+    in property <bool> open: false;
+    in property <string> title: "";
+    in property <string> body: "";
+    in property <string> confirm-label: "Confirm";
+    in property <string> cancel-label: "Cancel";
+    // 0=default, 1=destructive
+    in property <int> variant: 0;
+    in property <bool> show-cancel: true;
+    callback confirmed();
+    callback cancelled();
+
+    width: 100%;
+    height: 100%;
+    visible: root.open;
+
+    // Backdrop
+    Rectangle {
+        width: 100%;
+        height: 100%;
+        background: Theme.overlay-backdrop;
+        opacity: root.open ? 1.0 : 0.0;
+        animate opacity { duration: Theme.dur-normal; }
+
+        TouchArea {
+            clicked => { root.cancelled(); }
+        }
+    }
+
+    // Dialog card
+    Rectangle {
+        x: (parent.width - 420px) / 2;
+        y: (parent.height - self.height) / 2;
+        width: 420px;
+        min-height: 160px;
+        border-radius: Theme.r-lg;
+        background: Theme.bg-card;
+        border-width: 1px;
+        border-color: Theme.border-subtle;
+        drop-shadow-blur: 30px;
+        drop-shadow-color: Theme.overlay-shadow;
+
+        VerticalLayout {
+            padding: Theme.sp-6;
+            spacing: Theme.sp-4;
+
+            // Title
+            if root.title != "" : Text {
+                text: root.title;
+                color: Theme.text-primary;
+                font-size: Theme.fs-title-2;
+                font-weight: Theme.fw-title-2;
+                wrap: word-wrap;
+            }
+
+            // Body
+            if root.body != "" : Text {
+                text: root.body;
+                color: Theme.text-secondary;
+                font-size: Theme.fs-body;
+                wrap: word-wrap;
+            }
+
+            // Footer actions
+            HorizontalLayout {
+                alignment: end;
+                spacing: Theme.sp-2;
+
+                if root.show-cancel : YButton {
+                    label: root.cancel-label;
+                    variant: 2;
+                    clicked => { root.cancelled(); }
+                }
+
+                YButton {
+                    label: root.confirm-label;
+                    variant: root.variant == 1 ? 3 : 0;
+                    clicked => { root.confirmed(); }
+                }
+            }
+        }
+    }
+}

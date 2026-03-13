@@ -4,6 +4,10 @@
 
 import { Theme } from "theme.slint";
 import { ListView } from "std-widgets.slint";
+import { YButton, YIconButton } from "components/y_button.slint";
+import { YInput } from "components/y_input.slint";
+import { YEmptyState } from "components/y_empty_state.slint";
+import { YTabs, YTabItem } from "components/y_tabs.slint";
 
 export struct DownloadItem {
     id: int,
@@ -91,9 +95,9 @@ export component DownloadManagerScreen inherits Rectangle {
             background: Theme.bg-card;
 
             HorizontalLayout {
-                padding-left: 20px;
-                padding-right: 20px;
-                spacing: 24px;
+                padding-left: Theme.sp-5;
+                padding-right: Theme.sp-5;
+                spacing: Theme.sp-6;
                 alignment: center;
 
                 // Active downloads stat
@@ -105,7 +109,7 @@ export component DownloadManagerScreen inherits Rectangle {
                         width: 8px;
                         height: 8px;
                         border-radius: 4px;
-                        background: root.active-count > 0 ? Theme.cyan : Theme.text-dim;
+                        background: root.active-count > 0 ? Theme.accent : Theme.text-dim;
                         y: (parent.height - self.height) / 2;
                     }
 
@@ -119,7 +123,7 @@ export component DownloadManagerScreen inherits Rectangle {
 
                     Text {
                         text: "active";
-                        font-size: Theme.font-small;
+                        font-size: Theme.fs-caption;
                         color: Theme.text-secondary;
                         vertical-alignment: center;
                     }
@@ -154,7 +158,7 @@ export component DownloadManagerScreen inherits Rectangle {
                     Text {
                         text: "\u{2713}";
                         font-size: 16px;
-                        color: #4caf50;
+                        color: Theme.color-success;
                         vertical-alignment: center;
                     }
 
@@ -168,7 +172,7 @@ export component DownloadManagerScreen inherits Rectangle {
 
                     Text {
                         text: "today";
-                        font-size: Theme.font-small;
+                        font-size: Theme.fs-caption;
                         color: Theme.text-secondary;
                         vertical-alignment: center;
                     }
@@ -178,93 +182,38 @@ export component DownloadManagerScreen inherits Rectangle {
                 Rectangle { horizontal-stretch: 1; }
 
                 // Pause All button
-                Rectangle {
-                    width: 90px;
-                    height: 34px;
-                    background: pause-all-ta.has-hover ? Theme.hover-fill-strong : Theme.hover-fill;
-                    border-radius: Theme.radius-pill;
-                    border-width: 1px;
-                    border-color: Theme.border-subtle;
-
-                    HorizontalLayout {
-                        alignment: center;
-                        spacing: 4px;
-                        Text {
-                            text: "\u{23F8}";
-                            font-size: 11px;
-                            color: Theme.amber;
-                            vertical-alignment: center;
-                        }
-                        Text {
-                            text: "Pause All";
-                            font-size: Theme.font-small;
-                            color: Theme.text-secondary;
-                            vertical-alignment: center;
-                        }
-                    }
-
-                    pause-all-ta := TouchArea {
-                        clicked => { root.dl-pause-all(); }
-                    }
+                YButton {
+                    label: "Pause All";
+                    icon: "\u{23F8}";
+                    variant: 1;
+                    size: 0;
+                    clicked => { root.dl-pause-all(); }
                 }
 
                 // Resume All button
-                Rectangle {
-                    width: 100px;
-                    height: 34px;
-                    background: resume-all-ta.has-hover ? Theme.hover-fill-strong : Theme.hover-fill;
-                    border-radius: Theme.radius-pill;
-                    border-width: 1px;
-                    border-color: Theme.border-subtle;
-
-                    HorizontalLayout {
-                        alignment: center;
-                        spacing: 4px;
-                        Text {
-                            text: "\u{25B6}";
-                            font-size: 11px;
-                            color: #4caf50;
-                            vertical-alignment: center;
-                        }
-                        Text {
-                            text: "Resume All";
-                            font-size: Theme.font-small;
-                            color: Theme.text-secondary;
-                            vertical-alignment: center;
-                        }
-                    }
-
-                    resume-all-ta := TouchArea {
-                        clicked => { root.dl-resume-all(); }
-                    }
+                YButton {
+                    label: "Resume All";
+                    icon: "\u{25B6}";
+                    variant: 1;
+                    size: 0;
+                    clicked => { root.dl-resume-all(); }
                 }
 
                 // Clear Completed button
-                Rectangle {
-                    width: 140px;
-                    height: 34px;
-                    background: clear-ta.has-hover ? Theme.hover-fill-strong : Theme.hover-fill;
-                    border-radius: Theme.radius-pill;
-                    border-width: 1px;
-                    border-color: Theme.border-subtle;
-
-                    Text {
-                        text: "Clear Completed";
-                        font-size: Theme.font-small;
-                        color: Theme.text-secondary;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
-                    }
-
-                    clear-ta := TouchArea {
-                        clicked => { root.dl-clear-completed(); }
-                    }
+                YButton {
+                    label: "Clear Completed";
+                    variant: 2;
+                    size: 0;
+                    clicked => { root.dl-clear-completed(); }
                 }
 
                 // AI button
-                TouchArea {
-                    width: ai-dl-btn.preferred-width + 16px;
-                    height: 34px;
+                YButton {
+                    label: root.ai-is-working ? "Analyzing..." : "AI";
+                    icon: "\u{2728}";
+                    variant: root.ai-is-working ? 0 : 1;
+                    size: 0;
+                    loading: root.ai-is-working;
                     clicked => {
                         if root.ai-panel-open {
                             root.ai-dismiss();
@@ -274,54 +223,15 @@ export component DownloadManagerScreen inherits Rectangle {
                             root.ai-panel-open = true;
                         }
                     }
-                    ai-dl-btn := Rectangle {
-                        height: 34px;
-                        border-radius: Theme.radius-pill;
-                        background: root.ai-is-working ? Theme.accent
-                            : (parent.has-hover ? Theme.hover-fill-strong : Theme.hover-fill);
-                        border-width: 1px;
-                        border-color: Theme.border-subtle;
-                        HorizontalLayout {
-                            padding-left: 10px;
-                            padding-right: 10px;
-                            spacing: 4px;
-                            alignment: center;
-                            Text {
-                                text: root.ai-is-working ? "\u{2B50}" : "\u{2728}";
-                                font-size: 12px;
-                                vertical-alignment: center;
-                            }
-                            Text {
-                                text: root.ai-is-working ? "Analyzing..." : "AI";
-                                color: root.ai-is-working ? #ffffff : Theme.text-secondary;
-                                font-size: 11px;
-                                font-weight: 500;
-                                vertical-alignment: center;
-                            }
-                        }
-                    }
                 }
 
                 // + Add URL button
-                Rectangle {
-                    width: 110px;
-                    height: 34px;
-                    background: add-ta.has-hover ? Theme.accent : Theme.accent-dim;
-                    border-radius: Theme.radius-pill;
-
-                    Text {
-                        text: "+ Add URL";
-                        font-size: Theme.font-body;
-                        font-weight: 600;
-                        color: #ffffff;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
-                    }
-
-                    add-ta := TouchArea {
-                        clicked => {
-                            root.add-url-open = !root.add-url-open;
-                        }
+                YButton {
+                    label: "+ Add URL";
+                    variant: 0;
+                    size: 1;
+                    clicked => {
+                        root.add-url-open = !root.add-url-open;
                     }
                 }
             }
@@ -330,7 +240,7 @@ export component DownloadManagerScreen inherits Rectangle {
         // ── AI Response Panel ──
         if root.ai-panel-open && root.ai-response != "" : Rectangle {
             max-height: 160px;
-            background: #1a2332;
+            background: Theme.bg-overlay-panel;
             border-width: 1px;
             border-color: Theme.accent.transparentize(70%);
 
@@ -338,8 +248,8 @@ export component DownloadManagerScreen inherits Rectangle {
                 viewport-height: ai-dl-resp.preferred-height + 16px;
 
                 ai-dl-resp := VerticalLayout {
-                    padding: 12px;
-                    spacing: 8px;
+                    padding: Theme.sp-3;
+                    spacing: Theme.sp-2;
 
                     HorizontalLayout {
                         spacing: 6px;
@@ -356,24 +266,12 @@ export component DownloadManagerScreen inherits Rectangle {
                             vertical-alignment: center;
                         }
                         Rectangle { horizontal-stretch: 1; }
-                        TouchArea {
-                            width: 24px;
-                            height: 24px;
+                        YIconButton {
+                            icon: "\u{2715}";
+                            variant: 2;
                             clicked => {
                                 root.ai-panel-open = false;
                                 root.ai-dismiss();
-                            }
-                            Rectangle {
-                                width: 24px; height: 24px;
-                                border-radius: 12px;
-                                background: parent.has-hover ? Theme.hover-fill : transparent;
-                                Text {
-                                    text: "\u{2715}";
-                                    font-size: 11px;
-                                    color: Theme.text-dim;
-                                    horizontal-alignment: center;
-                                    vertical-alignment: center;
-                                }
                             }
                         }
                     }
@@ -395,10 +293,10 @@ export component DownloadManagerScreen inherits Rectangle {
             border-width: 0;
 
             VerticalLayout {
-                padding: 10px;
-                padding-left: 20px;
-                padding-right: 20px;
-                spacing: 6px;
+                padding: Theme.sp-3;
+                padding-left: Theme.sp-5;
+                padding-right: Theme.sp-5;
+                spacing: Theme.sp-2;
 
                 // Row 1: URL input + submit + cancel
                 HorizontalLayout {
@@ -409,9 +307,10 @@ export component DownloadManagerScreen inherits Rectangle {
                         horizontal-stretch: 1;
                         height: 36px;
                         background: Theme.bg-input;
-                        border-radius: Theme.radius-pill;
+                        border-radius: Theme.r-pill;
                         border-width: 1px;
                         border-color: url-input-ta.has-focus ? Theme.accent : Theme.border-subtle;
+                        clip: true;
 
                         HorizontalLayout {
                             padding-left: 14px;
@@ -421,7 +320,7 @@ export component DownloadManagerScreen inherits Rectangle {
                             url-input-ta := TextInput {
                                 horizontal-stretch: 1;
                                 text <=> root.add-url-text;
-                                font-size: Theme.font-body;
+                                font-size: Theme.fs-body;
                                 color: Theme.text-primary;
                                 accepted => {
                                     if root.add-url-text != "" {
@@ -437,56 +336,30 @@ export component DownloadManagerScreen inherits Rectangle {
                     }
 
                     // Submit button
-                    Rectangle {
-                        width: 90px;
-                        height: 36px;
-                        background: submit-ta.has-hover ? #2e9b47 : #27863e;
-                        border-radius: Theme.radius-pill;
-
-                        Text {
-                            text: "Download";
-                            font-size: Theme.font-small;
-                            font-weight: 600;
-                            color: #ffffff;
-                            horizontal-alignment: center;
-                            vertical-alignment: center;
-                        }
-
-                        submit-ta := TouchArea {
-                            clicked => {
-                                if root.add-url-text != "" {
-                                    root.dl-add(root.add-url-text, root.add-checksum-text, root.add-save-dir-text);
-                                    root.add-url-text = "";
-                                    root.add-checksum-text = "";
-                                    root.add-save-dir-text = "";
-                                    root.add-url-open = false;
-                                }
+                    YButton {
+                        label: "Download";
+                        variant: 0;
+                        size: 1;
+                        clicked => {
+                            if root.add-url-text != "" {
+                                root.dl-add(root.add-url-text, root.add-checksum-text, root.add-save-dir-text);
+                                root.add-url-text = "";
+                                root.add-checksum-text = "";
+                                root.add-save-dir-text = "";
+                                root.add-url-open = false;
                             }
                         }
                     }
 
                     // Cancel
-                    Rectangle {
-                        width: 32px;
-                        height: 32px;
-                        background: cancel-input-ta.has-hover ? Theme.hover-fill-strong : transparent;
-                        border-radius: 16px;
-
-                        Text {
-                            text: "\u{2715}";
-                            font-size: 14px;
-                            color: Theme.text-dim;
-                            horizontal-alignment: center;
-                            vertical-alignment: center;
-                        }
-
-                        cancel-input-ta := TouchArea {
-                            clicked => {
-                                root.add-url-open = false;
-                                root.add-url-text = "";
-                                root.add-checksum-text = "";
-                                root.add-save-dir-text = "";
-                            }
+                    YIconButton {
+                        icon: "\u{2715}";
+                        variant: 2;
+                        clicked => {
+                            root.add-url-open = false;
+                            root.add-url-text = "";
+                            root.add-checksum-text = "";
+                            root.add-save-dir-text = "";
                         }
                     }
                 }
@@ -501,9 +374,10 @@ export component DownloadManagerScreen inherits Rectangle {
                         horizontal-stretch: 1;
                         height: 32px;
                         background: Theme.bg-input;
-                        border-radius: Theme.radius-pill;
+                        border-radius: Theme.r-pill;
                         border-width: 1px;
                         border-color: checksum-input.has-focus ? Theme.accent : Theme.border-subtle;
+                        clip: true;
 
                         HorizontalLayout {
                             padding-left: 12px;
@@ -541,9 +415,10 @@ export component DownloadManagerScreen inherits Rectangle {
                         horizontal-stretch: 1;
                         height: 32px;
                         background: Theme.bg-input;
-                        border-radius: Theme.radius-pill;
+                        border-radius: Theme.r-pill;
                         border-width: 1px;
                         border-color: savedir-input.has-focus ? Theme.accent : Theme.border-subtle;
+                        clip: true;
 
                         HorizontalLayout {
                             padding-left: 12px;
@@ -614,7 +489,7 @@ export component DownloadManagerScreen inherits Rectangle {
                         if root.dl-all-selected : Text {
                             text: "\u{2713}";
                             font-size: 10px;
-                            color: #ffffff;
+                            color: Theme.text-on-accent;
                             horizontal-alignment: center;
                             vertical-alignment: center;
                         }
@@ -633,9 +508,10 @@ export component DownloadManagerScreen inherits Rectangle {
                     horizontal-stretch: 1;
                     height: 32px;
                     background: Theme.bg-input;
-                    border-radius: Theme.radius-pill;
+                    border-radius: Theme.r-pill;
                     border-width: 1px;
                     border-color: search-input.has-focus ? Theme.accent : Theme.border-subtle;
+                    clip: true;
 
                     HorizontalLayout {
                         padding-left: 12px;
@@ -653,7 +529,7 @@ export component DownloadManagerScreen inherits Rectangle {
                         search-input := TextInput {
                             horizontal-stretch: 1;
                             text <=> root.dl-search-text;
-                            font-size: Theme.font-small;
+                            font-size: Theme.fs-caption;
                             color: Theme.text-primary;
                             edited => {
                                 root.dl-search(root.dl-search-text);
@@ -697,7 +573,7 @@ export component DownloadManagerScreen inherits Rectangle {
                     width: sort-label.preferred-width + 24px;
                     height: 30px;
                     background: sort-ta.has-hover ? Theme.hover-fill-strong : Theme.hover-fill;
-                    border-radius: Theme.radius-pill;
+                    border-radius: Theme.r-pill;
                     border-width: 1px;
                     border-color: Theme.border-subtle;
 
@@ -766,14 +642,14 @@ export component DownloadManagerScreen inherits Rectangle {
 
                         Text {
                             text: root.dl-search-text != "" ? "No matching downloads" : "No downloads";
-                            font-size: Theme.font-title;
+                            font-size: Theme.fs-headline;
                             color: Theme.text-dim;
                             horizontal-alignment: center;
                         }
 
                         Text {
                             text: root.dl-search-text != "" ? "Try a different search term" : "Add a URL to start downloading";
-                            font-size: Theme.font-small;
+                            font-size: Theme.fs-caption;
                             color: Theme.text-dim;
                             horizontal-alignment: center;
                         }
@@ -812,7 +688,7 @@ export component DownloadManagerScreen inherits Rectangle {
                                     if dl.is-selected : Text {
                                         text: "\u{2713}";
                                         font-size: 10px;
-                                        color: #ffffff;
+                                        color: Theme.text-on-accent;
                                         horizontal-alignment: center;
                                         vertical-alignment: center;
                                     }
@@ -829,9 +705,9 @@ export component DownloadManagerScreen inherits Rectangle {
                                     border-radius: 5px;
                                     y: (parent.height - self.height) / 2;
                                     background:
-                                        dl.status == "downloading" ? Theme.cyan
+                                        dl.status == "downloading" ? Theme.accent
                                       : dl.status == "paused" ? Theme.amber
-                                      : dl.status == "completed" ? #4caf50
+                                      : dl.status == "completed" ? Theme.color-success
                                       : dl.status == "failed" ? Theme.color-emotional
                                       : Theme.text-dim;  // queued
                                 }
@@ -839,7 +715,7 @@ export component DownloadManagerScreen inherits Rectangle {
                                 // Filename
                                 Text {
                                     text: dl.filename;
-                                    font-size: Theme.font-body;
+                                    font-size: Theme.fs-body;
                                     font-weight: 600;
                                     color: Theme.text-primary;
                                     overflow: elide;
@@ -853,9 +729,9 @@ export component DownloadManagerScreen inherits Rectangle {
                                     height: 20px;
                                     border-radius: 10px;
                                     background:
-                                        dl.checksum-status == "pass" ? #4caf5020
-                                      : dl.checksum-status == "fail" ? #e0505020
-                                      : #ffffff10;
+                                        dl.checksum-status == "pass" ? Theme.color-success-dim
+                                      : dl.checksum-status == "fail" ? Theme.color-danger-dim
+                                      : Theme.hover-fill-strong;
 
                                     Text {
                                         text: dl.checksum-status == "pass" ? "\u{2713} Hash OK"
@@ -864,8 +740,8 @@ export component DownloadManagerScreen inherits Rectangle {
                                         font-size: 9px;
                                         font-weight: 500;
                                         color:
-                                            dl.checksum-status == "pass" ? #4caf50
-                                          : dl.checksum-status == "fail" ? #e05050
+                                            dl.checksum-status == "pass" ? Theme.color-success
+                                          : dl.checksum-status == "fail" ? Theme.color-danger
                                           : Theme.text-dim;
                                         horizontal-alignment: center;
                                         vertical-alignment: center;
@@ -907,7 +783,7 @@ export component DownloadManagerScreen inherits Rectangle {
                                 // Speed (only when downloading)
                                 if dl.status == "downloading" : Text {
                                     text: dl.speed-text;
-                                    font-size: Theme.font-small;
+                                    font-size: Theme.fs-caption;
                                     font-weight: 500;
                                     color: Theme.accent;
                                     vertical-alignment: center;
@@ -916,7 +792,7 @@ export component DownloadManagerScreen inherits Rectangle {
                                 // ETA (only when downloading)
                                 if dl.status == "downloading" && dl.eta-text != "" : Text {
                                     text: dl.eta-text;
-                                    font-size: Theme.font-small;
+                                    font-size: Theme.fs-caption;
                                     color: Theme.text-dim;
                                     vertical-alignment: center;
                                 }
@@ -924,7 +800,7 @@ export component DownloadManagerScreen inherits Rectangle {
                                 // Size text
                                 Text {
                                     text: dl.size-text;
-                                    font-size: Theme.font-small;
+                                    font-size: Theme.fs-caption;
                                     color: Theme.text-secondary;
                                     vertical-alignment: center;
                                 }
@@ -935,10 +811,10 @@ export component DownloadManagerScreen inherits Rectangle {
                                     height: 22px;
                                     border-radius: 11px;
                                     background:
-                                        dl.status == "downloading" ? Theme.cyan-glow
+                                        dl.status == "downloading" ? Theme.accent-glow
                                       : dl.status == "paused" ? Theme.amber-glow
-                                      : dl.status == "completed" ? #4caf5020
-                                      : dl.status == "failed" ? #e0505020
+                                      : dl.status == "completed" ? Theme.color-success-dim
+                                      : dl.status == "failed" ? Theme.color-danger-dim
                                       : Theme.hover-fill;
 
                                     Text {
@@ -950,9 +826,9 @@ export component DownloadManagerScreen inherits Rectangle {
                                         font-size: 10px;
                                         font-weight: 500;
                                         color:
-                                            dl.status == "downloading" ? Theme.cyan
+                                            dl.status == "downloading" ? Theme.accent
                                           : dl.status == "paused" ? Theme.amber
-                                          : dl.status == "completed" ? #4caf50
+                                          : dl.status == "completed" ? Theme.color-success
                                           : dl.status == "failed" ? Theme.color-emotional
                                           : Theme.text-dim;
                                         horizontal-alignment: center;
@@ -990,7 +866,7 @@ export component DownloadManagerScreen inherits Rectangle {
                                 if dl.status == "downloading" || dl.status == "paused" || dl.status == "queued" : Rectangle {
                                     width: 28px;
                                     height: 28px;
-                                    background: cancel-dl-ta.has-hover ? #c0303030 : Theme.hover-fill;
+                                    background: cancel-dl-ta.has-hover ? Theme.color-danger-dim : Theme.hover-fill;
                                     border-radius: 14px;
 
                                     Text {
@@ -1128,7 +1004,7 @@ export component DownloadManagerScreen inherits Rectangle {
                             if dl.status == "completed" : Rectangle {
                                 height: 4px;
                                 border-radius: 2px;
-                                background: #4caf50;
+                                background: Theme.color-success;
                             }
 
                             // Failed: red bar
@@ -1295,9 +1171,9 @@ export component DownloadManagerScreen inherits Rectangle {
         // ── Error bar ──
         if root.error-text != "" : Rectangle {
             height: 36px;
-            background: #c0303018;
+            background: Theme.color-danger.with-alpha(0.09);
             border-width: 1px;
-            border-color: #c0303040;
+            border-color: Theme.color-danger.with-alpha(0.25);
 
             HorizontalLayout {
                 padding-left: 16px;
@@ -1306,8 +1182,8 @@ export component DownloadManagerScreen inherits Rectangle {
 
                 Text {
                     text: root.error-text;
-                    font-size: Theme.font-small;
-                    color: #e06060;
+                    font-size: Theme.fs-caption;
+                    color: Theme.color-danger;
                     vertical-alignment: center;
                     horizontal-stretch: 1;
                     overflow: elide;
@@ -1331,13 +1207,13 @@ export component DownloadManagerScreen inherits Rectangle {
                     width: 64px;
                     height: 30px;
                     background: root.active-filter == 0 ? Theme.accent-glow : transparent;
-                    border-radius: Theme.radius-pill;
+                    border-radius: Theme.r-pill;
                     border-width: root.active-filter == 0 ? 1px : 0;
                     border-color: root.active-filter == 0 ? Theme.accent-dim : transparent;
 
                     Text {
                         text: "All";
-                        font-size: Theme.font-small;
+                        font-size: Theme.fs-caption;
                         font-weight: root.active-filter == 0 ? 600 : 400;
                         color: root.active-filter == 0 ? Theme.accent : Theme.text-secondary;
                         horizontal-alignment: center;
@@ -1357,13 +1233,13 @@ export component DownloadManagerScreen inherits Rectangle {
                     width: 76px;
                     height: 30px;
                     background: root.active-filter == 1 ? Theme.accent-glow : transparent;
-                    border-radius: Theme.radius-pill;
+                    border-radius: Theme.r-pill;
                     border-width: root.active-filter == 1 ? 1px : 0;
                     border-color: root.active-filter == 1 ? Theme.accent-dim : transparent;
 
                     Text {
                         text: "Active";
-                        font-size: Theme.font-small;
+                        font-size: Theme.fs-caption;
                         font-weight: root.active-filter == 1 ? 600 : 400;
                         color: root.active-filter == 1 ? Theme.accent : Theme.text-secondary;
                         horizontal-alignment: center;
@@ -1383,13 +1259,13 @@ export component DownloadManagerScreen inherits Rectangle {
                     width: 92px;
                     height: 30px;
                     background: root.active-filter == 2 ? Theme.accent-glow : transparent;
-                    border-radius: Theme.radius-pill;
+                    border-radius: Theme.r-pill;
                     border-width: root.active-filter == 2 ? 1px : 0;
                     border-color: root.active-filter == 2 ? Theme.accent-dim : transparent;
 
                     Text {
                         text: "Completed";
-                        font-size: Theme.font-small;
+                        font-size: Theme.fs-caption;
                         font-weight: root.active-filter == 2 ? 600 : 400;
                         color: root.active-filter == 2 ? Theme.accent : Theme.text-secondary;
                         horizontal-alignment: center;
@@ -1409,13 +1285,13 @@ export component DownloadManagerScreen inherits Rectangle {
                     width: 72px;
                     height: 30px;
                     background: root.active-filter == 3 ? Theme.accent-glow : transparent;
-                    border-radius: Theme.radius-pill;
+                    border-radius: Theme.r-pill;
                     border-width: root.active-filter == 3 ? 1px : 0;
                     border-color: root.active-filter == 3 ? Theme.accent-dim : transparent;
 
                     Text {
                         text: "Failed";
-                        font-size: Theme.font-small;
+                        font-size: Theme.fs-caption;
                         font-weight: root.active-filter == 3 ? 600 : 400;
                         color: root.active-filter == 3 ? Theme.accent : Theme.text-secondary;
                         horizontal-alignment: center;

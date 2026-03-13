@@ -47,20 +47,20 @@ export component QuickSettings inherits Rectangle {
 
         // Glass background
         background: @linear-gradient(180deg,
-            #12111ae0 0%,
-            #0c0b10d0 50%,
-            #080810c0 100%
+            Theme.bg-deep.transparentize(12%) 0%,
+            Theme.bg-deep.transparentize(19%) 50%,
+            Theme.bg-deep.transparentize(25%) 100%
         );
 
         // Glass border
         border-width: 1px;
         border-color: @linear-gradient(180deg,
-            #ffffff14 0%,
-            #ffffff08 100%
+            Theme.border-strong 0%,
+            Theme.separator 100%
         );
 
         drop-shadow-blur: 32px;
-        drop-shadow-color: #00000060;
+        drop-shadow-color: Theme.overlay-backdrop;
 
         // Bottom holographic edge
         Rectangle {
@@ -93,10 +93,10 @@ export component QuickSettings inherits Rectangle {
                         height: 100%;
                         border-radius: 14px;
                         background: root.wifi-connected
-                            ? @linear-gradient(135deg, #5ac8d418 0%, #5ac8d408 100%)
-                            : @linear-gradient(135deg, #12111a 0%, #0c0b10 100%);
+                            ? @linear-gradient(135deg, Theme.tint-cyan 0%, Theme.cyan.transparentize(97%) 100%)
+                            : @linear-gradient(135deg, Theme.bg-deep 0%, Theme.bg-deep 100%);
                         border-width: 1px;
-                        border-color: root.wifi-connected ? Theme.cyan-dim : #ffffff08;
+                        border-color: root.wifi-connected ? Theme.cyan-dim : Theme.separator;
                         drop-shadow-blur: root.wifi-connected ? 8px : 0;
                         drop-shadow-color: Theme.cyan-glow;
 
@@ -167,7 +167,7 @@ export component QuickSettings inherits Rectangle {
                 }
             }
 
-            Rectangle { height: 1px; background: #ffffff08; }
+            Rectangle { height: 1px; background: Theme.separator; }
 
             // -- Brightness slider --
             VerticalLayout {
@@ -210,7 +210,7 @@ export component QuickSettings inherits Rectangle {
                         width: 100%;
                         height: 6px;
                         border-radius: 3px;
-                        background: #0808100a;
+                        background: Theme.bg-deep.transparentize(96%);
 
                         Rectangle {
                             width: max(0px, parent.width * root.brightness-level / 100);
@@ -279,7 +279,7 @@ export component QuickSettings inherits Rectangle {
                         width: 100%;
                         height: 6px;
                         border-radius: 3px;
-                        background: #0808100a;
+                        background: Theme.bg-deep.transparentize(96%);
 
                         Rectangle {
                             width: max(0px, parent.width * root.volume-level / 100);
@@ -307,7 +307,7 @@ export component QuickSettings inherits Rectangle {
                 }
             }
 
-            Rectangle { height: 1px; background: #ffffff08; }
+            Rectangle { height: 1px; background: Theme.separator; }
 
             // -- Battery info — holographic (hidden when no battery) --
             HorizontalLayout {
@@ -333,7 +333,7 @@ export component QuickSettings inherits Rectangle {
                                     root.battery-level <= 50 ? Theme.amber : Theme.cyan;
                         drop-shadow-blur: 4px;
                         drop-shadow-color: root.battery-charging ? Theme.cyan-glow :
-                                           root.battery-level <= 20 ? #e86b6b40 :
+                                           root.battery-level <= 20 ? Theme.color-emotional.transparentize(75%) :
                                            Theme.amber-glow;
                     }
 

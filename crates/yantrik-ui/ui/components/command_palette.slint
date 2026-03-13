@@ -1,5 +1,5 @@
 // Command Palette — Ctrl+Shift+P overlay for quick command access.
-// Glassmorphic centered panel with fuzzy search and categorized commands.
+// Glassmorphic centered panel with fuzzy search, categorized results, keyboard navigation.
 
 import { Theme } from "../theme.slint";
 
@@ -16,6 +16,7 @@ export component CommandPalette inherits Rectangle {
     in property <[CommandItem]> commands: [];
     in property <[CommandItem]> filtered-commands: [];
     in property <string> search-text: "";
+    in-out property <int> selected-index: 0;
 
     callback search-changed(string);
     callback command-selected(string);
@@ -24,7 +25,7 @@ export component CommandPalette inherits Rectangle {
     width: 100%;
     height: 100%;
 
-    // Backdrop
+    // Backdrop with fade
     if root.is-open : TouchArea {
         width: 100%;
         height: 100%;
@@ -34,30 +35,40 @@ export component CommandPalette inherits Rectangle {
             width: 100%;
             height: 100%;
             background: Theme.overlay-backdrop;
+            opacity: 1.0;
+            animate opacity { duration: Theme.dur-normal; }
         }
     }
 
-    // Panel — glassmorphic, centered
+    // Panel — glassmorphic, centered with slide+fade entrance
     if root.is-open : Rectangle {
-        x: (parent.width - 560px) / 2;
-        y: 80px;
-        width: 560px;
-        height: min(palette-layout.preferred-height + 16px, parent.height - 160px);
-        border-radius: 16px;
+        x: (parent.width - 580px) / 2;
+        y: 72px;
+        width: 580px;
+        height: min(palette-layout.preferred-height + Theme.sp-4, parent.height - 160px);
+        border-radius: Theme.r-xl;
         clip: true;
 
         // Glass background
         background: @linear-gradient(180deg,
-            #12111ae8 0%,
-            #0c0b10e0 50%,
-            #080810d8 100%
+            Theme.bg-deep.transparentize(9%) 0%,
+            Theme.bg-deep.transparentize(12%) 50%,
+            Theme.bg-deep.transparentize(15%) 100%
         );
         border-width: 1px;
-        border-color: #ffffff10;
+        border-color: Theme.hover-fill-strong;
 
-        // Subtle glow
+        // Top glass rim
+        Rectangle {
+            x: Theme.sp-6; y: 0;
+            width: parent.width - Theme.sp-9;
+            height: 1px;
+            background: @linear-gradient(90deg, transparent 0%, Theme.border-strong 50%, transparent 100%);
+        }
+
+        // Accent glow
         drop-shadow-blur: 40px;
-        drop-shadow-color: #5ac8d410;
+        drop-shadow-color: Theme.accent-glow;
         drop-shadow-offset-y: 8px;
 
         palette-layout := VerticalLayout {
@@ -66,21 +77,21 @@ export component CommandPalette inherits Rectangle {
 
             // Search input area
             Rectangle {
-                height: 52px;
-                background: #ffffff06;
-                border-width: 0px;
+                height: Theme.lens-input-height;
+                background: Theme.border-subtle;
+                clip: true;
 
                 HorizontalLayout {
-                    padding-left: 16px;
-                    padding-right: 16px;
-                    spacing: 10px;
+                    padding-left: Theme.sp-4;
+                    padding-right: Theme.sp-4;
+                    spacing: Theme.sp-2;
                     alignment: center;
 
                     // Prompt icon
                     Text {
                         text: ">";
                         color: Theme.accent;
-                        font-size: 16px;
+                        font-size: Theme.fs-headline;
                         font-weight: 700;
                         vertical-alignment: center;
                         width: 18px;
@@ -88,19 +99,40 @@ export component CommandPalette inherits Rectangle {
 
                     search-input := TextInput {
                         text: root.search-text;
-                        font-size: 15px;
+                        font-size: Theme.fs-headline;
                         color: Theme.text-primary;
                         horizontal-alignment: left;
                         vertical-alignment: center;
                         input-type: text;
                         edited => {
+                            root.selected-index = 0;
                             root.search-changed(self.text);
                         }
                         accepted => {
-                            // Select first result
                             if root.filtered-commands.length > 0 {
-                                root.command-selected(root.filtered-commands[0].action-id);
+                                root.command-selected(
+                                    root.filtered-commands[min(root.selected-index, root.filtered-commands.length - 1)].action-id
+                                );
                             }
+                        }
+                    }
+
+                    // Escape hint
+                    Rectangle {
+                        width: 32px;
+                        height: 20px;
+                        y: (parent.height - 20px) / 2;
+                        border-radius: Theme.r-sm;
+                        background: Theme.bg-elevated;
+                        border-width: 1px;
+                        border-color: Theme.border-subtle;
+
+                        Text {
+                            text: "Esc";
+                            color: Theme.text-dim;
+                            font-size: 10px;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
                         }
                     }
                 }
@@ -110,34 +142,39 @@ export component CommandPalette inherits Rectangle {
                     y: parent.height - 1px;
                     width: 100%;
                     height: 1px;
-                    background: #ffffff0a;
+                    background: Theme.separator;
                 }
             }
 
-            // Results list
+            // Results list with keyboard selection
             Flickable {
                 viewport-height: results-col.preferred-height;
                 height: min(results-col.preferred-height, 400px);
 
                 results-col := VerticalLayout {
-                    padding: 4px;
+                    padding: Theme.sp-1;
                     spacing: 1px;
 
                     for item[idx] in root.filtered-commands : TouchArea {
+                        property <bool> is-selected: idx == root.selected-index;
                         height: 40px;
                         clicked => { root.command-selected(item.action-id); }
 
                         Rectangle {
                             width: 100%;
                             height: 100%;
-                            border-radius: 8px;
-                            background: parent.has-hover ? #ffffff0c : transparent;
-                            animate background { duration: 100ms; }
+                            border-radius: Theme.r-md;
+                            background: is-selected ? Theme.tint-accent
+                                      : parent.has-hover ? Theme.hover-fill
+                                      : transparent;
+                            border-width: is-selected ? 1px : 0;
+                            border-color: is-selected ? Theme.accent-glow : transparent;
+                            animate background { duration: Theme.dur-fast; }
 
                             HorizontalLayout {
-                                padding-left: 12px;
-                                padding-right: 12px;
-                                spacing: 10px;
+                                padding-left: Theme.sp-3;
+                                padding-right: Theme.sp-3;
+                                spacing: Theme.sp-2;
                                 alignment: stretch;
 
                                 // Icon
@@ -145,8 +182,8 @@ export component CommandPalette inherits Rectangle {
                                     width: 28px;
                                     Text {
                                         text: item.icon-char;
-                                        color: Theme.accent;
-                                        font-size: 13px;
+                                        color: is-selected ? Theme.accent : Theme.accent-dim;
+                                        font-size: Theme.fs-body;
                                         font-weight: 600;
                                         horizontal-alignment: center;
                                         vertical-alignment: center;
@@ -156,50 +193,69 @@ export component CommandPalette inherits Rectangle {
                                 // Label
                                 Text {
                                     text: item.label;
-                                    color: Theme.text-primary;
-                                    font-size: 14px;
+                                    color: is-selected ? Theme.text-primary : Theme.text-secondary;
+                                    font-size: Theme.fs-body;
+                                    font-weight: is-selected ? Theme.fw-body-strong : Theme.fw-body;
                                     vertical-alignment: center;
                                     overflow: elide;
+                                    horizontal-stretch: 1;
                                 }
 
                                 // Category badge
                                 Rectangle {
-                                    width: cat-text.preferred-width + 12px;
+                                    width: cat-text.preferred-width + Theme.sp-3;
                                     height: 20px;
-                                    border-radius: 4px;
-                                    background: #ffffff08;
+                                    border-radius: Theme.r-sm;
+                                    background: Theme.hover-fill;
 
                                     cat-text := Text {
                                         text: item.category;
                                         color: Theme.text-dim;
-                                        font-size: 11px;
+                                        font-size: Theme.fs-caption;
                                         horizontal-alignment: center;
                                         vertical-alignment: center;
                                     }
                                 }
 
                                 // Shortcut
-                                if item.shortcut != "" : Text {
-                                    text: item.shortcut;
-                                    color: Theme.text-dim;
-                                    font-size: 11px;
-                                    font-weight: 500;
-                                    vertical-alignment: center;
-                                    horizontal-alignment: right;
+                                if item.shortcut != "" : Rectangle {
+                                    width: shortcut-text.preferred-width + Theme.sp-3;
+                                    height: 20px;
+                                    border-radius: Theme.r-sm;
+                                    background: Theme.bg-elevated;
+                                    border-width: 1px;
+                                    border-color: Theme.border-subtle;
+
+                                    shortcut-text := Text {
+                                        text: item.shortcut;
+                                        color: Theme.text-dim;
+                                        font-size: 10px;
+                                        font-weight: Theme.fw-body-strong;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
                                 }
                             }
                         }
                     }
 
                     // Empty state
-                    if root.filtered-commands.length == 0 : Rectangle {
-                        height: 60px;
+                    if root.filtered-commands.length == 0 : VerticalLayout {
+                        height: 80px;
+                        alignment: center;
+                        spacing: Theme.sp-1;
+
                         Text {
                             text: "No matching commands";
-                            color: Theme.text-dim;
-                            font-size: 13px;
+                            color: Theme.text-secondary;
+                            font-size: Theme.fs-body;
                             horizontal-alignment: center;
-                            vertical-alignment: center;
+                        }
+                        Text {
+                            text: "Try a different search term";
+                            color: Theme.text-dim;
+                            font-size: Theme.fs-caption;
+                            horizontal-alignment: center;
                         }
                     }
                 }
@@ -208,20 +264,40 @@ export component CommandPalette inherits Rectangle {
             // Footer hint
             Rectangle {
                 height: 32px;
-                background: #ffffff04;
+                background: Theme.border-subtle;
+
+                // Top separator
+                Rectangle {
+                    y: 0; width: 100%; height: 1px;
+                    background: Theme.separator;
+                }
 
                 HorizontalLayout {
-                    padding-left: 16px;
-                    padding-right: 16px;
+                    padding-left: Theme.sp-4;
+                    padding-right: Theme.sp-4;
                     alignment: center;
+                    spacing: Theme.sp-4;
 
                     Text {
-                        text: "Enter to select  ·  Esc to close";
+                        text: "↑↓ Navigate";
                         color: Theme.text-dim;
-                        font-size: 11px;
-                        horizontal-alignment: center;
+                        font-size: Theme.fs-caption;
                         vertical-alignment: center;
-                        opacity: 0.6;
+                        opacity: 0.7;
+                    }
+                    Text {
+                        text: "↵ Select";
+                        color: Theme.text-dim;
+                        font-size: Theme.fs-caption;
+                        vertical-alignment: center;
+                        opacity: 0.7;
+                    }
+                    Text {
+                        text: "Esc Close";
+                        color: Theme.text-dim;
+                        font-size: Theme.fs-caption;
+                        vertical-alignment: center;
+                        opacity: 0.7;
                     }
                 }
             }

@@ -1441,18 +1441,46 @@ email:
         });
     }
 
-    // ── Email selected (show detail) ──
+    // ── Email selected (show detail + auto mark as read) ──
     {
         let cache = email_cache.clone();
         let ui_weak = ui.as_weak();
+        let model = email_model.clone();
+        let acct = account_info.clone();
+        let folder = current_folder.clone();
         ui.on_email_selected(move |id| {
             if let Some(ui) = ui_weak.upgrade() {
-                let cached = cache.borrow();
-                if let Some(email) = cached.iter().find(|e| e.id == id) {
+                let was_unread;
+                {
+                    let mut cached = cache.borrow_mut();
+                    let email = match cached.iter_mut().find(|e| e.id == id) {
+                        Some(e) => e,
+                        None => return,
+                    };
+                    was_unread = !email.is_read;
+                    // Mark as read in cache
+                    email.is_read = true;
+                    // Compute avatar initial and color
+                    let from_initial = if !email.from_name.is_empty() {
+                        email.from_name.chars().next().unwrap_or('?').to_uppercase().to_string()
+                    } else {
+                        email.from_addr.chars().next().unwrap_or('?').to_uppercase().to_string()
+                    };
+                    let color_seed: u32 = email.from_addr.bytes().map(|b| b as u32).sum();
+                    let from_avatar_color = match color_seed % 6 {
+                        0 => slint::Color::from_rgb_u8(90, 200, 212),
+                        1 => slint::Color::from_rgb_u8(212, 165, 116),
+                        2 => slint::Color::from_rgb_u8(180, 132, 224),
+                        3 => slint::Color::from_rgb_u8(132, 195, 136),
+                        4 => slint::Color::from_rgb_u8(224, 132, 156),
+                        _ => slint::Color::from_rgb_u8(132, 170, 224),
+                    };
                     ui.set_email_detail(EmailDetailData {
                         id: email.id,
                         from_name: email.from_name.clone().into(),
                         from_addr: email.from_addr.clone().into(),
+                        from_initial: from_initial.into(),
+                        from_avatar_color,
                         to_addr: email.to_addr.clone().into(),
                         cc_addr: "".into(),
                         subject: email.subject.clone().into(),
@@ -1460,15 +1488,43 @@ email:
                         body: email.body.clone().into(),
                         ai_summary: "".into(),
                         is_flagged: false,
-                        is_read: email.is_read,
+                        is_read: true,
                         has_attachment: false,
                         attachment_names: "".into(),
                         thread_count: 0,
                     });
-                    // Clear thread messages for non-threaded view
-                    ui.set_email_thread_messages(ModelRc::from(Rc::new(VecModel::<EmailThreadMessage>::default())));
-                    // Clear AI intent from previous email
-                    ui.set_email_ai_intent("".into());
+                }
+                // Clear thread messages for non-threaded view
+                ui.set_email_thread_messages(ModelRc::from(Rc::new(VecModel::<EmailThreadMessage>::default())));
+                // Clear AI intent from previous email
+                ui.set_email_ai_intent("".into());
+
+                // Update the list model row to show as read
+                if was_unread {
+                    for i in 0..model.row_count() {
+                        if let Some(mut row) = model.row_data(i) {
+                            if row.id == id {
+                                row.is_read = true;
+                                model.set_row_data(i, row);
+                                break;
+                            }
+                        }
+                    }
+                    // Update unread count
+                    let unread = ui.get_email_folder_unread();
+                    if unread > 0 {
+                        ui.set_email_folder_unread(unread - 1);
+                    }
+
+                    // Mark as read on IMAP server in background
+                    let info = acct.borrow().clone();
+                    let folder_name = folder.borrow().clone();
+                    let email_id = id;
+                    std::thread::spawn(move || {
+                        if let Err(e) = imap_mark_read(&info, &folder_name, email_id) {
+                            tracing::warn!(error = %e, email_id, "Failed to mark email as read on server");
+                        }
+                    });
                 }
             }
         });
@@ -1617,7 +1673,72 @@ email:
 
     // ── Delete / Mark read / Mark flagged ──
     { ui.on_email_delete(move |id| { tracing::info!(email_id = id, "Delete requested"); }); }
-    { ui.on_email_mark_read(move |id| { tracing::debug!(email_id = id, "Mark read"); }); }
+
+    // Toggle read/unread
+    {
+        let cache = email_cache.clone();
+        let model = email_model.clone();
+        let ui_weak = ui.as_weak();
+        let acct = account_info.clone();
+        let folder = current_folder.clone();
+        ui.on_email_mark_read(move |id| {
+            let Some(ui) = ui_weak.upgrade() else { return };
+            let new_is_read;
+            {
+                let mut cached = cache.borrow_mut();
+                if let Some(email) = cached.iter_mut().find(|e| e.id == id) {
+                    email.is_read = !email.is_read;
+                    new_is_read = email.is_read;
+                } else {
+                    return;
+                }
+            }
+
+            // Update list model row
+            for i in 0..model.row_count() {
+                if let Some(mut row) = model.row_data(i) {
+                    if row.id == id {
+                        row.is_read = new_is_read;
+                        model.set_row_data(i, row);
+                        break;
+                    }
+                }
+            }
+
+            // Update detail view
+            let mut detail = ui.get_email_detail();
+            if detail.id == id {
+                detail.is_read = new_is_read;
+                ui.set_email_detail(detail);
+            }
+
+            // Update unread count
+            let unread = ui.get_email_folder_unread();
+            if new_is_read && unread > 0 {
+                ui.set_email_folder_unread(unread - 1);
+            } else if !new_is_read {
+                ui.set_email_folder_unread(unread + 1);
+            }
+
+            // Sync to IMAP in background
+            let info = acct.borrow().clone();
+            let folder_name = folder.borrow().clone();
+            std::thread::spawn(move || {
+                if new_is_read {
+                    if let Err(e) = imap_mark_read(&info, &folder_name, id) {
+                        tracing::warn!(error = %e, email_id = id, "Failed to mark read on server");
+                    }
+                } else {
+                    if let Err(e) = imap_mark_unread(&info, &folder_name, id) {
+                        tracing::warn!(error = %e, email_id = id, "Failed to mark unread on server");
+                    }
+                }
+            });
+
+            tracing::info!(email_id = id, is_read = new_is_read, "Toggled read status");
+        });
+    }
+
     { ui.on_email_mark_flagged(move |id| { tracing::debug!(email_id = id, "Mark flagged"); }); }
 
     // ── Toggle thread message collapse/expand ──
@@ -2248,4 +2369,56 @@ fn fetch_and_populate(
         }
     });
     std::mem::forget(t);
+}
+
+/// Mark an email as read on the IMAP server (sets \Seen flag).
+fn imap_mark_read(info: &AccountInfo, folder: &str, email_id: i32) -> Result<(), String> {
+    imap_store_flag(info, folder, email_id, "+FLAGS", "(\\Seen)")
+}
+
+/// Mark an email as unread on the IMAP server (removes \Seen flag).
+fn imap_mark_unread(info: &AccountInfo, folder: &str, email_id: i32) -> Result<(), String> {
+    imap_store_flag(info, folder, email_id, "-FLAGS", "(\\Seen)")
+}
+
+/// IMAP STORE command to add/remove flags on an email.
+fn imap_store_flag(info: &AccountInfo, folder: &str, email_id: i32, action: &str, flags: &str) -> Result<(), String> {
+    use std::net::TcpStream;
+
+    let server = &info.imap_server;
+    let port = info.imap_port;
+
+    let addr = format!("{}:{}", server, port);
+    let sock_addr = std::net::ToSocketAddrs::to_socket_addrs(&addr.as_str())
+        .map_err(|e| format!("DNS: {}", e))?
+        .next()
+        .ok_or_else(|| format!("No addresses for {}", addr))?;
+
+    let tcp = TcpStream::connect_timeout(&sock_addr, Duration::from_secs(10))
+        .map_err(|e| format!("Connect: {}", e))?;
+
+    let tls = native_tls::TlsConnector::new().map_err(|e| format!("TLS: {}", e))?;
+    let tls_stream = tls.connect(server, tcp).map_err(|e| format!("TLS: {}", e))?;
+
+    let client = imap::Client::new(tls_stream);
+
+    let mut session = if info.is_oauth() {
+        let (token, _) = info.get_valid_token().map_err(|e| format!("OAuth: {}", e))?;
+        let auth = XOAuth2 { user: info.email.clone(), token };
+        client.authenticate("XOAUTH2", &auth).map_err(|e| format!("Auth: {}", e.0))?
+    } else {
+        client.login(&info.email, &info.password).map_err(|e| format!("Login: {}", e.0))?
+    };
+
+    session.select(folder).map_err(|e| format!("Select {}: {}", folder, e))?;
+
+    // The email_id is 1-based sequence number used in our cache
+    // Use STORE with sequence number
+    let seq = format!("{}", email_id);
+    session.store(&seq, format!("{} {}", action, flags))
+        .map_err(|e| format!("STORE: {}", e))?;
+
+    let _ = session.logout();
+    tracing::info!(email_id, action, flags, "IMAP flag updated");
+    Ok(())
 }

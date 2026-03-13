@@ -174,6 +174,14 @@ fn build_system_prompt(
     // Budget check macro: skip sections when prompt is full
     let over_budget = |p: &str| estimate_tokens(p) >= max_prompt_tokens;
 
+    // ── 3b. Behavioral rules ──
+    if !over_budget(&prompt) {
+        prompt.push_str(
+            "When the user corrects you, dismisses an alert, or says something is a false alarm, \
+             always use the remember tool to store their preference so you don't repeat the mistake.\n\n"
+        );
+    }
+
     // ── 4. Current time ──
     if !over_budget(&prompt) {
         let now = chrono::Local::now();

@@ -106,7 +106,7 @@ export component MorningBriefCard inherits Rectangle {
     min-height: 0px;
     preferred-height: show-card ? card-layout.preferred-height + 24px : 0px;
     border-radius: 16px;
-    background: #0c0b10e0;
+    background: Theme.bg-deep.transparentize(12%);
     border-width: 1px;
     border-color: Theme.cyan-glow;
     opacity: show-card ? 1.0 : 0.0;
@@ -157,7 +157,7 @@ export component MorningBriefCard inherits Rectangle {
                 Rectangle {
                     width: 100%; height: 100%;
                     border-radius: 14px;
-                    background: #ffffff08;
+                    background: Theme.separator;
 
                     Text {
                         text: "✕";
@@ -173,7 +173,7 @@ export component MorningBriefCard inherits Rectangle {
         // Divider
         Rectangle {
             height: 1px;
-            background: #ffffff10;
+            background: Theme.hover-fill-strong;
         }
 
         // Sections

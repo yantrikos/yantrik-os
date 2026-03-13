@@ -306,7 +306,7 @@ export component SnippetManagerScreen inherits Rectangle {
                     Rectangle {
                         width: 100%; height: 28px;
                         border-radius: 8px;
-                        background: parent.has-hover ? #d4404020 : transparent;
+                        background: parent.has-hover ? Theme.color-danger-dim : transparent;
                         HorizontalLayout {
                             alignment: center;
                             spacing: 4px;
@@ -469,7 +469,7 @@ export component SnippetManagerScreen inherits Rectangle {
                                 if snip.is-favorite : Text {
                                     text: "\u{2605}";
                                     font-size: 12px;
-                                    color: #e8b44c;
+                                    color: Theme.amber;
                                     vertical-alignment: center;
                                 }
 
@@ -577,7 +577,7 @@ export component SnippetManagerScreen inherits Rectangle {
                         Text {
                             text: "+";
                             font-size: 18px;
-                            color: #ffffff;
+                            color: Theme.text-on-accent;
                             font-weight: 700;
                             vertical-alignment: center;
                         }
@@ -585,7 +585,7 @@ export component SnippetManagerScreen inherits Rectangle {
                         Text {
                             text: "New Snippet";
                             font-size: Theme.font-body;
-                            color: #ffffff;
+                            color: Theme.text-on-accent;
                             font-weight: 600;
                             vertical-alignment: center;
                         }
@@ -681,7 +681,7 @@ export component SnippetManagerScreen inherits Rectangle {
                             Text {
                                 text: root.detail-is-favorite ? "\u{2605}" : "\u{2606}";
                                 font-size: 18px;
-                                color: root.detail-is-favorite ? #e8b44c : Theme.text-dim;
+                                color: root.detail-is-favorite ? Theme.amber : Theme.text-dim;
                                 horizontal-alignment: center;
                                 vertical-alignment: center;
                             }
@@ -862,7 +862,7 @@ export component SnippetManagerScreen inherits Rectangle {
                         Text {
                             text: "Save";
                             font-size: Theme.font-body;
-                            color: #ffffff;
+                            color: Theme.text-on-accent;
                             font-weight: 600;
                             horizontal-alignment: center;
                             vertical-alignment: center;
@@ -880,7 +880,7 @@ export component SnippetManagerScreen inherits Rectangle {
                         width: 100px;
                         height: 38px;
                         background: root.copy-feedback-visible
-                            ? #2a8a3a
+                            ? Theme.color-success
                             : (copy-ta.has-hover ? Theme.hover-fill-strong : Theme.hover-fill);
                         border-radius: Theme.radius-pill;
                         border-width: root.copy-feedback-visible ? 0px : 1px;
@@ -899,7 +899,7 @@ export component SnippetManagerScreen inherits Rectangle {
                             Text {
                                 text: root.copy-feedback-visible ? "Copied!" : "Copy";
                                 font-size: Theme.font-body;
-                                color: root.copy-feedback-visible ? #ffffff : Theme.text-secondary;
+                                color: root.copy-feedback-visible ? Theme.text-on-accent : Theme.text-secondary;
                                 font-weight: root.copy-feedback-visible ? 600 : 500;
                                 vertical-alignment: center;
                             }
@@ -939,7 +939,7 @@ export component SnippetManagerScreen inherits Rectangle {
                                 }
                                 Text {
                                     text: root.ai-is-working ? "..." : "AI Explain";
-                                    color: root.ai-is-working ? #ffffff : Theme.text-secondary;
+                                    color: root.ai-is-working ? Theme.text-on-accent : Theme.text-secondary;
                                     font-size: Theme.font-body;
                                     font-weight: 500;
                                     vertical-alignment: center;
@@ -991,13 +991,13 @@ export component SnippetManagerScreen inherits Rectangle {
                     Rectangle {
                         width: 100px;
                         height: 38px;
-                        background: del-ta.has-hover ? #d44040 : #c03030;
+                        background: del-ta.has-hover ? Theme.color-danger.brighter(20%) : Theme.color-danger;
                         border-radius: Theme.radius-pill;
 
                         Text {
                             text: "Delete";
                             font-size: Theme.font-body;
-                            color: #ffffff;
+                            color: Theme.text-on-accent;
                             font-weight: 600;
                             horizontal-alignment: center;
                             vertical-alignment: center;
@@ -1084,7 +1084,7 @@ export component SnippetManagerScreen inherits Rectangle {
         visible: root.ai-panel-open && root.ai-response != "";
         max-height: 180px;
         width: 100%;
-        background: #1a2332;
+        background: Theme.bg-surface;
         border-width: 1px;
         border-color: Theme.accent.transparentize(70%);
 

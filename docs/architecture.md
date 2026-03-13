@@ -1,41 +1,57 @@
 # Yantrik OS — System Architecture
 
 > Decision document. Finalized via multi-model brainstorm (Claude + GPT-4.1 + DeepSeek).
-> Last updated: 2026-02-27
+> Last updated: 2026-03-11
 
 ---
 
 ## Overview
 
 Yantrik OS is an AI-native desktop OS where the AI IS the shell. Single Rust binary:
-Slint UI + CompanionService + Candle LLM + YantrikDB. Zero external LLM dependencies.
+Slint UI + CompanionService + multi-backend LLM + YantrikDB. Supports local and remote
+LLM backends with automatic fallback.
 
 Stack: Alpine Linux → labwc (Wayland compositor) → yantrik-ui (fullscreen Slint shell)
 
 ---
 
-## 3 Crates
+## 5 Crates
 
 ```
 crates/
   yantrik-os/              # System integration (D-Bus, inotify, sysinfo). ZERO AI deps.
-  yantrikdb-companion/     # AI brain (already exists). LLM, memory, instincts, bond.
-  yantrik-ui/              # Shell binary. Features, UI, orchestration.
+  yantrik-ml/              # AI inference: LLM backends, embeddings, TTS, vision.
+  yantrikdb-core/          # Memory database: SQLite + HNSW vector search, knowledge graph, vault.
+  yantrik-companion/       # AI agent: 65+ instincts, 116+ tools, bond, personality, cortex.
+  yantrik-ui/              # Shell binary. 15+ apps, features, UI, orchestration.
 ```
 
-Dependency graph: `yantrik-os → yantrik-ui ← yantrikdb-companion` (shell orchestrates both)
+Dependency graph: `yantrik-ui ← yantrik-companion ← yantrikdb-core ← yantrik-ml`
+                  `yantrik-ui ← yantrik-os`
 
 ### yantrik-os
 Pure system observation. No AI, no Slint, no LLM. Watches the machine via D-Bus,
 inotify, and sysinfo. Emits `SystemEvent` variants over a crossbeam channel.
 
-### yantrikdb-companion
-The AI brain. Already fully built: 9 instincts, bond system, Candle LLM (Qwen2.5-0.5B),
-MiniLM embeddings, YantrikDB memory engine, evolution/learning pipelines.
+### yantrik-ml
+AI inference layer. Multiple LLM backends (Ollama API, OpenAI-compatible API, Claude CLI,
+llama.cpp) with automatic fallback. MiniLM embeddings, Whisper voice input, vision.
+Model-adaptive intelligence auto-detects model tier (Tiny/Small/Medium/Large) and adjusts
+tool calling strategy.
+
+### yantrikdb-core
+Memory database. SQLite + HNSW vector search for semantic memory retrieval. Knowledge
+graph, encrypted vault, cognition triggers, distributed conflict resolution.
+
+### yantrik-companion
+The AI agent. 65+ instincts (proactive behaviors), 116+ tools, bond system (5 levels),
+personality engine, proactive pipeline (4-stage: Detect → Generate → Score → Deliver),
+cortex (pattern recognition + playbooks), learning/memory evolution, hallucination firewall.
 
 ### yantrik-ui
 The shell binary that ties everything together. Owns the Slint event loop, runs
 ProactiveFeatures, routes system events to the brain, renders urges as Whisper Cards.
+15+ built-in apps (spreadsheet, presentations, documents, email, calendar, etc.).
 
 ---
 
@@ -190,17 +206,41 @@ crates/yantrik-os/src/
   processes.rs        # sysinfo process tracker (poll every 5s)
   mock.rs             # Mock mode for QEMU dev (fake battery drain, etc.)
 
+crates/yantrik-ml/src/
+  llm/
+    api.rs            # Ollama / OpenAI-compatible API backend
+    claude_cli.rs     # Claude Code CLI backend
+    llamacpp.rs       # llama.cpp backend
+    fallback.rs       # FallbackLLM: primary → fallback auto-switch
+  capability.rs       # ModelCapabilityProfile, model tier detection
+  embeddings.rs       # MiniLM sentence embeddings
+
+crates/yantrik-companion/src/
+  companion.rs        # Agent loop, tool execution, adaptive tool selection
+  instincts/          # 60+ proactive instincts
+  tools/              # 60+ tool implementations
+  cortex/             # Pattern recognition, playbooks, reasoner
+  bond.rs             # Bond level system (Stranger → Partner)
+  proactive_pipeline.rs  # 4-stage: Detect → Generate → Score → Deliver
+  learning.rs         # Memory evolution, fact extraction, write-time dedup
+  hallucination_firewall.rs  # Claim extraction, evidence verification
+
 crates/yantrik-ui/src/
   main.rs             # Thin: init → event loop → shutdown
-  bridge.rs           # CompanionService bridge (existing)
-  ui_state.rs         # Centralized Slint property updates
+  bridge.rs           # CompanionService bridge
+  apps.rs             # App registry (screen IDs, dock entries)
+  wire/               # App backends (one .rs per app)
+    spreadsheet.rs    # ySheets
+    presentation.rs   # yPresent
+    document_editor.rs # yDocs
+    email.rs          # Email client
+    calendar.rs       # Calendar
+    ...
   features/
     mod.rs            # ProactiveFeature trait, FeatureRegistry, UrgencyScorer
     resource_guardian.rs
     process_sentinel.rs
-    error_companion.rs
-    file_lifecycle.rs
-    focus_flow.rs
+    ...
 ```
 
 ---

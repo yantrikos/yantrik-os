@@ -1,0 +1,69 @@
+// ShellCard — reusable card surface with consistent styling.
+// Uses the 4-tier surface hierarchy: surface-default → raised → floating.
+// Supports optional header, hover lift, border variants.
+import { Theme } from "../theme.slint";
+
+export component ShellCard inherits Rectangle {
+    // 0 = surface (bg-surface), 1 = raised (bg-card), 2 = floating (bg-elevated)
+    in property <int> tier: 1;
+    in property <bool> hoverable: false;
+    in property <bool> selected: false;
+    in property <string> title: "";
+    in property <string> subtitle: "";
+    in property <bool> show-border: true;
+    in property <bool> compact: false;
+
+    property <bool> hovered: card-ta.has-hover && root.hoverable;
+
+    border-radius: Theme.r-lg;
+    background: root.selected ? Theme.bg-selected
+              : tier == 2 ? Theme.bg-elevated
+              : tier == 1 ? Theme.bg-card
+              : Theme.bg-surface;
+    border-width: show-border ? 1px : 0;
+    border-color: root.selected ? Theme.accent-dim
+                : root.hovered ? Theme.border-strong
+                : Theme.border-subtle;
+
+    animate background { duration: Theme.dur-fast; }
+    animate border-color { duration: Theme.dur-fast; }
+
+    card-ta := TouchArea {
+        enabled: root.hoverable;
+        mouse-cursor: root.hoverable ? pointer : default;
+    }
+
+    VerticalLayout {
+        padding: compact ? Theme.sp-3 : Theme.sp-4;
+        spacing: Theme.sp-3;
+
+        // Optional header
+        if root.title != "" : VerticalLayout {
+            spacing: Theme.sp-1;
+
+            Text {
+                text: root.title;
+                color: Theme.text-primary;
+                font-size: Theme.fs-headline;
+                font-weight: Theme.fw-headline;
+                overflow: elide;
+            }
+
+            if root.subtitle != "" : Text {
+                text: root.subtitle;
+                color: Theme.text-secondary;
+                font-size: Theme.fs-caption;
+                overflow: elide;
+            }
+
+            // Header divider
+            Rectangle {
+                height: 1px;
+                background: Theme.separator;
+            }
+        }
+
+        // Content slot — populated via @children
+        @children
+    }
+}

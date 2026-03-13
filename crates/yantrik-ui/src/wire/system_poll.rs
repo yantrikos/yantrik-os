@@ -102,7 +102,7 @@ pub fn wire(ui: &App, ctx: &AppContext) {
                         // DND check: skip toast if DND is on, UNLESS critical (urgency == 2)
                         let dnd = ui_ref.get_dnd_mode();
                         if !dnd || *urgency == 2 {
-                            super::toast::push_toast(&ui_weak, app, summary, body, *urgency);
+                            super::toast::push_toast_no_store(&ui_weak, app, summary, body, *urgency);
                         }
                     }
                 }
@@ -313,7 +313,7 @@ pub fn wire(ui: &App, ctx: &AppContext) {
                     ("launchpad",     |t| t.get_dock_apps(),     "\u{229E}"),
                     ("spreadsheet",   |t| t.get_dock_ysheets(),  "YS"),
                     ("documents",     |t| t.get_dock_ydoc(),     "YD"),
-                    ("presentation",  |t| t.get_dock_yslides(),  "YP"),
+                    ("presentation",  |t| t.get_dock_ypresent(), "YP"),
                     ("settings",      |t| t.get_dock_settings(), "\u{2699}"),
                 ];
                 let dock: Vec<DockItem> = dock_defs

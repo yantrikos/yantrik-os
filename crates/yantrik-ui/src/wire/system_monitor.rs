@@ -106,6 +106,7 @@ pub fn wire(ui: &App, ctx: &AppContext) {
 
     // 1-second poll timer
     let ui_weak = ui.as_weak();
+    let bridge_mon = ctx.bridge.clone();
 
     // Per-core CPU state: previous idle and total jiffies per core
     let prev_cpu: RefCell<Vec<(u64, u64)>> = RefCell::new(Vec::new());
@@ -236,6 +237,21 @@ pub fn wire(ui: &App, ctx: &AppContext) {
 
         // ── Uptime ──
         ui.set_mon_uptime_text(read_uptime().into());
+
+        // ── AI Workloads ──
+        // Model name and tier from settings (already set at startup)
+        let model_name = ui.get_settings_llm_api_model().to_string();
+        if !model_name.is_empty() {
+            ui.set_mon_ai_model_name(model_name.clone().into());
+            // Detect tier from model name
+            let tier = super::settings::detect_tier_from_name(&model_name);
+            ui.set_mon_ai_model_tier(tier.into());
+        }
+        // Provider health from companion online status
+        let online = bridge_mon.is_online();
+        if !online {
+            ui.set_mon_ai_provider_latency_ms(-1);
+        }
 
         // ── Health Score ──
         let mut score = 100.0f32;

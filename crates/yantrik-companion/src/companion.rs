@@ -384,6 +384,10 @@ pub struct CompanionService {
     /// Controls tool exposure, routing strategy, context budgets, and guardrails.
     pub capability_profile: ModelCapabilityProfile,
 
+    /// Provider Registry — multi-provider LLM management with routing and failover.
+    /// When populated, routes requests through registered providers instead of `self.llm`.
+    pub provider_registry: Option<std::sync::Arc<yantrik_ml::ProviderRegistry>>,
+
     /// Active Day Context — ambient awareness buffer (calendar, weather, email, etc.).
     /// Refreshed by stewardship loop, injected into system prompt per token budget.
     pub active_context: ActiveDayContext,
@@ -623,12 +627,108 @@ impl CompanionService {
             trust_state,
             policy_engine: crate::policy_engine::PolicyEngine::new(),
             silence_policy,
+            provider_registry: None,
         }
     }
 
     /// Attach a cognitive event bus for tool execution tracing.
     pub fn set_event_bus(&mut self, bus: yantrik_os::EventBus) {
         self.event_bus = Some(bus);
+    }
+
+    /// Build and attach a ProviderRegistry from the config's `providers` list.
+    ///
+    /// When a provider registry is active, `get_backend()` routes through it
+    /// instead of using `self.llm` directly.
+    pub fn init_provider_registry(&mut self) {
+        if self.config.llm.providers.is_empty() {
+            tracing::debug!("No providers configured, skipping registry init");
+            return;
+        }
+
+        let registry = yantrik_ml::ProviderRegistry::new();
+        let mut primary_id = None;
+        let mut fallback_chain = Vec::new();
+
+        for provider_cfg in &self.config.llm.providers {
+            let model = provider_cfg.model.as_deref().unwrap_or("default");
+            let backend = yantrik_ml::ProviderRegistry::create_backend(
+                &provider_cfg.provider_type,
+                &provider_cfg.base_url,
+                provider_cfg.api_key.as_deref(),
+                model,
+            );
+
+            let entry = yantrik_ml::RegisteredProvider::new(
+                backend,
+                &provider_cfg.provider_type,
+                &provider_cfg.name,
+            );
+
+            registry.register(&provider_cfg.id, entry);
+
+            if provider_cfg.is_primary && primary_id.is_none() {
+                primary_id = Some(provider_cfg.id.clone());
+            }
+            if provider_cfg.is_fallback {
+                fallback_chain.push(provider_cfg.id.clone());
+            }
+        }
+
+        if let Some(ref pid) = primary_id {
+            registry.set_primary(pid);
+        }
+        if !fallback_chain.is_empty() {
+            registry.set_fallback_chain(fallback_chain);
+        }
+
+        tracing::info!(
+            providers = registry.len(),
+            primary = ?primary_id,
+            "Provider registry initialized"
+        );
+
+        self.provider_registry = Some(std::sync::Arc::new(registry));
+    }
+
+    /// Get the active LLM backend — either from the provider registry or the direct llm field.
+    ///
+    /// When a provider registry is active, returns it as an Arc<dyn LLMBackend>
+    /// (ProviderRegistry implements LLMBackend). Otherwise returns self.llm.
+    pub fn get_backend(&self) -> std::sync::Arc<dyn LLMBackend> {
+        if let Some(ref registry) = self.provider_registry {
+            registry.clone() as std::sync::Arc<dyn LLMBackend>
+        } else {
+            self.llm.clone()
+        }
+    }
+
+    /// Hot-swap a provider in the registry at runtime.
+    ///
+    /// Used for runtime reconfiguration (e.g. user changes API key in settings).
+    pub fn hot_swap_provider(
+        &self,
+        provider_id: &str,
+        provider_type: &str,
+        base_url: &str,
+        api_key: Option<&str>,
+        model: &str,
+        display_name: &str,
+    ) {
+        if let Some(ref registry) = self.provider_registry {
+            let backend = yantrik_ml::ProviderRegistry::create_backend(
+                provider_type,
+                base_url,
+                api_key,
+                model,
+            );
+            registry.hot_swap(provider_id, backend, display_name, provider_type);
+            tracing::info!(
+                provider = %provider_id,
+                model = %model,
+                "Provider hot-swapped"
+            );
+        }
     }
 
     /// Apply a Skill Store snapshot — merges skill-derived services with config,

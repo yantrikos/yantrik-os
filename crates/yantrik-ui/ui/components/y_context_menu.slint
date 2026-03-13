@@ -1,0 +1,108 @@
+// YContextMenu — context menu with icon + label + shortcut.
+// Separators, disabled items, hover/keyboard-active states.
+import { Theme } from "../theme.slint";
+
+export struct YMenuAction {
+    id: string,
+    icon: string,
+    label: string,
+    shortcut: string,
+    disabled: bool,
+    separator-after: bool,
+    is-danger: bool,
+}
+
+export component YContextMenu inherits Rectangle {
+    in property <bool> open: false;
+    in property <[YMenuAction]> actions: [];
+    in property <length> menu-x: 0;
+    in property <length> menu-y: 0;
+    callback action-clicked(string);
+    callback close-menu();
+
+    width: 100%;
+    height: 100%;
+    visible: root.open;
+
+    // Backdrop (invisible, catches clicks outside)
+    TouchArea {
+        width: 100%;
+        height: 100%;
+        clicked => { root.close-menu(); }
+    }
+
+    // Menu panel
+    Rectangle {
+        x: root.menu-x;
+        y: root.menu-y;
+        width: 220px;
+        border-radius: Theme.r-lg;
+        background: Theme.bg-elevated;
+        border-width: 1px;
+        border-color: Theme.border-subtle;
+        drop-shadow-blur: 20px;
+        drop-shadow-color: Theme.overlay-backdrop;
+        clip: true;
+
+        VerticalLayout {
+            padding: Theme.sp-1;
+
+            for action[idx] in root.actions : VerticalLayout {
+                spacing: 0;
+
+                Rectangle {
+                    property <bool> hovered: action-ta.has-hover;
+
+                    height: 32px;
+                    border-radius: Theme.r-sm;
+                    background: hovered && !action.disabled ? Theme.hover-fill : transparent;
+                    opacity: action.disabled ? 0.4 : 1.0;
+
+                    action-ta := TouchArea {
+                        enabled: !action.disabled;
+                        mouse-cursor: action.disabled ? default : pointer;
+                        clicked => {
+                            root.action-clicked(action.id);
+                            root.close-menu();
+                        }
+                    }
+
+                    HorizontalLayout {
+                        padding-left: Theme.sp-3;
+                        padding-right: Theme.sp-3;
+                        spacing: Theme.sp-2;
+
+                        if action.icon != "" : Text {
+                            text: action.icon;
+                            color: action.is-danger ? Theme.color-danger : Theme.text-secondary;
+                            font-size: Theme.fs-body;
+                            vertical-alignment: center;
+                            width: 18px;
+                        }
+
+                        Text {
+                            text: action.label;
+                            color: action.is-danger ? Theme.color-danger : Theme.text-primary;
+                            font-size: Theme.fs-body;
+                            vertical-alignment: center;
+                            horizontal-stretch: 1;
+                        }
+
+                        if action.shortcut != "" : Text {
+                            text: action.shortcut;
+                            color: Theme.text-dim;
+                            font-size: Theme.fs-caption;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+
+                // Separator
+                if action.separator-after : Rectangle {
+                    height: 1px;
+                    background: Theme.separator;
+                }
+            }
+        }
+    }
+}

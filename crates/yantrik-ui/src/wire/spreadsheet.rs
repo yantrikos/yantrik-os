@@ -316,11 +316,22 @@ fn color_preset(idx: i32) -> Option<(u8, u8, u8)> {
     }
 }
 
+/// Convert color index to brush for background colors (0 = transparent/default).
 fn color_idx_to_brush(idx: i32) -> slint::Brush {
     if let Some((r, g, b)) = color_preset(idx) {
         slint::Brush::from(slint::Color::from_rgb_u8(r, g, b))
     } else {
         slint::Brush::default()
+    }
+}
+
+/// Convert color index to brush for text colors (0 = light gray, visible on dark bg).
+fn text_color_idx_to_brush(idx: i32) -> slint::Brush {
+    if let Some((r, g, b)) = color_preset(idx) {
+        slint::Brush::from(slint::Color::from_rgb_u8(r, g, b))
+    } else {
+        // Default text color — light gray, visible on dark background
+        slint::Brush::from(slint::Color::from_rgb_u8(230, 230, 230))
     }
 }
 
@@ -1719,7 +1730,7 @@ fn sync_grid_to_ui(ui: &App, state: &SpreadsheetState) {
                 is_italic: cell.is_italic,
                 align: cell.align,
                 bg_color: color_idx_to_brush(cell.bg_color_idx),
-                text_color: color_idx_to_brush(cell.text_color_idx),
+                text_color: text_color_idx_to_brush(cell.text_color_idx),
                 has_comment: sheet.comments.contains_key(&(r, c)),
                 number_format: cell.number_format as i32,
             });
@@ -1794,6 +1805,10 @@ fn sync_status(ui: &App, state: &SpreadsheetState) {
 /// Re-evaluate all formula cells in the active sheet.
 fn recalculate_sheet(state: &mut SpreadsheetState) {
     let sheet_idx = state.active_sheet;
+    if sheet_idx >= state.sheets.len() {
+        state.active_sheet = 0;
+        return;
+    }
     let rows = state.sheets[sheet_idx].cells.len();
     let cols = if rows > 0 {
         state.sheets[sheet_idx].cells[0].len()
@@ -1932,11 +1947,44 @@ pub fn wire(ui: &App, ctx: &AppContext) {
         let ui_weak = ui.as_weak();
         ui.on_sheet_cell_clicked(move |row, col| {
             let mut s = st.borrow_mut();
+            let prev_row = s.active_row;
+            let prev_col = s.active_col;
+
+            // Auto-commit: persist formula bar value to the previous cell before switching
+            if let Some(ui) = ui_weak.upgrade() {
+                let current_text = ui.get_sheet_cell_data().to_string();
+                let old = s.current_sheet().get_cell(prev_row, prev_col);
+                if current_text != old.raw {
+                    s.push_undo();
+                    let display = if current_text.starts_with('=') {
+                        evaluate_formula(&current_text, s.current_sheet())
+                    } else {
+                        current_text.clone()
+                    };
+                    s.current_sheet_mut().set_cell(
+                        prev_row,
+                        prev_col,
+                        CellData {
+                            raw: current_text,
+                            display,
+                            is_bold: old.is_bold,
+                            is_italic: old.is_italic,
+                            align: old.align,
+                            bg_color_idx: old.bg_color_idx,
+                            text_color_idx: old.text_color_idx,
+                            number_format: old.number_format,
+                        },
+                    );
+                    recalculate_sheet(&mut s);
+                }
+            }
+
             s.active_row = row as usize;
             s.active_col = col as usize;
             if let Some(ui) = ui_weak.upgrade() {
                 ui.set_sheet_active_row(row);
                 ui.set_sheet_active_col(col);
+                sync_grid_to_ui(&ui, &s);
                 sync_formula_bar(&ui, &s);
                 sync_status(&ui, &s);
             }
@@ -3223,44 +3271,116 @@ fn wire_ai(ui: &App, ctx: &AppContext, state: Rc<RefCell<SpreadsheetState>>) {
         });
     }
 
-    // Apply AI response (insert formula/value into active cell)
+    // Apply AI response (insert formula/value or CSV data into cells)
     {
         let st = state.clone();
         let ui_weak = ui.as_weak();
         ui.on_sheet_ai_apply(move || {
             if let Some(ui) = ui_weak.upgrade() {
                 let response = ui.get_sheet_ai_response().to_string();
-                // Extract formula if response starts with =
-                let value = if let Some(formula_line) = response.lines().find(|l| l.trim().starts_with('=')) {
-                    formula_line.trim().to_string()
-                } else {
-                    response.lines().next().unwrap_or("").trim().to_string()
-                };
-                if !value.is_empty() {
+                // Strip markdown code fences if present
+                let cleaned = response
+                    .trim()
+                    .trim_start_matches("```csv")
+                    .trim_start_matches("```")
+                    .trim_end_matches("```")
+                    .trim();
+
+                // Detect multi-line CSV data — find the CSV portion by looking for
+                // consecutive lines with commas (skip introductory text)
+                let all_lines: Vec<&str> = cleaned.lines()
+                    .map(|l| l.trim())
+                    .filter(|l| !l.is_empty())
+                    .collect();
+
+                // Find the first line that looks like CSV (contains comma, not a sentence)
+                let csv_start = all_lines.iter().position(|l| {
+                    l.contains(',') && !l.ends_with('.') && !l.ends_with(':')
+                }).unwrap_or(0);
+                let lines: Vec<&str> = all_lines[csv_start..].iter()
+                    .take_while(|l| l.contains(','))
+                    .copied()
+                    .collect();
+
+                let is_csv = lines.len() > 1;
+
+                if is_csv {
+                    // Multi-cell CSV apply: fill from active cell
                     let mut s = st.borrow_mut();
                     s.push_undo();
-                    let row = s.active_row;
-                    let col = s.active_col;
-                    let old = s.current_sheet().get_cell(row, col);
-                    let display = if value.starts_with('=') {
-                        evaluate_formula(&value, s.current_sheet())
-                    } else {
-                        value.clone()
-                    };
-                    s.current_sheet_mut().set_cell(row, col, CellData {
-                        raw: value,
-                        display,
-                        is_bold: old.is_bold,
-                        is_italic: old.is_italic,
-                        align: old.align,
-                        bg_color_idx: old.bg_color_idx,
-                        text_color_idx: old.text_color_idx,
-                        number_format: old.number_format,
-                    });
+                    let start_row = s.active_row;
+                    let start_col = s.active_col;
+                    let mut cells_filled = 0;
+
+                    for (ri, line) in lines.iter().enumerate() {
+                        let row = start_row + ri;
+                        if row >= s.row_count { break; }
+                        for (ci, val) in parse_csv_line(line).iter().enumerate() {
+                            let col = start_col + ci;
+                            if col >= s.col_count { break; }
+                            let val = val.trim().to_string();
+                            let display = if val.starts_with('=') {
+                                evaluate_formula(&val, s.current_sheet())
+                            } else {
+                                val.clone()
+                            };
+                            // Bold the header row
+                            let is_bold = ri == 0;
+                            s.current_sheet_mut().set_cell(row, col, CellData {
+                                raw: val,
+                                display,
+                                is_bold,
+                                is_italic: false,
+                                align: 0,
+                                bg_color_idx: 0,
+                                text_color_idx: 0,
+                                number_format: NumberFormat::General,
+                            });
+                            cells_filled += 1;
+                        }
+                    }
                     recalculate_sheet(&mut s);
                     sync_grid_to_ui(&ui, &s);
                     sync_formula_bar(&ui, &s);
-                    ui.set_sheet_status_text(format!("AI applied to {}{}", col_to_letter(col), row + 1).into());
+                    ui.set_sheet_status_text(
+                        format!("AI filled {} cells ({} rows x {} cols)",
+                            cells_filled, lines.len(),
+                            lines.first().map(|l| parse_csv_line(l).len()).unwrap_or(0)
+                        ).into()
+                    );
+                } else {
+                    // Single-cell apply: formula or value
+                    let value = if let Some(formula_line) = cleaned.lines().find(|l| l.trim().starts_with('=')) {
+                        formula_line.trim().to_string()
+                    } else {
+                        cleaned.lines().next().unwrap_or("").trim().to_string()
+                    };
+                    if !value.is_empty() {
+                        let mut s = st.borrow_mut();
+                        s.push_undo();
+                        let row = s.active_row;
+                        let col = s.active_col;
+                        let old = s.current_sheet().get_cell(row, col);
+                        let display = if value.starts_with('=') {
+                            evaluate_formula(&value, s.current_sheet())
+                        } else {
+                            value.clone()
+                        };
+                        s.current_sheet_mut().set_cell(row, col, CellData {
+                            raw: value,
+                            display,
+                            is_bold: old.is_bold,
+                            is_italic: old.is_italic,
+                            align: old.align,
+                            bg_color_idx: old.bg_color_idx,
+                            text_color_idx: old.text_color_idx,
+                            number_format: old.number_format,
+                        });
+                        recalculate_sheet(&mut s);
+                        sync_grid_to_ui(&ui, &s);
+                        sync_formula_bar(&ui, &s);
+                        ui.set_sheet_status_text(format!("AI applied to {}{}", col_to_letter(col), row + 1).into());
+                    }
                 }
                 ui.set_sheet_ai_response("".into());
             }
@@ -3286,6 +3406,43 @@ fn wire_ai(ui: &App, ctx: &AppContext, state: Rc<RefCell<SpreadsheetState>>) {
         ui.on_sheet_ai_insights(move || {
             let context = build_data_summary(&st.borrow());
             let full_prompt = super::ai_assist::contextual_insights_prompt(&context, "spreadsheet");
+            super::ai_assist::ai_request(
+                &ui_weak,
+                &bridge,
+                &ai_st,
+                super::ai_assist::AiAssistRequest {
+                    prompt: full_prompt,
+                    timeout_secs: 60,
+                    set_working: Box::new(|ui, v| ui.set_sheet_ai_working(v)),
+                    set_response: Box::new(|ui, s| ui.set_sheet_ai_response(s.into())),
+                    get_response: Box::new(|ui| ui.get_sheet_ai_response().to_string()),
+                },
+            );
+        });
+    }
+
+    // ── Generate data ──
+    {
+        let st = state.clone();
+        let bridge = bridge.clone();
+        let ai_st = ai_state.clone();
+        let ui_weak = ui.as_weak();
+        ui.on_sheet_ai_generate_data(move |prompt| {
+            let prompt_str = prompt.to_string();
+            let desc = if prompt_str.trim().is_empty() {
+                "Generate sample sales data with 10 rows".to_string()
+            } else {
+                prompt_str
+            };
+            let s = st.borrow();
+            let start_cell = format!("{}{}", col_to_letter(s.active_col), s.active_row + 1);
+            let full_prompt = format!(
+                "You are a CSV data generator. You output ONLY raw CSV. No words, no explanation, no markdown, no code fences.\n\
+                 REQUEST: {}\n\
+                 RULES: First row = headers. 10-20 data rows. Plain numbers (no $ or %). Dates as YYYY-MM-DD. Realistic varied data.\n\
+                 BEGIN CSV OUTPUT NOW:",
+                desc
+            );
             super::ai_assist::ai_request(
                 &ui_weak,
                 &bridge,

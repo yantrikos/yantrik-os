@@ -41,10 +41,13 @@ impl Instinct for EmailWatchInstinct {
 
         let user = &state.config_user_name;
         let execute_msg = format!(
-            "EXECUTE Use email_check to fetch new emails. If any look urgent or important \
-             (from a known contact, contains deadline language, flagged by sender as important), \
-             summarize the most important one in 1-2 sentences as a notification to {}. \
-             If no new emails or nothing important, respond with just \"No new important emails.\"",
+            "EXECUTE Use email_check to fetch new emails. Before alerting, use recall to check if {} \
+             has previously told you to ignore or dismiss any specific email types (e.g., security alerts \
+             marked as false alarms, recurring notifications they don't care about). Skip those. \
+             If any remaining emails look urgent or important (from a known contact, contains deadline \
+             language, flagged by sender as important), summarize the most important one in 1-2 sentences \
+             as a notification. If no new emails or nothing important, respond with just \
+             \"No new important emails.\"",
             user,
         );
 

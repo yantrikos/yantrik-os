@@ -3,6 +3,9 @@
 // Saved locations, unit toggle, severe weather alerts, last updated, AQI.
 
 import { Theme } from "theme.slint";
+import { YButton, YIconButton } from "components/y_button.slint";
+import { YInput } from "components/y_input.slint";
+import { YEmptyState } from "components/y_empty_state.slint";
 
 // ── Data structs ──
 
@@ -126,43 +129,37 @@ export component WeatherDashboard inherits Rectangle {
         width: 100%;
         height: 100%;
 
-        // ── Header bar (56px) ──
+        // ── Header bar ──
         Rectangle {
-            height: 56px;
+            height: Theme.sp-9;
             background: Theme.bg-surface;
 
+            // Bottom divider
+            Rectangle {
+                y: parent.height - 1px;
+                width: 100%;
+                height: 1px;
+                background: Theme.separator;
+            }
+
             HorizontalLayout {
-                padding-left: 12px;
-                padding-right: 16px;
-                spacing: 12px;
+                padding-left: Theme.sp-3;
+                padding-right: Theme.sp-4;
+                spacing: Theme.sp-3;
 
                 // Back button
-                Rectangle {
-                    width: 36px;
-                    height: 36px;
-                    y: (parent.height - 36px) / 2;
-                    border-radius: 18px;
-                    background: ta-back.has-hover ? Theme.hover-fill-strong : transparent;
-
-                    ta-back := TouchArea {
-                        clicked => { root.back-pressed(); }
-                    }
-
-                    Text {
-                        text: "\u{2190}";
-                        color: Theme.text-primary;
-                        font-size: 20px;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
-                    }
+                YIconButton {
+                    icon: "\u{2190}";
+                    variant: 2;
+                    clicked => { root.back-pressed(); }
                 }
 
                 // Title
                 Text {
                     text: "Weather";
                     color: Theme.text-primary;
-                    font-size: Theme.font-title;
-                    font-weight: 600;
+                    font-size: Theme.fs-title-2;
+                    font-weight: Theme.fw-title-2;
                     vertical-alignment: center;
                 }
 
@@ -175,7 +172,7 @@ export component WeatherDashboard inherits Rectangle {
                     }
                     Rectangle {
                         height: 32px;
-                        border-radius: Theme.radius-pill;
+                        border-radius: Theme.r-pill;
                         background: root.weather-location-panel-open ? Theme.tint-accent : (parent.has-hover ? Theme.hover-fill-strong : Theme.bg-card);
                         border-width: 1px;
                         border-color: root.weather-location-panel-open ? Theme.accent-dim : Theme.border-subtle;
@@ -247,7 +244,7 @@ export component WeatherDashboard inherits Rectangle {
                         Text {
                             text: "\u{00B0}C";
                             x: 6px;
-                            color: root.weather-use-fahrenheit ? Theme.text-dim : #ffffff;
+                            color: root.weather-use-fahrenheit ? Theme.text-dim : Theme.text-on-accent;
                             font-size: 10px;
                             font-weight: 600;
                             vertical-alignment: center;
@@ -259,7 +256,7 @@ export component WeatherDashboard inherits Rectangle {
                         Text {
                             text: "\u{00B0}F";
                             x: 28px;
-                            color: root.weather-use-fahrenheit ? #ffffff : Theme.text-dim;
+                            color: root.weather-use-fahrenheit ? Theme.text-on-accent : Theme.text-dim;
                             font-size: 10px;
                             font-weight: 600;
                             vertical-alignment: center;
@@ -284,7 +281,7 @@ export component WeatherDashboard inherits Rectangle {
                     }
                     ai-wx-btn := Rectangle {
                         height: 32px;
-                        border-radius: Theme.radius-pill;
+                        border-radius: Theme.r-pill;
                         background: root.ai-is-working ? Theme.accent
                             : (parent.has-hover ? Theme.hover-fill-strong : Theme.bg-card);
                         border-width: 1px;
@@ -301,7 +298,7 @@ export component WeatherDashboard inherits Rectangle {
                             }
                             Text {
                                 text: root.ai-is-working ? "Analyzing..." : "AI Insights";
-                                color: root.ai-is-working ? #ffffff : Theme.text-secondary;
+                                color: root.ai-is-working ? Theme.text-on-accent : Theme.text-secondary;
                                 font-size: 11px;
                                 font-weight: 500;
                                 vertical-alignment: center;
@@ -359,6 +356,7 @@ export component WeatherDashboard inherits Rectangle {
                             background: Theme.bg-card;
                             border-width: 1px;
                             border-color: Theme.border-subtle;
+                            clip: true;
 
                             loc-input := TextInput {
                                 text <=> root.weather-add-location-text;
@@ -403,7 +401,7 @@ export component WeatherDashboard inherits Rectangle {
                                 border-color: Theme.border-subtle;
                                 Text {
                                     text: "+";
-                                    color: add-loc-btn.background == Theme.accent ? #ffffff : Theme.accent;
+                                    color: add-loc-btn.background == Theme.accent ? Theme.text-on-accent : Theme.accent;
                                     font-size: 16px;
                                     font-weight: 700;
                                     horizontal-alignment: center;
@@ -552,7 +550,7 @@ export component WeatherDashboard inherits Rectangle {
         // ── AI Response Panel ──
         if root.ai-panel-open && root.ai-response != "" : Rectangle {
             max-height: 160px;
-            background: #1a2332;
+            background: Theme.bg-overlay-panel;
             border-width: 1px;
             border-color: Theme.accent.transparentize(70%);
 
@@ -560,8 +558,8 @@ export component WeatherDashboard inherits Rectangle {
                 viewport-height: ai-wx-resp.preferred-height + 16px;
 
                 ai-wx-resp := VerticalLayout {
-                    padding: 12px;
-                    spacing: 8px;
+                    padding: Theme.sp-3;
+                    spacing: Theme.sp-2;
 
                     HorizontalLayout {
                         spacing: 6px;
@@ -578,24 +576,12 @@ export component WeatherDashboard inherits Rectangle {
                             vertical-alignment: center;
                         }
                         Rectangle { horizontal-stretch: 1; }
-                        TouchArea {
-                            width: 24px;
-                            height: 24px;
+                        YIconButton {
+                            icon: "\u{2715}";
+                            variant: 2;
                             clicked => {
                                 root.ai-panel-open = false;
                                 root.ai-dismiss();
-                            }
-                            Rectangle {
-                                width: 24px; height: 24px;
-                                border-radius: 12px;
-                                background: parent.has-hover ? Theme.hover-fill : transparent;
-                                Text {
-                                    text: "\u{2715}";
-                                    font-size: 11px;
-                                    color: Theme.text-dim;
-                                    horizontal-alignment: center;
-                                    vertical-alignment: center;
-                                }
                             }
                         }
                     }
@@ -615,21 +601,21 @@ export component WeatherDashboard inherits Rectangle {
             viewport-height: content-col.preferred-height + 40px;
 
             content-col := VerticalLayout {
-                padding: 20px;
-                spacing: 16px;
+                padding: Theme.sp-5;
+                spacing: Theme.sp-4;
 
                 // ══════ ERROR BANNER ══════
                 if root.current.error-text != "" : Rectangle {
-                    background: #e8444420;
-                    border-radius: Theme.radius-card;
+                    background: Theme.color-danger-dim;
+                    border-radius: Theme.r-lg;
                     border-width: 1px;
-                    border-color: #e8444440;
+                    border-color: Theme.color-danger.with-alpha(0.25);
                     height: 48px;
 
                     Text {
                         text: root.current.error-text;
-                        color: #e88888;
-                        font-size: Theme.font-body;
+                        color: Theme.color-danger;
+                        font-size: Theme.fs-body;
                         horizontal-alignment: center;
                         vertical-alignment: center;
                     }
@@ -637,14 +623,14 @@ export component WeatherDashboard inherits Rectangle {
 
                 // ══════ SEVERE WEATHER ALERT BANNER ══════
                 if root.weather-severe-alert-active : Rectangle {
-                    background: root.weather-severe-alert-level == "watch" ? #ff980020
-                        : root.weather-severe-alert-level == "warning" ? #e8444420
-                        : root.weather-severe-alert-level == "emergency" ? #e8444430
-                        : #ff980020;
-                    border-radius: Theme.radius-card;
+                    background: root.weather-severe-alert-level == "watch" ? Theme.color-warning-dim
+                        : root.weather-severe-alert-level == "warning" ? Theme.color-danger-dim
+                        : root.weather-severe-alert-level == "emergency" ? Theme.color-danger.with-alpha(0.19)
+                        : Theme.color-warning-dim;
+                    border-radius: Theme.r-lg;
                     border-width: 1px;
-                    border-color: root.weather-severe-alert-level == "watch" ? #ff980060
-                        : #e8444460;
+                    border-color: root.weather-severe-alert-level == "watch" ? Theme.color-warning.with-alpha(0.37)
+                        : Theme.color-danger.with-alpha(0.37);
                     height: severe-alert-row.preferred-height + 16px;
 
                     severe-alert-row := HorizontalLayout {
@@ -667,17 +653,17 @@ export component WeatherDashboard inherits Rectangle {
                                 text: root.weather-severe-alert-level == "watch" ? "Weather Watch"
                                     : root.weather-severe-alert-level == "warning" ? "Weather Warning"
                                     : "Weather Emergency";
-                                font-size: Theme.font-body;
+                                font-size: Theme.fs-body;
                                 font-weight: 700;
-                                color: root.weather-severe-alert-level == "watch" ? #ff9800
-                                    : #e84444;
+                                color: root.weather-severe-alert-level == "watch" ? Theme.color-warning
+                                    : Theme.color-danger;
                             }
 
                             Text {
                                 text: root.weather-severe-alert-text;
-                                font-size: Theme.font-small;
-                                color: root.weather-severe-alert-level == "watch" ? #ffb74d
-                                    : #e88888;
+                                font-size: Theme.fs-caption;
+                                color: root.weather-severe-alert-level == "watch" ? Theme.color-warning
+                                    : Theme.color-danger;
                                 wrap: word-wrap;
                             }
                         }
@@ -687,7 +673,7 @@ export component WeatherDashboard inherits Rectangle {
                 // ══════ HERO SECTION — Current Conditions ══════
                 Rectangle {
                     background: Theme.bg-card;
-                    border-radius: Theme.radius-card;
+                    border-radius: Theme.r-lg;
                     border-width: 1px;
                     border-color: Theme.border-subtle;
                     height: hero-col.preferred-height;
@@ -702,14 +688,14 @@ export component WeatherDashboard inherits Rectangle {
                     }
 
                     hero-col := VerticalLayout {
-                        padding: 24px;
-                        spacing: 16px;
+                        padding: Theme.sp-6;
+                        spacing: Theme.sp-4;
 
                         // Loading indicator
                         if root.current.is-loading : Text {
                             text: "Fetching weather data...";
                             color: Theme.text-dim;
-                            font-size: Theme.font-body;
+                            font-size: Theme.fs-body;
                             horizontal-alignment: center;
                         }
 
@@ -740,13 +726,13 @@ export component WeatherDashboard inherits Rectangle {
                                 Text {
                                     text: root.current.condition;
                                     color: Theme.text-secondary;
-                                    font-size: Theme.font-title;
+                                    font-size: Theme.fs-headline;
                                 }
 
                                 Text {
                                     text: "Feels like " + root.current.feels-like;
                                     color: Theme.text-dim;
-                                    font-size: Theme.font-small;
+                                    font-size: Theme.fs-caption;
                                 }
                             }
                         }
@@ -771,7 +757,7 @@ export component WeatherDashboard inherits Rectangle {
                                 Text {
                                     text: root.current.humidity;
                                     color: Theme.text-primary;
-                                    font-size: Theme.font-body;
+                                    font-size: Theme.fs-body;
                                     font-weight: 600;
                                     horizontal-alignment: center;
                                 }
@@ -796,7 +782,7 @@ export component WeatherDashboard inherits Rectangle {
                                 Text {
                                     text: root.current.wind-speed;
                                     color: Theme.text-primary;
-                                    font-size: Theme.font-body;
+                                    font-size: Theme.fs-body;
                                     font-weight: 600;
                                     horizontal-alignment: center;
                                 }
@@ -821,7 +807,7 @@ export component WeatherDashboard inherits Rectangle {
                                 Text {
                                     text: root.current.uv-index;
                                     color: Theme.text-primary;
-                                    font-size: Theme.font-body;
+                                    font-size: Theme.fs-body;
                                     font-weight: 600;
                                     horizontal-alignment: center;
                                 }
@@ -846,7 +832,7 @@ export component WeatherDashboard inherits Rectangle {
                                 Text {
                                     text: root.current.visibility;
                                     color: Theme.text-primary;
-                                    font-size: Theme.font-body;
+                                    font-size: Theme.fs-body;
                                     font-weight: 600;
                                     horizontal-alignment: center;
                                 }
@@ -883,25 +869,25 @@ export component WeatherDashboard inherits Rectangle {
 
                 Rectangle {
                     background: Theme.bg-card;
-                    border-radius: Theme.radius-card;
+                    border-radius: Theme.r-lg;
                     border-width: 1px;
                     border-color: Theme.border-subtle;
                     height: 110px;
                     clip: true;
 
                     Flickable {
-                        width: parent.width - 16px;
-                        x: 8px;
+                        width: parent.width - Theme.sp-4;
+                        x: Theme.sp-2;
                         height: parent.height;
-                        viewport-width: hourly.length * 70px + 16px;
+                        viewport-width: hourly.length * 70px + Theme.sp-4;
 
                         HorizontalLayout {
-                            padding: 8px;
-                            spacing: 4px;
+                            padding: Theme.sp-2;
+                            spacing: Theme.sp-1;
 
                             for hour[i] in root.hourly : Rectangle {
                                 width: 62px;
-                                border-radius: 8px;
+                                border-radius: Theme.r-md;
                                 background: hour.is-current ? Theme.tint-accent : transparent;
                                 border-width: hour.is-current ? 1px : 0px;
                                 border-color: hour.is-current ? Theme.accent-dim : transparent;
@@ -960,7 +946,7 @@ export component WeatherDashboard inherits Rectangle {
 
                 Rectangle {
                     background: Theme.bg-card;
-                    border-radius: Theme.radius-card;
+                    border-radius: Theme.r-lg;
                     border-width: 1px;
                     border-color: Theme.border-subtle;
                     height: daily-col.preferred-height;
@@ -981,7 +967,7 @@ export component WeatherDashboard inherits Rectangle {
                                 Text {
                                     text: day.day-name;
                                     color: Theme.text-primary;
-                                    font-size: Theme.font-body;
+                                    font-size: Theme.fs-body;
                                     vertical-alignment: center;
                                     width: 80px;
                                 }
@@ -999,7 +985,7 @@ export component WeatherDashboard inherits Rectangle {
                                 Text {
                                     text: day.precip-chance;
                                     color: Theme.holo-blue;
-                                    font-size: Theme.font-small;
+                                    font-size: Theme.fs-caption;
                                     vertical-alignment: center;
                                     width: 42px;
                                     horizontal-alignment: right;
@@ -1064,9 +1050,9 @@ export component WeatherDashboard inherits Rectangle {
                     Rectangle {
                         width: 3px; height: 14px;
                         border-radius: 1.5px;
-                        background: Theme.cyan;
+                        background: Theme.accent;
                         drop-shadow-blur: 4px;
-                        drop-shadow-color: Theme.cyan-glow;
+                        drop-shadow-color: Theme.accent-glow;
                     }
                     Text {
                         text: "DETAILS";
@@ -1089,7 +1075,7 @@ export component WeatherDashboard inherits Rectangle {
                         // Sunrise
                         Rectangle {
                             background: Theme.bg-card;
-                            border-radius: Theme.radius-card;
+                            border-radius: Theme.r-lg;
                             border-width: 1px;
                             border-color: Theme.border-subtle;
                             height: 72px;
@@ -1108,7 +1094,7 @@ export component WeatherDashboard inherits Rectangle {
                                     Text {
                                         text: "Sunrise";
                                         color: Theme.text-dim;
-                                        font-size: Theme.font-small;
+                                        font-size: Theme.fs-caption;
                                         vertical-alignment: center;
                                     }
                                 }
@@ -1124,7 +1110,7 @@ export component WeatherDashboard inherits Rectangle {
                         // Pressure
                         Rectangle {
                             background: Theme.bg-card;
-                            border-radius: Theme.radius-card;
+                            border-radius: Theme.r-lg;
                             border-width: 1px;
                             border-color: Theme.border-subtle;
                             height: 72px;
@@ -1143,7 +1129,7 @@ export component WeatherDashboard inherits Rectangle {
                                     Text {
                                         text: "Pressure";
                                         color: Theme.text-dim;
-                                        font-size: Theme.font-small;
+                                        font-size: Theme.fs-caption;
                                         vertical-alignment: center;
                                     }
                                 }
@@ -1159,7 +1145,7 @@ export component WeatherDashboard inherits Rectangle {
                         // Cloud Cover
                         Rectangle {
                             background: Theme.bg-card;
-                            border-radius: Theme.radius-card;
+                            border-radius: Theme.r-lg;
                             border-width: 1px;
                             border-color: Theme.border-subtle;
                             height: 72px;
@@ -1178,7 +1164,7 @@ export component WeatherDashboard inherits Rectangle {
                                     Text {
                                         text: "Cloud Cover";
                                         color: Theme.text-dim;
-                                        font-size: Theme.font-small;
+                                        font-size: Theme.fs-caption;
                                         vertical-alignment: center;
                                     }
                                 }
@@ -1194,7 +1180,7 @@ export component WeatherDashboard inherits Rectangle {
                         // AQI Card
                         Rectangle {
                             background: Theme.bg-card;
-                            border-radius: Theme.radius-card;
+                            border-radius: Theme.r-lg;
                             border-width: 1px;
                             border-color: Theme.border-subtle;
                             height: 72px;
@@ -1213,7 +1199,7 @@ export component WeatherDashboard inherits Rectangle {
                                     Text {
                                         text: "Air Quality";
                                         color: Theme.text-dim;
-                                        font-size: Theme.font-small;
+                                        font-size: Theme.fs-caption;
                                         vertical-alignment: center;
                                     }
                                     Rectangle { horizontal-stretch: 1; }
@@ -1222,12 +1208,12 @@ export component WeatherDashboard inherits Rectangle {
                                         width: aqi-badge-text.preferred-width + 10px;
                                         height: 18px;
                                         border-radius: 9px;
-                                        background: root.weather-aqi-level == 0 ? #4caf5030
+                                        background: root.weather-aqi-level == 0 ? Theme.color-success-dim
                                                    : root.weather-aqi-level == 1 ? Theme.amber.transparentize(70%)
                                                    : Theme.color-emotional.transparentize(70%);
                                         aqi-badge-text := Text {
                                             text: root.weather-aqi-label;
-                                            color: root.weather-aqi-level == 0 ? #4caf50
+                                            color: root.weather-aqi-level == 0 ? Theme.color-success
                                                   : root.weather-aqi-level == 1 ? Theme.amber
                                                   : Theme.color-emotional;
                                             font-size: 9px;
@@ -1239,7 +1225,7 @@ export component WeatherDashboard inherits Rectangle {
                                 }
                                 Text {
                                     text: root.weather-aqi-value;
-                                    color: root.weather-aqi-level == 0 ? #4caf50
+                                    color: root.weather-aqi-level == 0 ? Theme.color-success
                                           : root.weather-aqi-level == 1 ? Theme.amber
                                           : Theme.color-emotional;
                                     font-size: 18px;
@@ -1257,7 +1243,7 @@ export component WeatherDashboard inherits Rectangle {
                         // Sunset
                         Rectangle {
                             background: Theme.bg-card;
-                            border-radius: Theme.radius-card;
+                            border-radius: Theme.r-lg;
                             border-width: 1px;
                             border-color: Theme.border-subtle;
                             height: 72px;
@@ -1276,7 +1262,7 @@ export component WeatherDashboard inherits Rectangle {
                                     Text {
                                         text: "Sunset";
                                         color: Theme.text-dim;
-                                        font-size: Theme.font-small;
+                                        font-size: Theme.fs-caption;
                                         vertical-alignment: center;
                                     }
                                 }
@@ -1292,7 +1278,7 @@ export component WeatherDashboard inherits Rectangle {
                         // Dew Point
                         Rectangle {
                             background: Theme.bg-card;
-                            border-radius: Theme.radius-card;
+                            border-radius: Theme.r-lg;
                             border-width: 1px;
                             border-color: Theme.border-subtle;
                             height: 72px;
@@ -1311,7 +1297,7 @@ export component WeatherDashboard inherits Rectangle {
                                     Text {
                                         text: "Dew Point";
                                         color: Theme.text-dim;
-                                        font-size: Theme.font-small;
+                                        font-size: Theme.fs-caption;
                                         vertical-alignment: center;
                                     }
                                 }
@@ -1327,7 +1313,7 @@ export component WeatherDashboard inherits Rectangle {
                         // Precipitation
                         Rectangle {
                             background: Theme.bg-card;
-                            border-radius: Theme.radius-card;
+                            border-radius: Theme.r-lg;
                             border-width: 1px;
                             border-color: Theme.border-subtle;
                             height: 72px;
@@ -1346,7 +1332,7 @@ export component WeatherDashboard inherits Rectangle {
                                     Text {
                                         text: "Precip.";
                                         color: Theme.text-dim;
-                                        font-size: Theme.font-small;
+                                        font-size: Theme.fs-caption;
                                         vertical-alignment: center;
                                     }
                                 }
@@ -1362,7 +1348,7 @@ export component WeatherDashboard inherits Rectangle {
                         // Wind Direction detail
                         Rectangle {
                             background: Theme.bg-card;
-                            border-radius: Theme.radius-card;
+                            border-radius: Theme.r-lg;
                             border-width: 1px;
                             border-color: Theme.border-subtle;
                             height: 72px;
@@ -1381,7 +1367,7 @@ export component WeatherDashboard inherits Rectangle {
                                     Text {
                                         text: "Wind Dir.";
                                         color: Theme.text-dim;
-                                        font-size: Theme.font-small;
+                                        font-size: Theme.fs-caption;
                                         vertical-alignment: center;
                                     }
                                 }

@@ -3,6 +3,8 @@
 // 2-column grid layout: CPU+Memory top, Disk+Network middle, Processes bottom.
 
 import { Theme } from "theme.slint";
+import { YButton, YIconButton } from "components/y_button.slint";
+import { YTabs, YTabItem } from "components/y_tabs.slint";
 
 // ── Data structs ──
 
@@ -89,6 +91,16 @@ export component SystemMonitor inherits Rectangle {
     in property <float> health-score: 100.0;  // 0-100
     in property <string> health-summary: "";  // "All systems nominal" or issue description
 
+    // AI Workloads
+    in property <string> ai-model-name: "";
+    in property <string> ai-model-tier: "";
+    in property <float> ai-tokens-per-sec: 0.0;
+    in property <int> ai-tokens-today: 0;
+    in property <int> ai-provider-latency-ms: -1;
+    in property <float> ai-error-rate: 0.0;
+    in property <bool> ai-request-active: false;
+    in property <float> ai-request-progress: 0.0;
+
     // AI Assist
     in property <bool> ai-is-working: false;
     in property <string> ai-response: "";
@@ -103,42 +115,46 @@ export component SystemMonitor inherits Rectangle {
 
         // Header
         Rectangle {
-            height: 48px;
+            height: Theme.sp-9;
             background: Theme.bg-surface;
 
-            HorizontalLayout {
-                padding-left: 12px;
-                padding-right: 16px;
-                alignment: start;
-                spacing: 12px;
+            // Bottom divider
+            Rectangle {
+                y: parent.height - 1px;
+                width: 100%;
+                height: 1px;
+                background: Theme.separator;
+            }
 
-                TouchArea {
-                    width: Theme.touch-target;
-                    height: Theme.touch-target;
+            HorizontalLayout {
+                padding-left: Theme.sp-3;
+                padding-right: Theme.sp-4;
+                alignment: start;
+                spacing: Theme.sp-3;
+
+                YIconButton {
+                    icon: "\u{2190}";
+                    variant: 2;
                     clicked => { root.back-pressed(); }
-                    Text {
-                        text: "\u{2190}";
-                        color: Theme.text-secondary;
-                        font-size: 20px;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
-                    }
                 }
 
                 Text {
                     text: "System Monitor";
                     color: Theme.text-primary;
-                    font-size: Theme.font-title;
-                    font-weight: 600;
+                    font-size: Theme.fs-title-2;
+                    font-weight: Theme.fw-title-2;
                     vertical-alignment: center;
                 }
 
                 Rectangle { horizontal-stretch: 1; }
 
                 // AI Explain button
-                TouchArea {
-                    width: ai-btn-content.preferred-width + 16px;
-                    height: 28px;
+                YButton {
+                    label: root.ai-is-working ? "Analyzing..." : "AI Explain";
+                    icon: root.ai-is-working ? "\u{2B50}" : "\u{2728}";
+                    variant: root.ai-is-working ? 0 : 1;
+                    size: 0;
+                    loading: root.ai-is-working;
                     clicked => {
                         if root.ai-panel-open {
                             root.ai-dismiss();
@@ -146,29 +162,6 @@ export component SystemMonitor inherits Rectangle {
                         } else {
                             root.ai-explain-pressed();
                             root.ai-panel-open = true;
-                        }
-                    }
-                    ai-btn-content := Rectangle {
-                        height: 28px;
-                        border-radius: 14px;
-                        background: root.ai-is-working ? Theme.accent : Theme.bg-card;
-                        HorizontalLayout {
-                            padding-left: 10px;
-                            padding-right: 10px;
-                            spacing: 4px;
-                            alignment: center;
-                            Text {
-                                text: root.ai-is-working ? "\u{2B50}" : "\u{2728}";
-                                font-size: 12px;
-                                vertical-alignment: center;
-                            }
-                            Text {
-                                text: root.ai-is-working ? "Analyzing..." : "AI Explain";
-                                color: root.ai-is-working ? #ffffff : Theme.text-secondary;
-                                font-size: 11px;
-                                font-weight: 500;
-                                vertical-alignment: center;
-                            }
                         }
                     }
                 }
@@ -194,42 +187,35 @@ export component SystemMonitor inherits Rectangle {
         // AI Response Panel
         if root.ai-panel-open && root.ai-response != "" : Rectangle {
             height: ai-resp-layout.preferred-height + 16px;
-            background: #1a2332;
+            background: Theme.bg-elevated;
             border-width: 1px;
             border-color: Theme.accent.transparentize(70%);
 
             ai-resp-layout := VerticalLayout {
-                padding: 12px;
-                spacing: 8px;
+                padding: Theme.sp-3;
+                spacing: Theme.sp-2;
 
                 HorizontalLayout {
-                    spacing: 6px;
+                    spacing: Theme.sp-2;
                     Text {
                         text: "\u{2728}";
-                        font-size: 12px;
+                        font-size: Theme.fs-caption;
                         vertical-alignment: center;
                     }
                     Text {
                         text: "AI Analysis";
                         color: Theme.accent;
-                        font-size: 12px;
-                        font-weight: 600;
+                        font-size: Theme.fs-caption;
+                        font-weight: Theme.fw-headline;
                         vertical-alignment: center;
                     }
                     Rectangle { horizontal-stretch: 1; }
-                    TouchArea {
-                        width: 24px;
-                        height: 24px;
+                    YIconButton {
+                        icon: "\u{2715}";
+                        variant: 2;
                         clicked => {
                             root.ai-dismiss();
                             root.ai-panel-open = false;
-                        }
-                        Text {
-                            text: "\u{2715}";
-                            color: Theme.text-dim;
-                            font-size: 14px;
-                            horizontal-alignment: center;
-                            vertical-alignment: center;
                         }
                     }
                 }
@@ -237,7 +223,7 @@ export component SystemMonitor inherits Rectangle {
                 Text {
                     text: root.ai-response;
                     color: Theme.text-primary;
-                    font-size: 13px;
+                    font-size: Theme.fs-body;
                     wrap: word-wrap;
                 }
             }
@@ -256,14 +242,14 @@ export component SystemMonitor inherits Rectangle {
             }
 
             HorizontalLayout {
-                padding-left: 14px;
-                padding-right: 14px;
-                spacing: 16px;
+                padding-left: Theme.sp-4;
+                padding-right: Theme.sp-4;
+                spacing: Theme.sp-4;
                 alignment: stretch;
 
                 // Left: status dot + status text
                 HorizontalLayout {
-                    spacing: 8px;
+                    spacing: Theme.sp-2;
                     horizontal-stretch: 0;
                     alignment: center;
 
@@ -273,18 +259,18 @@ export component SystemMonitor inherits Rectangle {
                         y: (parent.height - 10px) / 2;
                         border-radius: 5px;
                         background: root.health-status == "Critical" ? Theme.color-emotional :
-                                   root.health-status == "Degraded" ? Theme.amber : #2e9b47;
-                        animate background { duration: 300ms; }
+                                   root.health-status == "Degraded" ? Theme.amber : Theme.color-success;
+                        animate background { duration: 150ms; easing: ease-in-out; }
                     }
 
                     Text {
                         text: root.health-status;
                         color: root.health-status == "Critical" ? Theme.color-emotional :
-                               root.health-status == "Degraded" ? Theme.amber : #2e9b47;
+                               root.health-status == "Degraded" ? Theme.amber : Theme.color-success;
                         font-size: 13px;
                         font-weight: 600;
                         vertical-alignment: center;
-                        animate color { duration: 300ms; }
+                        animate color { duration: 150ms; easing: ease-in-out; }
                     }
                 }
 
@@ -297,12 +283,12 @@ export component SystemMonitor inherits Rectangle {
                     Text {
                         text: Math.round(root.health-score) + "%";
                         color: root.health-status == "Critical" ? Theme.color-emotional :
-                               root.health-status == "Degraded" ? Theme.amber : #2e9b47;
+                               root.health-status == "Degraded" ? Theme.amber : Theme.color-success;
                         font-size: 14px;
                         font-weight: 700;
                         vertical-alignment: center;
                         min-width: 36px;
-                        animate color { duration: 300ms; }
+                        animate color { duration: 150ms; easing: ease-in-out; }
                     }
 
                     Rectangle {
@@ -316,9 +302,9 @@ export component SystemMonitor inherits Rectangle {
                             height: 100%;
                             border-radius: 2px;
                             background: root.health-status == "Critical" ? Theme.color-emotional :
-                                       root.health-status == "Degraded" ? Theme.amber : #2e9b47;
-                            animate width { duration: 300ms; }
-                            animate background { duration: 300ms; }
+                                       root.health-status == "Degraded" ? Theme.amber : Theme.color-success;
+                            animate width { duration: 150ms; easing: ease-in-out; }
+                            animate background { duration: 150ms; easing: ease-in-out; }
                         }
                     }
                 }
@@ -353,7 +339,7 @@ export component SystemMonitor inherits Rectangle {
                     Rectangle {
                         horizontal-stretch: 1;
                         background: Theme.bg-card;
-                        border-radius: Theme.radius-card;
+                        border-radius: Theme.r-lg;
                         height: cpu-inner.preferred-height;
 
                         cpu-inner := VerticalLayout {
@@ -392,7 +378,7 @@ export component SystemMonitor inherits Rectangle {
                                         border-radius: 40px;
                                         border-width: 5px;
                                         border-color: root.cpu-usage > 80 ? Theme.color-emotional :
-                                                     root.cpu-usage > 50 ? Theme.amber : Theme.cyan;
+                                                     root.cpu-usage > 50 ? Theme.amber : Theme.accent;
                                         background: transparent;
                                         // Clip to show percentage (using opacity trick)
                                         opacity: root.cpu-usage / 100;
@@ -404,7 +390,7 @@ export component SystemMonitor inherits Rectangle {
                                     Text {
                                         text: Math.round(root.cpu-usage) + "%";
                                         color: root.cpu-usage > 80 ? Theme.color-emotional :
-                                               root.cpu-usage > 50 ? Theme.amber : Theme.cyan;
+                                               root.cpu-usage > 50 ? Theme.amber : Theme.accent;
                                         font-size: 18px;
                                         font-weight: 700;
                                         horizontal-alignment: center;
@@ -492,7 +478,7 @@ export component SystemMonitor inherits Rectangle {
                                         height: 100%;
                                         border-radius: 4px;
                                         background: core.usage > 80 ? Theme.color-emotional :
-                                                   core.usage > 50 ? Theme.amber : Theme.cyan;
+                                                   core.usage > 50 ? Theme.amber : Theme.accent;
                                         animate width { duration: 300ms; }
                                     }
                                 }
@@ -514,7 +500,7 @@ export component SystemMonitor inherits Rectangle {
                     Rectangle {
                         horizontal-stretch: 1;
                         background: Theme.bg-card;
-                        border-radius: Theme.radius-card;
+                        border-radius: Theme.r-lg;
                         height: mem-inner.preferred-height;
 
                         mem-inner := VerticalLayout {
@@ -551,7 +537,7 @@ export component SystemMonitor inherits Rectangle {
                                         border-radius: 40px;
                                         border-width: 5px;
                                         border-color: root.memory-usage > 85 ? Theme.color-emotional :
-                                                     root.memory-usage > 60 ? Theme.amber : Theme.cyan;
+                                                     root.memory-usage > 60 ? Theme.amber : Theme.accent;
                                         background: transparent;
                                         opacity: root.memory-usage / 100;
                                         animate opacity { duration: 300ms; }
@@ -561,7 +547,7 @@ export component SystemMonitor inherits Rectangle {
                                     Text {
                                         text: Math.round(root.memory-usage) + "%";
                                         color: root.memory-usage > 85 ? Theme.color-emotional :
-                                               root.memory-usage > 60 ? Theme.amber : Theme.cyan;
+                                               root.memory-usage > 60 ? Theme.amber : Theme.accent;
                                         font-size: 18px;
                                         font-weight: 700;
                                         horizontal-alignment: center;
@@ -680,7 +666,7 @@ export component SystemMonitor inherits Rectangle {
                     Rectangle {
                         horizontal-stretch: 1;
                         background: Theme.bg-card;
-                        border-radius: Theme.radius-card;
+                        border-radius: Theme.r-lg;
                         height: disk-inner.preferred-height;
 
                         disk-inner := VerticalLayout {
@@ -697,7 +683,7 @@ export component SystemMonitor inherits Rectangle {
                             if root.disks.length == 0 : Text {
                                 text: "No disk data";
                                 color: Theme.text-dim;
-                                font-size: Theme.font-small;
+                                font-size: Theme.fs-caption;
                             }
 
                             for disk in root.disks : VerticalLayout {
@@ -733,7 +719,7 @@ export component SystemMonitor inherits Rectangle {
                                             height: 100%;
                                             border-radius: 4px;
                                             background: disk.usage-percent > 90 ? Theme.color-emotional :
-                                                       disk.usage-percent > 75 ? Theme.amber : Theme.cyan;
+                                                       disk.usage-percent > 75 ? Theme.amber : Theme.accent;
                                             animate width { duration: 300ms; }
                                         }
                                     }
@@ -764,7 +750,7 @@ export component SystemMonitor inherits Rectangle {
                     Rectangle {
                         horizontal-stretch: 1;
                         background: Theme.bg-card;
-                        border-radius: Theme.radius-card;
+                        border-radius: Theme.r-lg;
                         height: net-inner.preferred-height;
 
                         net-inner := VerticalLayout {
@@ -781,7 +767,7 @@ export component SystemMonitor inherits Rectangle {
                             if root.network-interfaces.length == 0 : Text {
                                 text: "No network interfaces";
                                 color: Theme.text-dim;
-                                font-size: Theme.font-small;
+                                font-size: Theme.fs-caption;
                             }
 
                             for iface in root.network-interfaces : VerticalLayout {
@@ -797,7 +783,7 @@ export component SystemMonitor inherits Rectangle {
                                         height: 6px;
                                         y: (parent.height - 6px) / 2;
                                         border-radius: 3px;
-                                        background: Theme.cyan;
+                                        background: Theme.accent;
                                     }
 
                                     Text {
@@ -828,7 +814,7 @@ export component SystemMonitor inherits Rectangle {
                                         spacing: 4px;
                                         Text {
                                             text: "\u{2193}";
-                                            color: Theme.cyan;
+                                            color: Theme.accent;
                                             font-size: 12px;
                                             vertical-alignment: center;
                                         }
@@ -883,10 +869,202 @@ export component SystemMonitor inherits Rectangle {
                     }
                 }
 
+                // ── Row 2.5: AI Workloads (full width) ──
+                Rectangle {
+                    background: Theme.bg-card;
+                    border-radius: Theme.r-lg;
+                    height: ai-wl-inner.preferred-height;
+
+                    ai-wl-inner := VerticalLayout {
+                        padding: 14px;
+                        spacing: 8px;
+
+                        // Header
+                        HorizontalLayout {
+                            spacing: 8px;
+                            Text {
+                                text: "AI WORKLOADS";
+                                color: Theme.text-dim;
+                                font-size: Theme.fs-caption;
+                                font-weight: 600;
+                                letter-spacing: 2px;
+                                horizontal-stretch: 1;
+                                vertical-alignment: center;
+                            }
+                            // Status indicator
+                            Rectangle {
+                                width: 8px;
+                                height: 8px;
+                                y: (parent.height - 8px) / 2;
+                                border-radius: 4px;
+                                background: root.ai-model-name != "" ? Theme.color-reminder : Theme.text-dim;
+                                drop-shadow-blur: root.ai-model-name != "" ? 6px : 0px;
+                                drop-shadow-color: Theme.color-success.transparentize(60%);
+                            }
+                        }
+
+                        Rectangle { height: 1px; background: Theme.bg-elevated; }
+
+                        // Model info row
+                        HorizontalLayout {
+                            spacing: 10px;
+                            Text {
+                                text: "Model";
+                                color: Theme.text-dim;
+                                font-size: Theme.fs-caption;
+                                vertical-alignment: center;
+                            }
+                            Text {
+                                text: root.ai-model-name != "" ? root.ai-model-name : "—";
+                                color: Theme.accent;
+                                font-size: Theme.fs-body;
+                                font-weight: 500;
+                                horizontal-stretch: 1;
+                                vertical-alignment: center;
+                            }
+                            if root.ai-model-tier != "" : Rectangle {
+                                width: ai-tier-txt.preferred-width + 12px;
+                                height: 20px;
+                                border-radius: 10px;
+                                background: root.ai-model-tier == "Large" ? Theme.tint-accent
+                                          : root.ai-model-tier == "Medium" ? Theme.tint-cyan
+                                          : root.ai-model-tier == "Small" ? Theme.tint-amber
+                                          : Theme.hover-fill;
+                                ai-tier-txt := Text {
+                                    text: root.ai-model-tier;
+                                    color: root.ai-model-tier == "Large" ? Theme.accent
+                                         : root.ai-model-tier == "Medium" ? Theme.accent
+                                         : root.ai-model-tier == "Small" ? Theme.amber
+                                         : Theme.text-secondary;
+                                    font-size: 10px;
+                                    font-weight: 600;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+
+                        Rectangle { height: 1px; background: Theme.bg-elevated; }
+
+                        // Metrics row
+                        HorizontalLayout {
+                            spacing: 24px;
+
+                            // Tokens/sec
+                            VerticalLayout {
+                                spacing: 2px;
+                                horizontal-stretch: 1;
+                                Text {
+                                    text: "Tokens/sec";
+                                    color: Theme.text-dim;
+                                    font-size: 10px;
+                                }
+                                Text {
+                                    text: root.ai-tokens-per-sec > 0.0 ? round(root.ai-tokens-per-sec) + " t/s" : "—";
+                                    color: Theme.text-primary;
+                                    font-size: Theme.fs-headline;
+                                    font-weight: 600;
+                                }
+                            }
+
+                            // Today's tokens
+                            VerticalLayout {
+                                spacing: 2px;
+                                horizontal-stretch: 1;
+                                Text {
+                                    text: "Today";
+                                    color: Theme.text-dim;
+                                    font-size: 10px;
+                                }
+                                Text {
+                                    text: root.ai-tokens-today > 0 ? root.ai-tokens-today + "" : "—";
+                                    color: Theme.text-primary;
+                                    font-size: Theme.fs-headline;
+                                    font-weight: 600;
+                                }
+                            }
+
+                            // Latency
+                            VerticalLayout {
+                                spacing: 2px;
+                                horizontal-stretch: 1;
+                                Text {
+                                    text: "Latency";
+                                    color: Theme.text-dim;
+                                    font-size: 10px;
+                                }
+                                Text {
+                                    text: root.ai-provider-latency-ms >= 0 ? root.ai-provider-latency-ms + "ms" : "—";
+                                    color: root.ai-provider-latency-ms >= 0 && root.ai-provider-latency-ms < 200 ? Theme.color-reminder
+                                         : root.ai-provider-latency-ms < 500 ? Theme.amber
+                                         : Theme.color-emotional;
+                                    font-size: Theme.fs-headline;
+                                    font-weight: 600;
+                                }
+                            }
+
+                            // Error rate
+                            VerticalLayout {
+                                spacing: 2px;
+                                horizontal-stretch: 1;
+                                Text {
+                                    text: "Error Rate";
+                                    color: Theme.text-dim;
+                                    font-size: 10px;
+                                }
+                                Text {
+                                    text: root.ai-error-rate > 0.0 ? round(root.ai-error-rate * 100.0) + "%" : "0%";
+                                    color: root.ai-error-rate < 0.05 ? Theme.color-reminder
+                                         : root.ai-error-rate < 0.2 ? Theme.amber
+                                         : Theme.color-emotional;
+                                    font-size: Theme.fs-headline;
+                                    font-weight: 600;
+                                }
+                            }
+                        }
+
+                        // Active request progress bar
+                        if root.ai-request-active : VerticalLayout {
+                            spacing: 4px;
+                            Rectangle { height: 1px; background: Theme.bg-elevated; }
+                            HorizontalLayout {
+                                spacing: 8px;
+                                Text {
+                                    text: "Active Request";
+                                    color: Theme.text-dim;
+                                    font-size: 10px;
+                                    vertical-alignment: center;
+                                }
+                                Rectangle {
+                                    height: 4px;
+                                    horizontal-stretch: 1;
+                                    border-radius: 2px;
+                                    background: Theme.bg-elevated;
+                                    Rectangle {
+                                        width: parent.width * (root.ai-request-progress / 100.0);
+                                        height: 4px;
+                                        border-radius: 2px;
+                                        background: Theme.accent;
+                                        drop-shadow-blur: 4px;
+                                        drop-shadow-color: Theme.accent-glow;
+                                    }
+                                }
+                                Text {
+                                    text: round(root.ai-request-progress) + "%";
+                                    color: Theme.accent;
+                                    font-size: 10px;
+                                    font-weight: 600;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+                    }
+                }
+
                 // ── Row 3: Processes (full width) ──
                 Rectangle {
                     background: Theme.bg-card;
-                    border-radius: Theme.radius-card;
+                    border-radius: Theme.r-lg;
                     height: proc-inner.preferred-height;
 
                     proc-inner := VerticalLayout {
@@ -938,11 +1116,11 @@ export component SystemMonitor inherits Rectangle {
                                     Rectangle {
                                         width: 100%; height: 100%;
                                         border-radius: 8px;
-                                        background: ta-fkill.has-hover ? #cc3333 : #992222;
+                                        background: ta-fkill.has-hover ? Theme.color-danger.brighter(20%) : Theme.color-danger;
                                         animate background { duration: 120ms; }
                                         Text {
                                             text: "Force Kill";
-                                            color: #ffffff;
+                                            color: Theme.text-on-accent;
                                             font-size: 11px;
                                             font-weight: 500;
                                             horizontal-alignment: center;
@@ -963,10 +1141,11 @@ export component SystemMonitor inherits Rectangle {
                         // Search bar
                         Rectangle {
                             height: 30px;
-                            background: #0a091080;
+                            background: Theme.bg-deep;
                             border-width: 1px;
                             border-color: Theme.border-subtle;
                             border-radius: 8px;
+                            clip: true;
 
                             HorizontalLayout {
                                 padding-left: 10px;
@@ -1029,7 +1208,7 @@ export component SystemMonitor inherits Rectangle {
                                     spacing: 2px;
                                     Text {
                                         text: "CPU%";
-                                        color: root.sort-column == 0 ? Theme.cyan : Theme.text-dim;
+                                        color: root.sort-column == 0 ? Theme.accent : Theme.text-dim;
                                         font-size: 10px;
                                         letter-spacing: 1px;
                                         font-weight: root.sort-column == 0 ? 700 : 400;
@@ -1038,7 +1217,7 @@ export component SystemMonitor inherits Rectangle {
                                     }
                                     if root.sort-column == 0 : Text {
                                         text: "\u{25BC}";
-                                        color: Theme.cyan;
+                                        color: Theme.accent;
                                         font-size: 8px;
                                         vertical-alignment: center;
                                     }
@@ -1055,7 +1234,7 @@ export component SystemMonitor inherits Rectangle {
                                     spacing: 2px;
                                     Text {
                                         text: "MEM%";
-                                        color: root.sort-column == 1 ? Theme.cyan : Theme.text-dim;
+                                        color: root.sort-column == 1 ? Theme.accent : Theme.text-dim;
                                         font-size: 10px;
                                         letter-spacing: 1px;
                                         font-weight: root.sort-column == 1 ? 700 : 400;
@@ -1064,7 +1243,7 @@ export component SystemMonitor inherits Rectangle {
                                     }
                                     if root.sort-column == 1 : Text {
                                         text: "\u{25BC}";
-                                        color: Theme.cyan;
+                                        color: Theme.accent;
                                         font-size: 8px;
                                         vertical-alignment: center;
                                     }
@@ -1087,7 +1266,7 @@ export component SystemMonitor inherits Rectangle {
                         if root.processes.length == 0 : Text {
                             text: "No process data";
                             color: Theme.text-dim;
-                            font-size: Theme.font-small;
+                            font-size: Theme.fs-caption;
                         }
 
                         for proc in root.processes : Rectangle {
@@ -1123,7 +1302,7 @@ export component SystemMonitor inherits Rectangle {
                                 Text {
                                     text: proc.name;
                                     color: Theme.text-primary;
-                                    font-size: Theme.font-small;
+                                    font-size: Theme.fs-caption;
                                     horizontal-stretch: 1;
                                     overflow: elide;
                                     vertical-alignment: center;
@@ -1133,7 +1312,7 @@ export component SystemMonitor inherits Rectangle {
                                     text: Math.round(proc.cpu-percent * 10) / 10 + "%";
                                     color: proc.cpu-percent > 80 ? Theme.color-emotional :
                                            proc.cpu-percent > 50 ? Theme.amber : Theme.text-secondary;
-                                    font-size: Theme.font-small;
+                                    font-size: Theme.fs-caption;
                                     font-weight: 500;
                                     min-width: 56px;
                                     horizontal-alignment: right;
@@ -1144,7 +1323,7 @@ export component SystemMonitor inherits Rectangle {
                                     text: Math.round(proc.mem-percent * 10) / 10 + "%";
                                     color: proc.mem-percent > 80 ? Theme.color-emotional :
                                            proc.mem-percent > 50 ? Theme.amber : Theme.text-secondary;
-                                    font-size: Theme.font-small;
+                                    font-size: Theme.fs-caption;
                                     font-weight: 500;
                                     min-width: 56px;
                                     horizontal-alignment: right;
@@ -1153,7 +1332,7 @@ export component SystemMonitor inherits Rectangle {
 
                                 Text {
                                     text: proc.status;
-                                    color: proc.status == "R" ? Theme.cyan :
+                                    color: proc.status == "R" ? Theme.accent :
                                            proc.status == "S" ? Theme.text-dim :
                                            proc.status == "Z" ? Theme.color-emotional : Theme.text-dim;
                                     font-size: 10px;

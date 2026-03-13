@@ -75,19 +75,19 @@ export component WindowFrame inherits Rectangle {
 
     // Glass body — semi-transparent deep background
     background: @linear-gradient(180deg,
-        #0a0a18e8 0%,
-        #080814e0 50%,
-        #0a0a18e8 100%
+        Theme.bg-deep.transparentize(9%) 0%,
+        Theme.bg-deep.transparentize(12%) 50%,
+        Theme.bg-deep.transparentize(9%) 100%
     );
     border-radius: root.is-maximized ? 0px : 12px;
     clip: true;
     drop-shadow-blur: root.is-maximized ? 0px : 24px;
-    drop-shadow-color: root.is-maximized ? transparent : #000000cc;
+    drop-shadow-color: root.is-maximized ? transparent : Theme.overlay-shadow;
     border-width: root.is-maximized ? 0px : 1px;
     border-color: root.is-maximized ? transparent : @linear-gradient(180deg,
-        #ffffff14 0%,
-        #ffffff08 50%,
-        #ffffff04 100%
+        Theme.border-strong 0%,
+        Theme.separator 50%,
+        Theme.border-subtle 100%
     );
 
     animate border-radius, drop-shadow-blur, border-width { duration: 200ms; easing: ease-out; }
@@ -99,8 +99,8 @@ export component WindowFrame inherits Rectangle {
         Rectangle {
             height: 36px;
             background: @linear-gradient(180deg,
-                #14122290 0%,
-                #0e0d18a0 100%
+                Theme.bg-surface.transparentize(44%) 0%,
+                Theme.bg-deep.transparentize(37%) 100%
             );
 
             // Top edge reflection
@@ -111,9 +111,9 @@ export component WindowFrame inherits Rectangle {
                 border-radius: 0.5px;
                 background: @linear-gradient(90deg,
                     transparent 0%,
-                    #ffffff0c 30%,
-                    #ffffff14 50%,
-                    #ffffff0c 70%,
+                    Theme.border-default 30%,
+                    Theme.border-strong 50%,
+                    Theme.border-default 70%,
                     transparent 100%
                 );
             }
@@ -157,13 +157,13 @@ export component WindowFrame inherits Rectangle {
                         width: 22px;
                         height: 22px;
                         border-radius: 5px;
-                        background: @radial-gradient(circle, root.icon-color, #00000040);
+                        background: @radial-gradient(circle, root.icon-color, Theme.overlay-backdrop);
                         drop-shadow-blur: 6px;
                         drop-shadow-color: root.icon-color;
 
                         Text {
                             text: root.icon-char;
-                            color: #ffffffd0;
+                            color: Theme.text-on-accent;
                             font-size: 12px;
                             horizontal-alignment: center;
                             vertical-alignment: center;
@@ -238,16 +238,16 @@ export component WindowFrame inherits Rectangle {
                         clicked => { root.close(); }
                         Rectangle {
                             width: 100%; height: 100%;
-                            background: close-btn.has-hover ? #e05252 : transparent;
+                            background: close-btn.has-hover ? Theme.color-danger : transparent;
                             drop-shadow-blur: close-btn.has-hover ? 6px : 0;
-                            drop-shadow-color: #e0525260;
+                            drop-shadow-color: Theme.color-danger.transparentize(62%);
 
                             animate background { duration: 120ms; }
                             animate drop-shadow-blur { duration: 120ms; }
 
                             Text {
                                 text: "\u{2715}";
-                                color: close-btn.has-hover ? #ffffff : Theme.text-secondary;
+                                color: close-btn.has-hover ? Theme.text-on-accent : Theme.text-secondary;
                                 font-size: 14px;
                                 horizontal-alignment: center;
                                 vertical-alignment: center;
@@ -277,7 +277,7 @@ export component WindowFrame inherits Rectangle {
         Rectangle {
             vertical-stretch: 1;
             clip: true;
-            background: #080814d8;
+            background: Theme.bg-deep.transparentize(15%);
             @children
         }
     }

@@ -1,5 +1,5 @@
-// Firelight Design Tokens — warm amber + electric cyan on deep black.
-// A sci-fi neural aesthetic: the companion's mind visualized.
+// Yantrik Design System — Calm Graphite
+// "A quiet, precise desktop OS with an always-available intelligence layer."
 // Supports dark (default) and light modes via ThemeMode.dark toggle.
 // Community themes can override key tokens via ThemeOverrides global.
 // Accent color presets via AccentPreset global (index-based).
@@ -14,48 +14,47 @@ export global AccentPreset {
     in-out property <int> index: 0;
 
     // Resolved accent colors — reactive to index + dark mode.
-    // Primary accent
     out property <color> accent:
-        index == 0 ? (ThemeMode.dark ? #5ac8d4 : #1a8a94)   // cyan
+        index == 0 ? (ThemeMode.dark ? #4ecdc4 : #1a8a94)   // teal-cyan
       : index == 1 ? (ThemeMode.dark ? #e8b44c : #9a7020)   // amber
       : index == 2 ? (ThemeMode.dark ? #b484e0 : #7840b0)   // purple
       : index == 3 ? (ThemeMode.dark ? #6cd480 : #2a8a3a)   // green
       :               (ThemeMode.dark ? #e87898 : #c04068);  // pink
 
     out property <color> accent-light:
-        index == 0 ? (ThemeMode.dark ? #7ee0e8 : #40a8b4)
+        index == 0 ? (ThemeMode.dark ? #7ee0d8 : #40a8b4)
       : index == 1 ? (ThemeMode.dark ? #f0cc78 : #b88838)
       : index == 2 ? (ThemeMode.dark ? #cca0f0 : #9060c8)
       : index == 3 ? (ThemeMode.dark ? #90e8a0 : #48a858)
       :               (ThemeMode.dark ? #f098b4 : #d06080);
 
     out property <color> accent-dim:
-        index == 0 ? (ThemeMode.dark ? #3a8a94 : #80c8d0)
+        index == 0 ? (ThemeMode.dark ? #2a9d8f : #80c8d0)
       : index == 1 ? (ThemeMode.dark ? #a07a30 : #c8a860)
       : index == 2 ? (ThemeMode.dark ? #7a50a0 : #b090d0)
       : index == 3 ? (ThemeMode.dark ? #3a7a48 : #80c090)
       :               (ThemeMode.dark ? #a04868 : #d898b0);
 
     out property <color> accent-glow:
-        index == 0 ? (ThemeMode.dark ? #5ac8d450 : #5ac8d430)
-      : index == 1 ? (ThemeMode.dark ? #e8b44c50 : #e8b44c30)
-      : index == 2 ? (ThemeMode.dark ? #b484e050 : #b484e030)
-      : index == 3 ? (ThemeMode.dark ? #6cd48050 : #6cd48030)
-      :               (ThemeMode.dark ? #e8789850 : #e8789830);
+        index == 0 ? (ThemeMode.dark ? #4ecdc440 : #4ecdc430)
+      : index == 1 ? (ThemeMode.dark ? #e8b44c40 : #e8b44c30)
+      : index == 2 ? (ThemeMode.dark ? #b484e040 : #b484e030)
+      : index == 3 ? (ThemeMode.dark ? #6cd48040 : #6cd48030)
+      :               (ThemeMode.dark ? #e8789840 : #e8789830);
 
     out property <color> accent-glow-strong:
-        index == 0 ? (ThemeMode.dark ? #5ac8d480 : #5ac8d450)
-      : index == 1 ? (ThemeMode.dark ? #e8b44c80 : #e8b44c50)
-      : index == 2 ? (ThemeMode.dark ? #b484e080 : #b484e050)
-      : index == 3 ? (ThemeMode.dark ? #6cd48080 : #6cd48050)
-      :               (ThemeMode.dark ? #e8789880 : #e8789850);
+        index == 0 ? (ThemeMode.dark ? #4ecdc470 : #4ecdc450)
+      : index == 1 ? (ThemeMode.dark ? #e8b44c70 : #e8b44c50)
+      : index == 2 ? (ThemeMode.dark ? #b484e070 : #b484e050)
+      : index == 3 ? (ThemeMode.dark ? #6cd48070 : #6cd48050)
+      :               (ThemeMode.dark ? #e8789870 : #e8789850);
 
     out property <color> tint:
-        index == 0 ? (ThemeMode.dark ? #5ac8d420 : #1a8a9a18)
-      : index == 1 ? (ThemeMode.dark ? #e8b44c20 : #9a702018)
-      : index == 2 ? (ThemeMode.dark ? #b484e020 : #7840b018)
-      : index == 3 ? (ThemeMode.dark ? #6cd48020 : #2a8a3a18)
-      :               (ThemeMode.dark ? #e8789820 : #c0406818);
+        index == 0 ? (ThemeMode.dark ? #4ecdc418 : #1a8a9a14)
+      : index == 1 ? (ThemeMode.dark ? #e8b44c18 : #9a702014)
+      : index == 2 ? (ThemeMode.dark ? #b484e018 : #7840b014)
+      : index == 3 ? (ThemeMode.dark ? #6cd48018 : #2a8a3a14)
+      :               (ThemeMode.dark ? #e8789818 : #c0406814);
 
     // Label for current accent (for settings display)
     out property <string> label:
@@ -70,58 +69,59 @@ export global AccentPreset {
 // When enabled, these override the 10 key color tokens in Theme.
 export global ThemeOverrides {
     in-out property <bool> enabled: false;
-    in-out property <color> bg-deep-override:     #050508;
-    in-out property <color> bg-surface-override:   #0c0b10;
-    in-out property <color> bg-card-override:      #12111a;
-    in-out property <color> bg-elevated-override:  #1a1824;
+    in-out property <color> bg-deep-override:     #0c0c14;
+    in-out property <color> bg-surface-override:   #161622;
+    in-out property <color> bg-card-override:      #1e1e2e;
+    in-out property <color> bg-elevated-override:  #262638;
     in-out property <color> amber-override:        #d4a574;
-    in-out property <color> cyan-override:         #5ac8d4;
-    in-out property <color> text-primary-override: #e0e4ec;
-    in-out property <color> text-secondary-override: #7a8494;
-    in-out property <color> text-dim-override:     #3e4454;
-    in-out property <color> accent-override:       #4ab8f0;
+    in-out property <color> cyan-override:         #4ecdc4;
+    in-out property <color> text-primary-override: #e8eaef;
+    in-out property <color> text-secondary-override: #8890a0;
+    in-out property <color> text-dim-override:     #4a5060;
+    in-out property <color> accent-override:       #4ecdc4;
 }
 
 export global Theme {
-    // Backgrounds — override-aware
+    // ─── Surface hierarchy (4-tier depth) ─────────────────────────
+    // base → default → raised → floating
+    // Each tier +6-8% luminance for clear depth without blur.
     out property <color> bg-deep:     ThemeOverrides.enabled ? ThemeOverrides.bg-deep-override
-        : (ThemeMode.dark ? #050508 : #f5f5f7);
+        : (ThemeMode.dark ? #0c0c14 : #f4f4f6);
     out property <color> bg-surface:  ThemeOverrides.enabled ? ThemeOverrides.bg-surface-override
-        : (ThemeMode.dark ? #0c0b10 : #eaeaec);
+        : (ThemeMode.dark ? #161622 : #eaeaee);
     out property <color> bg-card:     ThemeOverrides.enabled ? ThemeOverrides.bg-card-override
-        : (ThemeMode.dark ? #12111a : #ffffff);
+        : (ThemeMode.dark ? #1e1e2e : #ffffff);
     out property <color> bg-elevated: ThemeOverrides.enabled ? ThemeOverrides.bg-elevated-override
-        : (ThemeMode.dark ? #1a1824 : #ffffff);
-    out property <color> bg-input:    ThemeMode.dark ? #0e0d14 : #f0f0f4;
-    out property <color> bg-selected: ThemeMode.dark ? #181624 : #e8e6f0;
+        : (ThemeMode.dark ? #262638 : #ffffff);
+    out property <color> bg-input:    ThemeMode.dark ? #12121e : #f0f0f4;
+    out property <color> bg-selected: ThemeMode.dark ? #1a1a2a : #e4e4ee;
 
-    // Amber palette — override-aware primary
+    // ─── Amber palette ────────────────────────────────────────────
     out property <color> amber:             ThemeOverrides.enabled ? ThemeOverrides.amber-override
         : (ThemeMode.dark ? #d4a574 : #8a6030);
     out property <color> amber-light:       ThemeMode.dark ? #e8c496 : #a07840;
     out property <color> amber-dim:         ThemeMode.dark ? #a07a50 : #c4a070;
-    out property <color> amber-glow:        ThemeMode.dark ? #d4a57460 : #d4a57430;
-    out property <color> amber-glow-strong: ThemeMode.dark ? #d4a574b0 : #d4a57460;
+    out property <color> amber-glow:        ThemeMode.dark ? #d4a57450 : #d4a57430;
+    out property <color> amber-glow-strong: ThemeMode.dark ? #d4a574a0 : #d4a57460;
 
-    // Cyan palette — override-aware primary
+    // ─── Cyan palette ─────────────────────────────────────────────
     out property <color> cyan:             ThemeOverrides.enabled ? ThemeOverrides.cyan-override
-        : (ThemeMode.dark ? #5ac8d4 : #1a8a94);
-    out property <color> cyan-light:       ThemeMode.dark ? #7ee0e8 : #40a8b4;
-    out property <color> cyan-dim:         ThemeMode.dark ? #3a8a94 : #80c8d0;
-    out property <color> cyan-glow:        ThemeMode.dark ? #5ac8d450 : #5ac8d430;
-    out property <color> cyan-glow-strong: ThemeMode.dark ? #5ac8d480 : #5ac8d450;
+        : (ThemeMode.dark ? #4ecdc4 : #1a8a94);
+    out property <color> cyan-light:       ThemeMode.dark ? #7ee0d8 : #40a8b4;
+    out property <color> cyan-dim:         ThemeMode.dark ? #2a9d8f : #80c8d0;
+    out property <color> cyan-glow:        ThemeMode.dark ? #4ecdc440 : #4ecdc430;
+    out property <color> cyan-glow-strong: ThemeMode.dark ? #4ecdc470 : #4ecdc450;
 
-    // Holographic blue palette — accent-aware
+    // ─── Holographic blue palette (kept for legacy, alias to accent) ──
     out property <color> holo-blue:       ThemeOverrides.enabled ? ThemeOverrides.accent-override
         : (ThemeMode.dark ? #4ab8f0 : #2080c0);
     out property <color> holo-blue-light: ThemeMode.dark ? #6ed0ff : #50a0d0;
     out property <color> holo-blue-dim:   ThemeMode.dark ? #2a7ab0 : #80c0e0;
-    out property <color> holo-blue-glow:  ThemeMode.dark ? #4ab8f050 : #4ab8f030;
+    out property <color> holo-blue-glow:  ThemeMode.dark ? #4ab8f040 : #4ab8f030;
     out property <color> holo-core:       ThemeMode.dark ? #80e0ff : #40b0d0;
-    out property <color> holo-edge:       ThemeMode.dark ? #2060a040 : #2060a020;
+    out property <color> holo-edge:       ThemeMode.dark ? #2060a030 : #2060a018;
 
-    // Accent palette — resolved from AccentPreset global.
-    // Components can use Theme.accent instead of hardcoded cyan for accent-aware styling.
+    // ─── Accent palette (resolved from AccentPreset) ──────────────
     out property <color> accent:             AccentPreset.accent;
     out property <color> accent-light:       AccentPreset.accent-light;
     out property <color> accent-dim:         AccentPreset.accent-dim;
@@ -129,7 +129,23 @@ export global Theme {
     out property <color> accent-glow-strong: AccentPreset.accent-glow-strong;
     out property <color> tint-accent:        AccentPreset.tint;
 
-    // Instinct colors
+    // ─── Semantic status colors ───────────────────────────────────
+    out property <color> color-success:      ThemeMode.dark ? #26a69a : #2e7d32;
+    out property <color> color-success-dim:  ThemeMode.dark ? #26a69a28 : #2e7d3220;
+    out property <color> color-danger:       ThemeMode.dark ? #ef9a9a : #c62828;
+    out property <color> color-danger-dim:   ThemeMode.dark ? #ef9a9a28 : #c6282820;
+    out property <color> color-warning:      ThemeMode.dark ? #ffb74d : #e65100;
+    out property <color> color-warning-dim:  ThemeMode.dark ? #ffb74d28 : #e6510020;
+    out property <color> color-purple:       ThemeMode.dark ? #b084e0 : #7840b0;
+    out property <color> color-purple-dim:   ThemeMode.dark ? #b084e028 : #7840b020;
+
+    // Text on colored backgrounds (accent buttons, status badges)
+    out property <color> text-on-accent: #ffffff;
+
+    // AI/overlay panel background
+    out property <color> bg-overlay-panel: ThemeMode.dark ? #1a2230 : #e8eef4;
+
+    // ─── Instinct colors ──────────────────────────────────────────
     out property <color> color-pattern:   ThemeMode.dark ? #c48bd4 : #9040a0;
     out property <color> color-reminder:  ThemeMode.dark ? #8be86b : #40a020;
     out property <color> color-emotional: ThemeMode.dark ? #e86b6b : #c04040;
@@ -137,69 +153,126 @@ export global Theme {
     out property <color> color-follow-up: ThemeMode.dark ? #6bb8e8 : #2080b0;
     out property <color> color-conflict:  ThemeMode.dark ? #e8a06b : #c07030;
 
-    // Text — override-aware
+    // ─── Text hierarchy ───────────────────────────────────────────
+    // Primary (92% white), Secondary (60%), Tertiary/dim (40%)
     out property <color> text-primary:   ThemeOverrides.enabled ? ThemeOverrides.text-primary-override
-        : (ThemeMode.dark ? #e0e4ec : #1a1c20);
+        : (ThemeMode.dark ? #e8eaef : #1a1c20);
     out property <color> text-secondary: ThemeOverrides.enabled ? ThemeOverrides.text-secondary-override
-        : (ThemeMode.dark ? #7a8494 : #5a6474);
+        : (ThemeMode.dark ? #8890a0 : #5a6474);
     out property <color> text-dim:       ThemeOverrides.enabled ? ThemeOverrides.text-dim-override
-        : (ThemeMode.dark ? #3e4454 : #a0a8b4);
+        : (ThemeMode.dark ? #4a5060 : #a0a8b4);
 
-    // Overlay utility tokens (replace hardcoded opacity hex colors)
+    // ─── Borders & overlays ───────────────────────────────────────
     out property <color> overlay-backdrop:  ThemeMode.dark ? #00000060 : #00000030;
     out property <color> overlay-shadow:    ThemeMode.dark ? #00000080 : #00000040;
-    out property <color> border-subtle:     ThemeMode.dark ? #ffffff08 : #00000008;
+    out property <color> border-subtle:     ThemeMode.dark ? #ffffff06 : #00000006;
+    out property <color> border-default:    ThemeMode.dark ? #ffffff0a : #0000000a;
+    out property <color> border-strong:     ThemeMode.dark ? #ffffff14 : #00000014;
     out property <color> separator:         ThemeMode.dark ? #ffffff08 : #0000000c;
     out property <color> hover-fill:        ThemeMode.dark ? #ffffff08 : #00000008;
     out property <color> hover-fill-strong: ThemeMode.dark ? #ffffff10 : #00000010;
-    out property <color> tint-cyan:         ThemeMode.dark ? #5ac8d420 : #1a8a9a18;
-    out property <color> tint-amber:        ThemeMode.dark ? #d4a57418 : #b0784018;
+    out property <color> tint-cyan:         ThemeMode.dark ? #4ecdc418 : #1a8a9a14;
+    out property <color> tint-amber:        ThemeMode.dark ? #d4a57414 : #b0784014;
 
-    // Typography
-    out property <length> font-body: 15px;
+    // ─── Typography scale ─────────────────────────────────────────
+    // 6 named roles: display, heading, body, label, caption, micro
+    // Legacy aliases (kept for backward compatibility)
+    out property <length> font-page-title: 20px;
+    out property <length> font-body: 14px;
     out property <length> font-small: 12px;
-    out property <length> font-title: 17px;
+    out property <length> font-title: 16px;
+    out property <length> font-label: 13px;
+    out property <length> font-caption: 11px;
     out property <length> font-logo: 20px;
     out property <length> font-boot: 35px;
+
+    // V63 — 6-role typography scale (tuned for 1080p)
+    out property <length> fs-display: 20px;      // Panel titles, major headers
+    out property <int>    fw-display: 600;
+    out property <length> fs-title-1: 18px;      // App titles, large section headers
+    out property <int>    fw-title-1: 600;
+    out property <length> fs-title-2: 16px;      // Sub-section headers
+    out property <int>    fw-title-2: 600;
+    out property <length> fs-headline: 15px;     // Toolbar titles, emphasized text
+    out property <int>    fw-headline: 600;
+    out property <length> fs-body: 14px;         // Primary UI text
+    out property <int>    fw-body: 400;
+    out property <length> fs-body-strong: 14px;  // Emphasized body text, buttons
+    out property <int>    fw-body-strong: 500;
+    out property <length> fs-caption: 12px;      // Status bar, metadata, timestamps
+    out property <int>    fw-caption: 400;
+    out property <length> fs-micro: 11px;        // Badges, fine detail
+    out property <int>    fw-micro: 500;
+    out property <length> fs-mono: 13px;         // Terminal, code, IDs
+
+    // ─── Spacing scale (8px base grid) ────────────────────────────
+    out property <length> sp-1: 4px;
+    out property <length> sp-2: 8px;
+    out property <length> sp-3: 12px;
+    out property <length> sp-4: 16px;
+    out property <length> sp-5: 20px;
+    out property <length> sp-6: 24px;
+    out property <length> sp-7: 32px;
+    out property <length> sp-8: 40px;
+    out property <length> sp-9: 48px;
 
     // Touch targets
     out property <length> touch-target: 44px;
 
-    // Border radius
+    // ─── Radius scale ─────────────────────────────────────────────
+    // Legacy aliases (kept for backward compatibility)
     out property <length> radius-bubble: 18px;
     out property <length> radius-card: 12px;
     out property <length> radius-pill: 16px;
     out property <length> radius-round: 50px;
+    // Standard radius scale
+    out property <length> r-sm: 6px;       // Small controls, badges
+    out property <length> r-md: 8px;       // Buttons, inputs, cards
+    out property <length> r-lg: 12px;      // Panels, dialogs
+    out property <length> r-xl: 16px;      // Modals, command palette
+    out property <length> r-pill: 999px;   // Pills, full-round
 
-    // Desktop layout sizes
-    out property <length> status-bar-height: 24px;
-    out property <length> dock-height: 48px;
-    out property <length> dock-icon-size: 36px;
+    // ─── Motion tokens ────────────────────────────────────────────
+    // fast = hover/focus, base = panel/state, slow = modal/large
+    out property <duration> dur-fast: 120ms;
+    out property <duration> dur-normal: 200ms;
+    out property <duration> dur-slow: 300ms;
+
+    // ─── Control height tokens ────────────────────────────────────
+    out property <length> h-compact: 28px;
+    out property <length> h-regular: 32px;
+    out property <length> h-prominent: 36px;
+
+    // ─── Desktop layout sizes ─────────────────────────────────────
+    out property <length> status-bar-height: 32px;
+    out property <length> dock-height: 64px;
+    out property <length> dock-icon-size: 32px;
+    out property <length> dock-item-size: 48px;   // Hit area per dock icon
     out property <length> orb-desktop-size: 80px;
 
     // Intent Lens
-    out property <length> lens-width: 720px;
-    out property <length> lens-input-height: 52px;
-    out property <length> lens-result-height: 48px;
+    out property <length> lens-width: 640px;
+    out property <length> lens-input-height: 48px;
+    out property <length> lens-result-height: 44px;
 
     // Chat side panel
     out property <length> chat-panel-width: 380px;
 
-    // Result type colors
+    // ─── Result type colors ───────────────────────────────────────
     out property <color> color-do:        ThemeMode.dark ? #d4a574 : #8a6030;
-    out property <color> color-find:      ThemeMode.dark ? #5ac8d4 : #1a8a94;
+    out property <color> color-find:      ThemeMode.dark ? #4ecdc4 : #1a8a94;
     out property <color> color-ask:       ThemeMode.dark ? #c4a050 : #8a7020;
     out property <color> color-memory:    ThemeMode.dark ? #a07a50 : #806030;
-    out property <color> color-setting:   ThemeMode.dark ? #7a8494 : #5a6474;
-    out property <color> color-tool:      ThemeMode.dark ? #d4a574 : #8a6030;  // same as do
-    out property <color> color-clipboard: ThemeMode.dark ? #7a8494 : #5a6474;  // same as setting
-    out property <color> color-context:   ThemeMode.dark ? #5ac8d4 : #1a8a94;  // cyan — ambient awareness
-    out property <color> color-recent:    ThemeMode.dark ? #4a5464 : #8a9aa4;  // muted steel
-    out property <color> color-answer:    ThemeMode.dark ? #4ab8f0 : #2080c0;  // holographic blue
+    out property <color> color-setting:   ThemeMode.dark ? #8890a0 : #5a6474;
+    out property <color> color-tool:      ThemeMode.dark ? #d4a574 : #8a6030;
+    out property <color> color-clipboard: ThemeMode.dark ? #8890a0 : #5a6474;
+    out property <color> color-context:   ThemeMode.dark ? #4ecdc4 : #1a8a94;
+    out property <color> color-recent:    ThemeMode.dark ? #4a5464 : #8a9aa4;
+    out property <color> color-answer:    ThemeMode.dark ? #4ab8f0 : #2080c0;
 
     // Skeleton shimmer
-    out property <color> color-skeleton:  ThemeMode.dark ? #1a1924 : #e0e0e4;
-    out property <color> shimmer-peak:    ThemeMode.dark ? #22212e : #d0d0d8;
+    out property <color> color-skeleton:  ThemeMode.dark ? #1a1a28 : #e0e0e4;
+    out property <color> shimmer-peak:    ThemeMode.dark ? #24243a : #d0d0d8;
 
     // Section headers
     out property <length> section-header-height: 28px;

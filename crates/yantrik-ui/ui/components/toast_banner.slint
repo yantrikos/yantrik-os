@@ -25,11 +25,11 @@ export component ToastBanner inherits Rectangle {
         width: 360px;
         height: 72px;
         border-radius: 14px;
-        background: @linear-gradient(135deg, #1a1a2440 0%, #0c0c1840 100%);
+        background: @linear-gradient(135deg, Theme.bg-card.transparentize(75%) 0%, Theme.bg-deep.transparentize(75%) 100%);
         border-width: 1px;
-        border-color: toast.urgency == 2 ? #e86b6b40 : #5ac8d420;
+        border-color: toast.urgency == 2 ? Theme.color-emotional.transparentize(75%) : Theme.cyan.transparentize(87%);
         drop-shadow-blur: 20px;
-        drop-shadow-color: #00000060;
+        drop-shadow-color: Theme.overlay-backdrop;
         opacity: 0.97;
         clip: true;
 
@@ -38,8 +38,8 @@ export component ToastBanner inherits Rectangle {
             x: 0; y: 0;
             width: 3px;
             height: parent.height;
-            background: toast.urgency == 2 ? #e86b6b :
-                        toast.urgency == 1 ? #e8b44c : #5ac8d4;
+            background: toast.urgency == 2 ? Theme.color-emotional :
+                        toast.urgency == 1 ? Theme.amber : Theme.cyan;
         }
 
         TouchArea {
@@ -59,13 +59,13 @@ export component ToastBanner inherits Rectangle {
                 height: 36px;
                 y: (parent.height - 36px) / 2;
                 border-radius: 18px;
-                background: toast.urgency == 2 ? #e86b6b20 :
-                            toast.urgency == 1 ? #e8b44c20 : #5ac8d420;
+                background: toast.urgency == 2 ? Theme.color-emotional.transparentize(87%) :
+                            toast.urgency == 1 ? Theme.amber.transparentize(87%) : Theme.cyan.transparentize(87%);
 
                 Text {
                     text: toast.icon-char;
-                    color: toast.urgency == 2 ? #e86b6b :
-                           toast.urgency == 1 ? #e8b44c : #5ac8d4;
+                    color: toast.urgency == 2 ? Theme.color-emotional :
+                           toast.urgency == 1 ? Theme.amber : Theme.cyan;
                     font-size: 14px;
                     font-weight: 700;
                     horizontal-alignment: center;

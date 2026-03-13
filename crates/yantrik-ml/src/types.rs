@@ -217,3 +217,33 @@ impl Default for VoiceParams {
         }
     }
 }
+
+// ── Provider config entry (for secret migration) ─────────────────────────
+
+/// A provider entry as it appears in the config YAML.
+///
+/// This type is used by the secret migration system to replace plain-text
+/// `api_key` fields with `secret_ref` pointers. It mirrors the companion's
+/// `ProviderEntry` config struct but lives in yantrik-ml so the provider
+/// module can operate independently.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProviderConfigEntry {
+    /// Unique provider identifier (e.g. "openai-main", "ollama-local").
+    pub id: String,
+    /// Provider type (e.g. "openai", "ollama", "anthropic").
+    #[serde(default)]
+    pub provider_type: String,
+    /// API base URL.
+    #[serde(default)]
+    pub base_url: String,
+    /// Plain-text API key (deprecated — migrated to secret_ref on first run).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_key: Option<String>,
+    /// Secret reference URI (replaces api_key after migration).
+    /// Format: `keyring://yantrik/providers/{id}`
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secret_ref: Option<String>,
+    /// Currently selected model.
+    #[serde(default)]
+    pub model: Option<String>,
+}

@@ -46,6 +46,8 @@ pub mod document_editor;
 pub mod presentation;
 pub mod version;
 pub mod ai_assist;
+pub mod ai_onboarding;
+pub mod ai_provider;
 mod morning_brief;
 mod window_switcher;
 pub mod entity_bridge;
@@ -101,5 +103,7 @@ pub fn wire_all(ui: &App, ctx: &AppContext) {
     morning_brief::wire(ui, ctx);
     command_palette::wire(ui, ctx);
     cross_app::wire(ui, ctx);
+    ai_onboarding::wire(ui, ctx);
+    ai_provider::wire(ui, ctx);
     callbacks::wire(ui, ctx);
 }

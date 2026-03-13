@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use slint::{ComponentHandle, ModelRc, Timer, TimerMode, VecModel};
 
 use crate::app_context::AppContext;
-use crate::{App, WifiNetwork, EthernetInterface, BluetoothDevice, VpnConnection, FirewallRule, DiagTestResult, ConnectionEvent};
+use crate::{App, WifiNetwork, EthernetInterface, BluetoothDevice, VpnConnection, FirewallRule, DiagTestResult, ConnectionEvent, NetAIProviderStatus};
 
 /// Shared network state — updated by background threads, read by UI timer.
 struct NetState {
@@ -1874,6 +1874,43 @@ pub fn wire(ui: &App, ctx: &AppContext) {
             ui.set_net_ai_panel_open(false);
         }
     });
+
+    // ── AI Provider Connectivity Test ──
+    {
+        let ui_weak = ui.as_weak();
+        ui.on_net_test_ai_connectivity(move || {
+            let ui_weak2 = ui_weak.clone();
+            // Set testing flag
+            if let Some(ui) = ui_weak.upgrade() {
+                ui.set_net_ai_connectivity_testing(true);
+            }
+
+            std::thread::spawn(move || {
+                let providers = load_provider_entries();
+                let results = test_all_providers(&providers);
+
+                // Push results to UI
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(ui) = ui_weak2.upgrade() {
+                        let items: Vec<NetAIProviderStatus> = results
+                            .iter()
+                            .map(|r| NetAIProviderStatus {
+                                name: r.name.clone().into(),
+                                provider_type: r.provider_type.clone().into(),
+                                base_url: r.base_url.clone().into(),
+                                status: r.status.clone().into(),
+                                latency_ms: r.latency_ms,
+                                is_primary: r.is_primary,
+                                is_fallback: r.is_fallback,
+                            })
+                            .collect();
+                        ui.set_net_ai_provider_connectivity(ModelRc::new(VecModel::from(items)));
+                        ui.set_net_ai_connectivity_testing(false);
+                    }
+                });
+            });
+        });
+    }
 }
 
 /// Apply base firewall rules (established, loopback, ICMP, SSH).
@@ -1921,4 +1958,88 @@ fn allow_port(backend: &str, port: &str) {
         }
         _ => {}
     }
+}
+
+// ── AI Provider Connectivity ──
+
+#[derive(Clone)]
+struct AIProviderResult {
+    name: String,
+    provider_type: String,
+    base_url: String,
+    status: String,
+    latency_ms: i32,
+    is_primary: bool,
+    is_fallback: bool,
+}
+
+/// Load provider entries from the providers YAML file via ProviderStore.
+fn load_provider_entries() -> Vec<AIProviderResult> {
+    use crate::wire::settings::ProviderStore;
+
+    let store = ProviderStore::load();
+    store
+        .entries
+        .iter()
+        .map(|e| AIProviderResult {
+            name: e.name.clone(),
+            provider_type: e.provider_type.clone(),
+            base_url: e.base_url.clone(),
+            status: "testing".to_string(),
+            latency_ms: -1,
+            is_primary: e.is_primary,
+            is_fallback: e.is_fallback,
+        })
+        .collect()
+}
+
+/// Test connectivity to all AI providers.
+fn test_all_providers(providers: &[AIProviderResult]) -> Vec<AIProviderResult> {
+    providers
+        .iter()
+        .map(|p| {
+            let mut result = p.clone();
+            if result.base_url.is_empty() {
+                result.status = "unreachable".to_string();
+                return result;
+            }
+
+            // Determine test URL
+            let test_url = if result.provider_type == "ollama" {
+                format!("{}/api/tags", result.base_url.trim_end_matches('/'))
+            } else {
+                format!("{}/v1/models", result.base_url.trim_end_matches('/'))
+            };
+
+            let start = std::time::Instant::now();
+            match ureq::AgentBuilder::new()
+                .timeout(std::time::Duration::from_secs(10))
+                .build()
+                .get(&test_url)
+                .call()
+            {
+                Ok(_) => {
+                    let elapsed = start.elapsed().as_millis() as i32;
+                    result.status = "reachable".to_string();
+                    result.latency_ms = elapsed;
+                }
+                Err(ureq::Error::Status(code, _)) => {
+                    // Got a response (even if error status) — endpoint is reachable
+                    let elapsed = start.elapsed().as_millis() as i32;
+                    if code == 401 || code == 403 {
+                        // Auth required but reachable
+                        result.status = "reachable".to_string();
+                    } else {
+                        result.status = "reachable".to_string();
+                    }
+                    result.latency_ms = elapsed;
+                }
+                Err(_) => {
+                    result.status = "unreachable".to_string();
+                    result.latency_ms = -1;
+                }
+            }
+            result
+        })
+        .collect()
 }

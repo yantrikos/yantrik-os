@@ -87,6 +87,55 @@ pub struct LLMConfig {
     /// Fallback model configuration — used when primary LLM is unavailable.
     #[serde(default)]
     pub fallback: Option<FallbackModelConfig>,
+
+    /// Configured LLM providers (multi-provider support).
+    /// When present, these override the flat backend/api_base_url/api_key fields.
+    /// The flat fields are kept for backward compatibility and single-provider setups.
+    #[serde(default)]
+    pub providers: Vec<ProviderEntry>,
+}
+
+/// A configured LLM provider endpoint.
+///
+/// Supports all major providers: Ollama (local), OpenAI, Anthropic, OpenRouter,
+/// Google Gemini, Together, Groq, Fireworks, Mistral, DeepSeek, HuggingFace,
+/// and any OpenAI-compatible custom endpoint.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProviderEntry {
+    /// Unique identifier (e.g. "ollama-local", "openai-main").
+    pub id: String,
+    /// Display name (e.g. "Ollama (Local)", "OpenAI").
+    pub name: String,
+    /// Provider type — determines default URL, auth, and capabilities.
+    /// Known types: "ollama", "openai", "anthropic", "openrouter", "gemini",
+    /// "together", "groq", "fireworks", "mistral", "deepseek", "huggingface", "custom"
+    #[serde(default = "default_provider_type")]
+    pub provider_type: String,
+    /// API base URL (e.g. "http://localhost:11434/v1", "https://api.openai.com/v1").
+    pub base_url: String,
+    /// API key (required for most cloud providers, optional for Ollama).
+    #[serde(default)]
+    pub api_key: Option<String>,
+    /// Authentication type: "bearer" (most providers), "x-api-key" (Anthropic), "none" (Ollama).
+    #[serde(default = "default_auth_type")]
+    pub auth_type: String,
+    /// Currently selected model name for this provider.
+    #[serde(default)]
+    pub model: Option<String>,
+    /// Whether this is the primary provider.
+    #[serde(default)]
+    pub is_primary: bool,
+    /// Whether this is the fallback provider.
+    #[serde(default)]
+    pub is_fallback: bool,
+}
+
+fn default_provider_type() -> String {
+    "custom".to_string()
+}
+
+fn default_auth_type() -> String {
+    "bearer".to_string()
 }
 
 /// Configuration for the fallback (offline) LLM model.
@@ -181,6 +230,7 @@ impl Default for LLMConfig {
             temperature: default_temperature(),
             max_context_tokens: default_max_context_tokens(),
             fallback: None,
+            providers: Vec::new(),
         }
     }
 }

@@ -1,0 +1,82 @@
+// ShellPanel — side panel / overlay panel base component.
+// Provides header with title + close button, scrollable content area.
+// Entry/exit via opacity + translateY animation.
+import { Theme } from "../theme.slint";
+import { YIconButton } from "y_button.slint";
+
+export component ShellPanel inherits Rectangle {
+    in property <string> title: "";
+    in property <bool> show-close: true;
+    in property <bool> show-header: true;
+    in property <bool> show-header-divider: true;
+    // 0 = surface, 1 = raised
+    in property <int> tier: 0;
+    callback close-requested();
+
+    background: tier == 1 ? Theme.bg-card : Theme.bg-surface;
+
+    VerticalLayout {
+        spacing: 0;
+
+        // Header bar
+        if root.show-header : Rectangle {
+            height: Theme.h-prominent;
+            background: transparent;
+
+            HorizontalLayout {
+                padding-left: Theme.sp-4;
+                padding-right: Theme.sp-2;
+                spacing: Theme.sp-2;
+
+                Text {
+                    text: root.title;
+                    color: Theme.text-primary;
+                    font-size: Theme.fs-headline;
+                    font-weight: Theme.fw-headline;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                    overflow: elide;
+                }
+
+                if root.show-close : YIconButton {
+                    icon: "✕";
+                    variant: 2;
+                    clicked => { root.close-requested(); }
+                }
+            }
+
+            // Bottom divider
+            if root.show-header-divider : Rectangle {
+                y: parent.height - 1px;
+                height: 1px;
+                width: 100%;
+                background: Theme.separator;
+            }
+        }
+
+        // Content area — populated via @children
+        Rectangle {
+            vertical-stretch: 1;
+            @children
+        }
+    }
+}
+
+// ShellOverlayPanel — floating panel with backdrop dim.
+// Use for command palette, Intent Lens, modal overlays.
+export component ShellOverlayPanel inherits Rectangle {
+    in property <bool> show: false;
+    callback backdrop-clicked();
+
+    background: show ? Theme.overlay-backdrop : transparent;
+    visible: root.show;
+    opacity: root.show ? 1.0 : 0.0;
+    animate opacity { duration: Theme.dur-normal; easing: ease-out; }
+
+    // Backdrop click
+    TouchArea {
+        clicked => { root.backdrop-clicked(); }
+    }
+
+    @children
+}

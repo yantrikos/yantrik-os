@@ -306,7 +306,7 @@ export component SystemDashboard inherits Rectangle {
                     current-text: Math.round(root.cpu-usage) + "%";
                     accent-color: root.cpu-usage > 80 ? Theme.color-emotional :
                                   root.cpu-usage > 50 ? Theme.amber : Theme.cyan;
-                    accent-glow: root.cpu-usage > 80 ? #e86b6b40 :
+                    accent-glow: root.cpu-usage > 80 ? Theme.color-danger.transparentize(75%) :
                                  root.cpu-usage > 50 ? Theme.amber-glow : Theme.cyan-glow;
                     height: 140px;
                     width: 100%;
@@ -318,7 +318,7 @@ export component SystemDashboard inherits Rectangle {
                     current-text: root.memory-text;
                     accent-color: root.memory-usage > 85 ? Theme.color-emotional :
                                   root.memory-usage > 60 ? Theme.amber : Theme.cyan;
-                    accent-glow: root.memory-usage > 85 ? #e86b6b40 :
+                    accent-glow: root.memory-usage > 85 ? Theme.color-danger.transparentize(75%) :
                                  root.memory-usage > 60 ? Theme.amber-glow : Theme.cyan-glow;
                     height: 140px;
                     width: 100%;

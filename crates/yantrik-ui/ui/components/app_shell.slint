@@ -1,0 +1,90 @@
+// AppShell — standard app layout pattern.
+// toolbar at top + optional sidebar + content area + optional detail pane.
+// If every app uses this shell, consistency comes for free.
+import { Theme } from "../theme.slint";
+
+export component AppShell inherits Rectangle {
+    in property <string> title: "";
+    in property <bool> show-sidebar: true;
+    in property <int> sidebar-width: 220;
+    in property <bool> show-detail: false;
+    in property <int> detail-width: 320;
+    in property <bool> show-toolbar: true;
+    in property <bool> show-toolbar-divider: true;
+
+    background: Theme.bg-deep;
+
+    VerticalLayout {
+        spacing: 0;
+
+        // Toolbar area
+        if root.show-toolbar : Rectangle {
+            height: Theme.h-prominent;
+            background: Theme.bg-surface;
+
+            // Bottom divider
+            if root.show-toolbar-divider : Rectangle {
+                y: parent.height - 1px;
+                height: 1px;
+                width: 100%;
+                background: Theme.separator;
+            }
+
+            HorizontalLayout {
+                padding-left: Theme.sp-4;
+                padding-right: Theme.sp-4;
+                spacing: Theme.sp-3;
+
+                if root.title != "" : Text {
+                    text: root.title;
+                    color: Theme.text-primary;
+                    font-size: Theme.fs-headline;
+                    font-weight: Theme.fw-headline;
+                    vertical-alignment: center;
+                }
+
+                Rectangle { horizontal-stretch: 1; }
+            }
+        }
+
+        // Main content area
+        HorizontalLayout {
+            spacing: 0;
+            vertical-stretch: 1;
+
+            // Sidebar slot — use @children to populate
+            if root.show-sidebar : Rectangle {
+                width: root.sidebar-width * 1px;
+                background: Theme.bg-surface;
+
+                // Right separator
+                Rectangle {
+                    x: parent.width - 1px;
+                    width: 1px;
+                    height: 100%;
+                    background: Theme.separator;
+                }
+            }
+
+            // Content area (primary)
+            Rectangle {
+                horizontal-stretch: 1;
+                background: Theme.bg-deep;
+            }
+
+            // Detail pane
+            if root.show-detail : Rectangle {
+                width: root.detail-width * 1px;
+                background: Theme.bg-surface;
+
+                // Left separator
+                Rectangle {
+                    x: 0;
+                    width: 1px;
+                    height: 100%;
+                    background: Theme.separator;
+                }
+            }
+        }
+    }
+}

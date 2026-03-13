@@ -1,0 +1,143 @@
+// YSidebar — navigation sidebar with sections, items, active indicator.
+// Collapsible groups, hover/selected states.
+import { Theme } from "../theme.slint";
+
+export struct YSidebarItem {
+    id: string,
+    icon: string,
+    label: string,
+    badge: string,
+    badge-count: int,
+}
+
+export struct YSidebarSection {
+    title: string,
+    collapsed: bool,
+    items: [YSidebarItem],
+}
+
+export component YSidebar inherits Rectangle {
+    in property <[YSidebarSection]> sections: [];
+    in property <string> active-id: "";
+    in property <int> width-px: 220;
+    callback item-clicked(string);
+
+    width: root.width-px * 1px;
+    background: Theme.bg-surface;
+    border-width: 0;
+
+    // Right border separator
+    Rectangle {
+        x: parent.width - 1px;
+        width: 1px;
+        height: 100%;
+        background: Theme.separator;
+    }
+
+    Flickable {
+        width: 100%;
+        height: 100%;
+
+        VerticalLayout {
+            padding: Theme.sp-2;
+            spacing: Theme.sp-1;
+
+            for section[si] in root.sections : VerticalLayout {
+                spacing: 0;
+
+                // Section header
+                if section.title != "" : Rectangle {
+                    height: Theme.section-header-height;
+
+                    Text {
+                        x: Theme.sp-3;
+                        text: section.title;
+                        color: Theme.text-dim;
+                        font-size: 10px;
+                        font-weight: 600;
+                        letter-spacing: 1px;
+                        vertical-alignment: center;
+                    }
+                }
+
+                // Section items
+                for item[ii] in section.items : Rectangle {
+                    property <bool> is-active: item.id == root.active-id;
+                    property <bool> hovered: item-ta.has-hover;
+
+                    height: 32px;
+                    border-radius: Theme.r-md;
+                    background: is-active ? Theme.tint-accent
+                              : hovered ? Theme.hover-fill
+                              : transparent;
+
+                    animate background { duration: Theme.dur-fast; }
+
+                    // Active indicator bar
+                    if is-active : Rectangle {
+                        x: 0;
+                        width: 3px;
+                        height: 18px;
+                        y: (parent.height - 18px) / 2;
+                        border-radius: 2px;
+                        background: Theme.accent;
+                    }
+
+                    item-ta := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.item-clicked(item.id); }
+                    }
+
+                    HorizontalLayout {
+                        padding-left: Theme.sp-3;
+                        padding-right: Theme.sp-3;
+                        spacing: Theme.sp-2;
+
+                        Text {
+                            text: item.icon;
+                            color: is-active ? Theme.accent : Theme.text-secondary;
+                            font-size: Theme.fs-body;
+                            vertical-alignment: center;
+                            width: 20px;
+                        }
+
+                        Text {
+                            text: item.label;
+                            color: is-active ? Theme.text-primary : Theme.text-secondary;
+                            font-size: Theme.fs-body;
+                            font-weight: is-active ? Theme.fw-body-strong : Theme.fw-body;
+                            vertical-alignment: center;
+                            horizontal-stretch: 1;
+                            overflow: elide;
+                        }
+
+                        if item.badge-count > 0 : Rectangle {
+                            width: badge-ct.preferred-width + 10px;
+                            min-width: 18px;
+                            height: 18px;
+                            y: (parent.height - 18px) / 2;
+                            border-radius: 9px;
+                            background: Theme.accent;
+
+                            badge-ct := Text {
+                                text: item.badge-count < 100 ? item.badge-count : "99+";
+                                color: Theme.text-on-accent;
+                                font-size: 10px;
+                                font-weight: 700;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+
+                        if item.badge != "" && item.badge-count <= 0 : Text {
+                            text: item.badge;
+                            color: Theme.text-dim;
+                            font-size: Theme.fs-caption;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

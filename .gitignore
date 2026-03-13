@@ -1,6 +1,8 @@
 # Rust
 target/
 
+.brainstorm/
+
 # SQLite databases (runtime)
 memory.db
 memory.db-shm

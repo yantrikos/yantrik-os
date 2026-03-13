@@ -5,6 +5,10 @@
 
 import { Theme } from "theme.slint";
 import { TextEdit } from "std-widgets.slint";
+import { YButton, YIconButton } from "components/y_button.slint";
+import { YInput } from "components/y_input.slint";
+import { YEmptyState } from "components/y_empty_state.slint";
+import { YListItem } from "components/y_list_item.slint";
 
 export struct NoteEntry {
     title: string,
@@ -103,6 +107,7 @@ export component NotesEditor inherits Rectangle {
     callback new-note();
     callback save-note();
     callback delete-note();
+    callback close-note();
     callback select-note(int);
     callback search-notes(string);
     callback content-changed(string);
@@ -115,24 +120,32 @@ export component NotesEditor inherits Rectangle {
 
         // ── Toolbar ──
         Rectangle {
-            height: 40px;
+            height: Theme.h-prominent;
             background: Theme.bg-surface;
 
+            // Bottom divider
+            Rectangle {
+                y: parent.height - 1px;
+                width: 100%;
+                height: 1px;
+                background: Theme.separator;
+            }
+
             HorizontalLayout {
-                padding-left: 14px;
-                padding-right: 12px;
+                padding-left: Theme.sp-4;
+                padding-right: Theme.sp-3;
                 alignment: space-between;
 
                 // Left: title + modified indicator
                 HorizontalLayout {
-                    spacing: 8px;
+                    spacing: Theme.sp-2;
                     alignment: start;
 
                     Text {
                         text: root.current-title != "" ? root.current-title : "Notes";
                         color: Theme.text-primary;
-                        font-size: 14px;
-                        font-weight: 500;
+                        font-size: Theme.fs-headline;
+                        font-weight: Theme.fw-headline;
                         vertical-alignment: center;
                         overflow: elide;
                     }
@@ -140,281 +153,114 @@ export component NotesEditor inherits Rectangle {
                     if root.is-modified : Text {
                         text: "\u{25CF}";
                         color: Theme.amber;
-                        font-size: 14px;
+                        font-size: Theme.fs-body;
                         vertical-alignment: center;
                     }
 
                     if root.export-status != "" : Text {
                         text: root.export-status;
-                        color: Theme.cyan;
-                        font-size: 11px;
+                        color: Theme.accent;
+                        font-size: Theme.fs-caption;
                         vertical-alignment: center;
                     }
                 }
 
                 // Right: buttons
                 HorizontalLayout {
-                    spacing: 6px;
+                    spacing: Theme.sp-1;
                     alignment: end;
 
                     // Meeting mode toggle
-                    if root.selected-index >= 0 : TouchArea {
-                        width: 32px;
-                        height: 32px;
+                    if root.selected-index >= 0 : YIconButton {
+                        icon: "M";
+                        variant: root.meeting-mode ? 0 : 1;
                         clicked => { root.toggle-meeting-mode(); }
-                        Rectangle {
-                            width: 32px; height: 32px;
-                            border-radius: 8px;
-                            background: root.meeting-mode ? Theme.accent
-                                : (parent.has-hover ? Theme.hover-fill-strong : Theme.hover-fill);
-                            border-width: root.meeting-mode ? 0px : 1px;
-                            border-color: Theme.border-subtle;
-                            Text {
-                                text: "M";
-                                color: root.meeting-mode ? #ffffff : Theme.text-secondary;
-                                font-size: 12px;
-                                font-weight: 700;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
-                            }
-                        }
                     }
 
                     // Export MD button
-                    if root.selected-index >= 0 : TouchArea {
-                        width: 42px;
-                        height: 32px;
+                    if root.selected-index >= 0 : YButton {
+                        label: "\u{2193} MD";
+                        variant: 1;
+                        size: 0;
                         clicked => { root.export-md(); }
-                        Rectangle {
-                            width: 42px; height: 32px;
-                            border-radius: 8px;
-                            background: parent.has-hover ? Theme.hover-fill-strong : Theme.hover-fill;
-                            border-width: 1px;
-                            border-color: Theme.border-subtle;
-                            Text {
-                                text: "\u{2193} MD";
-                                color: Theme.text-secondary;
-                                font-size: 10px;
-                                font-weight: 500;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
-                            }
-                        }
                     }
 
                     // Import MD button
-                    if root.selected-index >= 0 : TouchArea {
-                        width: 42px;
-                        height: 32px;
+                    if root.selected-index >= 0 : YButton {
+                        label: "\u{2191} MD";
+                        variant: 1;
+                        size: 0;
                         clicked => { root.import-md(); }
-                        Rectangle {
-                            width: 42px; height: 32px;
-                            border-radius: 8px;
-                            background: parent.has-hover ? Theme.hover-fill-strong : Theme.hover-fill;
-                            border-width: 1px;
-                            border-color: Theme.border-subtle;
-                            Text {
-                                text: "\u{2191} MD";
-                                color: Theme.text-secondary;
-                                font-size: 10px;
-                                font-weight: 500;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
-                            }
-                        }
                     }
 
                     // Version history toggle
-                    if root.selected-index >= 0 : TouchArea {
-                        width: 32px;
-                        height: 32px;
+                    if root.selected-index >= 0 : YIconButton {
+                        icon: "\u{23F3}";
+                        variant: root.version-panel-open ? 0 : 1;
                         clicked => { root.version-panel-open = !root.version-panel-open; }
-                        Rectangle {
-                            width: 32px; height: 32px;
-                            border-radius: 8px;
-                            background: root.version-panel-open ? Theme.accent
-                                : (parent.has-hover ? Theme.hover-fill-strong : Theme.hover-fill);
-                            border-width: root.version-panel-open ? 0px : 1px;
-                            border-color: Theme.border-subtle;
-                            Text {
-                                text: "\u{23F3}";
-                                color: root.version-panel-open ? #ffffff : Theme.text-secondary;
-                                font-size: 13px;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
-                            }
-                        }
                     }
 
                     // AI Structure button
-                    if root.selected-index >= 0 : TouchArea {
-                        width: 72px;
-                        height: 32px;
+                    if root.selected-index >= 0 : YButton {
+                        label: root.ai-is-working ? "..." : "Structure";
+                        icon: "\u{2728}";
+                        variant: root.ai-is-working ? 0 : 1;
+                        size: 0;
+                        loading: root.ai-is-working;
                         clicked => {
                             root.ai-structure();
                             root.ai-panel-open = true;
                         }
-                        Rectangle {
-                            width: 72px; height: 32px;
-                            border-radius: 8px;
-                            background: root.ai-is-working ? Theme.accent
-                                : (parent.has-hover ? Theme.hover-fill-strong : Theme.hover-fill);
-                            border-width: root.ai-is-working ? 0px : 1px;
-                            border-color: Theme.border-subtle;
-                            HorizontalLayout {
-                                padding-left: 6px;
-                                padding-right: 6px;
-                                spacing: 3px;
-                                alignment: center;
-                                Text {
-                                    text: "\u{2728}";
-                                    font-size: 11px;
-                                    vertical-alignment: center;
-                                }
-                                Text {
-                                    text: root.ai-is-working ? "..." : "Structure";
-                                    color: root.ai-is-working ? #ffffff : Theme.text-secondary;
-                                    font-size: 11px;
-                                    font-weight: 500;
-                                    vertical-alignment: center;
-                                }
-                            }
-                        }
                     }
 
                     // AI Summarize button
-                    if root.selected-index >= 0 : TouchArea {
-                        width: 76px;
-                        height: 32px;
+                    if root.selected-index >= 0 : YButton {
+                        label: "Summarize";
+                        icon: "\u{1F4CB}";
+                        variant: 1;
+                        size: 0;
                         clicked => {
                             root.ai-summarize();
                             root.ai-panel-open = true;
                         }
-                        Rectangle {
-                            width: 76px; height: 32px;
-                            border-radius: 8px;
-                            background: parent.has-hover ? Theme.hover-fill-strong : Theme.hover-fill;
-                            border-width: 1px;
-                            border-color: Theme.border-subtle;
-                            HorizontalLayout {
-                                padding-left: 6px;
-                                padding-right: 6px;
-                                spacing: 3px;
-                                alignment: center;
-                                Text {
-                                    text: "\u{1F4CB}";
-                                    font-size: 11px;
-                                    vertical-alignment: center;
-                                }
-                                Text {
-                                    text: "Summarize";
-                                    color: Theme.text-secondary;
-                                    font-size: 11px;
-                                    font-weight: 500;
-                                    vertical-alignment: center;
-                                }
-                            }
-                        }
                     }
 
                     // New note button
-                    TouchArea {
-                        width: 56px;
-                        height: 32px;
+                    YButton {
+                        label: "+ New";
+                        variant: 0;
+                        size: 0;
                         clicked => { root.new-note(); }
-
-                        Rectangle {
-                            width: 56px;
-                            height: 32px;
-                            border-radius: 8px;
-                            background: parent.has-hover ? Theme.hover-fill-strong : Theme.hover-fill;
-                            border-width: 1px;
-                            border-color: Theme.border-subtle;
-
-                            Text {
-                                text: "+ New";
-                                color: Theme.cyan;
-                                font-size: 12px;
-                                font-weight: 500;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
-                            }
-                        }
                     }
 
                     // New from Template button
-                    TouchArea {
-                        width: 80px;
-                        height: 32px;
+                    YButton {
+                        label: "Template";
+                        variant: root.template-menu-open ? 0 : 2;
+                        size: 0;
                         clicked => { root.template-menu-open = !root.template-menu-open; }
-
-                        Rectangle {
-                            width: 80px;
-                            height: 32px;
-                            border-radius: 8px;
-                            background: root.template-menu-open ? Theme.hover-fill-strong
-                                : (parent.has-hover ? Theme.hover-fill-strong : Theme.hover-fill);
-                            border-width: 1px;
-                            border-color: Theme.border-subtle;
-
-                            Text {
-                                text: "Template";
-                                color: Theme.accent;
-                                font-size: 12px;
-                                font-weight: 500;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
-                            }
-                        }
                     }
 
                     // Save button
-                    TouchArea {
-                        width: 56px;
-                        height: 32px;
+                    YButton {
+                        label: "Save";
+                        variant: root.is-modified ? 0 : 1;
+                        size: 0;
                         clicked => { root.save-note(); }
-
-                        Rectangle {
-                            width: 56px;
-                            height: 32px;
-                            border-radius: 8px;
-                            background: root.is-modified
-                                ? Theme.cyan
-                                : (parent.has-hover ? Theme.hover-fill-strong : Theme.hover-fill);
-                            border-width: root.is-modified ? 0px : 1px;
-                            border-color: Theme.border-subtle;
-
-                            Text {
-                                text: "Save";
-                                color: root.is-modified ? Theme.bg-deep : Theme.text-secondary;
-                                font-size: 12px;
-                                font-weight: root.is-modified ? 600 : 400;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
-                            }
-                        }
                     }
 
-                    // Delete button
-                    if root.selected-index >= 0 : TouchArea {
-                        width: 32px;
-                        height: 32px;
+                    // Delete note
+                    if root.selected-index >= 0 : YIconButton {
+                        icon: "\u{1F5D1}";
+                        variant: 3;
                         clicked => { root.delete-note(); }
+                    }
 
-                        Rectangle {
-                            width: 32px;
-                            height: 32px;
-                            border-radius: 8px;
-                            background: parent.has-hover ? #ff444444 : transparent;
-
-                            Text {
-                                text: "\u{00D7}";
-                                color: Theme.text-dim;
-                                font-size: 18px;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
-                            }
-                        }
+                    // Close note (deselect)
+                    if root.selected-index >= 0 : YIconButton {
+                        icon: "\u{00D7}";
+                        variant: 2;
+                        clicked => { root.close-note(); }
                     }
                 }
             }
@@ -427,11 +273,12 @@ export component NotesEditor inherits Rectangle {
         if root.template-menu-open : Rectangle {
             height: 180px;
             background: Theme.bg-elevated;
+            border-radius: Theme.r-md;
             border-width: 1px;
             border-color: Theme.border-subtle;
 
             VerticalLayout {
-                padding: 4px;
+                padding: Theme.sp-1;
                 spacing: 0px;
 
                 // Meeting Notes
@@ -530,7 +377,7 @@ export component NotesEditor inherits Rectangle {
         // ── AI Response Panel ──
         if root.ai-panel-open && root.ai-response != "" : Rectangle {
             max-height: 200px;
-            background: #1a2332;
+            background: Theme.bg-overlay-panel;
             border-width: 1px;
             border-color: Theme.accent.transparentize(70%);
 
@@ -538,8 +385,8 @@ export component NotesEditor inherits Rectangle {
                 viewport-height: ai-notes-resp.preferred-height + 16px;
 
                 ai-notes-resp := VerticalLayout {
-                    padding: 12px;
-                    spacing: 8px;
+                    padding: Theme.sp-3;
+                    spacing: Theme.sp-2;
 
                     HorizontalLayout {
                         spacing: 6px;
@@ -558,44 +405,20 @@ export component NotesEditor inherits Rectangle {
                         Rectangle { horizontal-stretch: 1; }
 
                         // Apply button
-                        TouchArea {
-                            width: 56px;
-                            height: 24px;
+                        YButton {
+                            label: "Apply";
+                            variant: 0;
+                            size: 0;
                             clicked => { root.ai-apply(); }
-                            Rectangle {
-                                width: 56px; height: 24px;
-                                border-radius: 12px;
-                                background: parent.has-hover ? #2e9b47 : #27863e;
-                                Text {
-                                    text: "Apply";
-                                    color: #ffffff;
-                                    font-size: 11px;
-                                    font-weight: 600;
-                                    horizontal-alignment: center;
-                                    vertical-alignment: center;
-                                }
-                            }
                         }
 
                         // Dismiss button
-                        TouchArea {
-                            width: 24px;
-                            height: 24px;
+                        YIconButton {
+                            icon: "\u{2715}";
+                            variant: 2;
                             clicked => {
                                 root.ai-panel-open = false;
                                 root.ai-dismiss();
-                            }
-                            Rectangle {
-                                width: 24px; height: 24px;
-                                border-radius: 12px;
-                                background: parent.has-hover ? Theme.hover-fill : transparent;
-                                Text {
-                                    text: "\u{2715}";
-                                    font-size: 11px;
-                                    color: Theme.text-dim;
-                                    horizontal-alignment: center;
-                                    vertical-alignment: center;
-                                }
                             }
                         }
                     }
@@ -628,17 +451,17 @@ export component NotesEditor inherits Rectangle {
                         background: Theme.bg-surface;
 
                         VerticalLayout {
-                            padding: 6px;
-                            padding-left: 8px;
-                            padding-right: 8px;
+                            padding: Theme.sp-2;
+                            padding-left: Theme.sp-2;
+                            padding-right: Theme.sp-2;
                             spacing: 0px;
 
                             // Header
                             Text {
                                 text: "NOTEBOOKS";
                                 color: Theme.text-dim;
-                                font-size: 10px;
-                                font-weight: 600;
+                                font-size: Theme.fs-caption;
+                                font-weight: Theme.fw-headline;
                                 height: 20px;
                                 vertical-alignment: center;
                             }
@@ -662,7 +485,7 @@ export component NotesEditor inherits Rectangle {
                                         }
                                         Text {
                                             text: "All Notes";
-                                            color: root.active-folder == 0 ? Theme.cyan : Theme.text-primary;
+                                            color: root.active-folder == 0 ? Theme.accent : Theme.text-primary;
                                             font-size: 12px;
                                             font-weight: root.active-folder == 0 ? 600 : 400;
                                             vertical-alignment: center;
@@ -822,9 +645,9 @@ export component NotesEditor inherits Rectangle {
                                         : (parent.has-hover ? Theme.hover-fill : transparent);
 
                                     VerticalLayout {
-                                        padding: 8px;
-                                        padding-left: 10px;
-                                        padding-right: 10px;
+                                        padding: Theme.sp-2;
+                                        padding-left: Theme.sp-3;
+                                        padding-right: Theme.sp-3;
                                         spacing: 2px;
 
                                         // Title row with pin indicator
@@ -843,7 +666,7 @@ export component NotesEditor inherits Rectangle {
                                             Text {
                                                 text: entry.title;
                                                 color: idx == root.selected-index
-                                                    ? Theme.cyan
+                                                    ? Theme.accent
                                                     : Theme.text-primary;
                                                 font-size: 13px;
                                                 font-weight: 500;
@@ -918,7 +741,7 @@ export component NotesEditor inherits Rectangle {
                                         y: 0px;
                                         width: 3px;
                                         height: parent.height;
-                                        background: Theme.cyan;
+                                        background: Theme.accent;
                                     }
                                 }
                             }
@@ -937,12 +760,20 @@ export component NotesEditor inherits Rectangle {
 
                 // ── Formatting toolbar (only when note selected) ──
                 if root.selected-index >= 0 : Rectangle {
-                    height: 34px;
+                    height: Theme.h-prominent;
                     background: Theme.bg-surface;
 
+                    // Bottom divider
+                    Rectangle {
+                        y: parent.height - 1px;
+                        width: 100%;
+                        height: 1px;
+                        background: Theme.separator;
+                    }
+
                     HorizontalLayout {
-                        padding-left: 8px;
-                        padding-right: 8px;
+                        padding-left: Theme.sp-2;
+                        padding-right: Theme.sp-2;
                         spacing: 2px;
                         alignment: start;
 
@@ -1189,7 +1020,7 @@ export component NotesEditor inherits Rectangle {
 
                                         Text {
                                             text: "+ New Note";
-                                            color: Theme.cyan;
+                                            color: Theme.accent;
                                             font-size: 13px;
                                             font-weight: 500;
                                             horizontal-alignment: center;
@@ -1204,7 +1035,7 @@ export component NotesEditor inherits Rectangle {
                     // ── Backlinks panel (toggle) ──
                     if root.backlinks-panel-open && root.selected-index >= 0 : Rectangle {
                         height: 140px;
-                        background: #ffffff08;
+                        background: Theme.border-subtle;
                         border-width: 1px;
                         border-color: Theme.border-subtle;
 
@@ -1296,7 +1127,7 @@ export component NotesEditor inherits Rectangle {
                                                 }
                                                 Text {
                                                     text: bl.title;
-                                                    color: Theme.cyan;
+                                                    color: Theme.accent;
                                                     font-size: 11px;
                                                     font-weight: 500;
                                                     vertical-alignment: center;
@@ -1370,7 +1201,7 @@ export component NotesEditor inherits Rectangle {
             // ── Version history panel (right side, toggled) ──
             if root.version-panel-open && root.selected-index >= 0 : Rectangle {
                 width: 220px;
-                background: #ffffff08;
+                background: Theme.border-subtle;
                 border-width: 1px;
                 border-color: Theme.border-subtle;
 
@@ -1426,7 +1257,7 @@ export component NotesEditor inherits Rectangle {
                             for ver[idx] in root.version-history : Rectangle {
                                 height: 56px;
                                 border-radius: 8px;
-                                background: #ffffff08;
+                                background: Theme.border-subtle;
                                 border-width: 1px;
                                 border-color: Theme.border-subtle;
 
@@ -1464,7 +1295,7 @@ export component NotesEditor inherits Rectangle {
                                                 background: parent.has-hover ? Theme.hover-fill-strong : Theme.hover-fill;
                                                 Text {
                                                     text: "View";
-                                                    color: Theme.cyan;
+                                                    color: Theme.accent;
                                                     font-size: 9px;
                                                     font-weight: 500;
                                                     horizontal-alignment: center;

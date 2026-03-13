@@ -193,7 +193,7 @@ export component PackageManager inherits Rectangle {
                             Text {
                                 text: root.upgradable-count;
                                 font-size: 10px;
-                                color: #ffffff;
+                                color: Theme.text-on-accent;
                                 horizontal-alignment: center;
                                 vertical-alignment: center;
                             }
@@ -265,7 +265,7 @@ export component PackageManager inherits Rectangle {
                             }
                             Text {
                                 text: root.ai-is-working ? "Analyzing..." : "AI Explain";
-                                color: root.ai-is-working ? #ffffff
+                                color: root.ai-is-working ? Theme.text-on-accent
                                     : (root.detail-name != "" ? Theme.text-secondary : Theme.text-dim);
                                 font-size: 11px;
                                 font-weight: 500;
@@ -299,13 +299,13 @@ export component PackageManager inherits Rectangle {
                 if root.upgradable-count > 0 : Rectangle {
                     width: 108px;
                     height: 36px;
-                    background: upgrade-all-ta.has-hover ? #2a8a3a : #1e7a30;
+                    background: upgrade-all-ta.has-hover ? Theme.color-success.brighter(20%) : Theme.color-success;
                     border-radius: Theme.radius-pill;
 
                     Text {
                         text: "Upgrade All";
                         font-size: Theme.font-small;
-                        color: #ffffff;
+                        color: Theme.text-on-accent;
                         font-weight: 600;
                         horizontal-alignment: center;
                         vertical-alignment: center;
@@ -324,7 +324,7 @@ export component PackageManager inherits Rectangle {
         // ── AI Response Panel ──
         if root.ai-panel-open && root.ai-response != "" : Rectangle {
             max-height: 180px;
-            background: #1a2332;
+            background: Theme.bg-elevated;
             border-width: 1px;
             border-color: Theme.accent.transparentize(70%);
 
@@ -452,7 +452,7 @@ export component PackageManager inherits Rectangle {
                                     height: 8px;
                                     border-radius: 4px;
                                     background: pkg.upgradable ? Theme.holo-blue
-                                        : pkg.installed ? #4caf50
+                                        : pkg.installed ? Theme.color-success
                                         : Theme.text-dim;
                                 }
 
@@ -519,13 +519,13 @@ export component PackageManager inherits Rectangle {
                                 Rectangle {
                                     width: 76px;
                                     height: 24px;
-                                    background: pkg.upgradable ? #1565c040
-                                        : pkg.installed ? #4caf5020
+                                    background: pkg.upgradable ? Theme.accent-dim
+                                        : pkg.installed ? Theme.color-success-dim
                                         : transparent;
                                     border-radius: 12px;
                                     border-width: pkg.installed || pkg.upgradable ? 1px : 0;
-                                    border-color: pkg.upgradable ? #1565c060
-                                        : pkg.installed ? #4caf5040
+                                    border-color: pkg.upgradable ? Theme.accent.transparentize(60%)
+                                        : pkg.installed ? Theme.color-success.transparentize(60%)
                                         : transparent;
 
                                     Text {
@@ -534,7 +534,7 @@ export component PackageManager inherits Rectangle {
                                             : "";
                                         font-size: 10px;
                                         color: pkg.upgradable ? Theme.holo-blue
-                                            : pkg.installed ? #4caf50
+                                            : pkg.installed ? Theme.color-success
                                             : transparent;
                                         horizontal-alignment: center;
                                         vertical-alignment: center;
@@ -640,13 +640,13 @@ export component PackageManager inherits Rectangle {
                             if !root.detail-installed : Rectangle {
                                 width: 100px;
                                 height: 36px;
-                                background: install-ta.has-hover ? #2e9b47 : #27863e;
+                                background: install-ta.has-hover ? Theme.color-success.brighter(20%) : Theme.color-success;
                                 border-radius: Theme.radius-pill;
 
                                 Text {
                                     text: "Install";
                                     font-size: Theme.font-body;
-                                    color: #ffffff;
+                                    color: Theme.text-on-accent;
                                     font-weight: 600;
                                     horizontal-alignment: center;
                                     vertical-alignment: center;
@@ -661,13 +661,13 @@ export component PackageManager inherits Rectangle {
                             if root.detail-upgradable : Rectangle {
                                 width: 100px;
                                 height: 36px;
-                                background: upg-ta.has-hover ? #1976d2 : #1565c0;
+                                background: upg-ta.has-hover ? Theme.accent.brighter(20%) : Theme.accent;
                                 border-radius: Theme.radius-pill;
 
                                 Text {
                                     text: "Upgrade";
                                     font-size: Theme.font-body;
-                                    color: #ffffff;
+                                    color: Theme.text-on-accent;
                                     font-weight: 600;
                                     horizontal-alignment: center;
                                     vertical-alignment: center;
@@ -682,13 +682,13 @@ export component PackageManager inherits Rectangle {
                             if root.detail-installed : Rectangle {
                                 width: 100px;
                                 height: 36px;
-                                background: remove-ta.has-hover ? #d44040 : #c03030;
+                                background: remove-ta.has-hover ? Theme.color-danger.brighter(20%) : Theme.color-danger;
                                 border-radius: Theme.radius-pill;
 
                                 Text {
                                     text: "Remove";
                                     font-size: Theme.font-body;
-                                    color: #ffffff;
+                                    color: Theme.text-on-accent;
                                     font-weight: 600;
                                     horizontal-alignment: center;
                                     vertical-alignment: center;
@@ -838,7 +838,7 @@ export component PackageManager inherits Rectangle {
                             Text {
                                 text: root.pending-actions.length;
                                 font-size: 10px;
-                                color: #ffffff;
+                                color: Theme.text-on-accent;
                                 horizontal-alignment: center;
                                 vertical-alignment: center;
                             }
@@ -852,13 +852,13 @@ export component PackageManager inherits Rectangle {
                         Rectangle {
                             width: 72px;
                             height: 28px;
-                            background: apply-ta.has-hover ? #2e9b47 : #27863e;
+                            background: apply-ta.has-hover ? Theme.color-success.brighter(20%) : Theme.color-success;
                             border-radius: Theme.radius-pill;
 
                             Text {
                                 text: "Apply";
                                 font-size: Theme.font-small;
-                                color: #ffffff;
+                                color: Theme.text-on-accent;
                                 font-weight: 600;
                                 horizontal-alignment: center;
                                 vertical-alignment: center;
@@ -912,17 +912,17 @@ export component PackageManager inherits Rectangle {
                                 width: 6px;
                                 height: 6px;
                                 border-radius: 3px;
-                                background: action.action-type == "install" ? #4caf50
-                                    : action.action-type == "remove" ? #e05050
-                                    : Theme.holo-blue;
+                                background: action.action-type == "install" ? Theme.color-success
+                                    : action.action-type == "remove" ? Theme.color-danger
+                                    : Theme.accent;
                             }
 
                             Text {
                                 text: action.action-type;
                                 font-size: 11px;
-                                color: action.action-type == "install" ? #4caf50
-                                    : action.action-type == "remove" ? #e05050
-                                    : Theme.holo-blue;
+                                color: action.action-type == "install" ? Theme.color-success
+                                    : action.action-type == "remove" ? Theme.color-danger
+                                    : Theme.accent;
                                 font-weight: 500;
                                 width: 60px;
                                 vertical-alignment: center;
@@ -945,9 +945,9 @@ export component PackageManager inherits Rectangle {
         // ── Error bar ──
         if root.error-text != "" : Rectangle {
             height: 36px;
-            background: #c0303018;
+            background: Theme.color-danger-dim;
             border-width: 1px;
-            border-color: #c0303040;
+            border-color: Theme.color-danger.transparentize(60%);
 
             HorizontalLayout {
                 padding-left: 16px;
@@ -957,7 +957,7 @@ export component PackageManager inherits Rectangle {
                 Text {
                     text: root.error-text;
                     font-size: Theme.font-small;
-                    color: #e06060;
+                    color: Theme.color-danger;
                     vertical-alignment: center;
                     horizontal-stretch: 1;
                     overflow: elide;
@@ -972,7 +972,7 @@ export component PackageManager inherits Rectangle {
                     Text {
                         text: "\u{2715}";
                         font-size: 12px;
-                        color: #e06060;
+                        color: Theme.color-danger;
                         horizontal-alignment: center;
                         vertical-alignment: center;
                     }

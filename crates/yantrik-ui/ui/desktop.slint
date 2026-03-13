@@ -143,6 +143,12 @@ export component DesktopScreen inherits Rectangle {
     in property <string> wallpaper-path: "";
     in property <image> wallpaper-image;
 
+    // V61 — AI privacy indicator state
+    in property <string> ai-privacy-mode: "local";
+    in property <string> ai-provider-label: "";
+    in property <string> ai-fallback-banner: "";
+    callback ai-privacy-clicked();
+
     // Callbacks
     callback send-message(string);
     callback mic-pressed();
@@ -175,11 +181,15 @@ export component DesktopScreen inherits Rectangle {
         incognito-enabled: root.settings-incognito-mode;
         dnd-enabled: root.dnd-mode;
         active-project: root.active-project;
+        ai-privacy-mode: root.ai-privacy-mode;
+        ai-provider-label: root.ai-provider-label;
+        ai-fallback-banner: root.ai-fallback-banner;
         anchor-clicked => { root.lens-open = !root.lens-open; root.open-lens(); }
         queue-clicked => { root.lens-open = true; root.open-lens(); }
         whisper-hint-clicked => { root.whisper-hint-clicked(); }
         settings-tapped => { root.quick-settings-open = !root.quick-settings-open; }
         power-pressed => { root.power-menu-open = !root.power-menu-open; }
+        ai-privacy-clicked => { root.ai-privacy-clicked(); }
     }
 
     // ── Layer 2: Desktop content area ──
@@ -549,7 +559,7 @@ export component DesktopScreen inherits Rectangle {
                 { app-id: "launchpad",     label: Tr.dock-apps,     icon-char: "⊞",  is-running: false },
                 { app-id: "spreadsheet",   label: Tr.dock-ysheets,  icon-char: "YS", is-running: false },
                 { app-id: "documents",     label: Tr.dock-ydoc,     icon-char: "YD", is-running: false },
-                { app-id: "presentation",  label: Tr.dock-yslides,  icon-char: "YP", is-running: false },
+                { app-id: "presentation",  label: Tr.dock-ypresent, icon-char: "YP", is-running: false },
                 { app-id: "settings",      label: Tr.dock-settings, icon-char: "⚙",  is-running: false },
             ];
             launch-app(app-id) => { root.launch-app(app-id); }

@@ -29,8 +29,15 @@ export component AboutScreen inherits Rectangle {
     in property <int> update-count: 0;
     in property <string> update-status: "";
 
+    // AI Readiness
+    in property <string> ai-model-name: "";
+    in property <string> ai-model-tier: "";
+    in property <string> ai-provider-status: "";
+    in property <string> ai-capability-summary: "";
+
     callback back-pressed();
     callback check-updates();
+    callback open-ai-settings();
 
     VerticalLayout {
         width: 100%;
@@ -92,7 +99,7 @@ export component AboutScreen inherits Rectangle {
                     background: Theme.bg-card;
                     border-radius: Theme.radius-card;
                     border-width: 1px;
-                    border-color: #ffffff08;
+                    border-color: Theme.separator;
                     height: logo-col.preferred-height;
 
                     logo-col := VerticalLayout {
@@ -165,7 +172,7 @@ export component AboutScreen inherits Rectangle {
                     background: Theme.bg-card;
                     border-radius: Theme.radius-card;
                     border-width: 1px;
-                    border-color: #ffffff08;
+                    border-color: Theme.separator;
                     height: device-col.preferred-height;
 
                     device-col := VerticalLayout {
@@ -193,7 +200,7 @@ export component AboutScreen inherits Rectangle {
                                 }
                             }
                         }
-                        Rectangle { height: 1px; background: #ffffff06; }
+                        Rectangle { height: 1px; background: Theme.border-subtle; }
 
                         // Kernel row
                         Rectangle {
@@ -216,7 +223,7 @@ export component AboutScreen inherits Rectangle {
                                 }
                             }
                         }
-                        Rectangle { height: 1px; background: #ffffff06; }
+                        Rectangle { height: 1px; background: Theme.border-subtle; }
 
                         // CPU row
                         Rectangle {
@@ -241,7 +248,7 @@ export component AboutScreen inherits Rectangle {
                                 }
                             }
                         }
-                        Rectangle { height: 1px; background: #ffffff06; }
+                        Rectangle { height: 1px; background: Theme.border-subtle; }
 
                         // RAM row
                         Rectangle {
@@ -264,7 +271,7 @@ export component AboutScreen inherits Rectangle {
                                 }
                             }
                         }
-                        Rectangle { height: 1px; background: #ffffff06; }
+                        Rectangle { height: 1px; background: Theme.border-subtle; }
 
                         // Disk row
                         Rectangle {
@@ -314,7 +321,7 @@ export component AboutScreen inherits Rectangle {
                     background: Theme.bg-card;
                     border-radius: Theme.radius-card;
                     border-width: 1px;
-                    border-color: #ffffff08;
+                    border-color: Theme.separator;
                     height: runtime-col.preferred-height;
 
                     runtime-col := VerticalLayout {
@@ -342,7 +349,7 @@ export component AboutScreen inherits Rectangle {
                                 }
                             }
                         }
-                        Rectangle { height: 1px; background: #ffffff06; }
+                        Rectangle { height: 1px; background: Theme.border-subtle; }
 
                         // Build date row
                         Rectangle {
@@ -368,6 +375,171 @@ export component AboutScreen inherits Rectangle {
                     }
                 }
 
+                // ── AI READINESS section header ──
+                HorizontalLayout {
+                    spacing: 8px;
+                    Rectangle {
+                        width: 3px; height: 14px;
+                        border-radius: 1.5px;
+                        background: Theme.accent;
+                        drop-shadow-blur: 4px;
+                        drop-shadow-color: Theme.accent-glow;
+                    }
+                    Text {
+                        text: "AI READINESS";
+                        color: Theme.text-dim;
+                        font-size: 11px;
+                        letter-spacing: 2px;
+                        vertical-alignment: center;
+                    }
+                }
+
+                // AI Readiness card
+                Rectangle {
+                    background: Theme.bg-card;
+                    border-radius: Theme.radius-card;
+                    border-width: 1px;
+                    border-color: Theme.separator;
+                    height: ai-ready-col.preferred-height;
+
+                    ai-ready-col := VerticalLayout {
+                        padding: 16px;
+                        spacing: 0px;
+
+                        // Model row
+                        Rectangle {
+                            height: 44px;
+                            HorizontalLayout {
+                                padding-left: 4px;
+                                padding-right: 4px;
+                                Text {
+                                    text: "AI Model";
+                                    color: Theme.text-secondary;
+                                    font-size: Theme.font-body;
+                                    horizontal-stretch: 1;
+                                    vertical-alignment: center;
+                                }
+                                HorizontalLayout {
+                                    spacing: 8px;
+                                    Text {
+                                        text: root.ai-model-name != "" ? root.ai-model-name : "Not configured";
+                                        color: root.ai-model-name != "" ? Theme.accent : Theme.text-dim;
+                                        font-size: Theme.font-body;
+                                        font-weight: 500;
+                                        vertical-alignment: center;
+                                    }
+                                    if root.ai-model-tier != "" : Rectangle {
+                                        width: about-tier-txt.preferred-width + 12px;
+                                        height: 20px;
+                                        y: (parent.height - 20px) / 2;
+                                        border-radius: 10px;
+                                        background: root.ai-model-tier == "Large" ? Theme.tint-accent
+                                                  : root.ai-model-tier == "Medium" ? Theme.tint-cyan
+                                                  : root.ai-model-tier == "Small" ? Theme.tint-amber
+                                                  : Theme.border-default;
+                                        about-tier-txt := Text {
+                                            text: root.ai-model-tier;
+                                            color: root.ai-model-tier == "Large" ? Theme.accent
+                                                 : root.ai-model-tier == "Medium" ? Theme.cyan
+                                                 : root.ai-model-tier == "Small" ? Theme.amber
+                                                 : Theme.text-secondary;
+                                            font-size: 10px;
+                                            font-weight: 600;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Rectangle { height: 1px; background: Theme.border-subtle; }
+
+                        // Provider status row
+                        Rectangle {
+                            height: 44px;
+                            HorizontalLayout {
+                                padding-left: 4px;
+                                padding-right: 4px;
+                                Text {
+                                    text: "Provider";
+                                    color: Theme.text-secondary;
+                                    font-size: Theme.font-body;
+                                    horizontal-stretch: 1;
+                                    vertical-alignment: center;
+                                }
+                                HorizontalLayout {
+                                    spacing: 8px;
+                                    Rectangle {
+                                        width: 8px;
+                                        height: 8px;
+                                        y: (parent.height - 8px) / 2;
+                                        border-radius: 4px;
+                                        background: root.ai-provider-status == "Connected" ? Theme.color-reminder
+                                                  : root.ai-provider-status == "Disconnected" ? Theme.color-emotional
+                                                  : Theme.text-dim;
+                                    }
+                                    Text {
+                                        text: root.ai-provider-status != "" ? root.ai-provider-status : "Unknown";
+                                        color: root.ai-provider-status == "Connected" ? Theme.color-reminder
+                                             : root.ai-provider-status == "Disconnected" ? Theme.color-emotional
+                                             : Theme.text-dim;
+                                        font-size: Theme.font-body;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                            }
+                        }
+                        Rectangle { height: 1px; background: Theme.border-subtle; }
+
+                        // Capability summary row
+                        Rectangle {
+                            height: 44px;
+                            HorizontalLayout {
+                                padding-left: 4px;
+                                padding-right: 4px;
+                                Text {
+                                    text: "Capabilities";
+                                    color: Theme.text-secondary;
+                                    font-size: Theme.font-body;
+                                    horizontal-stretch: 1;
+                                    vertical-alignment: center;
+                                }
+                                Text {
+                                    text: root.ai-capability-summary != "" ? root.ai-capability-summary : "—";
+                                    color: Theme.text-primary;
+                                    font-size: Theme.font-small;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+                        Rectangle { height: 1px; background: Theme.border-subtle; }
+
+                        // Open AI Settings link
+                        TouchArea {
+                            height: 44px;
+                            clicked => { root.open-ai-settings(); }
+                            HorizontalLayout {
+                                padding-left: 4px;
+                                padding-right: 4px;
+                                Text {
+                                    text: "Open AI Settings";
+                                    color: Theme.accent;
+                                    font-size: Theme.font-body;
+                                    font-weight: 500;
+                                    horizontal-stretch: 1;
+                                    vertical-alignment: center;
+                                }
+                                Text {
+                                    text: "\u{2192}";
+                                    color: Theme.accent-dim;
+                                    font-size: 18px;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+                    }
+                }
+
                 // ── COMPONENTS section header ──
                 HorizontalLayout {
                     spacing: 8px;
@@ -376,7 +548,7 @@ export component AboutScreen inherits Rectangle {
                         border-radius: 1.5px;
                         background: Theme.holo-blue;
                         drop-shadow-blur: 4px;
-                        drop-shadow-color: #1565c040;
+                        drop-shadow-color: Theme.holo-blue.transparentize(75%);
                     }
                     Text {
                         text: "COMPONENTS";
@@ -418,7 +590,7 @@ export component AboutScreen inherits Rectangle {
                     background: Theme.bg-card;
                     border-radius: Theme.radius-card;
                     border-width: 1px;
-                    border-color: #ffffff08;
+                    border-color: Theme.separator;
                     height: comp-col.preferred-height;
 
                     comp-col := VerticalLayout {
@@ -459,9 +631,9 @@ export component AboutScreen inherits Rectangle {
                                         width: upd-text.preferred-width + 12px;
                                         height: 20px;
                                         border-radius: 10px;
-                                        background: #1565c020;
+                                        background: Theme.holo-blue.transparentize(87%);
                                         border-width: 1px;
-                                        border-color: #1565c040;
+                                        border-color: Theme.holo-blue.transparentize(75%);
 
                                         upd-text := Text {
                                             text: comp.latest-version;
@@ -485,7 +657,7 @@ export component AboutScreen inherits Rectangle {
                             // Separator between items (not after last)
                             if idx < root.components.length - 1 : Rectangle {
                                 height: 1px;
-                                background: #ffffff06;
+                                background: Theme.border-subtle;
                             }
                         }
                     }

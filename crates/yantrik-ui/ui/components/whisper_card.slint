@@ -33,15 +33,15 @@ component WhisperCard inherits Rectangle {
     border-radius: 16px;
     // Glassmorphic background
     background: @linear-gradient(135deg,
-        #12111ae0 0%,
-        #0c0b10d0 50%,
-        #080810c0 100%
+        Theme.bg-deep.transparentize(12%) 0%,
+        Theme.bg-deep.transparentize(19%) 50%,
+        Theme.bg-deep.transparentize(25%) 100%
     );
     border-width: 1px;
-    border-color: hovered ? #ffffff18 : #ffffff0a;
+    border-color: hovered ? Theme.border-strong : Theme.border-default;
     clip: true;
     drop-shadow-blur: 20px;
-    drop-shadow-color: #00000060;
+    drop-shadow-color: Theme.overlay-backdrop;
 
     animate x { duration: 300ms; easing: ease-out; }
     animate opacity { duration: 250ms; }
@@ -98,7 +98,7 @@ component WhisperCard inherits Rectangle {
                 height: 16px;
                 width: max(24px, source-text.preferred-width + 10px);
                 border-radius: 8px;
-                background: #ffffff08;
+                background: Theme.separator;
 
                 source-text := Text {
                     text: card.source;
@@ -145,7 +145,7 @@ component WhisperCard inherits Rectangle {
         Rectangle {
             width: 100%; height: 100%;
             border-radius: 10px;
-            background: root.hovered ? #ffffff10 : transparent;
+            background: root.hovered ? Theme.hover-fill-strong : transparent;
 
             Text {
                 text: "✕";

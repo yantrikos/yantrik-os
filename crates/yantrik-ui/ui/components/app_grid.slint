@@ -61,55 +61,66 @@ export component AppGrid inherits Rectangle {
             padding: 20px;
             spacing: 12px;
 
-            // Header
+            // Header with recent apps row
             Text {
                 text: "Applications";
                 color: Theme.text-primary;
-                font-size: Theme.font-title;
-                font-weight: 500;
+                font-size: Theme.fs-title-1;
+                font-weight: Theme.fw-title-1;
                 horizontal-alignment: center;
             }
 
-            // Search bar
+            // Search bar — search-first layout
             Rectangle {
-                height: 40px;
+                height: Theme.h-prominent;
                 background: Theme.bg-deep;
-                border-radius: 12px;
+                border-radius: Theme.r-lg;
                 border-width: 1px;
-                border-color: search-input.has-focus ? Theme.cyan-dim : Theme.border-subtle;
+                border-color: search-input.has-focus ? Theme.accent : Theme.border-subtle;
+                clip: true;
+
+                animate border-color { duration: Theme.dur-fast; }
 
                 HorizontalLayout {
-                    padding-left: 14px;
-                    padding-right: 14px;
-                    spacing: 10px;
+                    padding-left: Theme.sp-4;
+                    padding-right: Theme.sp-4;
+                    spacing: Theme.sp-2;
 
                     // Search icon
                     Text {
-                        text: "\u{2315}";
-                        color: Theme.text-dim;
-                        font-size: 16px;
+                        text: "⌕";
+                        color: search-input.has-focus ? Theme.accent : Theme.text-dim;
+                        font-size: Theme.fs-headline;
                         vertical-alignment: center;
+                        animate color { duration: Theme.dur-fast; }
                     }
 
                     search-input := TextInput {
                         vertical-alignment: center;
-                        font-size: Theme.font-body;
+                        font-size: Theme.fs-body;
                         color: Theme.text-primary;
                         horizontal-stretch: 1;
 
                         edited => {
                             root.search-changed(self.text);
                         }
-
-                        // Clear on close
                     }
 
-                    // Result count
-                    Text {
-                        text: root.apps.length + " apps";
-                        color: Theme.text-dim;
-                        font-size: 11px;
-                        vertical-alignment: center;
+                    // Result count badge
+                    Rectangle {
+                        width: count-text.preferred-width + Theme.sp-3;
+                        height: 20px;
+                        y: (parent.height - 20px) / 2;
+                        border-radius: Theme.r-pill;
+                        background: Theme.bg-elevated;
+
+                        count-text := Text {
+                            text: root.apps.length + " apps";
+                            color: Theme.text-dim;
+                            font-size: Theme.fs-caption;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
                     }
                 }
             }
@@ -120,18 +131,24 @@ export component AppGrid inherits Rectangle {
             if root.apps.length == 0 : VerticalLayout {
                 vertical-stretch: 1;
                 alignment: center;
-                spacing: 8px;
+                spacing: Theme.sp-2;
 
                 Text {
+                    text: "📦";
+                    font-size: 40px;
+                    horizontal-alignment: center;
+                }
+                Text {
                     text: "No apps found";
-                    color: Theme.text-dim;
-                    font-size: Theme.font-body;
+                    color: Theme.text-secondary;
+                    font-size: Theme.fs-headline;
+                    font-weight: Theme.fw-headline;
                     horizontal-alignment: center;
                 }
                 Text {
                     text: "Try a different search term";
                     color: Theme.text-dim;
-                    font-size: Theme.font-small;
+                    font-size: Theme.fs-caption;
                     horizontal-alignment: center;
                 }
             }
@@ -139,11 +156,11 @@ export component AppGrid inherits Rectangle {
             // Scrollable app grid
             if root.apps.length > 0 : Flickable {
                 vertical-stretch: 1;
-                viewport-height: ((root.apps.length + root.columns - 1) / root.columns) * (root.cell-size + 12px);
+                viewport-height: ((root.apps.length + root.columns - 1) / root.columns) * (root.cell-size + Theme.sp-3);
 
                 for app[idx] in root.apps : TouchArea {
-                    x: Math.mod(idx, root.columns) * (root.cell-size + 16px) + 4px;
-                    y: Math.floor(idx / root.columns) * (root.cell-size + 12px);
+                    x: Math.mod(idx, root.columns) * (root.cell-size + Theme.sp-4) + Theme.sp-1;
+                    y: Math.floor(idx / root.columns) * (root.cell-size + Theme.sp-3);
                     width: root.cell-size;
                     height: root.cell-size;
 
@@ -156,43 +173,50 @@ export component AppGrid inherits Rectangle {
                     cell := Rectangle {
                         width: 100%;
                         height: 100%;
-                        border-radius: 14px;
+                        border-radius: Theme.r-lg;
                         background: parent.has-hover ? Theme.hover-fill : transparent;
                         property <bool> hovered: parent.has-hover;
+                        animate background { duration: Theme.dur-fast; }
 
                         VerticalLayout {
                             alignment: center;
-                            spacing: 10px;
-                            padding: 12px;
+                            spacing: Theme.sp-2;
+                            padding: Theme.sp-3;
 
-                            // Icon badge — centered via HorizontalLayout
+                            // Icon badge — consistent canvas size
                             HorizontalLayout {
                                 alignment: center;
                                 Rectangle {
-                                    width: 52px;
-                                    height: 52px;
-                                    border-radius: 14px;
+                                    width: 56px;
+                                    height: 56px;
+                                    border-radius: Theme.r-lg;
                                     background: Theme.bg-card;
                                     border-width: 1px;
-                                    border-color: cell.hovered ? Theme.cyan-dim : Theme.border-subtle;
+                                    border-color: cell.hovered ? Theme.accent-dim : Theme.border-subtle;
+                                    drop-shadow-blur: cell.hovered ? 8px : 0;
+                                    drop-shadow-color: Theme.accent-glow;
+
+                                    animate border-color { duration: Theme.dur-fast; }
+                                    animate drop-shadow-blur { duration: Theme.dur-normal; }
 
                                     Text {
                                         text: app.icon-char;
-                                        color: Theme.cyan;
-                                        font-size: 20px;
+                                        color: cell.hovered ? Theme.accent : Theme.text-secondary;
+                                        font-size: 22px;
                                         font-weight: 700;
                                         horizontal-alignment: center;
                                         vertical-alignment: center;
+                                        animate color { duration: Theme.dur-fast; }
                                     }
                                 }
                             }
 
-                            // App name — full width so horizontal-alignment works
+                            // App name — consistent label
                             Text {
                                 text: app.name;
                                 color: Theme.text-primary;
-                                font-size: 12px;
-                                font-weight: 500;
+                                font-size: Theme.fs-caption;
+                                font-weight: Theme.fw-body-strong;
                                 horizontal-alignment: center;
                                 overflow: elide;
                             }

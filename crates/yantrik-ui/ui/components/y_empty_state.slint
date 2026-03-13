@@ -1,0 +1,66 @@
+// YEmptyState — centered placeholder for empty views.
+// Icon + title + description + primary CTA + optional secondary action.
+import { Theme } from "../theme.slint";
+import { YButton } from "y_button.slint";
+
+export component YEmptyState inherits Rectangle {
+    in property <string> icon: "📭";
+    in property <string> title: "Nothing here yet";
+    in property <string> description: "";
+    in property <string> action-label: "";
+    in property <string> secondary-label: "";
+    callback action-clicked();
+    callback secondary-clicked();
+
+    background: transparent;
+
+    VerticalLayout {
+        alignment: center;
+        spacing: Theme.sp-3;
+        padding: Theme.sp-9;
+
+        // Icon
+        Text {
+            text: root.icon;
+            font-size: 48px;
+            horizontal-alignment: center;
+        }
+
+        // Title
+        Text {
+            text: root.title;
+            color: Theme.text-primary;
+            font-size: Theme.fs-title-2;
+            font-weight: Theme.fw-title-2;
+            horizontal-alignment: center;
+        }
+
+        // Description
+        if root.description != "" : Text {
+            text: root.description;
+            color: Theme.text-secondary;
+            font-size: Theme.fs-body;
+            horizontal-alignment: center;
+            wrap: word-wrap;
+            max-width: 360px;
+        }
+
+        // Actions
+        if root.action-label != "" : HorizontalLayout {
+            alignment: center;
+            spacing: Theme.sp-3;
+
+            YButton {
+                label: root.action-label;
+                variant: 0;
+                clicked => { root.action-clicked(); }
+            }
+
+            if root.secondary-label != "" : YButton {
+                label: root.secondary-label;
+                variant: 2;
+                clicked => { root.secondary-clicked(); }
+            }
+        }
+    }
+}

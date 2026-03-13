@@ -62,7 +62,7 @@ export component ParticleField inherits Rectangle {
         y: parent.height * 0.12 - 175px;
         width: 400px; height: 350px;
         border-radius: 175px;
-        background: @radial-gradient(circle, #5ac8d41a 0%, #5ac8d40a 40%, transparent 70%);
+        background: @radial-gradient(circle, Theme.cyan.transparentize(90%) 0%, Theme.cyan.transparentize(96%) 40%, transparent 70%);
         opacity: intensity * day-brightness * (0.6 + cyan-boost + 0.3 * sin(phase * 4.398 * 1rad));
     }
 
@@ -72,7 +72,7 @@ export component ParticleField inherits Rectangle {
         y: parent.height * 0.4 - 225px;
         width: 400px; height: 450px;
         border-radius: 200px;
-        background: @radial-gradient(circle, #d4a5741a 0%, #d4a5740a 40%, transparent 70%);
+        background: @radial-gradient(circle, Theme.amber.transparentize(90%) 0%, Theme.amber.transparentize(96%) 40%, transparent 70%);
         opacity: intensity * day-brightness * (0.5 + urge-glow + amber-warmth + 0.3 * sin(phase * 5.655 * 1rad));
     }
 
@@ -82,7 +82,7 @@ export component ParticleField inherits Rectangle {
         y: parent.height * 0.65 - 200px;
         width: 350px; height: 400px;
         border-radius: 175px;
-        background: @radial-gradient(circle, #5ac8d416 0%, #5ac8d408 40%, transparent 70%);
+        background: @radial-gradient(circle, Theme.cyan.transparentize(91%) 0%, Theme.cyan.transparentize(97%) 40%, transparent 70%);
         opacity: intensity * day-brightness * (0.5 + cyan-boost + 0.25 * sin(phase * 6.912 * 1rad));
     }
 
@@ -92,7 +92,7 @@ export component ParticleField inherits Rectangle {
         y: parent.height * 0.05 - 100px;
         width: 350px; height: 200px;
         border-radius: 100px;
-        background: @radial-gradient(circle, #c48bd410 0%, transparent 60%);
+        background: @radial-gradient(circle, Theme.color-pattern.transparentize(94%) 0%, transparent 60%);
         opacity: intensity * day-brightness * (0.45 + purple-shift + 0.2 * sin(phase * 3.770 * 1rad));
     }
 
@@ -102,7 +102,7 @@ export component ParticleField inherits Rectangle {
         y: parent.height * 0.75 - 175px;
         width: 450px; height: 350px;
         border-radius: 175px;
-        background: @radial-gradient(circle, #d4a57414 0%, #d4a57408 30%, transparent 65%);
+        background: @radial-gradient(circle, Theme.tint-amber 0%, Theme.amber.transparentize(97%) 30%, transparent 65%);
         opacity: intensity * day-brightness * (0.5 + urge-glow + amber-warmth + 0.3 * sin(phase * 5.027 * 1rad));
     }
 
@@ -112,7 +112,7 @@ export component ParticleField inherits Rectangle {
         y: parent.height * 0.30 - 200px;
         width: 600px; height: 400px;
         border-radius: 200px;
-        background: @radial-gradient(circle, #5ac8d40c 0%, transparent 65%);
+        background: @radial-gradient(circle, Theme.cyan.transparentize(95%) 0%, transparent 65%);
         opacity: intensity * day-brightness * (0.4 + cyan-boost * 0.5 + 0.2 * sin(phase * 4.712 * 1rad));
     }
 
@@ -122,7 +122,7 @@ export component ParticleField inherits Rectangle {
         y: parent.height * 0.50 - 200px;
         width: 500px; height: 400px;
         border-radius: 200px;
-        background: @radial-gradient(circle, #e86b6b0c 0%, transparent 60%);
+        background: @radial-gradient(circle, Theme.color-emotional.transparentize(95%) 0%, transparent 60%);
         opacity: intensity * Math.max(0.0, -sentiment) * cognitive-load * (0.4 + 0.2 * sin(phase * 7.854 * 1rad));
     }
 
@@ -140,7 +140,7 @@ export component ParticleField inherits Rectangle {
         background: Theme.cyan;
         opacity: intensity * (0.35 + 0.3 * sin(phase * 12.566 * 1rad));
         drop-shadow-blur: 20px;
-        drop-shadow-color: #5ac8d460;
+        drop-shadow-color: Theme.cyan.transparentize(62%);
     }
 
     // Neuron 2 — upper right
@@ -151,7 +151,7 @@ export component ParticleField inherits Rectangle {
         background: Theme.amber;
         opacity: intensity * (0.3 + 0.25 * sin(phase * 10.996 * 1rad));
         drop-shadow-blur: 16px;
-        drop-shadow-color: #d4a57460;
+        drop-shadow-color: Theme.amber.transparentize(62%);
     }
 
     // Neuron 3 — mid left (larger)
@@ -162,7 +162,7 @@ export component ParticleField inherits Rectangle {
         background: Theme.cyan;
         opacity: intensity * (0.4 + 0.3 * sin(phase * 8.796 * 1rad));
         drop-shadow-blur: 24px;
-        drop-shadow-color: #5ac8d460;
+        drop-shadow-color: Theme.cyan.transparentize(62%);
     }
 
     // Neuron 4 — center-high
@@ -173,7 +173,7 @@ export component ParticleField inherits Rectangle {
         background: Theme.amber;
         opacity: intensity * (0.3 + 0.25 * sin(phase * 7.225 * 1rad));
         drop-shadow-blur: 18px;
-        drop-shadow-color: #d4a57460;
+        drop-shadow-color: Theme.amber.transparentize(62%);
     }
 
     // Neuron 5 — right side
@@ -184,7 +184,7 @@ export component ParticleField inherits Rectangle {
         background: Theme.cyan;
         opacity: intensity * (0.35 + 0.25 * sin(phase * 11.310 * 1rad));
         drop-shadow-blur: 16px;
-        drop-shadow-color: #5ac8d460;
+        drop-shadow-color: Theme.cyan.transparentize(62%);
     }
 
     // Neuron 6 — lower-left
@@ -195,7 +195,7 @@ export component ParticleField inherits Rectangle {
         background: Theme.cyan-light;
         opacity: intensity * (0.35 + 0.3 * sin(phase * 9.111 * 1rad));
         drop-shadow-blur: 22px;
-        drop-shadow-color: #5ac8d460;
+        drop-shadow-color: Theme.cyan.transparentize(62%);
     }
 
     // Neuron 7 — bottom center
@@ -206,7 +206,7 @@ export component ParticleField inherits Rectangle {
         background: Theme.amber;
         opacity: intensity * (0.25 + 0.2 * sin(phase * 13.195 * 1rad));
         drop-shadow-blur: 14px;
-        drop-shadow-color: #d4a57460;
+        drop-shadow-color: Theme.amber.transparentize(62%);
     }
 
     // Neuron 8 — lower right (larger, prominent)
@@ -217,7 +217,7 @@ export component ParticleField inherits Rectangle {
         background: Theme.cyan;
         opacity: intensity * (0.4 + 0.3 * sin(phase * 6.597 * 1rad));
         drop-shadow-blur: 28px;
-        drop-shadow-color: #5ac8d460;
+        drop-shadow-color: Theme.cyan.transparentize(62%);
     }
 
     // Neuron 9 — far right
@@ -228,7 +228,7 @@ export component ParticleField inherits Rectangle {
         background: Theme.amber;
         opacity: intensity * (0.25 + 0.2 * sin(phase * 10.367 * 1rad));
         drop-shadow-blur: 14px;
-        drop-shadow-color: #d4a57460;
+        drop-shadow-color: Theme.amber.transparentize(62%);
     }
 
     // Neuron 10 — center (hero neuron, biggest glow)
@@ -239,7 +239,7 @@ export component ParticleField inherits Rectangle {
         background: Theme.cyan-light;
         opacity: intensity * (0.25 + 0.2 * sin(phase * 5.027 * 1rad));
         drop-shadow-blur: 35px;
-        drop-shadow-color: #5ac8d450;
+        drop-shadow-color: Theme.cyan.transparentize(69%);
     }
 
     // Neuron 11 — upper drift
@@ -250,7 +250,7 @@ export component ParticleField inherits Rectangle {
         background: Theme.cyan;
         opacity: intensity * (0.3 + 0.2 * sin(phase * 8.482 * 1rad));
         drop-shadow-blur: 14px;
-        drop-shadow-color: #5ac8d450;
+        drop-shadow-color: Theme.cyan.transparentize(69%);
     }
 
     // Neuron 12 — mid right low
@@ -261,7 +261,7 @@ export component ParticleField inherits Rectangle {
         background: Theme.amber;
         opacity: intensity * (0.3 + 0.25 * sin(phase * 7.540 * 1rad));
         drop-shadow-blur: 18px;
-        drop-shadow-color: #d4a57460;
+        drop-shadow-color: Theme.amber.transparentize(62%);
     }
 
     // Neuron 13 — left center
@@ -272,7 +272,7 @@ export component ParticleField inherits Rectangle {
         background: Theme.amber;
         opacity: intensity * (0.25 + 0.2 * sin(phase * 9.425 * 1rad));
         drop-shadow-blur: 14px;
-        drop-shadow-color: #d4a57450;
+        drop-shadow-color: Theme.amber.transparentize(69%);
     }
 
     // Neuron 14 — center-right high
@@ -283,7 +283,7 @@ export component ParticleField inherits Rectangle {
         background: Theme.cyan;
         opacity: intensity * (0.3 + 0.25 * sin(phase * 7.540 * 1rad));
         drop-shadow-blur: 20px;
-        drop-shadow-color: #5ac8d450;
+        drop-shadow-color: Theme.cyan.transparentize(69%);
     }
 
     // Neuron 15 — lower center-left
@@ -294,7 +294,7 @@ export component ParticleField inherits Rectangle {
         background: Theme.cyan;
         opacity: intensity * (0.35 + 0.25 * sin(phase * 6.597 * 1rad));
         drop-shadow-blur: 22px;
-        drop-shadow-color: #5ac8d460;
+        drop-shadow-color: Theme.cyan.transparentize(62%);
     }
 
     // ══════════════════════════════════════════════
@@ -307,10 +307,10 @@ export component ParticleField inherits Rectangle {
         x: parent.width * (0.40 + 0.03 * sin(phase * 11.310 * 1rad));
         y: parent.height * (0.30 + 0.02 * cos(phase * 13.195 * 1rad));
         width: 4px; height: 4px; border-radius: 2px;
-        background: #e8a06b;
+        background: Theme.color-conflict;
         opacity: intensity * cognitive-load * Math.max(0.0, cognitive-load - 0.5) * 2.0 * (0.5 + 0.5 * sin(phase * 18.850 * 1rad));
         drop-shadow-blur: 12px;
-        drop-shadow-color: #e86b6b50;
+        drop-shadow-color: Theme.color-emotional.transparentize(69%);
     }
 
     // Stress neuron 2 — right mid
@@ -318,10 +318,10 @@ export component ParticleField inherits Rectangle {
         x: parent.width * (0.68 + 0.02 * cos(phase * 12.566 * 1rad));
         y: parent.height * (0.45 + 0.03 * sin(phase * 10.996 * 1rad));
         width: 3px; height: 3px; border-radius: 1.5px;
-        background: #e86b6b;
+        background: Theme.color-emotional;
         opacity: intensity * cognitive-load * Math.max(0.0, cognitive-load - 0.6) * 2.5 * (0.4 + 0.6 * sin(phase * 20.420 * 1rad));
         drop-shadow-blur: 10px;
-        drop-shadow-color: #e86b6b40;
+        drop-shadow-color: Theme.color-emotional.transparentize(75%);
     }
 
     // Stress neuron 3 — lower left (only at extreme load)
@@ -329,9 +329,9 @@ export component ParticleField inherits Rectangle {
         x: parent.width * (0.25 + 0.02 * sin(phase * 14.137 * 1rad));
         y: parent.height * (0.60 + 0.02 * cos(phase * 11.938 * 1rad));
         width: 3px; height: 3px; border-radius: 1.5px;
-        background: #e8a06b;
+        background: Theme.color-conflict;
         opacity: intensity * cognitive-load * Math.max(0.0, cognitive-load - 0.7) * 3.3 * (0.3 + 0.7 * sin(phase * 22.000 * 1rad));
         drop-shadow-blur: 10px;
-        drop-shadow-color: #e86b6b40;
+        drop-shadow-color: Theme.color-emotional.transparentize(75%);
     }
 }

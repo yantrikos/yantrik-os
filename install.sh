@@ -153,27 +153,35 @@ COMPANION_NAME=${COMPANION_NAME:-$DEFAULT_COMPANION}
 # LLM backend selection
 echo
 echo -e "   ${BOLD}LLM Backend:${NC}"
-echo -e "   ${DIM}1)${NC} Claude CLI  ${DIM}— Best quality, requires Claude Code installed${NC}"
-echo -e "   ${DIM}2)${NC} Ollama API  ${DIM}— Local/remote Ollama server${NC}"
+echo -e "   ${AMBER}   GPU is strongly recommended for interactive AI responses.${NC}"
+echo -e "   ${AMBER}   CPU-only inference is very slow (~1 TPS). GPU gives 50-130+ TPS.${NC}"
+echo
+echo -e "   ${DIM}1)${NC} Ollama API  ${DIM}— Local/remote Ollama with GPU (recommended)${NC}"
+echo -e "   ${DIM}2)${NC} Claude CLI  ${DIM}— Cloud quality, requires Claude Code installed${NC}"
 echo -e "   ${DIM}3)${NC} OpenAI API  ${DIM}— Any OpenAI-compatible API${NC}"
+echo -e "   ${DIM}4)${NC} Offline only ${DIM}— Use bundled 4B model (requires GPU for usable speed)${NC}"
 echo -n "   Choice [1]: "
 read -r LLM_CHOICE
 LLM_CHOICE=${LLM_CHOICE:-1}
 
-LLM_BACKEND="claude-cli"
-LLM_MODEL="sonnet"
-API_URL=""
+LLM_BACKEND="api"
+LLM_MODEL="qwen3.5:4b"
+API_URL="http://localhost:11434"
 API_KEY=""
 
 case "$LLM_CHOICE" in
-    2)
+    1)
         LLM_BACKEND="api"
         echo -n "   Ollama URL [http://localhost:11434]: "
         read -r API_URL
         API_URL=${API_URL:-http://localhost:11434}
-        echo -n "   Model name [qwen3:8b]: "
+        echo -n "   Model name [qwen3.5:4b]: "
         read -r LLM_MODEL
-        LLM_MODEL=${LLM_MODEL:-qwen3:8b}
+        LLM_MODEL=${LLM_MODEL:-qwen3.5:4b}
+        ;;
+    2)
+        LLM_BACKEND="claude-cli"
+        LLM_MODEL="sonnet"
         ;;
     3)
         LLM_BACKEND="api"
@@ -186,6 +194,12 @@ case "$LLM_CHOICE" in
         echo -n "   Model name [gpt-4o]: "
         read -r LLM_MODEL
         LLM_MODEL=${LLM_MODEL:-gpt-4o}
+        ;;
+    4)
+        LLM_BACKEND="api"
+        API_URL="http://localhost:8341"
+        LLM_MODEL="qwen3.5-4b"
+        info "Using bundled offline model via llama-server on port 8341"
         ;;
 esac
 
@@ -381,6 +395,27 @@ download_model "whisper" "$MODEL_DIR/whisper" \
     "https://huggingface.co/openai/whisper-tiny/resolve/main" \
     config.json tokenizer.json model.safetensors
 
+# Offline LLM — Qwen 3.5 4B Q4_K_M (~2.5GB)
+# The 4B model is the minimum viable size for reliable reasoning,
+# structured output (CSV, JSON, slides), and instruction following.
+# Thinking is disabled (think: false) at the API layer to maximize output quality.
+LLM_GGUF="Qwen3.5-4B-Q4_K_M.gguf"
+LLM_GGUF_URL="https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/main/$LLM_GGUF"
+if [ -f "$MODEL_DIR/llm/$LLM_GGUF" ]; then
+    ok "Offline LLM already present ($LLM_GGUF)"
+else
+    info "Downloading offline LLM ($LLM_GGUF, ~2.5 GB)..."
+    if [ "$CACHE_OK" = true ]; then
+        curl -fsSL --connect-timeout 5 "$MODEL_CACHE/$LLM_GGUF" -o "$MODEL_DIR/llm/$LLM_GGUF" 2>/dev/null && \
+            ok "Offline LLM (from LAN cache)" || true
+    fi
+    if [ ! -f "$MODEL_DIR/llm/$LLM_GGUF" ]; then
+        curl -fSL --progress-bar "$LLM_GGUF_URL" -o "$MODEL_DIR/llm/$LLM_GGUF" 2>&1 && \
+            ok "Offline LLM downloaded ($LLM_GGUF)" || \
+            warn "Offline LLM download failed — companion will need a remote LLM backend"
+    fi
+fi
+
 echo
 
 # ═══════════════════════════════════════════════════════════════
@@ -397,7 +432,7 @@ case "$LLM_BACKEND" in
         ;;
     api)
         LLM_CONFIG="backend: \"api\"
-  api_url: \"$API_URL\"
+  api_base_url: \"${API_URL}/v1\"
   api_model: \"$LLM_MODEL\""
         if [ -n "$API_KEY" ]; then
             LLM_CONFIG="$LLM_CONFIG
@@ -424,13 +459,13 @@ personality:
 
 llm:
   $LLM_CONFIG
-  model_dir: "$MODEL_DIR/llm"
-  hub_repo: "Qwen/Qwen2.5-3B-Instruct-GGUF"
-  hub_gguf: "qwen2.5-3b-instruct-q4_k_m.gguf"
-  hub_tokenizer: "Qwen/Qwen2.5-3B-Instruct"
-  max_tokens: 512
-  temperature: 0.7
-  max_context_tokens: 4096
+  max_tokens: 1024
+  temperature: 0.6
+  max_context_tokens: 16384
+  fallback:
+    backend: "api"
+    api_base_url: "http://localhost:8341/v1"
+    api_model: "qwen3.5-4b"
 
 server:
   host: "0.0.0.0"
@@ -677,7 +712,60 @@ ok "Services configured (dbus, seatd, auto-login)"
 echo
 
 # ═══════════════════════════════════════════════════════════════
-# STEP 10: Install Upgrade Script
+# STEP 10: Offline LLM Server (llama-server)
+# ═══════════════════════════════════════════════════════════════
+step "Setting up offline LLM server..."
+
+LLM_GGUF_PATH="$MODEL_DIR/llm/$LLM_GGUF"
+if [ -f "$LLM_GGUF_PATH" ]; then
+    # Build llama-server from llama.cpp if not already present
+    if ! command -v llama-server >/dev/null 2>&1 && [ ! -f /usr/local/bin/llama-server ]; then
+        info "Building llama-server from source (this takes a few minutes)..."
+        apk add -q build-base cmake linux-headers 2>/dev/null || true
+        cd /tmp
+        if [ ! -d llama.cpp ]; then
+            git clone --depth 1 https://github.com/ggerganov/llama.cpp.git 2>/dev/null || true
+        fi
+        if [ -d llama.cpp ]; then
+            cd llama.cpp
+            cmake -B build -DGGML_BLAS=OFF -DGGML_CUDA=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_SERVER=ON 2>/dev/null
+            cmake --build build --target llama-server -j$(nproc) 2>/dev/null && {
+                cp build/bin/llama-server /usr/local/bin/
+                ok "llama-server built and installed"
+            } || warn "llama-server build failed — offline fallback won't be available"
+            cd /tmp && rm -rf llama.cpp
+        fi
+    else
+        ok "llama-server already installed"
+    fi
+
+    # Create OpenRC service for llama-server
+    cat > /etc/init.d/llama-server <<'LLAMA_SVC'
+#!/sbin/openrc-run
+name="llama-server"
+description="Offline LLM server (Qwen 3.5 4B)"
+command="/usr/local/bin/llama-server"
+command_args="--model /opt/yantrik/models/llm/Qwen3.5-4B-Q4_K_M.gguf --host 127.0.0.1 --port 8341 --ctx-size 4096 --threads 2 --no-mmap"
+command_background=true
+pidfile="/run/llama-server.pid"
+output_log="/opt/yantrik/logs/llama-server.log"
+error_log="/opt/yantrik/logs/llama-server.log"
+
+depend() {
+    after localmount
+}
+LLAMA_SVC
+    chmod +x /etc/init.d/llama-server
+    rc-update add llama-server default 2>/dev/null || true
+    ok "llama-server OpenRC service configured (port 8341)"
+else
+    info "No offline LLM model found — skipping llama-server setup"
+fi
+
+echo
+
+# ═══════════════════════════════════════════════════════════════
+# STEP 11: Install Upgrade Script
 # ═══════════════════════════════════════════════════════════════
 step "Installing upgrade mechanism..."
 

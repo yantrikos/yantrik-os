@@ -1,5 +1,5 @@
-// Lock Screen — Enhanced atmospheric lock with clock, date, greeting, password toggle.
-// Shown on idle timeout or manual lock. Validates PIN to unlock.
+// Lock Screen — atmospheric lock with premium typography, clock, date, password.
+// Shown on idle timeout or manual lock (Super+L). Validates password to unlock.
 
 import { Theme } from "theme.slint";
 
@@ -13,105 +13,116 @@ export component LockScreen inherits Rectangle {
 
     // Internal state
     property <bool> show-password: false;
+    property <float> bg-phase: 0;
 
     callback try-unlock(string);
 
+    // Animated background phase
+    Timer {
+        interval: 16ms;
+        running: true;
+        triggered => {
+            bg-phase = mod(bg-phase + 0.0006, 1.0);
+        }
+    }
+
     // ── Animated gradient background ──
-    // Dark atmospheric layers with subtle color
     Rectangle {
         width: 100%;
         height: 100%;
         background: Theme.bg-deep;
 
-        // Top gradient overlay (dark to transparent)
+        // Top gradient
         Rectangle {
             width: 100%;
-            height: 40%;
+            height: 45%;
             y: 0;
-            background: @linear-gradient(180deg, #08060e 0%, #08060e00 100%);
+            background: @linear-gradient(180deg, Theme.bg-deep 0%, Theme.bg-deep.transparentize(100%) 100%);
         }
 
-        // Bottom gradient overlay (transparent to dark)
+        // Bottom gradient
         Rectangle {
             width: 100%;
-            height: 40%;
+            height: 45%;
             y: parent.height - self.height;
-            background: @linear-gradient(0deg, #0a0810 0%, #0a081000 100%);
+            background: @linear-gradient(0deg, Theme.bg-deep 0%, Theme.bg-deep.transparentize(100%) 100%);
         }
 
-        // Subtle amber accent glow (top-center, atmospheric)
+        // Animated amber glow (breathing)
         Rectangle {
-            width: 400px;
-            height: 400px;
+            width: 500px;
+            height: 500px;
             x: (parent.width - self.width) / 2;
-            y: parent.height * 0.10;
-            border-radius: 200px;
-            background: @radial-gradient(circle, #d4a57410 0%, #d4a57400 70%);
+            y: parent.height * 0.08;
+            border-radius: 250px;
+            background: @radial-gradient(circle, Theme.amber.transparentize(94%) 0%, Theme.amber.transparentize(100%) 70%);
+            opacity: 0.7 + 0.3 * sin(bg-phase * 6.2832 * 1rad);
         }
 
-        // Subtle cyan accent glow (bottom, atmospheric)
+        // Animated cyan glow
         Rectangle {
-            width: 300px;
-            height: 300px;
-            x: (parent.width - self.width) / 2 + 100px;
-            y: parent.height * 0.65;
-            border-radius: 150px;
-            background: @radial-gradient(circle, #56ccf208 0%, #56ccf200 70%);
+            width: 350px;
+            height: 350px;
+            x: (parent.width - self.width) / 2 + 80px;
+            y: parent.height * 0.60;
+            border-radius: 175px;
+            background: @radial-gradient(circle, Theme.cyan.transparentize(95%) 0%, Theme.cyan.transparentize(100%) 70%);
+            opacity: 0.6 + 0.3 * sin(bg-phase * 4.712 * 1rad);
         }
     }
 
     // ── Center content ──
     VerticalLayout {
         alignment: center;
-        spacing: 8px;
+        spacing: 0;
         padding-left: 40px;
         padding-right: 40px;
 
-        // Spacer to push content slightly above center
+        // Push content slightly above center
         Rectangle { height: 20px; }
 
-        // Clock (large, prominent)
+        // Clock — large, thin, elegant
         Text {
             text: root.clock-text;
             color: Theme.text-primary;
             font-size: 96px;
             font-weight: 200;
             horizontal-alignment: center;
-            letter-spacing: 4px;
+            letter-spacing: 6px;
         }
 
-        // Date
+        // Date — refined typography
         if root.date-text != "" : Text {
             text: root.date-text;
             color: Theme.text-secondary;
-            font-size: 18px;
-            font-weight: 400;
+            font-size: Theme.fs-title-2;
+            font-weight: Theme.fw-body;
             horizontal-alignment: center;
+            letter-spacing: 1px;
         }
 
-        // Spacer
-        Rectangle { height: 12px; }
+        Rectangle { height: Theme.sp-6; }
 
-        // Orb (dimmed, smaller)
+        // Orb (breathing glow)
         HorizontalLayout {
             alignment: center;
             Rectangle {
-                width: 72px;
-                height: 72px;
+                width: 64px;
+                height: 64px;
 
                 Rectangle {
-                    width: 56px;
-                    height: 56px;
-                    border-radius: 28px;
+                    width: 48px;
+                    height: 48px;
+                    border-radius: 24px;
                     background: Theme.amber-glow;
                     x: (parent.width - self.width) / 2;
                     y: (parent.height - self.height) / 2;
+                    opacity: 0.8 + 0.2 * sin(bg-phase * 6.2832 * 1rad);
 
-                    // Inner glow
                     Rectangle {
-                        width: 28px;
-                        height: 28px;
-                        border-radius: 14px;
+                        width: 24px;
+                        height: 24px;
+                        border-radius: 12px;
                         background: Theme.amber-dim;
                         x: (parent.width - self.width) / 2;
                         y: (parent.height - self.height) / 2;
@@ -120,55 +131,61 @@ export component LockScreen inherits Rectangle {
             }
         }
 
-        // Spacer
-        Rectangle { height: 4px; }
+        Rectangle { height: Theme.sp-2; }
 
         // Greeting from companion
         if root.greeting-text != "" : Text {
             text: root.greeting-text;
             color: Theme.text-secondary;
-            font-size: Theme.font-body;
-            font-weight: 400;
+            font-size: Theme.fs-body;
+            font-weight: Theme.fw-body;
             horizontal-alignment: center;
             font-italic: true;
+            opacity: 0.8;
         }
 
-        // Spacer
-        Rectangle { height: 16px; }
+        Rectangle { height: Theme.sp-6; }
 
         // "Enter password" label
         Text {
             text: "Enter password to unlock";
             color: Theme.text-dim;
-            font-size: Theme.font-small;
+            font-size: Theme.fs-caption;
             horizontal-alignment: center;
+            letter-spacing: 0.5px;
         }
 
-        // Spacer
-        Rectangle { height: 4px; }
+        Rectangle { height: Theme.sp-2; }
 
-        // Password input container with show/hide toggle
+        // Password input — glass pill
         HorizontalLayout {
             alignment: center;
 
             Rectangle {
-                width: 300px;
+                width: 320px;
                 height: 48px;
-                border-radius: Theme.radius-card;
+                border-radius: Theme.r-xl;
                 background: Theme.bg-input;
                 border-width: 1px;
-                border-color: root.error-text != "" ? Theme.color-emotional : Theme.text-dim;
+                border-color: root.error-text != "" ? Theme.color-danger
+                            : pin-input.has-focus ? Theme.accent-dim
+                            : Theme.text-dim;
+                clip: true;
 
-                animate border-color { duration: 300ms; easing: ease-out; }
+                animate border-color { duration: Theme.dur-normal; easing: ease-out; }
 
-                // Password text input
+                // Focus glow
+                drop-shadow-blur: pin-input.has-focus ? 12px : 0;
+                drop-shadow-color: root.error-text != "" ? Theme.color-danger-dim : Theme.accent-glow;
+                animate drop-shadow-blur { duration: Theme.dur-normal; }
+
                 pin-input := TextInput {
-                    x: 16px;
+                    x: Theme.sp-4;
                     y: 0;
                     width: parent.width - 60px;
                     height: parent.height;
                     color: Theme.text-primary;
-                    font-size: 18px;
+                    font-size: Theme.fs-title-2;
                     horizontal-alignment: left;
                     input-type: root.show-password ? InputType.text : InputType.password;
 
@@ -178,7 +195,7 @@ export component LockScreen inherits Rectangle {
                     }
                 }
 
-                // Show/hide toggle button
+                // Show/hide toggle
                 Rectangle {
                     x: parent.width - 44px;
                     y: (parent.height - self.height) / 2;
@@ -186,13 +203,12 @@ export component LockScreen inherits Rectangle {
                     height: 36px;
                     border-radius: 18px;
                     background: toggle-touch.has-hover ? Theme.hover-fill : transparent;
-
-                    animate background { duration: 150ms; }
+                    animate background { duration: Theme.dur-fast; }
 
                     Text {
-                        text: root.show-password ? "\u{25C9}" : "\u{25CE}";
+                        text: root.show-password ? "◉" : "○";
                         color: Theme.text-dim;
-                        font-size: 16px;
+                        font-size: Theme.fs-headline;
                         horizontal-alignment: center;
                         vertical-alignment: center;
                         width: 100%;
@@ -200,9 +216,7 @@ export component LockScreen inherits Rectangle {
                     }
 
                     toggle-touch := TouchArea {
-                        clicked => {
-                            root.show-password = !root.show-password;
-                        }
+                        clicked => { root.show-password = !root.show-password; }
                     }
                 }
             }
@@ -211,22 +225,23 @@ export component LockScreen inherits Rectangle {
         // Error text
         if root.error-text != "" : Text {
             text: root.error-text;
-            color: Theme.color-emotional;
-            font-size: Theme.font-small;
+            color: Theme.color-danger;
+            font-size: Theme.fs-caption;
             horizontal-alignment: center;
-
-            animate opacity { duration: 300ms; easing: ease-out; }
+            animate opacity { duration: Theme.dur-normal; easing: ease-out; }
         }
+
+        Rectangle { height: Theme.sp-2; }
 
         // Hint
         Text {
             text: "Press Enter to unlock";
             color: Theme.text-dim;
-            font-size: 11px;
+            font-size: Theme.fs-caption;
             horizontal-alignment: center;
+            opacity: 0.5;
         }
 
-        // Bottom spacer
         Rectangle { height: 40px; }
     }
 

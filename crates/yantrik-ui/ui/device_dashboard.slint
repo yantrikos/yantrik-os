@@ -56,21 +56,21 @@ component DevTabButton inherits TouchArea {
         background: active ? Theme.bg-elevated : (parent.has-hover ? Theme.hover-fill : transparent);
 
         HorizontalLayout {
-            spacing: 8px;
-            padding-left: 16px;
-            padding-right: 16px;
+            spacing: Theme.sp-2;
+            padding-left: Theme.sp-4;
+            padding-right: Theme.sp-4;
             alignment: center;
 
             Text {
                 text: icon;
                 color: active ? Theme.accent : Theme.text-secondary;
-                font-size: 16px;
+                font-size: Theme.fs-title-2;
                 vertical-alignment: center;
             }
             Text {
                 text: label;
                 color: active ? Theme.accent : Theme.text-secondary;
-                font-size: Theme.font-body;
+                font-size: Theme.fs-body;
                 font-weight: active ? 600 : 400;
                 vertical-alignment: center;
             }
@@ -93,27 +93,27 @@ component RefreshButton inherits TouchArea {
     width: 100px;
 
     Rectangle {
-        border-radius: Theme.radius-card;
+        border-radius: Theme.r-lg;
         background: parent.has-hover ? Theme.hover-fill-strong : Theme.bg-elevated;
         border-width: 1px;
         border-color: Theme.border-subtle;
 
         HorizontalLayout {
-            padding-left: 12px;
-            padding-right: 12px;
+            padding-left: Theme.sp-3;
+            padding-right: Theme.sp-3;
             alignment: center;
-            spacing: 6px;
+            spacing: Theme.r-sm;
 
             Text {
                 text: "\u{21BB}";
                 color: Theme.accent;
-                font-size: 16px;
+                font-size: Theme.fs-title-2;
                 vertical-alignment: center;
             }
             Text {
                 text: "Refresh";
                 color: Theme.text-primary;
-                font-size: Theme.font-small;
+                font-size: Theme.fs-caption;
                 font-weight: 600;
                 vertical-alignment: center;
             }
@@ -128,26 +128,26 @@ component ExportButton inherits TouchArea {
     width: 100px;
 
     Rectangle {
-        border-radius: Theme.radius-card;
+        border-radius: Theme.r-lg;
         background: parent.has-hover ? Theme.hover-fill-strong : Theme.bg-elevated;
         border-width: 1px;
         border-color: Theme.border-subtle;
 
         HorizontalLayout {
-            padding-left: 12px;
-            padding-right: 12px;
+            padding-left: Theme.sp-3;
+            padding-right: Theme.sp-3;
             alignment: center;
-            spacing: 6px;
+            spacing: Theme.r-sm;
 
             Text {
                 text: "\u{1F4E5}";
-                font-size: 14px;
+                font-size: Theme.fs-body;
                 vertical-alignment: center;
             }
             Text {
                 text: "Export";
                 color: Theme.text-primary;
-                font-size: Theme.font-small;
+                font-size: Theme.fs-caption;
                 font-weight: 600;
                 vertical-alignment: center;
             }
@@ -161,14 +161,14 @@ component TypeBadge inherits Rectangle {
     in property <string> label;
     in property <color> badge-color: Theme.accent;
     height: 22px;
-    width: badge-text.preferred-width + 16px;
-    border-radius: 4px;
+    width: badge-text.preferred-width + Theme.sp-4;
+    border-radius: Theme.sp-1;
     background: badge-color.with-alpha(0.15);
 
     badge-text := Text {
         text: label;
         color: badge-color;
-        font-size: 11px;
+        font-size: Theme.fs-micro;
         font-weight: 600;
         vertical-alignment: center;
         horizontal-alignment: center;
@@ -180,20 +180,20 @@ component TypeBadge inherits Rectangle {
 component SmartBadge inherits Rectangle {
     in property <string> status;
     height: 22px;
-    width: smart-text.preferred-width + 16px;
-    border-radius: 4px;
-    background: status == "Healthy" ? #6cd480.with-alpha(0.15)
-              : status == "Warning" ? #e8a06b.with-alpha(0.15)
-              : status == "Critical" ? #e06c75.with-alpha(0.15)
+    width: smart-text.preferred-width + Theme.sp-4;
+    border-radius: Theme.sp-1;
+    background: status == "Healthy" ? Theme.color-success.with-alpha(0.15)
+              : status == "Warning" ? Theme.color-warning.with-alpha(0.15)
+              : status == "Critical" ? Theme.color-danger.with-alpha(0.15)
               : Theme.text-dim.with-alpha(0.10);
 
     smart-text := Text {
         text: status != "" ? status : "N/A";
-        color: status == "Healthy" ? #6cd480
-             : status == "Warning" ? #e8a06b
-             : status == "Critical" ? #e06c75
+        color: status == "Healthy" ? Theme.color-success
+             : status == "Warning" ? Theme.color-warning
+             : status == "Critical" ? Theme.color-danger
              : Theme.text-dim;
-        font-size: 11px;
+        font-size: Theme.fs-micro;
         font-weight: 600;
         vertical-alignment: center;
         horizontal-alignment: center;
@@ -229,24 +229,24 @@ component UsbDeviceRow inherits TouchArea {
         background: data.is-selected ? Theme.bg-selected
                   : parent.has-hover ? Theme.hover-fill
                   : transparent;
-        border-radius: 6px;
+        border-radius: Theme.r-sm;
 
         HorizontalLayout {
-            spacing: 12px;
-            padding-left: 16px;
-            padding-right: 16px;
+            spacing: Theme.sp-3;
+            padding-left: Theme.sp-4;
+            padding-right: Theme.sp-4;
 
             // Bus badge
             Rectangle {
                 width: 52px;
                 height: 24px;
-                border-radius: 4px;
+                border-radius: Theme.sp-1;
                 background: Theme.holo-blue.with-alpha(0.12);
 
                 Text {
                     text: data.bus;
                     color: Theme.holo-blue;
-                    font-size: 11px;
+                    font-size: Theme.fs-micro;
                     font-weight: 600;
                     vertical-alignment: center;
                     horizontal-alignment: center;
@@ -257,7 +257,7 @@ component UsbDeviceRow inherits TouchArea {
             Text {
                 text: data.vendor-product;
                 color: Theme.accent;
-                font-size: Theme.font-small;
+                font-size: Theme.fs-caption;
                 font-family: "monospace";
                 vertical-alignment: center;
                 width: 100px;
@@ -267,7 +267,7 @@ component UsbDeviceRow inherits TouchArea {
             Text {
                 text: data.description;
                 color: Theme.text-primary;
-                font-size: Theme.font-body;
+                font-size: Theme.fs-body;
                 vertical-alignment: center;
                 overflow: elide;
                 horizontal-stretch: 1;
@@ -277,7 +277,7 @@ component UsbDeviceRow inherits TouchArea {
             Text {
                 text: data.device-id;
                 color: Theme.text-dim;
-                font-size: Theme.font-small;
+                font-size: Theme.fs-caption;
                 vertical-alignment: center;
                 width: 60px;
                 horizontal-alignment: right;
@@ -297,18 +297,18 @@ component PciDeviceRow inherits TouchArea {
         background: is-selected ? Theme.bg-selected
                   : parent.has-hover ? Theme.hover-fill
                   : transparent;
-        border-radius: 6px;
+        border-radius: Theme.r-sm;
 
         HorizontalLayout {
-            spacing: 12px;
-            padding-left: 16px;
-            padding-right: 16px;
+            spacing: Theme.sp-3;
+            padding-left: Theme.sp-4;
+            padding-right: Theme.sp-4;
 
             // Slot
             Text {
                 text: data.slot;
                 color: Theme.text-dim;
-                font-size: Theme.font-small;
+                font-size: Theme.fs-caption;
                 font-family: "monospace";
                 vertical-alignment: center;
                 width: 80px;
@@ -324,7 +324,7 @@ component PciDeviceRow inherits TouchArea {
             Text {
                 text: data.device-name;
                 color: Theme.text-primary;
-                font-size: Theme.font-body;
+                font-size: Theme.fs-body;
                 vertical-alignment: center;
                 overflow: elide;
                 horizontal-stretch: 1;
@@ -334,7 +334,7 @@ component PciDeviceRow inherits TouchArea {
             Text {
                 text: data.vendor;
                 color: Theme.text-secondary;
-                font-size: Theme.font-small;
+                font-size: Theme.fs-caption;
                 vertical-alignment: center;
                 width: 120px;
                 horizontal-alignment: right;
@@ -350,18 +350,18 @@ component InputDeviceRow inherits Rectangle {
     in property <InputDeviceData> data;
     height: 56px;
     background: transparent;
-    border-radius: 6px;
+    border-radius: Theme.r-sm;
 
     HorizontalLayout {
-        spacing: 12px;
-        padding-left: 16px;
-        padding-right: 16px;
+        spacing: Theme.sp-3;
+        padding-left: Theme.sp-4;
+        padding-right: Theme.sp-4;
 
         // Device type icon
         Rectangle {
             width: 36px;
             height: 36px;
-            border-radius: 8px;
+            border-radius: Theme.r-md;
             background: data.device-type == "keyboard" ? Theme.holo-blue.with-alpha(0.12)
                       : data.device-type == "mouse" ? Theme.accent.with-alpha(0.12)
                       : data.device-type == "touchpad" ? Theme.color-pattern.with-alpha(0.12)
@@ -372,7 +372,7 @@ component InputDeviceRow inherits Rectangle {
                     : data.device-type == "mouse" ? "\u{1F5B1}"
                     : data.device-type == "touchpad" ? "\u{261F}"
                     : "\u{2699}";
-                font-size: 18px;
+                font-size: Theme.fs-title-1;
                 color: data.device-type == "keyboard" ? Theme.holo-blue
                      : data.device-type == "mouse" ? Theme.accent
                      : data.device-type == "touchpad" ? Theme.color-pattern
@@ -390,14 +390,14 @@ component InputDeviceRow inherits Rectangle {
             Text {
                 text: data.name;
                 color: Theme.text-primary;
-                font-size: Theme.font-body;
+                font-size: Theme.fs-body;
                 vertical-alignment: center;
                 overflow: elide;
             }
             Text {
                 text: data.handler;
                 color: Theme.text-secondary;
-                font-size: Theme.font-small;
+                font-size: Theme.fs-caption;
                 vertical-alignment: center;
                 overflow: elide;
             }
@@ -416,7 +416,7 @@ component InputDeviceRow inherits Rectangle {
         Text {
             text: data.phys;
             color: Theme.text-dim;
-            font-size: Theme.font-small;
+            font-size: Theme.fs-caption;
             font-family: "monospace";
             vertical-alignment: center;
             width: 140px;
@@ -432,18 +432,18 @@ component StorageDeviceRow inherits Rectangle {
     in property <StorageDeviceData> data;
     height: 62px;
     background: transparent;
-    border-radius: 6px;
+    border-radius: Theme.r-sm;
 
     HorizontalLayout {
-        spacing: 12px;
-        padding-left: 16px;
-        padding-right: 16px;
+        spacing: Theme.sp-3;
+        padding-left: Theme.sp-4;
+        padding-right: Theme.sp-4;
 
         // Device icon
         Rectangle {
             width: 36px;
             height: 36px;
-            border-radius: 8px;
+            border-radius: Theme.r-md;
             background: data.device-type == "disk" ? Theme.accent.with-alpha(0.12)
                       : data.device-type == "part" ? Theme.holo-blue.with-alpha(0.12)
                       : data.device-type == "lvm" ? Theme.color-pattern.with-alpha(0.12)
@@ -453,7 +453,7 @@ component StorageDeviceRow inherits Rectangle {
                 text: data.device-type == "disk" ? "\u{1F4BD}"
                     : data.device-type == "rom" ? "\u{1F4BF}"
                     : "\u{1F4C1}";
-                font-size: 18px;
+                font-size: Theme.fs-title-1;
                 color: Theme.text-primary;
                 vertical-alignment: center;
                 horizontal-alignment: center;
@@ -466,11 +466,11 @@ component StorageDeviceRow inherits Rectangle {
             horizontal-stretch: 1;
 
             HorizontalLayout {
-                spacing: 8px;
+                spacing: Theme.sp-2;
                 Text {
                     text: data.name;
                     color: Theme.text-primary;
-                    font-size: Theme.font-body;
+                    font-size: Theme.fs-body;
                     font-weight: 600;
                     vertical-alignment: center;
                 }
@@ -484,17 +484,17 @@ component StorageDeviceRow inherits Rectangle {
             }
 
             HorizontalLayout {
-                spacing: 12px;
+                spacing: Theme.sp-3;
                 Text {
                     text: data.mountpoint != "" ? data.mountpoint : "(not mounted)";
                     color: data.mountpoint != "" ? Theme.text-secondary : Theme.text-dim;
-                    font-size: Theme.font-small;
+                    font-size: Theme.fs-caption;
                     vertical-alignment: center;
                 }
                 Text {
                     text: data.filesystem;
                     color: Theme.text-dim;
-                    font-size: Theme.font-small;
+                    font-size: Theme.fs-caption;
                     vertical-alignment: center;
                 }
             }
@@ -509,7 +509,7 @@ component StorageDeviceRow inherits Rectangle {
         Text {
             text: data.size-text;
             color: Theme.text-primary;
-            font-size: Theme.font-body;
+            font-size: Theme.fs-body;
             font-weight: 600;
             vertical-alignment: center;
             width: 80px;
@@ -530,7 +530,7 @@ component StorageDeviceRow inherits Rectangle {
                 color: data.usage-percent > 90 ? Theme.color-emotional
                      : data.usage-percent > 70 ? Theme.color-conflict
                      : Theme.text-secondary;
-                font-size: 10px;
+                font-size: Theme.fs-micro;
                 horizontal-alignment: right;
                 vertical-alignment: center;
             }
@@ -544,26 +544,26 @@ component DisplayDeviceRow inherits Rectangle {
     in property <DisplayDeviceData> data;
     height: 56px;
     background: transparent;
-    border-radius: 6px;
+    border-radius: Theme.r-sm;
 
     HorizontalLayout {
-        spacing: 12px;
-        padding-left: 16px;
-        padding-right: 16px;
+        spacing: Theme.sp-3;
+        padding-left: Theme.sp-4;
+        padding-right: Theme.sp-4;
 
         // Status indicator
         Rectangle {
             width: 10px;
             height: 10px;
             border-radius: 5px;
-            background: data.status == "connected" ? #6cd480 : Theme.text-dim;
+            background: data.status == "connected" ? Theme.color-success : Theme.text-dim;
         }
 
         // Connector
         Text {
             text: data.connector;
             color: Theme.accent;
-            font-size: Theme.font-body;
+            font-size: Theme.fs-body;
             font-weight: 600;
             vertical-alignment: center;
             width: 100px;
@@ -573,7 +573,7 @@ component DisplayDeviceRow inherits Rectangle {
         Text {
             text: data.name;
             color: Theme.text-primary;
-            font-size: Theme.font-body;
+            font-size: Theme.fs-body;
             vertical-alignment: center;
             horizontal-stretch: 1;
             overflow: elide;
@@ -583,7 +583,7 @@ component DisplayDeviceRow inherits Rectangle {
         Text {
             text: data.resolution;
             color: data.resolution != "" ? Theme.holo-blue : Theme.text-dim;
-            font-size: Theme.font-body;
+            font-size: Theme.fs-body;
             font-family: "monospace";
             vertical-alignment: center;
             width: 140px;
@@ -593,7 +593,7 @@ component DisplayDeviceRow inherits Rectangle {
         // Status badge
         TypeBadge {
             label: data.status;
-            badge-color: data.status == "connected" ? #6cd480 : Theme.text-dim;
+            badge-color: data.status == "connected" ? Theme.color-success : Theme.text-dim;
         }
     }
 }
@@ -607,14 +607,14 @@ component SectionHeader inherits Rectangle {
     background: transparent;
 
     HorizontalLayout {
-        padding-left: 16px;
-        padding-right: 16px;
-        spacing: 8px;
+        padding-left: Theme.sp-4;
+        padding-right: Theme.sp-4;
+        spacing: Theme.sp-2;
 
         Text {
             text: title;
             color: Theme.text-secondary;
-            font-size: Theme.font-small;
+            font-size: Theme.fs-caption;
             font-weight: 700;
             vertical-alignment: center;
             letter-spacing: 0.8px;
@@ -628,7 +628,7 @@ component SectionHeader inherits Rectangle {
             Text {
                 text: count;
                 color: Theme.accent;
-                font-size: 11px;
+                font-size: Theme.fs-micro;
                 font-weight: 600;
                 vertical-alignment: center;
                 horizontal-alignment: center;
@@ -648,7 +648,7 @@ component EmptyState inherits Rectangle {
     Text {
         text: message;
         color: Theme.text-dim;
-        font-size: Theme.font-body;
+        font-size: Theme.fs-body;
         vertical-alignment: center;
         horizontal-alignment: center;
     }
@@ -670,36 +670,36 @@ component DeviceDetailPanel inherits Rectangle {
         Text {
             text: "Select a device to view details";
             color: Theme.text-dim;
-            font-size: Theme.font-body;
+            font-size: Theme.fs-body;
             horizontal-alignment: center;
         }
     }
 
     if detail-info != "" : VerticalLayout {
-        padding: 16px;
+        padding: Theme.sp-4;
         spacing: 10px;
 
         HorizontalLayout {
-            spacing: 8px;
+            spacing: Theme.sp-2;
             Text {
                 text: "Device Details";
                 color: Theme.accent;
-                font-size: Theme.font-body;
+                font-size: Theme.fs-body;
                 font-weight: 700;
                 vertical-alignment: center;
                 horizontal-stretch: 1;
             }
             TouchArea {
-                width: 24px;
-                height: 24px;
+                width: Theme.sp-6;
+                height: Theme.sp-6;
                 clicked => { root.close-detail(); }
                 Rectangle {
-                    width: 24px; height: 24px;
-                    border-radius: 12px;
+                    width: Theme.sp-6; height: Theme.sp-6;
+                    border-radius: Theme.r-lg;
                     background: parent.has-hover ? Theme.hover-fill : transparent;
                     Text {
                         text: "\u{2715}";
-                        font-size: 11px;
+                        font-size: Theme.fs-micro;
                         color: Theme.text-dim;
                         horizontal-alignment: center;
                         vertical-alignment: center;
@@ -720,7 +720,7 @@ component DeviceDetailPanel inherits Rectangle {
             detail-content := Text {
                 text: detail-info;
                 color: Theme.text-secondary;
-                font-size: Theme.font-small;
+                font-size: Theme.fs-caption;
                 font-family: "monospace";
                 wrap: word-wrap;
                 vertical-alignment: top;
@@ -736,18 +736,19 @@ component SearchBar inherits Rectangle {
     callback search-changed(string);
     height: 40px;
     background: Theme.bg-elevated;
-    border-radius: Theme.radius-card;
+    border-radius: Theme.r-lg;
     border-width: 1px;
     border-color: Theme.border-subtle;
+    clip: true;
 
     HorizontalLayout {
-        padding-left: 12px;
-        padding-right: 12px;
-        spacing: 8px;
+        padding-left: Theme.sp-3;
+        padding-right: Theme.sp-3;
+        spacing: Theme.sp-2;
 
         Text {
             text: "\u{1F50D}";
-            font-size: 14px;
+            font-size: Theme.fs-body;
             color: Theme.text-dim;
             vertical-alignment: center;
             width: 20px;
@@ -755,7 +756,7 @@ component SearchBar inherits Rectangle {
 
         search-input := TextInput {
             text <=> root.search-text;
-            font-size: Theme.font-body;
+            font-size: Theme.fs-body;
             color: Theme.text-primary;
             vertical-alignment: center;
             horizontal-stretch: 1;
@@ -764,19 +765,19 @@ component SearchBar inherits Rectangle {
 
         // Clear button
         if search-text != "" : TouchArea {
-            width: 24px;
-            height: 24px;
+            width: Theme.sp-6;
+            height: Theme.sp-6;
             clicked => {
                 root.search-text = "";
                 root.search-changed("");
             }
             Rectangle {
-                width: 24px; height: 24px;
-                border-radius: 12px;
+                width: Theme.sp-6; height: Theme.sp-6;
+                border-radius: Theme.r-lg;
                 background: parent.has-hover ? Theme.hover-fill : transparent;
                 Text {
                     text: "\u{2715}";
-                    font-size: 11px;
+                    font-size: Theme.fs-micro;
                     color: Theme.text-dim;
                     horizontal-alignment: center;
                     vertical-alignment: center;
@@ -800,20 +801,20 @@ component CountChip inherits Rectangle {
     chip-layout := HorizontalLayout {
         padding-left: 10px;
         padding-right: 10px;
-        spacing: 4px;
+        spacing: Theme.sp-1;
         alignment: center;
 
         Text {
             text: count;
             color: chip-color;
-            font-size: 12px;
+            font-size: Theme.fs-caption;
             font-weight: 700;
             vertical-alignment: center;
         }
         Text {
             text: label;
             color: chip-color;
-            font-size: 11px;
+            font-size: Theme.fs-micro;
             font-weight: 500;
             vertical-alignment: center;
         }
@@ -950,7 +951,7 @@ export component DeviceDashboardScreen inherits Rectangle {
                     }
                     ai-dev-btn := Rectangle {
                         height: 32px;
-                        border-radius: Theme.radius-pill;
+                        border-radius: Theme.r-pill;
                         background: root.ai-is-working ? Theme.accent
                             : (parent.has-hover ? Theme.hover-fill-strong : Theme.bg-elevated);
                         border-width: 1px;
@@ -958,17 +959,17 @@ export component DeviceDashboardScreen inherits Rectangle {
                         HorizontalLayout {
                             padding-left: 10px;
                             padding-right: 10px;
-                            spacing: 4px;
+                            spacing: Theme.sp-1;
                             alignment: center;
                             Text {
                                 text: root.ai-is-working ? "\u{2B50}" : "\u{2728}";
-                                font-size: 12px;
+                                font-size: Theme.fs-caption;
                                 vertical-alignment: center;
                             }
                             Text {
                                 text: root.ai-is-working ? "Analyzing..." : "AI Explain";
-                                color: root.ai-is-working ? #ffffff : Theme.text-secondary;
-                                font-size: 11px;
+                                color: root.ai-is-working ? Theme.text-on-accent : Theme.text-secondary;
+                                font-size: Theme.fs-micro;
                                 font-weight: 500;
                                 vertical-alignment: center;
                             }
@@ -990,11 +991,11 @@ export component DeviceDashboardScreen inherits Rectangle {
                 if scanning : Text {
                     text: "Scanning...";
                     color: Theme.accent;
-                    font-size: Theme.font-small;
+                    font-size: Theme.fs-caption;
                     vertical-alignment: center;
                 }
 
-                Rectangle { width: 16px; }
+                Rectangle { width: Theme.sp-4; }
             }
         }
 
@@ -1007,25 +1008,25 @@ export component DeviceDashboardScreen inherits Rectangle {
         // ── Hotplug notification banner ──
         if root.dev-hotplug-banner-visible : Rectangle {
             height: 44px;
-            background: #4ab8f0.with-alpha(0.12);
+            background: Theme.holo-blue.with-alpha(0.12);
             border-width: 0px;
 
             HorizontalLayout {
-                padding-left: 16px;
-                padding-right: 8px;
+                padding-left: Theme.sp-4;
+                padding-right: Theme.sp-2;
                 spacing: 10px;
 
                 Text {
                     text: "\u{1F50C}";
-                    font-size: 16px;
+                    font-size: Theme.fs-title-2;
                     vertical-alignment: center;
                 }
 
                 Text {
                     text: root.dev-hotplug-notification;
-                    font-size: Theme.font-body;
+                    font-size: Theme.fs-body;
                     font-weight: 500;
-                    color: #4ab8f0;
+                    color: Theme.holo-blue;
                     vertical-alignment: center;
                     horizontal-stretch: 1;
                 }
@@ -1044,7 +1045,7 @@ export component DeviceDashboardScreen inherits Rectangle {
 
                         Text {
                             text: "\u{2715}";
-                            font-size: 11px;
+                            font-size: Theme.fs-micro;
                             color: Theme.text-dim;
                             horizontal-alignment: center;
                             vertical-alignment: center;
@@ -1060,11 +1061,11 @@ export component DeviceDashboardScreen inherits Rectangle {
             background: Theme.bg-card;
 
             HorizontalLayout {
-                padding-left: 16px;
-                padding-right: 16px;
-                padding-top: 6px;
-                padding-bottom: 6px;
-                spacing: 12px;
+                padding-left: Theme.sp-4;
+                padding-right: Theme.sp-4;
+                padding-top: Theme.r-sm;
+                padding-bottom: Theme.r-sm;
+                spacing: Theme.sp-3;
 
                 SearchBar {
                     horizontal-stretch: 1;
@@ -1076,13 +1077,13 @@ export component DeviceDashboardScreen inherits Rectangle {
                 if root.dev-export-status != "" : Rectangle {
                     width: export-status-text.preferred-width + 20px;
                     height: 32px;
-                    border-radius: 6px;
-                    background: #6cd480.with-alpha(0.15);
+                    border-radius: Theme.r-sm;
+                    background: Theme.color-success.with-alpha(0.15);
 
                     export-status-text := Text {
                         text: root.dev-export-status;
-                        color: #6cd480;
-                        font-size: Theme.font-small;
+                        color: Theme.color-success;
+                        font-size: Theme.fs-caption;
                         font-weight: 500;
                         vertical-alignment: center;
                         horizontal-alignment: center;
@@ -1100,46 +1101,46 @@ export component DeviceDashboardScreen inherits Rectangle {
         // ── AI Response Panel ──
         if root.ai-panel-open && root.ai-response != "" : Rectangle {
             max-height: 160px;
-            background: #1a2332;
+            background: Theme.bg-elevated;
             border-width: 1px;
             border-color: Theme.accent.transparentize(70%);
 
             Flickable {
-                viewport-height: ai-dev-resp.preferred-height + 16px;
+                viewport-height: ai-dev-resp.preferred-height + Theme.sp-4;
 
                 ai-dev-resp := VerticalLayout {
-                    padding: 12px;
-                    spacing: 8px;
+                    padding: Theme.sp-3;
+                    spacing: Theme.sp-2;
 
                     HorizontalLayout {
-                        spacing: 6px;
+                        spacing: Theme.r-sm;
                         Text {
                             text: "\u{2728}";
-                            font-size: 12px;
+                            font-size: Theme.fs-caption;
                             vertical-alignment: center;
                         }
                         Text {
                             text: "AI Analysis";
                             color: Theme.accent;
-                            font-size: 12px;
+                            font-size: Theme.fs-caption;
                             font-weight: 600;
                             vertical-alignment: center;
                         }
                         Rectangle { horizontal-stretch: 1; }
                         TouchArea {
-                            width: 24px;
-                            height: 24px;
+                            width: Theme.sp-6;
+                            height: Theme.sp-6;
                             clicked => {
                                 root.ai-panel-open = false;
                                 root.ai-dismiss();
                             }
                             Rectangle {
-                                width: 24px; height: 24px;
-                                border-radius: 12px;
+                                width: Theme.sp-6; height: Theme.sp-6;
+                                border-radius: Theme.r-lg;
                                 background: parent.has-hover ? Theme.hover-fill : transparent;
                                 Text {
                                     text: "\u{2715}";
-                                    font-size: 11px;
+                                    font-size: Theme.fs-micro;
                                     color: Theme.text-dim;
                                     horizontal-alignment: center;
                                     vertical-alignment: center;
@@ -1151,7 +1152,7 @@ export component DeviceDashboardScreen inherits Rectangle {
                     Text {
                         text: root.ai-response;
                         color: Theme.text-primary;
-                        font-size: 12px;
+                        font-size: Theme.fs-caption;
                         wrap: word-wrap;
                     }
                 }
@@ -1186,7 +1187,7 @@ export component DeviceDashboardScreen inherits Rectangle {
 
                         VerticalLayout {
                             spacing: 2px;
-                            padding: 8px;
+                            padding: Theme.sp-2;
 
                             for device[idx] in usb-devices : UsbDeviceRow {
                                 data: device;
@@ -1218,7 +1219,7 @@ export component DeviceDashboardScreen inherits Rectangle {
 
                         VerticalLayout {
                             spacing: 2px;
-                            padding: 8px;
+                            padding: Theme.sp-2;
 
                             for device[idx] in pci-devices : PciDeviceRow {
                                 data: device;
@@ -1251,7 +1252,7 @@ export component DeviceDashboardScreen inherits Rectangle {
 
                         VerticalLayout {
                             spacing: 2px;
-                            padding: 8px;
+                            padding: Theme.sp-2;
 
                             for device in input-devices : InputDeviceRow {
                                 data: device;
@@ -1278,7 +1279,7 @@ export component DeviceDashboardScreen inherits Rectangle {
 
                         VerticalLayout {
                             spacing: 2px;
-                            padding: 8px;
+                            padding: Theme.sp-2;
 
                             for device in storage-devices : StorageDeviceRow {
                                 data: device;
@@ -1295,25 +1296,25 @@ export component DeviceDashboardScreen inherits Rectangle {
                     if gpu-info != "" : Rectangle {
                         height: 64px;
                         background: Theme.bg-card;
-                        border-radius: Theme.radius-card;
+                        border-radius: Theme.r-lg;
                         border-width: 1px;
                         border-color: Theme.border-subtle;
 
                         HorizontalLayout {
-                            padding-left: 16px;
-                            padding-right: 16px;
-                            spacing: 12px;
+                            padding-left: Theme.sp-4;
+                            padding-right: Theme.sp-4;
+                            spacing: Theme.sp-3;
 
                             Rectangle {
                                 width: 36px;
                                 height: 36px;
-                                border-radius: 8px;
-                                background: #6cd480.with-alpha(0.12);
+                                border-radius: Theme.r-md;
+                                background: Theme.color-success.with-alpha(0.12);
 
                                 Text {
                                     text: "GPU";
-                                    color: #6cd480;
-                                    font-size: 11px;
+                                    color: Theme.color-success;
+                                    font-size: Theme.fs-micro;
                                     font-weight: 700;
                                     vertical-alignment: center;
                                     horizontal-alignment: center;
@@ -1323,7 +1324,7 @@ export component DeviceDashboardScreen inherits Rectangle {
                             Text {
                                 text: gpu-info;
                                 color: Theme.text-primary;
-                                font-size: Theme.font-body;
+                                font-size: Theme.fs-body;
                                 vertical-alignment: center;
                                 overflow: elide;
                                 horizontal-stretch: 1;
@@ -1345,7 +1346,7 @@ export component DeviceDashboardScreen inherits Rectangle {
 
                         VerticalLayout {
                             spacing: 2px;
-                            padding: 8px;
+                            padding: Theme.sp-2;
 
                             for device in display-devices : DisplayDeviceRow {
                                 data: device;
@@ -1379,8 +1380,8 @@ export component DeviceDashboardScreen inherits Rectangle {
             border-color: Theme.border-subtle;
 
             HorizontalLayout {
-                padding-left: 16px;
-                padding-right: 16px;
+                padding-left: Theme.sp-4;
+                padding-right: Theme.sp-4;
                 spacing: 10px;
                 alignment: start;
 
@@ -1402,12 +1403,12 @@ export component DeviceDashboardScreen inherits Rectangle {
                 CountChip {
                     count: storage-devices.length;
                     label: "Storage";
-                    chip-color: #e8a06b;
+                    chip-color: Theme.color-warning;
                 }
                 CountChip {
                     count: display-devices.length;
                     label: "Display";
-                    chip-color: #6cd480;
+                    chip-color: Theme.color-success;
                 }
 
                 Rectangle { horizontal-stretch: 1; }
@@ -1416,7 +1417,7 @@ export component DeviceDashboardScreen inherits Rectangle {
                 Text {
                     text: dev-summary;
                     color: Theme.text-dim;
-                    font-size: Theme.font-small;
+                    font-size: Theme.fs-caption;
                     vertical-alignment: center;
                 }
             }

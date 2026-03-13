@@ -22,6 +22,16 @@ hf-hub = { version = "0.5", optional = true }
 # API backend (optional)
 ureq = { version = "3", features = ["json"], optional = true }
 
+# Secure API key storage (optional — used with api-llm)
+keyring = { version = "3", optional = true }
+aes-gcm = { version = "0.10", optional = true }
+dirs-next = { version = "2", optional = true }
+hostname = { version = "0.4", optional = true }
+whoami = { version = "1", optional = true }
+
+# Hardware detection (optional — used with api-llm)
+sysinfo = { version = "0.33", optional = true }
+
 # llama.cpp backend (optional)
 llama-cpp-2 = { version = "0.1", optional = true }
 
@@ -37,8 +47,8 @@ cuda = ["candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda"]
 metal = ["candle-core/metal", "candle-nn/metal", "candle-transformers/metal"]
 accelerate = ["candle-core/accelerate", "candle-nn/accelerate", "candle-transformers/accelerate"]
 
-# API backend
-api-llm = ["dep:ureq"]
+# API backend (includes provider registry, secret storage, hardware detection)
+api-llm = ["dep:ureq", "dep:keyring", "dep:aes-gcm", "dep:dirs-next", "dep:hostname", "dep:whoami", "dep:sysinfo"]
 
 # Claude Code CLI backend (no extra deps — uses std::process::Command)
 claude-cli = []

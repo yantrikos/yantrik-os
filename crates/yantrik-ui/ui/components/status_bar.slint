@@ -1,12 +1,13 @@
-// Status bar — 28px holographic top edge.
-// Glassmorphic glass panel with breathing AI anchor, scanning glow line,
-// holographic indicators. The neural network's always-visible spine.
+// StatusBar — 32px precision instrument panel.
+// 3-zone layout: Left (workspace/app context) | Center (AI ambient lane) | Right (indicators + clock)
+// Design: calm, quiet, precise. No continuous animations, no glows.
+// AI presence via a small accent dot — dormant/available/active states.
 
 import { Theme } from "../theme.slint";
 
 export component StatusBar inherits Rectangle {
     in property <string> clock-text: "00:00";
-    in property <string> companion-status: "idle";
+    in property <string> companion-status: "idle";       // idle, thinking, listening
     in property <bool> companion-online: true;
     in property <bool> battery-available: false;
     in property <int> battery-level: 100;
@@ -17,243 +18,217 @@ export component StatusBar inherits Rectangle {
     in property <bool> incognito-enabled: false;
     in property <bool> dnd-enabled: false;
     in property <string> active-project: "";
+    // V61 — AI privacy indicator
+    in property <string> ai-privacy-mode: "local";       // "local", "cloud", "hybrid"
+    in property <string> ai-provider-label: "";
+    in property <string> ai-fallback-banner: "";
+    // V63 — AI context lane
+    in property <string> ai-context-text: "";             // Center lane: "Processing...", "2 suggestions", etc.
 
     callback anchor-clicked();
     callback queue-clicked();
     callback whisper-hint-clicked();
     callback settings-tapped();
     callback power-pressed();
+    callback ai-privacy-clicked();
 
     height: Theme.status-bar-height;
+    background: Theme.bg-surface;
 
-    // Glass background — translucent with depth
-    background: @linear-gradient(180deg,
-        #0c0b1090 0%,
-        #0608100a 100%
-    );
-
-    // Animated scan phase
-    property <float> scan-phase: 0;
-    Timer {
-        interval: 16ms;
-        running: true;
-        triggered => {
-            scan-phase = mod(scan-phase + 0.002, 1.0);
-        }
-    }
-
-    // Top edge highlight (glass rim)
-    Rectangle {
-        y: 0;
-        width: 100%;
-        height: 1px;
-        background: @linear-gradient(90deg,
-            transparent 5%,
-            #ffffff08 30%,
-            #ffffff10 50%,
-            #ffffff08 70%,
-            transparent 95%
-        );
-    }
-
-    // Bottom glow line (holographic signature — animated)
+    // Bottom border — single subtle line
     Rectangle {
         y: parent.height - 1px;
         width: 100%;
         height: 1px;
-        background: @linear-gradient(90deg, transparent 5%, Theme.cyan-glow 50%, transparent 95%);
-    }
-
-    // Glow bloom behind the line
-    Rectangle {
-        y: parent.height - 4px;
-        width: 100%;
-        height: 8px;
-        background: @linear-gradient(90deg, transparent 10%, Theme.tint-cyan 50%, transparent 90%);
-    }
-
-    // Scanning glow sweep — subtle holographic scanner
-    Rectangle {
-        y: parent.height - 2px;
-        x: parent.width * scan-phase - parent.width * 0.15;
-        width: parent.width * 0.15;
-        height: 2px;
-        background: @linear-gradient(90deg,
-            transparent 0%,
-            Theme.cyan 40%,
-            Theme.holo-core 70%,
-            transparent 100%
-        );
-        opacity: 0.5;
+        background: Theme.separator;
     }
 
     HorizontalLayout {
-        padding-left: 14px;
-        padding-right: 14px;
+        padding-left: Theme.sp-4;
+        padding-right: Theme.sp-4;
 
-        // -- Left: Anchor dot + Clock --
+        // ── LEFT ZONE: AI dot + Project context ──
         HorizontalLayout {
             horizontal-stretch: 1;
-            spacing: 10px;
+            spacing: Theme.sp-3;
             alignment: start;
 
-            // Anchor dot — holographic AI state indicator
+            // AI status dot — 6px, simple state-based coloring
             TouchArea {
                 width: 24px;
                 height: Theme.status-bar-height;
+                mouse-cursor: pointer;
                 clicked => { root.anchor-clicked(); }
 
                 Rectangle {
-                    property <float> breath-phase: 0;
+                    x: (parent.width - 6px) / 2;
+                    y: (parent.height - 6px) / 2;
+                    width: 6px;
+                    height: 6px;
+                    border-radius: 3px;
+                    background: !root.companion-online ? Theme.color-danger
+                              : root.companion-status == "thinking" ? Theme.accent
+                              : root.companion-status == "listening" ? Theme.accent-light
+                              : Theme.text-dim;  // dormant: neutral
+
+                    // Gentle pulse only when actively thinking
+                    opacity: root.companion-status == "thinking" ? ai-pulse-opacity : 1.0;
+                    property <float> ai-pulse-opacity: 0.6;
+                    animate ai-pulse-opacity { duration: 2000ms; }
+                    // Pulse driven by timer only when thinking
                     Timer {
-                        interval: 16ms;
-                        running: true;
+                        interval: 2000ms;
+                        running: root.companion-status == "thinking";
                         triggered => {
-                            parent.breath-phase = mod(parent.breath-phase + 0.003, 1.0);
+                            parent.ai-pulse-opacity = parent.ai-pulse-opacity > 0.8 ? 0.5 : 1.0;
                         }
                     }
 
-                    // Outer glow ring (breathing)
-                    x: (parent.width - 18px) / 2;
-                    y: (parent.height - 18px) / 2;
-                    width: 18px;
-                    height: 18px;
-                    border-radius: 9px;
-                    background: transparent;
-                    border-width: root.companion-status == "thinking" ? 2px : 1px;
-                    border-color: !root.companion-online ? Theme.color-emotional :
-                                  root.companion-status == "thinking" ? Theme.amber :
-                                  root.companion-status == "listening" ? Theme.cyan-light :
-                                  Theme.cyan-dim;
-                    opacity: !root.companion-online ? 0.6
-                        : 0.4 + 0.3 * sin(breath-phase * 6.2832 * 1rad);
-                    drop-shadow-blur: root.companion-status == "thinking" ? 8px : 4px;
-                    drop-shadow-color: !root.companion-online ? #e86b6b40 :
-                                       root.companion-status == "thinking" ? Theme.amber-glow : Theme.cyan-glow;
-
-                    animate border-width { duration: 300ms; }
-                    animate border-color { duration: 300ms; }
-                    animate drop-shadow-blur { duration: 300ms; }
-
-                    // Core dot
-                    Rectangle {
-                        x: (parent.width - 8px) / 2;
-                        y: (parent.height - 8px) / 2;
-                        width: 8px;
-                        height: 8px;
-                        border-radius: 4px;
-                        background: !root.companion-online ? Theme.color-emotional :
-                                    root.companion-status == "thinking" ? Theme.amber :
-                                    root.companion-status == "listening" ? Theme.cyan-light :
-                                    Theme.cyan;
-                        drop-shadow-blur: 6px;
-                        drop-shadow-color: !root.companion-online ? #e86b6b40 :
-                                           root.companion-status == "thinking" ? Theme.amber-glow : Theme.cyan-glow;
-
-                        animate background { duration: 300ms; }
-                    }
-
-                    // Secondary orbit dot (visible when thinking)
-                    Rectangle {
-                        property <float> orbit: breath-phase;
-                        x: parent.width / 2 + 7px * cos(orbit * 6.2832 * 3.0 * 1rad) - 1.5px;
-                        y: parent.height / 2 + 7px * sin(orbit * 6.2832 * 3.0 * 1rad) - 1.5px;
-                        width: 3px;
-                        height: 3px;
-                        border-radius: 1.5px;
-                        background: Theme.amber;
-                        opacity: root.companion-status == "thinking" ? 0.7 : 0;
-                        drop-shadow-blur: 4px;
-                        drop-shadow-color: Theme.amber-glow;
-
-                        animate opacity { duration: 200ms; }
-                    }
+                    animate background { duration: Theme.dur-normal; }
                 }
             }
 
-            // Clock — holographic numerals
-            Text {
-                text: root.clock-text;
-                color: Theme.text-secondary;
-                font-size: 12px;
-                font-weight: 600;
-                letter-spacing: 2px;
-                vertical-alignment: center;
-            }
-
-            // Project indicator — shows active project name
+            // Project indicator
             if root.active-project != "" : Rectangle {
-                width: proj-text.preferred-width + 12px;
-                height: 16px;
+                width: proj-text.preferred-width + Theme.sp-3;
+                height: 18px;
                 y: (Theme.status-bar-height - self.height) / 2;
-                border-radius: 8px;
-                background: Theme.cyan-dim;
-                opacity: 0.8;
+                border-radius: Theme.r-pill;
+                background: Theme.tint-accent;
+                border-width: 1px;
+                border-color: Theme.border-subtle;
 
                 proj-text := Text {
                     text: root.active-project;
-                    color: Theme.cyan;
-                    font-size: 9px;
-                    font-weight: 500;
-                    letter-spacing: 1px;
+                    color: Theme.accent;
+                    font-size: Theme.fs-micro;
+                    font-weight: Theme.fw-micro;
                     horizontal-alignment: center;
                     vertical-alignment: center;
                 }
             }
         }
 
-        // -- Right: Power + Pending count + WiFi + Battery --
+        // ── CENTER ZONE: AI context lane ──
         HorizontalLayout {
-            spacing: 14px;
+            horizontal-stretch: 1;
+            alignment: center;
+
+            // Show AI context only when there's something to say
+            if root.ai-context-text != "" : Text {
+                text: root.ai-context-text;
+                color: Theme.text-dim;
+                font-size: Theme.fs-caption;
+                font-weight: Theme.fw-caption;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                overflow: elide;
+                max-width: 300px;
+            }
+        }
+
+        // ── RIGHT ZONE: Badges + Indicators + Clock ──
+        HorizontalLayout {
+            horizontal-stretch: 1;
+            spacing: Theme.sp-3;
             alignment: end;
 
-            // Power button — holographic
+            // AI Privacy badge
             TouchArea {
-                width: 22px;
+                width: ai-priv-row.preferred-width + Theme.sp-3;
                 height: Theme.status-bar-height;
+                mouse-cursor: pointer;
+                clicked => { root.ai-privacy-clicked(); }
+
+                Rectangle {
+                    width: parent.width;
+                    height: 18px;
+                    y: (parent.height - 18px) / 2;
+                    border-radius: Theme.r-pill;
+                    background: root.ai-privacy-mode == "local" ? Theme.color-success.transparentize(92%)
+                              : root.ai-privacy-mode == "cloud" ? Theme.holo-blue.transparentize(92%)
+                              : Theme.color-warning.transparentize(92%);
+                    border-width: 1px;
+                    border-color: root.ai-privacy-mode == "local" ? Theme.color-success.transparentize(81%)
+                                : root.ai-privacy-mode == "cloud" ? Theme.holo-blue.transparentize(81%)
+                                : Theme.color-warning.transparentize(81%);
+
+                    ai-priv-row := HorizontalLayout {
+                        padding-left: 6px;
+                        padding-right: 6px;
+                        spacing: 3px;
+                        alignment: center;
+
+                        Text {
+                            text: root.ai-privacy-mode == "local" ? "🔒"
+                                : root.ai-privacy-mode == "cloud" ? "☁"
+                                : "🔄";
+                            font-size: 8px;
+                            vertical-alignment: center;
+                        }
+                        Text {
+                            text: root.ai-privacy-mode == "local" ? "Local"
+                                : root.ai-privacy-mode == "cloud" ? "Cloud"
+                                : "Hybrid";
+                            color: root.ai-privacy-mode == "local" ? Theme.color-success
+                                 : root.ai-privacy-mode == "cloud" ? Theme.holo-blue
+                                 : Theme.color-warning;
+                            font-size: 8px;
+                            font-weight: 600;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+            }
+
+            // Power button
+            TouchArea {
+                width: 24px;
+                height: Theme.status-bar-height;
+                mouse-cursor: pointer;
+                property <bool> hovered: self.has-hover;
                 clicked => { root.power-pressed(); }
 
                 Rectangle {
-                    x: (parent.width - 16px) / 2;
-                    y: (parent.height - 16px) / 2;
-                    width: 16px;
-                    height: 16px;
-                    border-radius: 8px;
-                    background: transparent;
+                    x: (parent.width - 18px) / 2;
+                    y: (parent.height - 18px) / 2;
+                    width: 18px;
+                    height: 18px;
+                    border-radius: 9px;
+                    background: parent.hovered ? Theme.hover-fill : transparent;
                     border-width: 1px;
-                    border-color: parent.has-hover ? Theme.text-secondary : Theme.text-dim;
-
-                    animate border-color { duration: 120ms; }
+                    border-color: parent.hovered ? Theme.text-secondary : Theme.border-default;
+                    animate background { duration: Theme.dur-fast; }
+                    animate border-color { duration: Theme.dur-fast; }
 
                     Text {
-                        text: "\u{23fb}";
+                        text: "⏻";
                         color: Theme.text-dim;
-                        font-size: 9px;
+                        font-size: 10px;
                         horizontal-alignment: center;
                         vertical-alignment: center;
                     }
                 }
             }
 
-            // Whisper hint badge (low-pressure urges)
+            // Whisper hint badge
             if root.whisper-hint-count > 0 : TouchArea {
                 width: whisper-badge.preferred-width + 4px;
                 height: Theme.status-bar-height;
+                mouse-cursor: pointer;
                 clicked => { root.whisper-hint-clicked(); }
 
                 whisper-badge := Rectangle {
                     width: max(18px, whisper-text.preferred-width + 10px);
-                    height: 16px;
-                    y: (parent.height - 16px) / 2;
-                    border-radius: 8px;
-                    background: Theme.cyan-dim;
-                    drop-shadow-blur: 6px;
-                    drop-shadow-color: Theme.cyan-glow;
+                    height: 18px;
+                    y: (parent.height - 18px) / 2;
+                    border-radius: Theme.r-pill;
+                    background: Theme.accent-dim;
 
                     whisper-text := Text {
                         text: root.whisper-hint-count;
-                        color: Theme.bg-deep;
-                        font-size: 9px;
+                        color: Theme.text-on-accent;
+                        font-size: Theme.fs-micro;
                         font-weight: 700;
                         horizontal-alignment: center;
                         vertical-alignment: center;
@@ -263,75 +238,60 @@ export component StatusBar inherits Rectangle {
 
             // Incognito badge
             if root.incognito-enabled : Rectangle {
-                width: inc-badge.preferred-width + 4px;
-                height: Theme.status-bar-height;
+                width: inc-text.preferred-width + 10px;
+                height: 18px;
+                y: (Theme.status-bar-height - 18px) / 2;
+                border-radius: Theme.r-pill;
+                background: Theme.color-danger-dim;
 
-                inc-badge := Rectangle {
-                    width: inc-text.preferred-width + 10px;
-                    height: 16px;
-                    y: (parent.height - 16px) / 2;
-                    border-radius: 8px;
-                    background: Theme.color-emotional;
-                    drop-shadow-blur: 6px;
-                    drop-shadow-color: #e86b6b40;
-
-                    inc-text := Text {
-                        text: "INC";
-                        color: #ffffff;
-                        font-size: 8px;
-                        font-weight: 700;
-                        letter-spacing: 1px;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
-                    }
+                inc-text := Text {
+                    text: "INC";
+                    color: Theme.color-danger;
+                    font-size: 8px;
+                    font-weight: 700;
+                    letter-spacing: 0.5px;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
                 }
             }
 
             // DND badge
             if root.dnd-enabled : Rectangle {
-                width: dnd-badge.preferred-width + 4px;
-                height: Theme.status-bar-height;
+                width: dnd-text.preferred-width + 10px;
+                height: 18px;
+                y: (Theme.status-bar-height - 18px) / 2;
+                border-radius: Theme.r-pill;
+                background: Theme.color-warning-dim;
 
-                dnd-badge := Rectangle {
-                    width: dnd-text.preferred-width + 10px;
-                    height: 16px;
-                    y: (parent.height - 16px) / 2;
-                    border-radius: 8px;
-                    background: Theme.amber;
-                    drop-shadow-blur: 6px;
-                    drop-shadow-color: Theme.amber-glow;
-
-                    dnd-text := Text {
-                        text: "DND";
-                        color: Theme.bg-deep;
-                        font-size: 8px;
-                        font-weight: 700;
-                        letter-spacing: 1px;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
-                    }
+                dnd-text := Text {
+                    text: "DND";
+                    color: Theme.color-warning;
+                    font-size: 8px;
+                    font-weight: 700;
+                    letter-spacing: 0.5px;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
                 }
             }
 
-            // Pending count badge (Quiet Queue)
+            // Pending queue badge
             if root.pending-count > 0 : TouchArea {
                 width: queue-badge.preferred-width + 4px;
                 height: Theme.status-bar-height;
+                mouse-cursor: pointer;
                 clicked => { root.queue-clicked(); }
 
                 queue-badge := Rectangle {
                     width: max(18px, queue-text.preferred-width + 10px);
-                    height: 16px;
-                    y: (parent.height - 16px) / 2;
-                    border-radius: 8px;
+                    height: 18px;
+                    y: (parent.height - 18px) / 2;
+                    border-radius: Theme.r-pill;
                     background: Theme.amber-dim;
-                    drop-shadow-blur: 6px;
-                    drop-shadow-color: Theme.amber-glow;
 
                     queue-text := Text {
                         text: root.pending-count;
-                        color: Theme.bg-deep;
-                        font-size: 9px;
+                        color: Theme.amber;
+                        font-size: Theme.fs-micro;
                         font-weight: 700;
                         horizontal-alignment: center;
                         vertical-alignment: center;
@@ -339,81 +299,46 @@ export component StatusBar inherits Rectangle {
                 }
             }
 
-            // WiFi + Battery — tappable area opens Quick Settings
+            // WiFi + Battery → opens Quick Settings
             TouchArea {
                 height: Theme.status-bar-height;
+                mouse-cursor: pointer;
                 clicked => { root.settings-tapped(); }
 
                 HorizontalLayout {
-                    spacing: 12px;
+                    spacing: Theme.sp-2;
 
-                    // WiFi indicator — holographic rings
-                    Rectangle {
-                        width: 14px;
-                        height: 14px;
-                        y: (parent.height - 14px) / 2;
-                        background: transparent;
-
-                        // Outer arc
-                        Rectangle {
-                            x: 1px; y: 0;
-                            width: 12px; height: 12px;
-                            border-radius: 6px;
-                            border-width: 1px;
-                            border-color: root.wifi-connected ? Theme.cyan : Theme.text-dim;
-                            background: transparent;
-                            opacity: root.wifi-connected ? 0.7 : 0.2;
-                        }
-                        // Inner arc
-                        Rectangle {
-                            x: 3.5px; y: 3px;
-                            width: 7px; height: 7px;
-                            border-radius: 3.5px;
-                            border-width: 1px;
-                            border-color: root.wifi-connected ? Theme.cyan : Theme.text-dim;
-                            background: transparent;
-                            opacity: root.wifi-connected ? 0.6 : 0.15;
-                        }
-                        // Center dot
-                        Rectangle {
-                            x: 5.5px; y: 6px;
-                            width: 3px; height: 3px;
-                            border-radius: 1.5px;
-                            background: root.wifi-connected ? Theme.cyan : Theme.text-dim;
-                            opacity: root.wifi-connected ? 1.0 : 0.3;
-                            drop-shadow-blur: root.wifi-connected ? 3px : 0;
-                            drop-shadow-color: Theme.cyan-glow;
-                        }
+                    // WiFi indicator — simple icon
+                    Text {
+                        text: root.wifi-connected ? "📶" : "📵";
+                        color: root.wifi-connected ? Theme.text-secondary : Theme.text-dim;
+                        font-size: 11px;
+                        vertical-alignment: center;
                     }
 
-                    // Battery — holographic bar (hidden when no battery hardware)
-                    HorizontalLayout {
-                        visible: root.battery-available;
+                    // Battery (when hardware present)
+                    if root.battery-available : HorizontalLayout {
                         spacing: 3px;
 
                         Rectangle {
-                            width: 22px;
+                            width: 20px;
                             height: 10px;
                             y: (parent.height - 10px) / 2;
                             border-radius: 2px;
                             border-width: 1px;
-                            border-color: root.battery-level <= 20 ? Theme.color-emotional : Theme.text-dim;
+                            border-color: root.battery-level <= 20 ? Theme.color-danger : Theme.text-dim;
                             background: transparent;
 
-                            // Fill
+                            // Fill bar
                             Rectangle {
                                 x: 1.5px; y: 1.5px;
                                 width: max(0px, (parent.width - 5px) * root.battery-level / 100);
                                 height: parent.height - 5px;
                                 border-radius: 1px;
-                                background: root.battery-charging ? Theme.cyan :
-                                            root.battery-level <= 20 ? Theme.color-emotional :
-                                            root.battery-level <= 50 ? Theme.amber :
-                                            Theme.cyan;
-                                drop-shadow-blur: 2px;
-                                drop-shadow-color: root.battery-charging ? Theme.cyan-glow :
-                                                   root.battery-level <= 20 ? #e86b6b40 :
-                                                   Theme.amber-glow;
+                                background: root.battery-charging ? Theme.color-success
+                                          : root.battery-level <= 20 ? Theme.color-danger
+                                          : root.battery-level <= 50 ? Theme.color-warning
+                                          : Theme.text-secondary;
                             }
 
                             // Terminal nub
@@ -424,18 +349,26 @@ export component StatusBar inherits Rectangle {
                                 height: parent.height - 6px;
                                 border-radius: 0.5px;
                                 background: Theme.text-dim;
-                                opacity: 0.5;
                             }
                         }
 
                         Text {
                             text: root.battery-level + "%";
-                            color: root.battery-level <= 20 ? Theme.color-emotional : Theme.text-dim;
+                            color: root.battery-level <= 20 ? Theme.color-danger : Theme.text-dim;
                             font-size: 9px;
                             vertical-alignment: center;
                         }
                     }
                 }
+            }
+
+            // Clock — right-most element
+            Text {
+                text: root.clock-text;
+                color: Theme.text-secondary;
+                font-size: Theme.fs-caption;
+                font-weight: Theme.fw-body-strong;
+                vertical-alignment: center;
             }
         }
     }

@@ -1,0 +1,96 @@
+// YTabs — tab strip with underline indicator animation, hover/active states.
+import { Theme } from "../theme.slint";
+
+export struct YTabItem {
+    id: string,
+    label: string,
+    icon: string,
+    badge-count: int,
+}
+
+export component YTabs inherits Rectangle {
+    in property <[YTabItem]> tabs: [];
+    in property <string> active-id: "";
+    callback tab-clicked(string);
+
+    height: Theme.h-prominent;
+    background: transparent;
+
+    // Bottom border
+    Rectangle {
+        y: parent.height - 1px;
+        height: 1px;
+        width: 100%;
+        background: Theme.separator;
+    }
+
+    HorizontalLayout {
+        alignment: start;
+        spacing: 0;
+        padding-left: Theme.sp-3;
+
+        for tab[idx] in root.tabs : Rectangle {
+            property <bool> is-active: tab.id == root.active-id;
+            property <bool> hovered: tab-ta.has-hover;
+
+            min-width: 64px;
+            width: tab-layout.preferred-width + Theme.sp-6;
+            height: 100%;
+
+            tab-ta := TouchArea {
+                mouse-cursor: pointer;
+                clicked => { root.tab-clicked(tab.id); }
+            }
+
+            tab-layout := HorizontalLayout {
+                alignment: center;
+                spacing: Theme.sp-1;
+
+                if tab.icon != "" : Text {
+                    text: tab.icon;
+                    color: is-active ? Theme.accent : Theme.text-secondary;
+                    font-size: Theme.fs-body;
+                    vertical-alignment: center;
+                }
+
+                Text {
+                    text: tab.label;
+                    color: is-active ? Theme.text-primary
+                         : hovered ? Theme.text-secondary
+                         : Theme.text-dim;
+                    font-size: Theme.fs-body;
+                    font-weight: is-active ? Theme.fw-body-strong : Theme.fw-body;
+                    vertical-alignment: center;
+                }
+
+                if tab.badge-count > 0 : Rectangle {
+                    width: 18px;
+                    height: 18px;
+                    y: (parent.height - 18px) / 2;
+                    border-radius: 9px;
+                    background: Theme.accent;
+
+                    Text {
+                        text: tab.badge-count;
+                        color: Theme.text-on-accent;
+                        font-size: 10px;
+                        font-weight: 700;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+
+            // Active underline indicator
+            Rectangle {
+                y: parent.height - 2px;
+                height: 2px;
+                width: is-active ? parent.width : 0;
+                x: (parent.width - self.width) / 2;
+                border-radius: 1px;
+                background: Theme.accent;
+                animate width { duration: Theme.dur-normal; easing: ease-out; }
+            }
+        }
+    }
+}

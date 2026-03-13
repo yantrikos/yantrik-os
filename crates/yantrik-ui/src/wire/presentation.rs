@@ -15,7 +15,7 @@ use slint::{ComponentHandle, ModelRc, SharedString, Timer, TimerMode, VecModel};
 
 use crate::app_context::AppContext;
 use crate::bridge::CompanionBridge;
-use crate::{App, PresentTheme, SlideData};
+use crate::{AiProposalState, App, PresentTheme, SlideData};
 
 // ─── Data Structures ────────────────────────────────────────────────
 
@@ -79,6 +79,170 @@ impl Slide {
     }
 }
 
+// ── AI Proposal Types ──
+
+/// A structured slide proposal from the AI.
+#[derive(Clone, Debug, serde::Deserialize)]
+struct AiSlideProposal {
+    title: String,
+    #[serde(default)]
+    bullets: Vec<String>,
+    #[serde(default)]
+    speaker_notes: String,
+    #[serde(default)]
+    slide_type: String,
+}
+
+/// A full deck proposal from the AI.
+#[derive(Clone, Debug, serde::Deserialize)]
+struct AiDeckProposal {
+    #[serde(default)]
+    title: String,
+    slides: Vec<AiSlideProposal>,
+}
+
+/// A split proposal from the AI.
+#[derive(Clone, Debug, serde::Deserialize)]
+struct AiSplitProposal {
+    slides: Vec<AiSlideProposal>,
+}
+
+/// Pending proposal waiting for user to preview and selectively apply.
+#[derive(Clone, Debug)]
+struct PendingProposal {
+    action_name: String,
+    /// For deck proposals, all proposed slides. For single-slide, just one.
+    proposed_slides: Vec<AiSlideProposal>,
+    /// Original slide data for diff display (only for single-slide actions).
+    original_slide: Option<Slide>,
+    /// Which slide in proposed_slides is currently being previewed.
+    preview_index: usize,
+    /// Whether this is a deck-level proposal (replaces all slides).
+    is_deck_proposal: bool,
+}
+
+/// Convert bullet points to body string (joined with newline, prefixed with bullet).
+fn bullets_to_body(bullets: &[String]) -> String {
+    if bullets.is_empty() {
+        return String::new();
+    }
+    bullets.iter()
+        .map(|b| {
+            let trimmed = b.trim();
+            if trimmed.starts_with('\u{2022}') || trimmed.starts_with('-') || trimmed.starts_with('*') {
+                trimmed.to_string()
+            } else {
+                format!("\u{2022} {}", trimmed)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Convert body string to bullet points (split on newlines, strip prefixes).
+fn body_to_bullets(body: &str) -> Vec<String> {
+    body.lines()
+        .map(|l| {
+            let trimmed = l.trim();
+            let stripped = trimmed.trim_start_matches('\u{2022}')
+                .trim_start_matches('-')
+                .trim_start_matches('*')
+                .trim();
+            stripped.to_string()
+        })
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
+/// Normalize and validate an AI slide proposal.
+fn normalize_proposal(p: &mut AiSlideProposal) {
+    // Trim
+    p.title = p.title.trim().to_string();
+    p.speaker_notes = p.speaker_notes.trim().to_string();
+
+    // Cap title
+    if p.title.len() > 80 {
+        p.title.truncate(80);
+    }
+
+    // Normalize bullets
+    p.bullets = p.bullets.iter()
+        .map(|b| b.trim().to_string())
+        .filter(|b| !b.is_empty())
+        .collect();
+
+    // Cap bullets to 7
+    p.bullets.truncate(7);
+
+    // Cap each bullet to 120 chars
+    for b in &mut p.bullets {
+        if b.len() > 120 {
+            b.truncate(120);
+        }
+    }
+
+    // Normalize slide_type
+    if p.slide_type.is_empty() {
+        p.slide_type = "title_and_content".to_string();
+    }
+}
+
+/// Parse a JSON response from the AI, extracting JSON from markdown code blocks if needed.
+fn parse_ai_json<T: serde::de::DeserializeOwned>(response: &str) -> Option<T> {
+    let trimmed = response.trim();
+
+    // Try to extract JSON from ```json ... ``` blocks
+    let json_str = if let Some(start) = trimmed.find("```json") {
+        let after = &trimmed[start + 7..];
+        if let Some(end) = after.find("```") {
+            after[..end].trim()
+        } else {
+            after.trim()
+        }
+    } else if let Some(start) = trimmed.find("```") {
+        let after = &trimmed[start + 3..];
+        // Skip optional language tag on same line
+        let after = if let Some(nl) = after.find('\n') {
+            &after[nl + 1..]
+        } else {
+            after
+        };
+        if let Some(end) = after.find("```") {
+            after[..end].trim()
+        } else {
+            after.trim()
+        }
+    } else if trimmed.starts_with('{') || trimmed.starts_with('[') {
+        trimmed
+    } else {
+        // Try to find JSON object in the response
+        if let Some(start) = trimmed.find('{') {
+            if let Some(end) = trimmed.rfind('}') {
+                &trimmed[start..=end]
+            } else {
+                return None;
+            }
+        } else {
+            return None;
+        }
+    };
+
+    serde_json::from_str(json_str).ok()
+}
+
+/// Map AI slide_type string to layout integer.
+fn slide_type_to_layout(slide_type: &str) -> i32 {
+    match slide_type {
+        "title_slide" => 0,
+        "title_and_content" => 1,
+        "two_column" => 2,
+        "section_header" => 3,
+        "blank" => 4,
+        "image_and_text" | "image_text" => 5,
+        _ => 1,
+    }
+}
+
 /// A snapshot of the slides vec for undo/redo.
 #[derive(Clone, Debug)]
 struct UndoSnapshot {
@@ -128,6 +292,9 @@ struct PresentationState {
 
     // Speaker notes per slide index (separate from slide notes for the panel)
     speaker_notes: HashMap<usize, String>,
+
+    // AI proposal state
+    pending_proposal: Option<PendingProposal>,
 }
 
 /// Layout names (indexed by layout id).
@@ -170,6 +337,7 @@ impl PresentationState {
             redo_stack: Vec::new(),
             search: SearchState::default(),
             speaker_notes: HashMap::new(),
+            pending_proposal: None,
         }
     }
 
@@ -334,6 +502,49 @@ fn build_slides_model(state: &PresentationState) -> ModelRc<SlideData> {
 }
 
 /// Sync all slide data + current slide info to the UI.
+/// Sync proposal state to Slint UI for preview.
+fn sync_proposal_to_ui(ui: &App, state: &PresentationState) {
+    if let Some(ref prop) = state.pending_proposal {
+        ui.set_pres_ai_has_proposal(true);
+
+        let preview_idx = prop.preview_index;
+        if let Some(proposed) = prop.proposed_slides.get(preview_idx) {
+            let proposed_body = bullets_to_body(&proposed.bullets);
+
+            // Get original for diff comparison
+            let (orig_title, orig_body, orig_notes) = if let Some(ref orig) = prop.original_slide {
+                (orig.title.clone(), orig.body.clone(), orig.notes.clone())
+            } else {
+                (String::new(), String::new(), String::new())
+            };
+
+            let title_changed = proposed.title != orig_title;
+            let body_changed = proposed_body != orig_body;
+            let notes_changed = proposed.speaker_notes != orig_notes;
+
+            ui.set_pres_ai_proposal(AiProposalState {
+                action_name: prop.action_name.clone().into(),
+                is_deck_proposal: prop.is_deck_proposal,
+                slide_count: prop.proposed_slides.len() as i32,
+                current_preview_index: preview_idx as i32,
+                original_title: orig_title.into(),
+                original_body: orig_body.into(),
+                original_notes: orig_notes.into(),
+                proposed_title: proposed.title.clone().into(),
+                proposed_body: proposed_body.into(),
+                proposed_notes: proposed.speaker_notes.clone().into(),
+                proposed_slide_type: proposed.slide_type.clone().into(),
+                title_changed,
+                body_changed,
+                notes_changed,
+                slide_type_changed: false,
+            });
+        }
+    } else {
+        ui.set_pres_ai_has_proposal(false);
+    }
+}
+
 fn sync_to_ui(ui: &App, state: &PresentationState) {
     ui.set_pres_slides(build_slides_model(state));
     ui.set_pres_slide_count(state.slides.len() as i32);
@@ -544,6 +755,7 @@ fn load_presentation_from_json(json: &str) -> Option<PresentationState> {
         redo_stack: Vec::new(),
         search: SearchState::default(),
         speaker_notes: HashMap::new(),
+        pending_proposal: None,
     })
 }
 
@@ -1667,94 +1879,288 @@ pub fn wire(ui: &App, ctx: &AppContext) {
     wire_ai(ui, ctx, state);
 }
 
-/// Wire AI assist callbacks for ySlides.
+/// Fire an AI action: send prompt, accumulate response, call on_complete when done.
+fn fire_ai_action(
+    ui_weak: &slint::Weak<App>,
+    bridge: &Arc<CompanionBridge>,
+    ai_state: &Rc<RefCell<super::ai_assist::AiAssistState>>,
+    prompt: String,
+    action_name: &str,
+    on_complete: impl Fn(String) + 'static,
+) {
+    // Cancel any in-progress request
+    {
+        let mut s = ai_state.borrow_mut();
+        s.timer = None;
+        s.is_working = true;
+    }
+
+    // Set status
+    if let Some(ui) = ui_weak.upgrade() {
+        ui.set_pres_ai_working(true);
+        ui.set_pres_ai_status(format!("{}...", action_name).into());
+        ui.set_pres_ai_has_proposal(false);
+    }
+
+    let token_rx = bridge.send_message(prompt);
+    let weak = ui_weak.clone();
+    let accumulated = Rc::new(RefCell::new(String::new()));
+    let acc2 = accumulated.clone();
+    let state_clone = ai_state.clone();
+    let start_time = std::time::Instant::now();
+    let timeout = Duration::from_secs(90);
+
+    let timer = Timer::default();
+    let token_count = Rc::new(std::cell::Cell::new(0u32));
+    let tc2 = token_count.clone();
+    let action_label = action_name.to_string();
+    timer.start(TimerMode::Repeated, Duration::from_millis(16), move || {
+        let mut done = false;
+        while let Ok(token) = token_rx.try_recv() {
+            if token == "__DONE__" {
+                done = true;
+                break;
+            }
+            // __REPLACE__ means "discard everything so far" — tool calls finished,
+            // next tokens are the final response.
+            if token == "__REPLACE__" {
+                acc2.borrow_mut().clear();
+                tc2.set(0);
+                continue;
+            }
+            if token.starts_with("__") && token.ends_with("__") {
+                continue;
+            }
+            acc2.borrow_mut().push_str(&token);
+            tc2.set(tc2.get() + 1);
+        }
+
+        // Update status with token count for progress feedback
+        if !done && tc2.get() > 0 {
+            if let Some(ui) = weak.upgrade() {
+                ui.set_pres_ai_status(
+                    format!("{}... ({} tokens)", action_label, tc2.get()).into(),
+                );
+            }
+        }
+
+        // Timeout check
+        if !done && start_time.elapsed() > timeout {
+            if let Some(ui) = weak.upgrade() {
+                ui.set_pres_ai_working(false);
+                ui.set_pres_ai_status("AI timed out. Try again.".into());
+            }
+            state_clone.borrow_mut().timer = None;
+            state_clone.borrow_mut().is_working = false;
+            return;
+        }
+
+        if done {
+            if let Some(ui) = weak.upgrade() {
+                ui.set_pres_ai_working(false);
+                ui.set_pres_ai_status("".into());
+            }
+            state_clone.borrow_mut().timer = None;
+            state_clone.borrow_mut().is_working = false;
+            let response = accumulated.borrow().clone();
+            on_complete(response);
+        }
+    });
+
+    ai_state.borrow_mut().timer = Some(timer);
+}
+
+/// Wire AI assist callbacks for yPresent.
 fn wire_ai(ui: &App, ctx: &AppContext, state: Rc<RefCell<PresentationState>>) {
     let bridge = ctx.bridge.clone();
     let ai_state = super::ai_assist::AiAssistState::new();
 
-    // Free-form AI submit
+    // ── Generate Deck ──
     {
         let st = state.clone();
         let bridge = bridge.clone();
         let ai_st = ai_state.clone();
         let ui_weak = ui.as_weak();
-        ui.on_pres_ai_submit(move |prompt| {
-            let prompt_str = prompt.to_string();
-            if prompt_str.trim().is_empty() { return; }
-            let s = st.borrow();
-            let slide = &s.slides[s.current_index];
-            let context = format!("Slide {}/{}: Title: {}\nBody: {}\nNotes: {}",
-                s.current_index + 1, s.slides.len(), slide.title, slide.body, slide.notes);
-            let full_prompt = super::ai_assist::office_freeform_prompt("presentation", &context, &prompt_str);
-            super::ai_assist::ai_request(
-                &ui_weak,
-                &bridge,
-                &ai_st,
-                super::ai_assist::AiAssistRequest {
-                    prompt: full_prompt,
-                    timeout_secs: 45,
-                    set_working: Box::new(|ui, v| ui.set_pres_ai_working(v)),
-                    set_response: Box::new(|ui, s| ui.set_pres_ai_response(s.into())),
-                    get_response: Box::new(|ui| ui.get_pres_ai_response().to_string()),
-                },
-            );
+        ui.on_pres_ai_generate_deck(move |topic| {
+            let instruction = if let Some(ui) = ui_weak.upgrade() {
+                ui.get_pres_ai_instruction().to_string()
+            } else { return; };
+            let topic_str = topic.to_string();
+            let prompt = if topic_str.trim().is_empty() {
+                if instruction.trim().is_empty() { return; }
+                super::ai_assist::pres_generate_deck_json_prompt(&instruction, "")
+            } else {
+                super::ai_assist::pres_generate_deck_json_prompt(&topic_str, &instruction)
+            };
+
+            let st2 = st.clone();
+            let weak2 = ui_weak.clone();
+            fire_ai_action(&ui_weak, &bridge, &ai_st, prompt, "Generate Deck", move |response| {
+                tracing::info!(len = response.len(), "Generate Deck AI response received");
+                if let Some(deck) = parse_ai_json::<AiDeckProposal>(&response) {
+                    let mut slides = deck.slides;
+                    for s in &mut slides { normalize_proposal(s); }
+                    tracing::info!(slide_count = slides.len(), "Parsed deck proposal");
+                    if !slides.is_empty() {
+                        let mut s = st2.borrow_mut();
+                        s.pending_proposal = Some(PendingProposal {
+                            action_name: "Generate Deck".into(),
+                            proposed_slides: slides,
+                            original_slide: None,
+                            preview_index: 0,
+                            is_deck_proposal: true,
+                        });
+                        if let Some(ui) = weak2.upgrade() {
+                            sync_proposal_to_ui(&ui, &s);
+                        }
+                    }
+                } else {
+                    tracing::warn!(
+                        response_preview = %response.chars().take(500).collect::<String>(),
+                        "Failed to parse AI deck response as JSON"
+                    );
+                    if let Some(ui) = weak2.upgrade() {
+                        ui.set_pres_ai_status("AI response was not valid JSON. Try again.".into());
+                    }
+                }
+            });
         });
     }
 
-    // Generate full deck from topic
+    // ── Structure Text ──
     {
+        let st = state.clone();
         let bridge = bridge.clone();
         let ai_st = ai_state.clone();
         let ui_weak = ui.as_weak();
-        ui.on_pres_ai_generate_deck(move |topic| {
-            let topic_str = topic.to_string();
-            let desc = if topic_str.trim().is_empty() {
-                "Create a general-purpose presentation template".to_string()
-            } else {
-                topic_str
-            };
-            let full_prompt = super::ai_assist::pres_generate_deck_prompt(&desc);
-            super::ai_assist::ai_request(
-                &ui_weak,
-                &bridge,
-                &ai_st,
-                super::ai_assist::AiAssistRequest {
-                    prompt: full_prompt,
-                    timeout_secs: 60,
-                    set_working: Box::new(|ui, v| ui.set_pres_ai_working(v)),
-                    set_response: Box::new(|ui, s| ui.set_pres_ai_response(s.into())),
-                    get_response: Box::new(|ui| ui.get_pres_ai_response().to_string()),
-                },
-            );
+        ui.on_pres_ai_structure_text(move |text| {
+            let instruction = if let Some(ui) = ui_weak.upgrade() {
+                ui.get_pres_ai_instruction().to_string()
+            } else { return; };
+            let text_str = text.to_string();
+            if text_str.trim().is_empty() && instruction.trim().is_empty() { return; }
+            let source = if text_str.trim().is_empty() { instruction.clone() } else { text_str };
+            let prompt = super::ai_assist::pres_structure_text_json_prompt(&source, &instruction);
+
+            let st2 = st.clone();
+            let weak2 = ui_weak.clone();
+            fire_ai_action(&ui_weak, &bridge, &ai_st, prompt, "Structure Text", move |response| {
+                if let Some(deck) = parse_ai_json::<AiDeckProposal>(&response) {
+                    let mut slides = deck.slides;
+                    for s in &mut slides { normalize_proposal(s); }
+                    if !slides.is_empty() {
+                        let mut s = st2.borrow_mut();
+                        s.pending_proposal = Some(PendingProposal {
+                            action_name: "Structure Text".into(),
+                            proposed_slides: slides,
+                            original_slide: None,
+                            preview_index: 0,
+                            is_deck_proposal: true,
+                        });
+                        if let Some(ui) = weak2.upgrade() {
+                            sync_proposal_to_ui(&ui, &s);
+                        }
+                    }
+                } else {
+                    tracing::warn!("Failed to parse AI structure-text response as JSON");
+                    if let Some(ui) = weak2.upgrade() {
+                        ui.set_pres_ai_status("AI response was not valid JSON. Try again.".into());
+                    }
+                }
+            });
         });
     }
 
-    // Improve current slide
+    // ── Generate All Notes ──
+    {
+        let st = state.clone();
+        let bridge = bridge.clone();
+        let ai_st = ai_state.clone();
+        let ui_weak = ui.as_weak();
+        ui.on_pres_ai_generate_all_notes(move || {
+            let s = st.borrow();
+            let slides_data: Vec<(String, Vec<String>)> = s.slides.iter()
+                .map(|sl| (sl.title.clone(), body_to_bullets(&sl.body)))
+                .collect();
+            drop(s);
+            let prompt = super::ai_assist::pres_generate_all_notes_json_prompt(&slides_data);
+
+            let st2 = st.clone();
+            let weak2 = ui_weak.clone();
+            fire_ai_action(&ui_weak, &bridge, &ai_st, prompt, "Generate All Notes", move |response| {
+                if let Some(split) = parse_ai_json::<AiSplitProposal>(&response) {
+                    let mut slides = split.slides;
+                    for s in &mut slides { normalize_proposal(s); }
+                    if !slides.is_empty() {
+                        let mut s = st2.borrow_mut();
+                        s.pending_proposal = Some(PendingProposal {
+                            action_name: "Generate All Notes".into(),
+                            proposed_slides: slides,
+                            original_slide: None,
+                            preview_index: 0,
+                            is_deck_proposal: true,
+                        });
+                        if let Some(ui) = weak2.upgrade() {
+                            sync_proposal_to_ui(&ui, &s);
+                        }
+                    }
+                } else {
+                    tracing::warn!("Failed to parse AI all-notes response as JSON");
+                    if let Some(ui) = weak2.upgrade() {
+                        ui.set_pres_ai_status("AI response was not valid JSON. Try again.".into());
+                    }
+                }
+            });
+        });
+    }
+
+    // ── Improve Slide ──
     {
         let st = state.clone();
         let bridge = bridge.clone();
         let ai_st = ai_state.clone();
         let ui_weak = ui.as_weak();
         ui.on_pres_ai_improve_slide(move || {
+            let instruction = if let Some(ui) = ui_weak.upgrade() {
+                ui.get_pres_ai_instruction().to_string()
+            } else { return; };
             let s = st.borrow();
-            let slide = &s.slides[s.current_index];
-            let full_prompt = super::ai_assist::pres_improve_slide_prompt(&slide.title, &slide.body, &slide.notes);
-            super::ai_assist::ai_request(
-                &ui_weak,
-                &bridge,
-                &ai_st,
-                super::ai_assist::AiAssistRequest {
-                    prompt: full_prompt,
-                    timeout_secs: 30,
-                    set_working: Box::new(|ui, v| ui.set_pres_ai_working(v)),
-                    set_response: Box::new(|ui, s| ui.set_pres_ai_response(s.into())),
-                    get_response: Box::new(|ui| ui.get_pres_ai_response().to_string()),
-                },
+            let slide = s.slides[s.current_index].clone();
+            let deck_title = s.slides.first().map(|sl| sl.title.as_str()).unwrap_or("Untitled");
+            let bullets = body_to_bullets(&slide.body);
+            let prompt = super::ai_assist::pres_improve_slide_json_prompt(
+                &slide.title, &bullets, &slide.notes, deck_title, &instruction,
             );
+            drop(s);
+
+            let st2 = st.clone();
+            let weak2 = ui_weak.clone();
+            let orig = slide.clone();
+            fire_ai_action(&ui_weak, &bridge, &ai_st, prompt, "Improve Slide", move |response| {
+                if let Some(mut proposed) = parse_ai_json::<AiSlideProposal>(&response) {
+                    normalize_proposal(&mut proposed);
+                    let mut s = st2.borrow_mut();
+                    s.pending_proposal = Some(PendingProposal {
+                        action_name: "Improve Slide".into(),
+                        proposed_slides: vec![proposed],
+                        original_slide: Some(orig.clone()),
+                        preview_index: 0,
+                        is_deck_proposal: false,
+                    });
+                    if let Some(ui) = weak2.upgrade() {
+                        sync_proposal_to_ui(&ui, &s);
+                    }
+                } else {
+                    tracing::warn!("Failed to parse AI improve-slide response as JSON");
+                    if let Some(ui) = weak2.upgrade() {
+                        ui.set_pres_ai_status("AI response was not valid JSON. Try again.".into());
+                    }
+                }
+            });
         });
     }
 
-    // Generate speaker notes
+    // ── Generate Notes (single slide) ──
     {
         let st = state.clone();
         let bridge = bridge.clone();
@@ -1762,120 +2168,347 @@ fn wire_ai(ui: &App, ctx: &AppContext, state: Rc<RefCell<PresentationState>>) {
         let ui_weak = ui.as_weak();
         ui.on_pres_ai_generate_notes(move || {
             let s = st.borrow();
-            let slide = &s.slides[s.current_index];
-            let full_prompt = super::ai_assist::pres_notes_prompt(&slide.title, &slide.body);
-            super::ai_assist::ai_request(
-                &ui_weak,
-                &bridge,
-                &ai_st,
-                super::ai_assist::AiAssistRequest {
-                    prompt: full_prompt,
-                    timeout_secs: 30,
-                    set_working: Box::new(|ui, v| ui.set_pres_ai_working(v)),
-                    set_response: Box::new(|ui, s| ui.set_pres_ai_response(s.into())),
-                    get_response: Box::new(|ui| ui.get_pres_ai_response().to_string()),
-                },
+            let slide = s.slides[s.current_index].clone();
+            let deck_title = s.slides.first().map(|sl| sl.title.as_str()).unwrap_or("Untitled");
+            let bullets = body_to_bullets(&slide.body);
+            let prompt = super::ai_assist::pres_generate_notes_json_prompt(
+                &slide.title, &bullets, deck_title,
             );
+            drop(s);
+
+            let st2 = st.clone();
+            let weak2 = ui_weak.clone();
+            let orig = slide.clone();
+            fire_ai_action(&ui_weak, &bridge, &ai_st, prompt, "Generate Notes", move |response| {
+                if let Some(mut proposed) = parse_ai_json::<AiSlideProposal>(&response) {
+                    normalize_proposal(&mut proposed);
+                    let mut s = st2.borrow_mut();
+                    s.pending_proposal = Some(PendingProposal {
+                        action_name: "Generate Notes".into(),
+                        proposed_slides: vec![proposed],
+                        original_slide: Some(orig.clone()),
+                        preview_index: 0,
+                        is_deck_proposal: false,
+                    });
+                    if let Some(ui) = weak2.upgrade() {
+                        sync_proposal_to_ui(&ui, &s);
+                    }
+                } else {
+                    tracing::warn!("Failed to parse AI generate-notes response as JSON");
+                    if let Some(ui) = weak2.upgrade() {
+                        ui.set_pres_ai_status("AI response was not valid JSON. Try again.".into());
+                    }
+                }
+            });
         });
     }
 
-    // Suggest visuals
+    // ── Simplify ──
     {
         let st = state.clone();
         let bridge = bridge.clone();
         let ai_st = ai_state.clone();
         let ui_weak = ui.as_weak();
-        ui.on_pres_ai_suggest_visuals(move || {
+        ui.on_pres_ai_simplify(move |audience| {
             let s = st.borrow();
-            let slide = &s.slides[s.current_index];
-            let full_prompt = super::ai_assist::pres_visuals_prompt(&slide.title, &slide.body);
-            super::ai_assist::ai_request(
-                &ui_weak,
-                &bridge,
-                &ai_st,
-                super::ai_assist::AiAssistRequest {
-                    prompt: full_prompt,
-                    timeout_secs: 30,
-                    set_working: Box::new(|ui, v| ui.set_pres_ai_working(v)),
-                    set_response: Box::new(|ui, s| ui.set_pres_ai_response(s.into())),
-                    get_response: Box::new(|ui| ui.get_pres_ai_response().to_string()),
-                },
+            let slide = s.slides[s.current_index].clone();
+            let bullets = body_to_bullets(&slide.body);
+            let audience_str = audience.to_string();
+            let prompt = super::ai_assist::pres_simplify_json_prompt(
+                &slide.title, &bullets, &slide.notes, &audience_str,
             );
+            drop(s);
+
+            let st2 = st.clone();
+            let weak2 = ui_weak.clone();
+            let orig = slide.clone();
+            fire_ai_action(&ui_weak, &bridge, &ai_st, prompt, "Simplify", move |response| {
+                if let Some(mut proposed) = parse_ai_json::<AiSlideProposal>(&response) {
+                    normalize_proposal(&mut proposed);
+                    let mut s = st2.borrow_mut();
+                    s.pending_proposal = Some(PendingProposal {
+                        action_name: "Simplify".into(),
+                        proposed_slides: vec![proposed],
+                        original_slide: Some(orig.clone()),
+                        preview_index: 0,
+                        is_deck_proposal: false,
+                    });
+                    if let Some(ui) = weak2.upgrade() {
+                        sync_proposal_to_ui(&ui, &s);
+                    }
+                } else {
+                    tracing::warn!("Failed to parse AI simplify response as JSON");
+                    if let Some(ui) = weak2.upgrade() {
+                        ui.set_pres_ai_status("AI response was not valid JSON. Try again.".into());
+                    }
+                }
+            });
         });
     }
 
-    // Apply AI response (update current slide notes with AI-generated content)
+    // ── Split Slide ──
+    {
+        let st = state.clone();
+        let bridge = bridge.clone();
+        let ai_st = ai_state.clone();
+        let ui_weak = ui.as_weak();
+        ui.on_pres_ai_split_slide(move || {
+            let s = st.borrow();
+            let slide = s.slides[s.current_index].clone();
+            let bullets = body_to_bullets(&slide.body);
+            let prompt = super::ai_assist::pres_split_slide_json_prompt(
+                &slide.title, &bullets, &slide.notes,
+            );
+            drop(s);
+
+            let st2 = st.clone();
+            let weak2 = ui_weak.clone();
+            let orig = slide.clone();
+            fire_ai_action(&ui_weak, &bridge, &ai_st, prompt, "Split Slide", move |response| {
+                if let Some(split) = parse_ai_json::<AiSplitProposal>(&response) {
+                    let mut slides = split.slides;
+                    for s in &mut slides { normalize_proposal(s); }
+                    if slides.len() >= 2 {
+                        let mut s = st2.borrow_mut();
+                        s.pending_proposal = Some(PendingProposal {
+                            action_name: "Split Slide".into(),
+                            proposed_slides: slides,
+                            original_slide: Some(orig.clone()),
+                            preview_index: 0,
+                            is_deck_proposal: false,
+                        });
+                        if let Some(ui) = weak2.upgrade() {
+                            sync_proposal_to_ui(&ui, &s);
+                        }
+                    }
+                } else {
+                    tracing::warn!("Failed to parse AI split-slide response as JSON");
+                    if let Some(ui) = weak2.upgrade() {
+                        ui.set_pres_ai_status("AI response was not valid JSON. Try again.".into());
+                    }
+                }
+            });
+        });
+    }
+
+    // ── Suggest Layout ──
+    {
+        let st = state.clone();
+        let bridge = bridge.clone();
+        let ai_st = ai_state.clone();
+        let ui_weak = ui.as_weak();
+        ui.on_pres_ai_suggest_layout(move || {
+            let s = st.borrow();
+            let slide = s.slides[s.current_index].clone();
+            let bullets = body_to_bullets(&slide.body);
+            let prompt = super::ai_assist::pres_suggest_layout_json_prompt(
+                &slide.title, &bullets, &slide.notes,
+            );
+            drop(s);
+
+            let st2 = st.clone();
+            let weak2 = ui_weak.clone();
+            let orig = slide.clone();
+            fire_ai_action(&ui_weak, &bridge, &ai_st, prompt, "Suggest Layout", move |response| {
+                if let Some(mut proposed) = parse_ai_json::<AiSlideProposal>(&response) {
+                    normalize_proposal(&mut proposed);
+                    let mut s = st2.borrow_mut();
+                    s.pending_proposal = Some(PendingProposal {
+                        action_name: "Suggest Layout".into(),
+                        proposed_slides: vec![proposed],
+                        original_slide: Some(orig.clone()),
+                        preview_index: 0,
+                        is_deck_proposal: false,
+                    });
+                    if let Some(ui) = weak2.upgrade() {
+                        sync_proposal_to_ui(&ui, &s);
+                    }
+                } else {
+                    tracing::warn!("Failed to parse AI suggest-layout response as JSON");
+                    if let Some(ui) = weak2.upgrade() {
+                        ui.set_pres_ai_status("AI response was not valid JSON. Try again.".into());
+                    }
+                }
+            });
+        });
+    }
+
+    // ── Freeform ──
+    {
+        let st = state.clone();
+        let bridge = bridge.clone();
+        let ai_st = ai_state.clone();
+        let ui_weak = ui.as_weak();
+        ui.on_pres_ai_freeform(move |prompt_input| {
+            let prompt_str = prompt_input.to_string();
+            if prompt_str.trim().is_empty() { return; }
+            let s = st.borrow();
+            let slide = s.slides[s.current_index].clone();
+            let deck_title = s.slides.first().map(|sl| sl.title.as_str()).unwrap_or("Untitled");
+            let bullets = body_to_bullets(&slide.body);
+            let bullets_json: Vec<String> = bullets.iter().map(|b| format!("\"{}\"", b.replace('"', "\\\""))).collect();
+            let context_prompt = format!(
+                r#"You are a presentation assistant. The user is editing a slide deck.
+
+Deck: {}
+Current slide:
+{{
+  "title": "{}",
+  "bullets": [{}],
+  "speaker_notes": "{}"
+}}
+
+User request: {}
+
+If the request is about modifying the slide, return ONLY valid JSON:
+{{
+  "title": "updated title",
+  "bullets": ["updated bullet 1", "updated bullet 2"],
+  "speaker_notes": "updated notes",
+  "slide_type": "title_and_content"
+}}
+
+If the request is a question (not a modification), respond with plain text."#,
+                deck_title,
+                slide.title.replace('"', "\\\""),
+                bullets_json.join(", "),
+                slide.notes.replace('"', "\\\""),
+                prompt_str,
+            );
+            drop(s);
+
+            let st2 = st.clone();
+            let weak2 = ui_weak.clone();
+            let orig = slide.clone();
+            fire_ai_action(&ui_weak, &bridge, &ai_st, context_prompt, "AI Assist", move |response| {
+                // Try to parse as structured slide proposal
+                if let Some(mut proposed) = parse_ai_json::<AiSlideProposal>(&response) {
+                    normalize_proposal(&mut proposed);
+                    let mut s = st2.borrow_mut();
+                    s.pending_proposal = Some(PendingProposal {
+                        action_name: "AI Assist".into(),
+                        proposed_slides: vec![proposed],
+                        original_slide: Some(orig.clone()),
+                        preview_index: 0,
+                        is_deck_proposal: false,
+                    });
+                    if let Some(ui) = weak2.upgrade() {
+                        sync_proposal_to_ui(&ui, &s);
+                    }
+                } else {
+                    // Plain text response — show as status message
+                    if let Some(ui) = weak2.upgrade() {
+                        let display = if response.len() > 500 { &response[..500] } else { &response };
+                        ui.set_pres_ai_status(display.into());
+                    }
+                }
+            });
+        });
+    }
+
+    // ── Apply ──
     {
         let st = state.clone();
         let ui_weak = ui.as_weak();
         ui.on_pres_ai_apply(move || {
             if let Some(ui) = ui_weak.upgrade() {
-                let response = ui.get_pres_ai_response().to_string();
-                if !response.is_empty() {
-                    let mut s = st.borrow_mut();
-                    let idx = s.current_index;
-                    // Parse structured response or use as notes
-                    if let Some(title_line) = response.lines().find(|l| l.starts_with("TITLE:")) {
-                        s.slides[idx].title = title_line.trim_start_matches("TITLE:").trim().to_string();
+                let mut s = st.borrow_mut();
+                if let Some(prop) = s.pending_proposal.take() {
+                    let apply_title = ui.get_pres_ai_apply_title();
+                    let apply_body = ui.get_pres_ai_apply_body();
+                    let apply_notes = ui.get_pres_ai_apply_notes();
+
+                    s.push_undo();
+
+                    if prop.is_deck_proposal {
+                        // Replace entire deck
+                        s.slides = prop.proposed_slides.iter().map(|p| {
+                            Slide {
+                                title: if apply_title { p.title.clone() } else { String::new() },
+                                body: if apply_body { bullets_to_body(&p.bullets) } else { String::new() },
+                                notes: if apply_notes { p.speaker_notes.clone() } else { String::new() },
+                                layout: slide_type_to_layout(&p.slide_type),
+                                image_path: None,
+                                formatting: SlideFormatting::default(),
+                                transition: 0,
+                            }
+                        }).collect();
+                        s.current_index = 0;
+                    } else if prop.proposed_slides.len() > 1 {
+                        // Split: remove current, insert replacements
+                        let idx = s.current_index;
+                        let base_slide = s.slides[idx].clone();
+                        s.slides.remove(idx);
+                        for (i, p) in prop.proposed_slides.iter().enumerate() {
+                            s.slides.insert(idx + i, Slide {
+                                title: if apply_title { p.title.clone() } else { base_slide.title.clone() },
+                                body: if apply_body { bullets_to_body(&p.bullets) } else { base_slide.body.clone() },
+                                notes: if apply_notes { p.speaker_notes.clone() } else { base_slide.notes.clone() },
+                                layout: slide_type_to_layout(&p.slide_type),
+                                image_path: None,
+                                formatting: base_slide.formatting.clone(),
+                                transition: 0,
+                            });
+                        }
+                    } else if let Some(p) = prop.proposed_slides.first() {
+                        // Single slide update
+                        let idx = s.current_index;
+                        if apply_title { s.slides[idx].title = p.title.clone(); }
+                        if apply_body { s.slides[idx].body = bullets_to_body(&p.bullets); }
+                        if apply_notes { s.slides[idx].notes = p.speaker_notes.clone(); }
                     }
-                    if let Some(body_start) = response.find("BODY:") {
-                        let body_end = response.find("NOTES:").unwrap_or(response.len());
-                        let body = response[body_start + 5..body_end].trim().to_string();
-                        s.slides[idx].body = body;
-                    }
-                    if let Some(notes_start) = response.find("NOTES:") {
-                        let notes_end = response.find("VISUAL:").unwrap_or(response.len());
-                        let notes = response[notes_start + 6..notes_end].trim().to_string();
-                        s.slides[idx].notes = notes;
-                    }
-                    // If no structured format, treat as notes
-                    if !response.contains("TITLE:") && !response.contains("BODY:") {
-                        s.slides[idx].notes = response;
-                    }
+
                     s.is_modified = true;
                     sync_to_ui(&ui, &s);
+                    sync_proposal_to_ui(&ui, &s);
                 }
-                ui.set_pres_ai_response("".into());
             }
         });
     }
 
-    // Dismiss AI response
+    // ── Dismiss ──
     {
+        let st = state.clone();
         let ui_weak = ui.as_weak();
         ui.on_pres_ai_dismiss(move || {
             if let Some(ui) = ui_weak.upgrade() {
-                ui.set_pres_ai_response("".into());
+                let mut s = st.borrow_mut();
+                s.pending_proposal = None;
+                sync_proposal_to_ui(&ui, &s);
+                ui.set_pres_ai_status("".into());
             }
         });
     }
 
-    // Contextual insights — uses companion's recall to find related emails/calendar/docs
+    // ── Preview navigation ──
     {
         let st = state.clone();
-        let bridge = bridge.clone();
-        let ai_st = ai_state.clone();
         let ui_weak = ui.as_weak();
-        ui.on_pres_ai_insights(move || {
-            let s = st.borrow();
-            let pres_title = s.slides.first().map(|sl| sl.title.as_str()).unwrap_or("Untitled");
-            let mut deck_context = format!("Presentation: {} ({} slides)\n\n", pres_title, s.slides.len());
-            for (i, slide) in s.slides.iter().enumerate().take(10) {
-                deck_context.push_str(&format!("Slide {}: {}\n{}\n\n", i + 1, slide.title, slide.body));
+        ui.on_pres_ai_preview_slide(move |idx| {
+            if let Some(ui) = ui_weak.upgrade() {
+                let mut s = st.borrow_mut();
+                if let Some(ref mut prop) = s.pending_proposal {
+                    let new_idx = idx as usize;
+                    if new_idx < prop.proposed_slides.len() {
+                        prop.preview_index = new_idx;
+                    }
+                }
+                sync_proposal_to_ui(&ui, &s);
             }
-            let full_prompt = super::ai_assist::contextual_insights_prompt(&deck_context, "presentation");
-            super::ai_assist::ai_request(
-                &ui_weak,
-                &bridge,
-                &ai_st,
-                super::ai_assist::AiAssistRequest {
-                    prompt: full_prompt,
-                    timeout_secs: 60,
-                    set_working: Box::new(|ui, v| ui.set_pres_ai_working(v)),
-                    set_response: Box::new(|ui, s| ui.set_pres_ai_response(s.into())),
-                    get_response: Box::new(|ui| ui.get_pres_ai_response().to_string()),
-                },
-            );
+        });
+    }
+
+    // ── Regenerate ──
+    {
+        let st = state.clone();
+        let ui_weak = ui.as_weak();
+        ui.on_pres_ai_regenerate(move || {
+            if let Some(ui) = ui_weak.upgrade() {
+                let mut s = st.borrow_mut();
+                s.pending_proposal = None;
+                sync_proposal_to_ui(&ui, &s);
+                ui.set_pres_ai_status("Dismissed. Click an action to regenerate.".into());
+            }
         });
     }
 

@@ -2,6 +2,11 @@
 // Screen 22. Six tabs: WiFi, Ethernet, Bluetooth, VPN, Firewall, Diagnostics.
 
 import { Theme } from "theme.slint";
+import { YButton, YIconButton } from "components/y_button.slint";
+import { YInput } from "components/y_input.slint";
+import { YTabs, YTabItem } from "components/y_tabs.slint";
+import { YEmptyState } from "components/y_empty_state.slint";
+import { YListItem } from "components/y_list_item.slint";
 
 // ── Data structs ──
 
@@ -59,6 +64,16 @@ export struct ConnectionEvent {
     timestamp: string,    // "14:32:05"
 }
 
+export struct NetAIProviderStatus {
+    name: string,
+    provider-type: string,
+    base-url: string,
+    status: string,       // "reachable", "unreachable", "testing"
+    latency-ms: int,      // -1 = unknown
+    is-primary: bool,
+    is-fallback: bool,
+}
+
 // ── Signal bar component ──
 
 component SignalBars inherits HorizontalLayout {
@@ -112,15 +127,15 @@ component ToggleSwitch inherits TouchArea {
     }
 
     HorizontalLayout {
-        spacing: 12px;
+        spacing: Theme.sp-3;
         alignment: space-between;
-        padding-left: 16px;
-        padding-right: 16px;
+        padding-left: Theme.sp-4;
+        padding-right: Theme.sp-4;
 
         Text {
             text: label;
             color: Theme.text-primary;
-            font-size: Theme.font-body;
+            font-size: Theme.fs-body;
             vertical-alignment: center;
         }
 
@@ -128,7 +143,7 @@ component ToggleSwitch inherits TouchArea {
         Rectangle {
             width: 44px;
             height: 24px;
-            border-radius: 12px;
+            border-radius: Theme.r-lg;
             background: checked ? Theme.accent : Theme.bg-elevated;
             border-width: 1px;
             border-color: checked ? Theme.accent-dim : Theme.text-dim;
@@ -141,7 +156,7 @@ component ToggleSwitch inherits TouchArea {
                 height: 18px;
                 border-radius: 9px;
                 background: Theme.text-primary;
-                animate x { duration: 150ms; easing: ease-out; }
+                animate x { duration: Theme.dur-fast; easing: ease-in-out; }
             }
         }
     }
@@ -159,21 +174,21 @@ component TabButton inherits TouchArea {
         background: active ? Theme.bg-elevated : (parent.has-hover ? Theme.hover-fill : transparent);
 
         HorizontalLayout {
-            spacing: 8px;
-            padding-left: 16px;
-            padding-right: 16px;
+            spacing: Theme.sp-2;
+            padding-left: Theme.sp-4;
+            padding-right: Theme.sp-4;
             alignment: center;
 
             Text {
                 text: icon;
                 color: active ? Theme.accent : Theme.text-secondary;
-                font-size: 16px;
+                font-size: Theme.fs-headline;
                 vertical-alignment: center;
             }
             Text {
                 text: label;
                 color: active ? Theme.accent : Theme.text-secondary;
-                font-size: Theme.font-body;
+                font-size: Theme.fs-body;
                 font-weight: active ? 600 : 400;
                 vertical-alignment: center;
             }
@@ -198,26 +213,26 @@ component ActionButton inherits TouchArea {
     height: 36px;
 
     Rectangle {
-        border-radius: Theme.radius-card;
+        border-radius: Theme.r-lg;
         background: primary ? Theme.accent
-                  : danger ? #a04040
+                  : danger ? Theme.color-danger-dim
                   : (parent.has-hover ? Theme.hover-fill-strong : Theme.bg-elevated);
         border-width: 1px;
         border-color: primary ? Theme.accent-dim
-                    : danger ? #c04040
+                    : danger ? Theme.color-danger
                     : Theme.border-subtle;
 
         HorizontalLayout {
-            padding-left: 16px;
-            padding-right: 16px;
+            padding-left: Theme.sp-4;
+            padding-right: Theme.sp-4;
             alignment: center;
 
             Text {
                 text: label;
                 color: primary ? Theme.bg-deep
-                     : danger ? #ffc0c0
+                     : danger ? Theme.color-danger
                      : Theme.text-primary;
-                font-size: Theme.font-small;
+                font-size: Theme.fs-caption;
                 font-weight: 600;
                 vertical-alignment: center;
             }
@@ -278,6 +293,10 @@ export component NetworkManager inherits Rectangle {
     in property <[DiagTestResult]> diag-tests: [];
     in property <[ConnectionEvent]> diag-connection-history: [];
 
+    // AI Provider Connectivity
+    in property <[NetAIProviderStatus]> ai-provider-connectivity: [];
+    in property <bool> ai-connectivity-testing: false;
+
     // Status bar (shown on all tabs)
     in property <string> status-connection-type: "";   // "WiFi", "Ethernet", ""
     in property <string> status-ip-address: "";
@@ -308,6 +327,7 @@ export component NetworkManager inherits Rectangle {
     // Diagnostics callbacks
     callback diag-run-test(string);    // "gateway", "dns", "internet"
     callback diag-run-all-tests();
+    callback test-ai-connectivity();   // test all AI providers
 
     // Diagnostics — Ping / Traceroute
     in-out property <string> net-diag-ping-target: "8.8.8.8";
@@ -337,7 +357,7 @@ export component NetworkManager inherits Rectangle {
         width: 500px;
         height: 400px;
         background: @radial-gradient(circle,
-            #5ac8d406 0%,
+            Theme.accent.transparentize(60%) 0%,
             transparent 60%
         );
     }
@@ -349,8 +369,8 @@ export component NetworkManager inherits Rectangle {
         Rectangle {
             height: 46px;
             background: @linear-gradient(180deg,
-                #12111aa0 0%,
-                #0c0b1080 100%
+                Theme.bg-surface.transparentize(40%) 0%,
+                Theme.bg-deep.transparentize(50%) 100%
             );
 
             // Bottom glow
@@ -424,7 +444,7 @@ export component NetworkManager inherits Rectangle {
                     }
                     ai-net-btn := Rectangle {
                         height: 32px;
-                        border-radius: Theme.radius-pill;
+                        border-radius: Theme.r-pill;
                         background: root.ai-is-working ? Theme.accent
                             : (parent.has-hover ? Theme.hover-fill-strong : Theme.bg-card);
                         border-width: 1px;
@@ -432,17 +452,17 @@ export component NetworkManager inherits Rectangle {
                         HorizontalLayout {
                             padding-left: 10px;
                             padding-right: 10px;
-                            spacing: 4px;
+                            spacing: Theme.sp-1;
                             alignment: center;
                             Text {
                                 text: root.ai-is-working ? "\u{2B50}" : "\u{2728}";
-                                font-size: 12px;
+                                font-size: Theme.fs-caption;
                                 vertical-alignment: center;
                             }
                             Text {
                                 text: root.ai-is-working ? "Analyzing..." : "AI Explain";
-                                color: root.ai-is-working ? #ffffff : Theme.text-secondary;
-                                font-size: 11px;
+                                color: root.ai-is-working ? Theme.text-on-accent : Theme.text-secondary;
+                                font-size: Theme.fs-micro;
                                 font-weight: 500;
                                 vertical-alignment: center;
                             }
@@ -450,14 +470,14 @@ export component NetworkManager inherits Rectangle {
                     }
                 }
 
-                Rectangle { width: 12px; }
+                Rectangle { width: Theme.sp-3; }
             }
         }
 
         // ── AI Response Panel ──
         if root.ai-panel-open && root.ai-response != "" : Rectangle {
             max-height: 160px;
-            background: #1a2332;
+            background: Theme.bg-elevated;
             border-width: 1px;
             border-color: Theme.accent.transparentize(70%);
 
@@ -465,20 +485,20 @@ export component NetworkManager inherits Rectangle {
                 viewport-height: ai-net-resp.preferred-height + 16px;
 
                 ai-net-resp := VerticalLayout {
-                    padding: 12px;
-                    spacing: 8px;
+                    padding: Theme.sp-3;
+                    spacing: Theme.sp-2;
 
                     HorizontalLayout {
-                        spacing: 6px;
+                        spacing: Theme.sp-2;
                         Text {
                             text: "\u{2728}";
-                            font-size: 12px;
+                            font-size: Theme.fs-caption;
                             vertical-alignment: center;
                         }
                         Text {
                             text: "AI Analysis";
                             color: Theme.accent;
-                            font-size: 12px;
+                            font-size: Theme.fs-caption;
                             font-weight: 600;
                             vertical-alignment: center;
                         }
@@ -492,11 +512,11 @@ export component NetworkManager inherits Rectangle {
                             }
                             Rectangle {
                                 width: 24px; height: 24px;
-                                border-radius: 12px;
+                                border-radius: Theme.r-lg;
                                 background: parent.has-hover ? Theme.hover-fill : transparent;
                                 Text {
                                     text: "\u{2715}";
-                                    font-size: 11px;
+                                    font-size: Theme.fs-micro;
                                     color: Theme.text-dim;
                                     horizontal-alignment: center;
                                     vertical-alignment: center;
@@ -508,7 +528,7 @@ export component NetworkManager inherits Rectangle {
                     Text {
                         text: root.ai-response;
                         color: Theme.text-primary;
-                        font-size: 12px;
+                        font-size: Theme.fs-caption;
                         wrap: word-wrap;
                     }
                 }
@@ -529,14 +549,14 @@ export component NetworkManager inherits Rectangle {
                 viewport-height: wifi-content.preferred-height + 40px;
 
                 wifi-content := VerticalLayout {
-                    padding: 20px;
-                    spacing: 16px;
+                    padding: Theme.sp-5;
+                    spacing: Theme.sp-4;
 
                     // WiFi toggle
                     Rectangle {
                         height: 56px;
                         background: Theme.bg-card;
-                        border-radius: Theme.radius-card;
+                        border-radius: Theme.r-lg;
                         border-width: 1px;
                         border-color: Theme.border-subtle;
 
@@ -550,34 +570,34 @@ export component NetworkManager inherits Rectangle {
                     // Current connection card
                     if root.wifi-current-ssid != "" : Rectangle {
                         background: Theme.bg-card;
-                        border-radius: Theme.radius-card;
+                        border-radius: Theme.r-lg;
                         border-width: 1px;
                         border-color: Theme.accent-glow;
                         height: conn-layout.preferred-height + 24px;
 
                         conn-layout := VerticalLayout {
-                            padding: 16px;
-                            spacing: 8px;
+                            padding: Theme.sp-4;
+                            spacing: Theme.sp-2;
 
                             HorizontalLayout {
-                                spacing: 12px;
+                                spacing: Theme.sp-3;
                                 alignment: space-between;
 
                                 VerticalLayout {
-                                    spacing: 4px;
+                                    spacing: Theme.sp-1;
                                     Text {
                                         text: "Connected";
                                         color: Theme.accent;
-                                        font-size: Theme.font-small;
+                                        font-size: Theme.fs-caption;
                                         font-weight: 600;
                                         letter-spacing: 1px;
                                     }
                                     HorizontalLayout {
-                                        spacing: 8px;
+                                        spacing: Theme.sp-2;
                                         Text {
                                             text: root.wifi-current-ssid;
                                             color: Theme.text-primary;
-                                            font-size: Theme.font-title;
+                                            font-size: Theme.fs-headline;
                                             font-weight: 600;
                                         }
                                         SignalBars {
@@ -596,21 +616,21 @@ export component NetworkManager inherits Rectangle {
 
                             // Details row
                             HorizontalLayout {
-                                spacing: 24px;
+                                spacing: Theme.sp-6;
                                 VerticalLayout {
                                     spacing: 2px;
-                                    Text { text: "IP Address"; color: Theme.text-dim; font-size: Theme.font-small; }
-                                    Text { text: root.wifi-ip-address != "" ? root.wifi-ip-address : "—"; color: Theme.text-secondary; font-size: Theme.font-body; }
+                                    Text { text: "IP Address"; color: Theme.text-dim; font-size: Theme.fs-caption; }
+                                    Text { text: root.wifi-ip-address != "" ? root.wifi-ip-address : "—"; color: Theme.text-secondary; font-size: Theme.fs-body; }
                                 }
                                 VerticalLayout {
                                     spacing: 2px;
-                                    Text { text: "Signal"; color: Theme.text-dim; font-size: Theme.font-small; }
-                                    Text { text: root.wifi-signal-strength + "%"; color: Theme.text-secondary; font-size: Theme.font-body; }
+                                    Text { text: "Signal"; color: Theme.text-dim; font-size: Theme.fs-caption; }
+                                    Text { text: root.wifi-signal-strength + "%"; color: Theme.text-secondary; font-size: Theme.fs-body; }
                                 }
                                 VerticalLayout {
                                     spacing: 2px;
-                                    Text { text: "Speed"; color: Theme.text-dim; font-size: Theme.font-small; }
-                                    Text { text: root.wifi-speed != "" ? root.wifi-speed : "—"; color: Theme.text-secondary; font-size: Theme.font-body; }
+                                    Text { text: "Speed"; color: Theme.text-dim; font-size: Theme.fs-caption; }
+                                    Text { text: root.wifi-speed != "" ? root.wifi-speed : "—"; color: Theme.text-secondary; font-size: Theme.fs-body; }
                                 }
                             }
                         }
@@ -619,37 +639,37 @@ export component NetworkManager inherits Rectangle {
                     // Connection Details (expandable)
                     if root.wifi-current-ssid != "" : Rectangle {
                         background: Theme.bg-card;
-                        border-radius: Theme.radius-card;
+                        border-radius: Theme.r-lg;
                         border-width: 1px;
                         border-color: Theme.border-subtle;
                         height: wifi-details-inner.preferred-height + 16px;
 
                         wifi-details-inner := VerticalLayout {
-                            padding: 12px;
-                            padding-left: 16px;
-                            padding-right: 16px;
-                            spacing: 8px;
+                            padding: Theme.sp-3;
+                            padding-left: Theme.sp-4;
+                            padding-right: Theme.sp-4;
+                            spacing: Theme.sp-2;
 
                             details-toggle := TouchArea {
                                 height: 28px;
                                 clicked => { root.wifi-details-expanded = !root.wifi-details-expanded; }
 
                                 HorizontalLayout {
-                                    spacing: 8px;
+                                    spacing: Theme.sp-2;
                                     alignment: space-between;
 
                                     HorizontalLayout {
-                                        spacing: 6px;
+                                        spacing: Theme.sp-2;
                                         Text {
                                             text: root.wifi-details-expanded ? "\u{25BC}" : "\u{25B6}";
                                             color: Theme.text-dim;
-                                            font-size: 10px;
+                                            font-size: Theme.fs-micro;
                                             vertical-alignment: center;
                                         }
                                         Text {
                                             text: "Connection Details";
                                             color: Theme.text-secondary;
-                                            font-size: Theme.font-body;
+                                            font-size: Theme.fs-body;
                                             font-weight: 500;
                                             vertical-alignment: center;
                                         }
@@ -661,30 +681,30 @@ export component NetworkManager inherits Rectangle {
                                 spacing: 10px;
                                 // Row 1
                                 HorizontalLayout {
-                                    spacing: 32px;
+                                    spacing: Theme.sp-7;
                                     VerticalLayout {
                                         spacing: 2px;
-                                        Text { text: "IP Address"; color: Theme.text-dim; font-size: Theme.font-small; }
-                                        Text { text: root.wifi-ip-address != "" ? root.wifi-ip-address : "\u{2014}"; color: Theme.text-secondary; font-size: Theme.font-body; }
+                                        Text { text: "IP Address"; color: Theme.text-dim; font-size: Theme.fs-caption; }
+                                        Text { text: root.wifi-ip-address != "" ? root.wifi-ip-address : "\u{2014}"; color: Theme.text-secondary; font-size: Theme.fs-body; }
                                     }
                                     VerticalLayout {
                                         spacing: 2px;
-                                        Text { text: "Subnet Mask"; color: Theme.text-dim; font-size: Theme.font-small; }
-                                        Text { text: root.wifi-subnet != "" ? root.wifi-subnet : "\u{2014}"; color: Theme.text-secondary; font-size: Theme.font-body; }
+                                        Text { text: "Subnet Mask"; color: Theme.text-dim; font-size: Theme.fs-caption; }
+                                        Text { text: root.wifi-subnet != "" ? root.wifi-subnet : "\u{2014}"; color: Theme.text-secondary; font-size: Theme.fs-body; }
                                     }
                                 }
                                 // Row 2
                                 HorizontalLayout {
-                                    spacing: 32px;
+                                    spacing: Theme.sp-7;
                                     VerticalLayout {
                                         spacing: 2px;
-                                        Text { text: "Gateway"; color: Theme.text-dim; font-size: Theme.font-small; }
-                                        Text { text: root.wifi-gateway != "" ? root.wifi-gateway : "\u{2014}"; color: Theme.text-secondary; font-size: Theme.font-body; }
+                                        Text { text: "Gateway"; color: Theme.text-dim; font-size: Theme.fs-caption; }
+                                        Text { text: root.wifi-gateway != "" ? root.wifi-gateway : "\u{2014}"; color: Theme.text-secondary; font-size: Theme.fs-body; }
                                     }
                                     VerticalLayout {
                                         spacing: 2px;
-                                        Text { text: "DNS"; color: Theme.text-dim; font-size: Theme.font-small; }
-                                        Text { text: root.wifi-dns != "" ? root.wifi-dns : "\u{2014}"; color: Theme.text-secondary; font-size: Theme.font-body; }
+                                        Text { text: "DNS"; color: Theme.text-dim; font-size: Theme.fs-caption; }
+                                        Text { text: root.wifi-dns != "" ? root.wifi-dns : "\u{2014}"; color: Theme.text-secondary; font-size: Theme.fs-body; }
                                     }
                                 }
                             }
@@ -693,27 +713,27 @@ export component NetworkManager inherits Rectangle {
 
                     // Available networks section
                     if root.wifi-enabled : VerticalLayout {
-                        spacing: 8px;
+                        spacing: Theme.sp-2;
 
                         HorizontalLayout {
-                            spacing: 12px;
+                            spacing: Theme.sp-3;
                             alignment: space-between;
 
                             Text {
                                 text: "Available Networks";
                                 color: Theme.text-primary;
-                                font-size: Theme.font-title;
+                                font-size: Theme.fs-headline;
                                 font-weight: 600;
                                 vertical-alignment: center;
                             }
 
                             HorizontalLayout {
-                                spacing: 8px;
+                                spacing: Theme.sp-2;
 
                                 if root.wifi-scanning : Text {
                                     text: "Scanning...";
                                     color: Theme.text-dim;
-                                    font-size: Theme.font-small;
+                                    font-size: Theme.fs-caption;
                                     vertical-alignment: center;
                                 }
 
@@ -748,18 +768,18 @@ export component NetworkManager inherits Rectangle {
                                 background: network.is-connected ? Theme.tint-accent
                                           : net-ta.has-hover ? Theme.hover-fill
                                           : Theme.bg-card;
-                                border-radius: Theme.radius-card;
+                                border-radius: Theme.r-lg;
                                 border-width: 1px;
                                 border-color: network.is-connected ? Theme.accent-dim : Theme.border-subtle;
 
                                 HorizontalLayout {
-                                    padding-left: 16px;
-                                    padding-right: 16px;
-                                    spacing: 12px;
+                                    padding-left: Theme.sp-4;
+                                    padding-right: Theme.sp-4;
+                                    spacing: Theme.sp-3;
                                     alignment: space-between;
 
                                     HorizontalLayout {
-                                        spacing: 12px;
+                                        spacing: Theme.sp-3;
 
                                         SignalBars {
                                             strength: network.signal;
@@ -771,13 +791,13 @@ export component NetworkManager inherits Rectangle {
                                             Text {
                                                 text: network.ssid;
                                                 color: Theme.text-primary;
-                                                font-size: Theme.font-body;
+                                                font-size: Theme.fs-body;
                                                 font-weight: network.is-connected ? 600 : 400;
                                             }
                                             Text {
                                                 text: network.is-connected ? "Connected" : network.security;
                                                 color: network.is-connected ? Theme.accent : Theme.text-dim;
-                                                font-size: Theme.font-small;
+                                                font-size: Theme.fs-caption;
                                             }
                                         }
                                     }
@@ -785,7 +805,7 @@ export component NetworkManager inherits Rectangle {
                                     if network.is-saved && !network.is-connected : Text {
                                         text: "Saved";
                                         color: Theme.text-dim;
-                                        font-size: Theme.font-small;
+                                        font-size: Theme.fs-caption;
                                         vertical-alignment: center;
                                     }
                                 }
@@ -795,31 +815,31 @@ export component NetworkManager inherits Rectangle {
 
                     // Saved networks section
                     if root.wifi-enabled && root.wifi-saved-networks.length > 0 : VerticalLayout {
-                        spacing: 8px;
+                        spacing: Theme.sp-2;
 
                         Text {
                             text: "Known Networks";
                             color: Theme.text-primary;
-                            font-size: Theme.font-title;
+                            font-size: Theme.fs-headline;
                             font-weight: 600;
                         }
 
                         for saved[idx] in root.wifi-saved-networks : Rectangle {
                             height: 44px;
                             background: Theme.bg-card;
-                            border-radius: Theme.radius-card;
+                            border-radius: Theme.r-lg;
                             border-width: 1px;
                             border-color: Theme.border-subtle;
 
                             HorizontalLayout {
-                                padding-left: 16px;
-                                padding-right: 16px;
+                                padding-left: Theme.sp-4;
+                                padding-right: Theme.sp-4;
                                 alignment: space-between;
 
                                 Text {
                                     text: saved.ssid;
                                     color: Theme.text-primary;
-                                    font-size: Theme.font-body;
+                                    font-size: Theme.fs-body;
                                     vertical-alignment: center;
                                 }
 
@@ -829,8 +849,8 @@ export component NetworkManager inherits Rectangle {
                                     clicked => { root.wifi-forget(saved.ssid); }
                                     Text {
                                         text: "Forget";
-                                        color: forget-ta.has-hover ? #ff6060 : Theme.text-dim;
-                                        font-size: Theme.font-small;
+                                        color: forget-ta.has-hover ? Theme.color-danger : Theme.text-dim;
+                                        font-size: Theme.fs-caption;
                                         horizontal-alignment: center;
                                         vertical-alignment: center;
                                     }
@@ -850,26 +870,26 @@ export component NetworkManager inherits Rectangle {
                 viewport-height: eth-content.preferred-height + 40px;
 
                 eth-content := VerticalLayout {
-                    padding: 20px;
-                    spacing: 16px;
+                    padding: Theme.sp-5;
+                    spacing: Theme.sp-4;
 
                     Text {
                         text: "Ethernet Interfaces";
                         color: Theme.text-primary;
-                        font-size: Theme.font-title;
+                        font-size: Theme.fs-headline;
                         font-weight: 600;
                     }
 
                     if root.ethernet-interfaces.length == 0 : Rectangle {
                         height: 80px;
                         background: Theme.bg-card;
-                        border-radius: Theme.radius-card;
+                        border-radius: Theme.r-lg;
                         border-width: 1px;
                         border-color: Theme.border-subtle;
                         Text {
                             text: "No Ethernet interfaces detected";
                             color: Theme.text-dim;
-                            font-size: Theme.font-body;
+                            font-size: Theme.fs-body;
                             horizontal-alignment: center;
                             vertical-alignment: center;
                         }
@@ -877,26 +897,26 @@ export component NetworkManager inherits Rectangle {
 
                     for iface[idx] in root.ethernet-interfaces : Rectangle {
                         background: Theme.bg-card;
-                        border-radius: Theme.radius-card;
+                        border-radius: Theme.r-lg;
                         border-width: 1px;
                         border-color: iface.status == "UP" ? Theme.accent-dim : Theme.border-subtle;
                         height: eth-iface-layout.preferred-height + 24px;
 
                         eth-iface-layout := VerticalLayout {
-                            padding: 16px;
+                            padding: Theme.sp-4;
                             spacing: 10px;
 
                             // Header row
                             HorizontalLayout {
-                                spacing: 12px;
+                                spacing: Theme.sp-3;
                                 alignment: space-between;
 
                                 HorizontalLayout {
-                                    spacing: 8px;
+                                    spacing: Theme.sp-2;
                                     Text {
                                         text: iface.name;
                                         color: Theme.text-primary;
-                                        font-size: Theme.font-title;
+                                        font-size: Theme.fs-headline;
                                         font-weight: 600;
                                         vertical-alignment: center;
                                     }
@@ -908,7 +928,7 @@ export component NetworkManager inherits Rectangle {
                                         eth-status-text := Text {
                                             text: iface.status;
                                             color: iface.status == "UP" ? Theme.accent : Theme.text-dim;
-                                            font-size: Theme.font-small;
+                                            font-size: Theme.fs-caption;
                                             font-weight: 600;
                                             horizontal-alignment: center;
                                             vertical-alignment: center;
@@ -924,7 +944,7 @@ export component NetworkManager inherits Rectangle {
                                     Text {
                                         text: "DHCP";
                                         color: Theme.accent;
-                                        font-size: Theme.font-small;
+                                        font-size: Theme.fs-caption;
                                         font-weight: 600;
                                         horizontal-alignment: center;
                                         vertical-alignment: center;
@@ -934,40 +954,40 @@ export component NetworkManager inherits Rectangle {
 
                             // Details grid
                             HorizontalLayout {
-                                spacing: 32px;
+                                spacing: Theme.sp-7;
                                 VerticalLayout {
                                     spacing: 2px;
-                                    Text { text: "IP Address"; color: Theme.text-dim; font-size: Theme.font-small; }
-                                    Text { text: iface.ip-address != "" ? iface.ip-address : "—"; color: Theme.text-secondary; font-size: Theme.font-body; }
+                                    Text { text: "IP Address"; color: Theme.text-dim; font-size: Theme.fs-caption; }
+                                    Text { text: iface.ip-address != "" ? iface.ip-address : "—"; color: Theme.text-secondary; font-size: Theme.fs-body; }
                                 }
                                 VerticalLayout {
                                     spacing: 2px;
-                                    Text { text: "MAC"; color: Theme.text-dim; font-size: Theme.font-small; }
-                                    Text { text: iface.mac-address != "" ? iface.mac-address : "—"; color: Theme.text-secondary; font-size: Theme.font-body; }
+                                    Text { text: "MAC"; color: Theme.text-dim; font-size: Theme.fs-caption; }
+                                    Text { text: iface.mac-address != "" ? iface.mac-address : "—"; color: Theme.text-secondary; font-size: Theme.fs-body; }
                                 }
                                 VerticalLayout {
                                     spacing: 2px;
-                                    Text { text: "Speed"; color: Theme.text-dim; font-size: Theme.font-small; }
-                                    Text { text: iface.speed != "" ? iface.speed : "—"; color: Theme.text-secondary; font-size: Theme.font-body; }
+                                    Text { text: "Speed"; color: Theme.text-dim; font-size: Theme.fs-caption; }
+                                    Text { text: iface.speed != "" ? iface.speed : "—"; color: Theme.text-secondary; font-size: Theme.fs-body; }
                                 }
                             }
 
                             if iface.status == "UP" : HorizontalLayout {
-                                spacing: 32px;
+                                spacing: Theme.sp-7;
                                 VerticalLayout {
                                     spacing: 2px;
-                                    Text { text: "Subnet"; color: Theme.text-dim; font-size: Theme.font-small; }
-                                    Text { text: iface.subnet != "" ? iface.subnet : "—"; color: Theme.text-secondary; font-size: Theme.font-body; }
+                                    Text { text: "Subnet"; color: Theme.text-dim; font-size: Theme.fs-caption; }
+                                    Text { text: iface.subnet != "" ? iface.subnet : "—"; color: Theme.text-secondary; font-size: Theme.fs-body; }
                                 }
                                 VerticalLayout {
                                     spacing: 2px;
-                                    Text { text: "Gateway"; color: Theme.text-dim; font-size: Theme.font-small; }
-                                    Text { text: iface.gateway != "" ? iface.gateway : "—"; color: Theme.text-secondary; font-size: Theme.font-body; }
+                                    Text { text: "Gateway"; color: Theme.text-dim; font-size: Theme.fs-caption; }
+                                    Text { text: iface.gateway != "" ? iface.gateway : "—"; color: Theme.text-secondary; font-size: Theme.fs-body; }
                                 }
                                 VerticalLayout {
                                     spacing: 2px;
-                                    Text { text: "DNS"; color: Theme.text-dim; font-size: Theme.font-small; }
-                                    Text { text: iface.dns != "" ? iface.dns : "—"; color: Theme.text-secondary; font-size: Theme.font-body; }
+                                    Text { text: "DNS"; color: Theme.text-dim; font-size: Theme.fs-caption; }
+                                    Text { text: iface.dns != "" ? iface.dns : "—"; color: Theme.text-secondary; font-size: Theme.fs-body; }
                                 }
                             }
                         }
@@ -984,14 +1004,14 @@ export component NetworkManager inherits Rectangle {
                 viewport-height: bt-content.preferred-height + 40px;
 
                 bt-content := VerticalLayout {
-                    padding: 20px;
-                    spacing: 16px;
+                    padding: Theme.sp-5;
+                    spacing: Theme.sp-4;
 
                     // Bluetooth toggle
                     Rectangle {
                         height: 56px;
                         background: Theme.bg-card;
-                        border-radius: Theme.radius-card;
+                        border-radius: Theme.r-lg;
                         border-width: 1px;
                         border-color: Theme.border-subtle;
 
@@ -1004,25 +1024,25 @@ export component NetworkManager inherits Rectangle {
 
                     // Paired devices
                     if root.bt-enabled : VerticalLayout {
-                        spacing: 8px;
+                        spacing: Theme.sp-2;
 
                         Text {
                             text: "Paired Devices";
                             color: Theme.text-primary;
-                            font-size: Theme.font-title;
+                            font-size: Theme.fs-headline;
                             font-weight: 600;
                         }
 
                         if root.bt-paired-devices.length == 0 : Rectangle {
                             height: 52px;
                             background: Theme.bg-card;
-                            border-radius: Theme.radius-card;
+                            border-radius: Theme.r-lg;
                             border-width: 1px;
                             border-color: Theme.border-subtle;
                             Text {
                                 text: "No paired devices";
                                 color: Theme.text-dim;
-                                font-size: Theme.font-body;
+                                font-size: Theme.fs-body;
                                 horizontal-alignment: center;
                                 vertical-alignment: center;
                             }
@@ -1031,14 +1051,14 @@ export component NetworkManager inherits Rectangle {
                         for device[idx] in root.bt-paired-devices : Rectangle {
                             height: 56px;
                             background: Theme.bg-card;
-                            border-radius: Theme.radius-card;
+                            border-radius: Theme.r-lg;
                             border-width: 1px;
                             border-color: device.is-connected ? Theme.accent-dim : Theme.border-subtle;
 
                             HorizontalLayout {
-                                padding-left: 16px;
-                                padding-right: 12px;
-                                spacing: 12px;
+                                padding-left: Theme.sp-4;
+                                padding-right: Theme.sp-3;
+                                spacing: Theme.sp-3;
                                 alignment: space-between;
 
                                 HorizontalLayout {
@@ -1053,7 +1073,7 @@ export component NetworkManager inherits Rectangle {
                                             : device.device-type == "speaker" ? "\u{1F50A}"
                                             : "\u{2630}";
                                         color: device.is-connected ? Theme.accent : Theme.text-secondary;
-                                        font-size: 18px;
+                                        font-size: Theme.fs-title-1;
                                         vertical-alignment: center;
                                     }
 
@@ -1063,12 +1083,12 @@ export component NetworkManager inherits Rectangle {
                                         Text {
                                             text: device.name;
                                             color: Theme.text-primary;
-                                            font-size: Theme.font-body;
+                                            font-size: Theme.fs-body;
                                         }
                                         Text {
                                             text: device.is-connected ? "Connected" : "Not connected";
                                             color: device.is-connected ? Theme.accent : Theme.text-dim;
-                                            font-size: Theme.font-small;
+                                            font-size: Theme.fs-caption;
                                         }
                                     }
                                 }
@@ -1090,27 +1110,27 @@ export component NetworkManager inherits Rectangle {
 
                     // Available devices
                     if root.bt-enabled : VerticalLayout {
-                        spacing: 8px;
+                        spacing: Theme.sp-2;
 
                         HorizontalLayout {
-                            spacing: 12px;
+                            spacing: Theme.sp-3;
                             alignment: space-between;
 
                             Text {
                                 text: "Available Devices";
                                 color: Theme.text-primary;
-                                font-size: Theme.font-title;
+                                font-size: Theme.fs-headline;
                                 font-weight: 600;
                                 vertical-alignment: center;
                             }
 
                             HorizontalLayout {
-                                spacing: 8px;
+                                spacing: Theme.sp-2;
 
                                 if root.bt-scanning : Text {
                                     text: "Scanning...";
                                     color: Theme.text-dim;
-                                    font-size: Theme.font-small;
+                                    font-size: Theme.fs-caption;
                                     vertical-alignment: center;
                                 }
 
@@ -1128,14 +1148,14 @@ export component NetworkManager inherits Rectangle {
 
                             Rectangle {
                                 background: bt-avail-ta.has-hover ? Theme.hover-fill : Theme.bg-card;
-                                border-radius: Theme.radius-card;
+                                border-radius: Theme.r-lg;
                                 border-width: 1px;
                                 border-color: Theme.border-subtle;
 
                                 HorizontalLayout {
-                                    padding-left: 16px;
-                                    padding-right: 12px;
-                                    spacing: 12px;
+                                    padding-left: Theme.sp-4;
+                                    padding-right: Theme.sp-3;
+                                    spacing: Theme.sp-3;
                                     alignment: space-between;
 
                                     VerticalLayout {
@@ -1144,12 +1164,12 @@ export component NetworkManager inherits Rectangle {
                                         Text {
                                             text: device.name;
                                             color: Theme.text-primary;
-                                            font-size: Theme.font-body;
+                                            font-size: Theme.fs-body;
                                         }
                                         Text {
                                             text: device.address;
                                             color: Theme.text-dim;
-                                            font-size: Theme.font-small;
+                                            font-size: Theme.fs-caption;
                                         }
                                     }
 
@@ -1175,36 +1195,36 @@ export component NetworkManager inherits Rectangle {
                 viewport-height: vpn-content.preferred-height + 40px;
 
                 vpn-content := VerticalLayout {
-                    padding: 20px;
-                    spacing: 16px;
+                    padding: Theme.sp-5;
+                    spacing: Theme.sp-4;
 
                     Text {
                         text: "VPN Connections";
                         color: Theme.text-primary;
-                        font-size: Theme.font-title;
+                        font-size: Theme.fs-headline;
                         font-weight: 600;
                     }
 
                     if root.vpn-connections.length == 0 : Rectangle {
                         height: 100px;
                         background: Theme.bg-card;
-                        border-radius: Theme.radius-card;
+                        border-radius: Theme.r-lg;
                         border-width: 1px;
                         border-color: Theme.border-subtle;
 
                         VerticalLayout {
-                            spacing: 8px;
+                            spacing: Theme.sp-2;
                             alignment: center;
                             Text {
                                 text: "No VPN connections detected";
                                 color: Theme.text-dim;
-                                font-size: Theme.font-body;
+                                font-size: Theme.fs-body;
                                 horizontal-alignment: center;
                             }
                             Text {
                                 text: "Configure WireGuard or OpenVPN on the system";
                                 color: Theme.text-dim;
-                                font-size: Theme.font-small;
+                                font-size: Theme.fs-caption;
                                 horizontal-alignment: center;
                             }
                         }
@@ -1212,17 +1232,17 @@ export component NetworkManager inherits Rectangle {
 
                     for vpn[idx] in root.vpn-connections : Rectangle {
                         background: Theme.bg-card;
-                        border-radius: Theme.radius-card;
+                        border-radius: Theme.r-lg;
                         border-width: 1px;
                         border-color: vpn.status == "connected" ? Theme.accent-dim : Theme.border-subtle;
                         height: vpn-layout.preferred-height + 24px;
 
                         vpn-layout := VerticalLayout {
-                            padding: 16px;
-                            spacing: 8px;
+                            padding: Theme.sp-4;
+                            spacing: Theme.sp-2;
 
                             HorizontalLayout {
-                                spacing: 12px;
+                                spacing: Theme.sp-3;
                                 alignment: space-between;
 
                                 HorizontalLayout {
@@ -1236,7 +1256,7 @@ export component NetworkManager inherits Rectangle {
                                         vpn-type-text := Text {
                                             text: vpn.vpn-type;
                                             color: Theme.accent;
-                                            font-size: Theme.font-small;
+                                            font-size: Theme.fs-caption;
                                             font-weight: 600;
                                             horizontal-alignment: center;
                                             vertical-alignment: center;
@@ -1245,7 +1265,7 @@ export component NetworkManager inherits Rectangle {
                                     Text {
                                         text: vpn.name;
                                         color: Theme.text-primary;
-                                        font-size: Theme.font-body;
+                                        font-size: Theme.fs-body;
                                         font-weight: 600;
                                         vertical-alignment: center;
                                     }
@@ -1266,21 +1286,21 @@ export component NetworkManager inherits Rectangle {
                             }
 
                             if vpn.status == "connected" : HorizontalLayout {
-                                spacing: 24px;
+                                spacing: Theme.sp-6;
                                 VerticalLayout {
                                     spacing: 2px;
-                                    Text { text: "Status"; color: Theme.text-dim; font-size: Theme.font-small; }
-                                    Text { text: "Connected"; color: Theme.accent; font-size: Theme.font-body; }
+                                    Text { text: "Status"; color: Theme.text-dim; font-size: Theme.fs-caption; }
+                                    Text { text: "Connected"; color: Theme.accent; font-size: Theme.fs-body; }
                                 }
                                 VerticalLayout {
                                     spacing: 2px;
-                                    Text { text: "Tunnel IP"; color: Theme.text-dim; font-size: Theme.font-small; }
-                                    Text { text: vpn.ip-address != "" ? vpn.ip-address : "—"; color: Theme.text-secondary; font-size: Theme.font-body; }
+                                    Text { text: "Tunnel IP"; color: Theme.text-dim; font-size: Theme.fs-caption; }
+                                    Text { text: vpn.ip-address != "" ? vpn.ip-address : "—"; color: Theme.text-secondary; font-size: Theme.fs-body; }
                                 }
                                 VerticalLayout {
                                     spacing: 2px;
-                                    Text { text: "Traffic"; color: Theme.text-dim; font-size: Theme.font-small; }
-                                    Text { text: vpn.traffic != "" ? vpn.traffic : "—"; color: Theme.text-secondary; font-size: Theme.font-body; }
+                                    Text { text: "Traffic"; color: Theme.text-dim; font-size: Theme.fs-caption; }
+                                    Text { text: vpn.traffic != "" ? vpn.traffic : "—"; color: Theme.text-secondary; font-size: Theme.fs-body; }
                                 }
                             }
                         }
@@ -1289,30 +1309,30 @@ export component NetworkManager inherits Rectangle {
                     // ── Import VPN Config ──
                     Rectangle {
                         background: Theme.bg-card;
-                        border-radius: Theme.radius-card;
+                        border-radius: Theme.r-lg;
                         border-width: 1px;
                         border-color: Theme.border-subtle;
                         height: vpn-import-layout.preferred-height + 24px;
 
                         vpn-import-layout := VerticalLayout {
-                            padding: 16px;
+                            padding: Theme.sp-4;
                             spacing: 10px;
 
                             Text {
                                 text: "Import VPN Config";
                                 color: Theme.text-primary;
-                                font-size: Theme.font-body;
+                                font-size: Theme.fs-body;
                                 font-weight: 600;
                             }
 
                             HorizontalLayout {
-                                spacing: 8px;
+                                spacing: Theme.sp-2;
 
                                 Rectangle {
                                     horizontal-stretch: 1;
                                     height: 36px;
-                                    background: Theme.bg-input;
-                                    border-radius: Theme.radius-card;
+                                    background: Theme.bg-input; clip: true;
+                                    border-radius: Theme.r-lg;
                                     border-width: 1px;
                                     border-color: Theme.border-subtle;
 
@@ -1322,7 +1342,7 @@ export component NetworkManager inherits Rectangle {
                                         height: 100%;
                                         text <=> root.net-vpn-import-path;
                                         color: Theme.text-primary;
-                                        font-size: Theme.font-body;
+                                        font-size: Theme.fs-body;
                                         accepted => { root.net-vpn-import-config(); }
                                     }
                                 }
@@ -1338,7 +1358,7 @@ export component NetworkManager inherits Rectangle {
                             if root.net-vpn-import-status != "" : Text {
                                 text: root.net-vpn-import-status;
                                 color: Theme.text-secondary;
-                                font-size: Theme.font-small;
+                                font-size: Theme.fs-caption;
                             }
                         }
                     }
@@ -1354,20 +1374,20 @@ export component NetworkManager inherits Rectangle {
                 viewport-height: fw-content.preferred-height + 40px;
 
                 fw-content := VerticalLayout {
-                    padding: 20px;
-                    spacing: 16px;
+                    padding: Theme.sp-5;
+                    spacing: Theme.sp-4;
 
                     // Firewall toggle + status
                     Rectangle {
                         background: Theme.bg-card;
-                        border-radius: Theme.radius-card;
+                        border-radius: Theme.r-lg;
                         border-width: 1px;
                         border-color: root.firewall-enabled ? Theme.accent-dim : Theme.border-subtle;
                         height: fw-header.preferred-height + 24px;
 
                         fw-header := VerticalLayout {
-                            padding: 16px;
-                            spacing: 8px;
+                            padding: Theme.sp-4;
+                            spacing: Theme.sp-2;
 
                             ToggleSwitch {
                                 checked: root.firewall-enabled;
@@ -1376,34 +1396,34 @@ export component NetworkManager inherits Rectangle {
                             }
 
                             HorizontalLayout {
-                                padding-left: 16px;
-                                spacing: 24px;
+                                padding-left: Theme.sp-4;
+                                spacing: Theme.sp-6;
 
                                 VerticalLayout {
                                     spacing: 2px;
-                                    Text { text: "Backend"; color: Theme.text-dim; font-size: Theme.font-small; }
+                                    Text { text: "Backend"; color: Theme.text-dim; font-size: Theme.fs-caption; }
                                     Text {
                                         text: root.firewall-backend-name != "" ? root.firewall-backend-name : "—";
                                         color: Theme.text-secondary;
-                                        font-size: Theme.font-body;
+                                        font-size: Theme.fs-body;
                                     }
                                 }
                                 VerticalLayout {
                                     spacing: 2px;
-                                    Text { text: "Rules"; color: Theme.text-dim; font-size: Theme.font-small; }
+                                    Text { text: "Rules"; color: Theme.text-dim; font-size: Theme.fs-caption; }
                                     Text {
                                         text: root.firewall-rule-count;
                                         color: Theme.text-secondary;
-                                        font-size: Theme.font-body;
+                                        font-size: Theme.fs-body;
                                     }
                                 }
                                 VerticalLayout {
                                     spacing: 2px;
-                                    Text { text: "Profile"; color: Theme.text-dim; font-size: Theme.font-small; }
+                                    Text { text: "Profile"; color: Theme.text-dim; font-size: Theme.fs-caption; }
                                     Text {
                                         text: root.firewall-profile;
                                         color: Theme.text-secondary;
-                                        font-size: Theme.font-body;
+                                        font-size: Theme.fs-body;
                                     }
                                 }
                             }
@@ -1412,12 +1432,12 @@ export component NetworkManager inherits Rectangle {
 
                     // Quick profiles
                     if root.firewall-enabled : VerticalLayout {
-                        spacing: 8px;
+                        spacing: Theme.sp-2;
 
                         Text {
                             text: "Quick Profiles";
                             color: Theme.text-primary;
-                            font-size: Theme.font-title;
+                            font-size: Theme.fs-headline;
                             font-weight: 600;
                         }
 
@@ -1447,12 +1467,12 @@ export component NetworkManager inherits Rectangle {
 
                     // Quick actions — Allow/Block port
                     if root.firewall-enabled : VerticalLayout {
-                        spacing: 8px;
+                        spacing: Theme.sp-2;
 
                         Text {
                             text: "Quick Actions";
                             color: Theme.text-primary;
-                            font-size: Theme.font-title;
+                            font-size: Theme.fs-headline;
                             font-weight: 600;
                         }
 
@@ -1462,8 +1482,8 @@ export component NetworkManager inherits Rectangle {
                             Rectangle {
                                 horizontal-stretch: 1;
                                 height: 36px;
-                                background: Theme.bg-input;
-                                border-radius: Theme.radius-card;
+                                background: Theme.bg-input; clip: true;
+                                border-radius: Theme.r-lg;
                                 border-width: 1px;
                                 border-color: Theme.border-subtle;
 
@@ -1473,13 +1493,13 @@ export component NetworkManager inherits Rectangle {
                                     height: 100%;
                                     text: "";
                                     color: Theme.text-primary;
-                                    font-size: Theme.font-body;
+                                    font-size: Theme.fs-body;
                                 }
                                 if fw-port-input.text == "" : Text {
                                     x: 12px;
                                     text: "Port number...";
                                     color: Theme.text-dim;
-                                    font-size: Theme.font-body;
+                                    font-size: Theme.fs-body;
                                     vertical-alignment: center;
                                 }
                             }
@@ -1511,41 +1531,41 @@ export component NetworkManager inherits Rectangle {
 
                     // Active rules
                     if root.firewall-enabled && root.firewall-rules.length > 0 : VerticalLayout {
-                        spacing: 8px;
+                        spacing: Theme.sp-2;
 
                         Text {
                             text: "Active Rules";
                             color: Theme.text-primary;
-                            font-size: Theme.font-title;
+                            font-size: Theme.fs-headline;
                             font-weight: 600;
                         }
 
                         for rule[idx] in root.firewall-rules : Rectangle {
                             height: 44px;
                             background: Theme.bg-card;
-                            border-radius: Theme.radius-card;
+                            border-radius: Theme.r-lg;
                             border-width: 1px;
                             border-color: Theme.border-subtle;
 
                             HorizontalLayout {
-                                padding-left: 16px;
-                                padding-right: 16px;
-                                spacing: 12px;
+                                padding-left: Theme.sp-4;
+                                padding-right: Theme.sp-4;
+                                spacing: Theme.sp-3;
 
                                 // Action badge
                                 Rectangle {
-                                    width: rule-action-text.preferred-width + 12px;
+                                    width: rule-action-text.preferred-width + Theme.sp-3;
                                     height: 20px;
                                     border-radius: 10px;
-                                    background: rule.action == "ACCEPT" ? #2a8a3a40
-                                              : rule.action == "DROP" ? #a0404040
+                                    background: rule.action == "ACCEPT" ? Theme.color-success-dim
+                                              : rule.action == "DROP" ? Theme.color-danger-dim
                                               : Theme.bg-elevated;
                                     rule-action-text := Text {
                                         text: rule.action;
-                                        color: rule.action == "ACCEPT" ? #6cd480
-                                             : rule.action == "DROP" ? #ff6060
+                                        color: rule.action == "ACCEPT" ? Theme.color-success
+                                             : rule.action == "DROP" ? Theme.color-danger
                                              : Theme.text-secondary;
-                                        font-size: 11px;
+                                        font-size: Theme.fs-micro;
                                         font-weight: 600;
                                         horizontal-alignment: center;
                                         vertical-alignment: center;
@@ -1555,14 +1575,14 @@ export component NetworkManager inherits Rectangle {
                                 Text {
                                     text: rule.chain;
                                     color: Theme.text-dim;
-                                    font-size: Theme.font-small;
+                                    font-size: Theme.fs-caption;
                                     vertical-alignment: center;
                                 }
 
                                 Text {
                                     text: rule.description;
                                     color: Theme.text-secondary;
-                                    font-size: Theme.font-body;
+                                    font-size: Theme.fs-body;
                                     vertical-alignment: center;
                                     overflow: elide;
                                     horizontal-stretch: 1;
@@ -1582,21 +1602,21 @@ export component NetworkManager inherits Rectangle {
                 viewport-height: diag-content.preferred-height + 40px;
 
                 diag-content := VerticalLayout {
-                    padding: 20px;
-                    spacing: 16px;
+                    padding: Theme.sp-5;
+                    spacing: Theme.sp-4;
 
                     // Connection Tests section
                     VerticalLayout {
-                        spacing: 8px;
+                        spacing: Theme.sp-2;
 
                         HorizontalLayout {
-                            spacing: 12px;
+                            spacing: Theme.sp-3;
                             alignment: space-between;
 
                             Text {
                                 text: "Connection Tests";
                                 color: Theme.text-primary;
-                                font-size: Theme.font-title;
+                                font-size: Theme.fs-headline;
                                 font-weight: 600;
                                 vertical-alignment: center;
                             }
@@ -1613,29 +1633,29 @@ export component NetworkManager inherits Rectangle {
                         for test[idx] in root.diag-tests : Rectangle {
                             height: 56px;
                             background: Theme.bg-card;
-                            border-radius: Theme.radius-card;
+                            border-radius: Theme.r-lg;
                             border-width: 1px;
-                            border-color: test.status == "ok" ? #2a8a3a40
-                                        : test.status == "fail" ? #a0404040
+                            border-color: test.status == "ok" ? Theme.color-success-dim
+                                        : test.status == "fail" ? Theme.color-danger-dim
                                         : Theme.border-subtle;
 
                             HorizontalLayout {
-                                padding-left: 16px;
-                                padding-right: 12px;
-                                spacing: 12px;
+                                padding-left: Theme.sp-4;
+                                padding-right: Theme.sp-3;
+                                spacing: Theme.sp-3;
                                 alignment: space-between;
 
                                 HorizontalLayout {
-                                    spacing: 12px;
+                                    spacing: Theme.sp-3;
 
                                     // Status icon
                                     Rectangle {
                                         width: 28px;
                                         height: 28px;
                                         border-radius: 14px;
-                                        background: test.status == "ok" ? #2a8a3a40
-                                                  : test.status == "fail" ? #a0404040
-                                                  : test.status == "running" ? #a08a2a40
+                                        background: test.status == "ok" ? Theme.color-success-dim
+                                                  : test.status == "fail" ? Theme.color-danger-dim
+                                                  : test.status == "running" ? Theme.color-warning-dim
                                                   : Theme.bg-elevated;
 
                                         Text {
@@ -1643,11 +1663,11 @@ export component NetworkManager inherits Rectangle {
                                                 : test.status == "fail" ? "\u{2717}"
                                                 : test.status == "running" ? "\u{25CB}"
                                                 : "\u{2014}";
-                                            color: test.status == "ok" ? #6cd480
-                                                 : test.status == "fail" ? #ff6060
-                                                 : test.status == "running" ? #e0c040
+                                            color: test.status == "ok" ? Theme.color-success
+                                                 : test.status == "fail" ? Theme.color-danger
+                                                 : test.status == "running" ? Theme.color-warning
                                                  : Theme.text-dim;
-                                            font-size: 14px;
+                                            font-size: Theme.fs-body;
                                             font-weight: 700;
                                             horizontal-alignment: center;
                                             vertical-alignment: center;
@@ -1661,7 +1681,7 @@ export component NetworkManager inherits Rectangle {
                                         Text {
                                             text: test.name;
                                             color: Theme.text-primary;
-                                            font-size: Theme.font-body;
+                                            font-size: Theme.fs-body;
                                             font-weight: 500;
                                         }
                                         Text {
@@ -1670,10 +1690,10 @@ export component NetworkManager inherits Rectangle {
                                                 : test.status == "fail" ? "unreachable"
                                                 : "Not tested";
                                             color: test.status == "ok" ? Theme.accent
-                                                 : test.status == "fail" ? #ff6060
-                                                 : test.status == "running" ? #e0c040
+                                                 : test.status == "fail" ? Theme.color-danger
+                                                 : test.status == "running" ? Theme.color-warning
                                                  : Theme.text-dim;
-                                            font-size: Theme.font-small;
+                                            font-size: Theme.fs-caption;
                                         }
                                     }
                                 }
@@ -1687,37 +1707,216 @@ export component NetworkManager inherits Rectangle {
                         }
                     }
 
+                    // ── AI Provider Connectivity ──
+                    VerticalLayout {
+                        spacing: Theme.sp-2;
+
+                        HorizontalLayout {
+                            spacing: Theme.sp-3;
+                            alignment: space-between;
+
+                            HorizontalLayout {
+                                spacing: Theme.sp-2;
+
+                                Text {
+                                    text: "\u{1F916}";
+                                    font-size: Theme.fs-headline;
+                                    vertical-alignment: center;
+                                }
+
+                                Text {
+                                    text: "AI Provider Connectivity";
+                                    color: Theme.text-primary;
+                                    font-size: Theme.fs-headline;
+                                    font-weight: 600;
+                                    vertical-alignment: center;
+                                }
+                            }
+
+                            ActionButton {
+                                label: root.ai-connectivity-testing ? "Testing..." : "Test All";
+                                width: 110px;
+                                primary: true;
+                                clicked => { root.test-ai-connectivity(); }
+                            }
+                        }
+
+                        if root.ai-provider-connectivity.length == 0 : Rectangle {
+                            height: 64px;
+                            background: Theme.bg-card;
+                            border-radius: Theme.r-lg;
+                            border-width: 1px;
+                            border-color: Theme.border-subtle;
+
+                            Text {
+                                text: "No AI providers configured. Add providers in Settings → AI & Intelligence.";
+                                color: Theme.text-dim;
+                                font-size: Theme.fs-body;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                                wrap: word-wrap;
+                            }
+                        }
+
+                        for provider[idx] in root.ai-provider-connectivity : Rectangle {
+                            height: 72px;
+                            background: Theme.bg-card;
+                            border-radius: Theme.r-lg;
+                            border-width: 1px;
+                            border-color: provider.status == "reachable" ? Theme.color-success-dim
+                                        : provider.status == "unreachable" ? Theme.color-danger-dim
+                                        : Theme.border-subtle;
+
+                            HorizontalLayout {
+                                padding-left: Theme.sp-4;
+                                padding-right: Theme.sp-4;
+                                spacing: Theme.sp-3;
+                                alignment: space-between;
+
+                                HorizontalLayout {
+                                    spacing: Theme.sp-3;
+
+                                    // Status dot
+                                    Rectangle {
+                                        width: 10px;
+                                        height: 10px;
+                                        border-radius: 5px;
+                                        y: (parent.height - self.height) / 2;
+                                        background: provider.status == "reachable" ? Theme.color-reminder
+                                                  : provider.status == "unreachable" ? Theme.color-danger
+                                                  : provider.status == "testing" ? Theme.amber
+                                                  : Theme.text-dim;
+
+                                        // Glow
+                                        Rectangle {
+                                            width: parent.width + 6px;
+                                            height: parent.height + 6px;
+                                            x: -3px;
+                                            y: -3px;
+                                            border-radius: Theme.r-md;
+                                            background: provider.status == "reachable" ? Theme.accent-glow
+                                                      : provider.status == "unreachable" ? Theme.color-danger.transparentize(60%)
+                                                      : transparent;
+                                        }
+                                    }
+
+                                    VerticalLayout {
+                                        spacing: 2px;
+                                        alignment: center;
+
+                                        HorizontalLayout {
+                                            spacing: Theme.sp-2;
+
+                                            Text {
+                                                text: provider.name;
+                                                color: Theme.text-primary;
+                                                font-size: Theme.fs-body;
+                                                font-weight: 500;
+                                            }
+
+                                            // Primary/Fallback badge
+                                            if provider.is-primary : Rectangle {
+                                                width: 58px;
+                                                height: 18px;
+                                                border-radius: 9px;
+                                                background: Theme.accent-glow;
+                                                Text {
+                                                    text: "Primary";
+                                                    color: Theme.accent;
+                                                    font-size: Theme.fs-caption;
+                                                    font-weight: 600;
+                                                    horizontal-alignment: center;
+                                                    vertical-alignment: center;
+                                                }
+                                            }
+                                            if provider.is-fallback : Rectangle {
+                                                width: 62px;
+                                                height: 18px;
+                                                border-radius: 9px;
+                                                background: Theme.amber-glow;
+                                                Text {
+                                                    text: "Fallback";
+                                                    color: Theme.amber;
+                                                    font-size: Theme.fs-caption;
+                                                    font-weight: 600;
+                                                    horizontal-alignment: center;
+                                                    vertical-alignment: center;
+                                                }
+                                            }
+                                        }
+
+                                        Text {
+                                            text: provider.base-url;
+                                            color: Theme.text-dim;
+                                            font-size: Theme.fs-caption;
+                                            overflow: elide;
+                                        }
+                                    }
+                                }
+
+                                // Latency display
+                                VerticalLayout {
+                                    alignment: center;
+                                    spacing: 2px;
+
+                                    Text {
+                                        text: provider.status == "testing" ? "..."
+                                            : provider.status == "reachable" ? (provider.latency-ms + "ms")
+                                            : provider.status == "unreachable" ? "\u{2717}"
+                                            : "\u{2014}";
+                                        color: provider.status == "reachable" ?
+                                                (provider.latency-ms < 100 ? Theme.color-reminder
+                                               : provider.latency-ms < 500 ? Theme.amber
+                                               : Theme.color-danger)
+                                             : provider.status == "unreachable" ? Theme.color-danger
+                                             : Theme.text-dim;
+                                        font-size: Theme.fs-body;
+                                        font-weight: 600;
+                                        horizontal-alignment: right;
+                                    }
+
+                                    Text {
+                                        text: provider.provider-type;
+                                        color: Theme.text-dim;
+                                        font-size: Theme.fs-caption;
+                                        horizontal-alignment: right;
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     // ── Ping Tool ──
                     VerticalLayout {
-                        spacing: 8px;
+                        spacing: Theme.sp-2;
 
                         Text {
                             text: "Ping / Traceroute";
                             color: Theme.text-primary;
-                            font-size: Theme.font-title;
+                            font-size: Theme.fs-headline;
                             font-weight: 600;
                         }
 
                         Rectangle {
                             background: Theme.bg-card;
-                            border-radius: Theme.radius-card;
+                            border-radius: Theme.r-lg;
                             border-width: 1px;
                             border-color: Theme.border-subtle;
                             height: ping-tool-layout.preferred-height + 24px;
 
                             ping-tool-layout := VerticalLayout {
-                                padding: 16px;
+                                padding: Theme.sp-4;
                                 spacing: 10px;
 
                                 HorizontalLayout {
-                                    spacing: 8px;
+                                    spacing: Theme.sp-2;
 
                                     // Target input
                                     Rectangle {
                                         horizontal-stretch: 1;
                                         height: 36px;
-                                        background: Theme.bg-input;
-                                        border-radius: Theme.radius-card;
+                                        background: Theme.bg-input; clip: true;
+                                        border-radius: Theme.r-lg;
                                         border-width: 1px;
                                         border-color: Theme.border-subtle;
 
@@ -1727,7 +1926,7 @@ export component NetworkManager inherits Rectangle {
                                             height: 100%;
                                             text <=> root.net-diag-ping-target;
                                             color: Theme.text-primary;
-                                            font-size: Theme.font-body;
+                                            font-size: Theme.fs-body;
                                             accepted => { root.net-diag-run-ping(); }
                                         }
                                     }
@@ -1748,7 +1947,7 @@ export component NetworkManager inherits Rectangle {
 
                                 // Ping spinner
                                 if root.net-diag-ping-running || root.net-diag-traceroute-running : HorizontalLayout {
-                                    spacing: 8px;
+                                    spacing: Theme.sp-2;
                                     Rectangle {
                                         width: 14px;
                                         height: 14px;
@@ -1760,7 +1959,7 @@ export component NetworkManager inherits Rectangle {
                                     Text {
                                         text: root.net-diag-ping-running ? "Pinging..." : "Running traceroute...";
                                         color: Theme.accent;
-                                        font-size: Theme.font-small;
+                                        font-size: Theme.fs-caption;
                                         vertical-alignment: center;
                                     }
                                 }
@@ -1768,7 +1967,7 @@ export component NetworkManager inherits Rectangle {
                                 // Ping result
                                 if root.net-diag-ping-result != "" : Rectangle {
                                     background: Theme.bg-elevated;
-                                    border-radius: 6px;
+                                    border-radius: Theme.r-sm;
                                     height: Math.min(ping-result-text.preferred-height + 16px, 160px);
 
                                     Flickable {
@@ -1778,11 +1977,11 @@ export component NetworkManager inherits Rectangle {
 
                                         ping-result-text := Text {
                                             x: 10px;
-                                            y: 8px;
+                                            y: Theme.sp-2;
                                             width: parent.width - 20px;
                                             text: root.net-diag-ping-result;
                                             color: Theme.text-secondary;
-                                            font-size: 11px;
+                                            font-size: Theme.fs-micro;
                                             wrap: word-wrap;
                                         }
                                     }
@@ -1791,16 +1990,16 @@ export component NetworkManager inherits Rectangle {
                                 // Traceroute result
                                 if root.net-diag-traceroute-result != "" : Rectangle {
                                     background: Theme.bg-elevated;
-                                    border-radius: 6px;
+                                    border-radius: Theme.r-sm;
                                     height: Math.min(traceroute-result-text.preferred-height + 16px, 200px);
 
                                     HorizontalLayout {
-                                        padding-left: 10px;
-                                        padding-top: 4px;
+                                        padding-left: Theme.sp-3;
+                                        padding-top: Theme.sp-1;
                                         Text {
                                             text: "Traceroute:";
                                             color: Theme.text-dim;
-                                            font-size: 10px;
+                                            font-size: Theme.fs-micro;
                                             font-weight: 600;
                                         }
                                     }
@@ -1813,11 +2012,11 @@ export component NetworkManager inherits Rectangle {
 
                                         traceroute-result-text := Text {
                                             x: 10px;
-                                            y: 4px;
+                                            y: Theme.sp-1;
                                             width: parent.width - 20px;
                                             text: root.net-diag-traceroute-result;
                                             color: Theme.text-secondary;
-                                            font-size: 11px;
+                                            font-size: Theme.fs-micro;
                                             wrap: word-wrap;
                                         }
                                     }
@@ -1828,25 +2027,25 @@ export component NetworkManager inherits Rectangle {
 
                     // Connection History section
                     VerticalLayout {
-                        spacing: 8px;
+                        spacing: Theme.sp-2;
 
                         Text {
                             text: "Connection History";
                             color: Theme.text-primary;
-                            font-size: Theme.font-title;
+                            font-size: Theme.fs-headline;
                             font-weight: 600;
                         }
 
                         if root.diag-connection-history.length == 0 : Rectangle {
                             height: 60px;
                             background: Theme.bg-card;
-                            border-radius: Theme.radius-card;
+                            border-radius: Theme.r-lg;
                             border-width: 1px;
                             border-color: Theme.border-subtle;
                             Text {
                                 text: "No recent connection events";
                                 color: Theme.text-dim;
-                                font-size: Theme.font-body;
+                                font-size: Theme.fs-body;
                                 horizontal-alignment: center;
                                 vertical-alignment: center;
                             }
@@ -1855,20 +2054,20 @@ export component NetworkManager inherits Rectangle {
                         for event[idx] in root.diag-connection-history : Rectangle {
                             height: 44px;
                             background: Theme.bg-card;
-                            border-radius: Theme.radius-card;
+                            border-radius: Theme.r-lg;
                             border-width: 1px;
                             border-color: Theme.border-subtle;
 
                             HorizontalLayout {
-                                padding-left: 16px;
-                                padding-right: 16px;
-                                spacing: 12px;
+                                padding-left: Theme.sp-4;
+                                padding-right: Theme.sp-4;
+                                spacing: Theme.sp-3;
                                 alignment: space-between;
 
                                 Text {
                                     text: event.description;
                                     color: Theme.text-primary;
-                                    font-size: Theme.font-body;
+                                    font-size: Theme.fs-body;
                                     vertical-alignment: center;
                                     overflow: elide;
                                     horizontal-stretch: 1;
@@ -1877,7 +2076,7 @@ export component NetworkManager inherits Rectangle {
                                 Text {
                                     text: event.timestamp;
                                     color: Theme.text-dim;
-                                    font-size: Theme.font-small;
+                                    font-size: Theme.fs-caption;
                                     vertical-alignment: center;
                                 }
                             }
@@ -1891,8 +2090,8 @@ export component NetworkManager inherits Rectangle {
         Rectangle {
             height: 32px;
             background: @linear-gradient(180deg,
-                #0c0b1080 0%,
-                #12111aa0 100%
+                Theme.bg-deep.transparentize(50%) 0%,
+                Theme.bg-surface.transparentize(40%) 100%
             );
 
             // Top border glow
@@ -1905,9 +2104,9 @@ export component NetworkManager inherits Rectangle {
             }
 
             HorizontalLayout {
-                padding-left: 16px;
-                padding-right: 16px;
-                spacing: 16px;
+                padding-left: Theme.sp-4;
+                padding-right: Theme.sp-4;
+                spacing: Theme.sp-4;
                 alignment: start;
 
                 // Status dot
@@ -1915,9 +2114,9 @@ export component NetworkManager inherits Rectangle {
                     width: 8px;
                     height: 8px;
                     border-radius: 4px;
-                    background: root.status-state == "connected" ? #4cd964
-                              : root.status-state == "connecting" ? #e0c040
-                              : #ff3b30;
+                    background: root.status-state == "connected" ? Theme.color-success
+                              : root.status-state == "connecting" ? Theme.color-warning
+                              : Theme.color-danger;
                     y: (parent.height - self.height) / 2;
                 }
 
@@ -1925,7 +2124,7 @@ export component NetworkManager inherits Rectangle {
                 Text {
                     text: root.status-connection-type != "" ? root.status-connection-type : "No Connection";
                     color: Theme.text-secondary;
-                    font-size: 11px;
+                    font-size: Theme.fs-micro;
                     font-weight: 500;
                     vertical-alignment: center;
                 }
@@ -1934,20 +2133,20 @@ export component NetworkManager inherits Rectangle {
                 if root.status-ip-address != "" : Text {
                     text: root.status-ip-address;
                     color: Theme.text-dim;
-                    font-size: 11px;
+                    font-size: Theme.fs-micro;
                     vertical-alignment: center;
                 }
 
                 // Signal strength (WiFi only)
                 if root.status-connection-type == "WiFi" && root.status-signal-strength > 0 : HorizontalLayout {
-                    spacing: 4px;
+                    spacing: Theme.sp-1;
                     SignalBars {
                         strength: root.status-signal-strength;
                     }
                     Text {
                         text: root.status-signal-strength + "%";
                         color: Theme.text-dim;
-                        font-size: 11px;
+                        font-size: Theme.fs-micro;
                         vertical-alignment: center;
                     }
                 }
@@ -1972,7 +2171,7 @@ export component NetworkManager inherits Rectangle {
                 width: 400px;
                 height: pw-dialog-layout.preferred-height + 32px;
                 background: Theme.bg-card;
-                border-radius: Theme.radius-card;
+                border-radius: Theme.r-lg;
                 border-width: 1px;
                 border-color: Theme.accent-dim;
                 drop-shadow-blur: 20px;
@@ -1982,27 +2181,27 @@ export component NetworkManager inherits Rectangle {
                 TouchArea { width: 100%; height: 100%; }
 
                 pw-dialog-layout := VerticalLayout {
-                    padding: 20px;
-                    spacing: 16px;
+                    padding: Theme.sp-5;
+                    spacing: Theme.sp-4;
 
                     Text {
                         text: "Connect to " + root.wifi-password-ssid;
                         color: Theme.text-primary;
-                        font-size: Theme.font-title;
+                        font-size: Theme.fs-headline;
                         font-weight: 600;
                     }
 
                     VerticalLayout {
-                        spacing: 6px;
+                        spacing: Theme.sp-2;
                         Text {
                             text: "Password";
                             color: Theme.text-secondary;
-                            font-size: Theme.font-small;
+                            font-size: Theme.fs-caption;
                         }
                         Rectangle {
                             height: 40px;
-                            background: Theme.bg-input;
-                            border-radius: Theme.radius-card;
+                            background: Theme.bg-input; clip: true;
+                            border-radius: Theme.r-lg;
                             border-width: 1px;
                             border-color: Theme.border-subtle;
 
@@ -2012,7 +2211,7 @@ export component NetworkManager inherits Rectangle {
                                 height: 100%;
                                 text <=> root.wifi-password-input;
                                 color: Theme.text-primary;
-                                font-size: Theme.font-body;
+                                font-size: Theme.fs-body;
                                 accepted => {
                                     root.wifi-connect(root.wifi-password-ssid, root.wifi-password-input);
                                     root.wifi-password-visible = false;
@@ -2024,7 +2223,7 @@ export component NetworkManager inherits Rectangle {
                     if root.wifi-connect-status != "" : Text {
                         text: root.wifi-connect-status;
                         color: Theme.color-emotional;
-                        font-size: Theme.font-small;
+                        font-size: Theme.fs-caption;
                     }
 
                     HorizontalLayout {

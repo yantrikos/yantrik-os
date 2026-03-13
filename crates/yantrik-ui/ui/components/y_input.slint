@@ -1,0 +1,147 @@
+// YInput — text input component.
+// Modes: text, search, password. States: default, hover, focused, error, success, disabled.
+import { Theme } from "../theme.slint";
+
+export component YInput inherits Rectangle {
+    // 0=text, 1=search, 2=password
+    in property <int> mode: 0;
+    in property <string> placeholder: "";
+    in property <string> leading-icon: "";
+    in property <string> error-text: "";
+    in property <string> help-text: "";
+    in property <bool> disabled: false;
+    in property <bool> has-error: false;
+    in property <bool> has-success: false;
+    in-out property <string> value: "";
+    in-out property <bool> password-visible: false;
+    callback edited(string);
+    callback accepted(string);
+    callback cleared();
+
+    property <bool> hovered: ta.has-hover;
+    property <bool> focused: input.has-focus;
+
+    height: Theme.h-regular + (root.error-text != "" || root.help-text != "" ? 18px : 0px);
+    min-width: 180px;
+
+    VerticalLayout {
+        spacing: Theme.sp-1;
+
+        Rectangle {
+            height: Theme.h-regular;
+            border-radius: Theme.r-md;
+            background: root.disabled ? Theme.bg-surface : Theme.bg-input;
+            border-width: 1px;
+            border-color: root.has-error ? Theme.color-danger
+                        : root.has-success ? Theme.color-success
+                        : root.focused ? Theme.accent
+                        : root.hovered ? Theme.text-dim
+                        : Theme.border-subtle;
+            opacity: root.disabled ? 0.5 : 1.0;
+            clip: true;
+
+            animate border-color { duration: Theme.dur-fast; }
+
+            ta := TouchArea {
+                clicked => { input.focus(); }
+            }
+
+            HorizontalLayout {
+                padding-left: Theme.sp-3;
+                padding-right: Theme.sp-2;
+                spacing: Theme.sp-2;
+
+                // Leading icon
+                if root.leading-icon != "" : Text {
+                    text: root.leading-icon;
+                    color: Theme.text-dim;
+                    font-size: Theme.fs-body;
+                    vertical-alignment: center;
+                    width: 20px;
+                }
+
+                // Search icon
+                if root.mode == 1 && root.leading-icon == "" : Text {
+                    text: "⌕";
+                    color: Theme.text-dim;
+                    font-size: Theme.fs-body;
+                    vertical-alignment: center;
+                    width: 20px;
+                }
+
+                input := TextInput {
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                    font-size: Theme.fs-body;
+                    color: root.disabled ? Theme.text-dim : Theme.text-primary;
+                    input-type: root.mode == 2 && !root.password-visible ? password : text;
+                    text: root.value;
+                    enabled: !root.disabled;
+
+                    edited => {
+                        root.value = self.text;
+                        root.edited(self.text);
+                    }
+                    accepted => {
+                        root.accepted(self.text);
+                    }
+                }
+
+                // Placeholder overlay
+                if root.value == "" : Text {
+                    text: root.placeholder;
+                    color: Theme.text-dim;
+                    font-size: Theme.fs-body;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                }
+
+                // Clear button (search mode or when has text)
+                if root.value != "" && (root.mode == 1 || root.mode == 0) : TouchArea {
+                    width: 20px;
+                    height: 20px;
+                    mouse-cursor: pointer;
+                    clicked => {
+                        root.value = "";
+                        root.cleared();
+                        root.edited("");
+                    }
+                    Text {
+                        text: "✕";
+                        color: Theme.text-dim;
+                        font-size: Theme.fs-caption;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+
+                // Password toggle
+                if root.mode == 2 : TouchArea {
+                    width: 20px;
+                    height: 20px;
+                    mouse-cursor: pointer;
+                    clicked => { root.password-visible = !root.password-visible; }
+                    Text {
+                        text: root.password-visible ? "◉" : "○";
+                        color: Theme.text-dim;
+                        font-size: Theme.fs-body;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+        }
+
+        // Error/help text
+        if root.error-text != "" : Text {
+            text: root.error-text;
+            color: Theme.color-danger;
+            font-size: Theme.fs-caption;
+        }
+        if root.error-text == "" && root.help-text != "" : Text {
+            text: root.help-text;
+            color: Theme.text-dim;
+            font-size: Theme.fs-caption;
+        }
+    }
+}

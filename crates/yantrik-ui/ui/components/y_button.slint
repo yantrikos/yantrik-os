@@ -1,0 +1,81 @@
+// YButton — unified button component.
+// Variants: primary, secondary, tertiary, danger. Sizes: compact, regular, prominent.
+// States: default, hover, pressed, focused, disabled, loading.
+import { Theme } from "../theme.slint";
+
+export component YButton inherits Rectangle {
+    // 0=primary, 1=secondary, 2=tertiary, 3=danger
+    in property <int> variant: 0;
+    // 0=compact(28px), 1=regular(32px), 2=prominent(36px)
+    in property <int> size: 1;
+    in property <string> label: "Button";
+    in property <string> icon: "";
+    in property <bool> disabled: false;
+    in property <bool> loading: false;
+    in property <bool> icon-only: false;
+    callback clicked();
+
+    property <bool> hovered: ta.has-hover && !root.disabled;
+    property <bool> pressed: ta.pressed && !root.disabled;
+
+    height: size == 0 ? Theme.h-compact : size == 2 ? Theme.h-prominent : Theme.h-regular;
+    min-width: icon-only ? self.height : 64px;
+    border-radius: Theme.r-md;
+    opacity: disabled ? 0.4 : 1.0;
+    clip: true;
+
+    // Background color by variant + state
+    background:
+        variant == 3 ? (pressed ? Theme.color-danger.darker(30%) : hovered ? Theme.color-danger.brighter(10%) : Theme.color-danger)
+      : variant == 2 ? (pressed ? Theme.hover-fill-strong : hovered ? Theme.hover-fill : transparent)
+      : variant == 1 ? (pressed ? Theme.hover-fill-strong : hovered ? Theme.hover-fill : Theme.bg-elevated)
+      :                 (pressed ? Theme.accent-dim : hovered ? Theme.accent-light : Theme.accent);
+
+    border-width: variant == 1 ? 1px : 0;
+    border-color: variant == 1 ? Theme.border-subtle : transparent;
+
+    animate background { duration: Theme.dur-fast; }
+    animate opacity { duration: Theme.dur-fast; }
+
+    ta := TouchArea {
+        enabled: !root.disabled && !root.loading;
+        mouse-cursor: root.disabled ? default : pointer;
+        clicked => { root.clicked(); }
+    }
+
+    HorizontalLayout {
+        alignment: center;
+        spacing: Theme.sp-2;
+        padding-left: root.icon-only ? 0 : Theme.sp-3;
+        padding-right: root.icon-only ? 0 : Theme.sp-3;
+
+        if root.loading : Text {
+            text: "⟳";
+            color: variant == 0 || variant == 3 ? Theme.text-on-accent : Theme.text-primary;
+            font-size: root.size == 0 ? Theme.fs-caption : Theme.fs-body;
+            vertical-alignment: center;
+            horizontal-alignment: center;
+        }
+
+        if root.icon != "" && !root.loading : Text {
+            text: root.icon;
+            color: variant == 0 || variant == 3 ? Theme.text-on-accent : Theme.text-primary;
+            font-size: root.size == 0 ? Theme.fs-caption : Theme.fs-body;
+            vertical-alignment: center;
+        }
+
+        if !root.icon-only && !root.loading : Text {
+            text: root.label;
+            color: variant == 0 || variant == 3 ? Theme.text-on-accent : Theme.text-primary;
+            font-size: root.size == 0 ? Theme.fs-caption : Theme.fs-body;
+            font-weight: Theme.fw-body-strong;
+            vertical-alignment: center;
+            horizontal-alignment: center;
+        }
+    }
+}
+
+export component YIconButton inherits YButton {
+    icon-only: true;
+    size: 0;
+}

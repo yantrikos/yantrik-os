@@ -1,11 +1,12 @@
 //! Settings wiring — persistent user preferences via ~/.config/yantrik/settings.yaml.
+//! AI provider management via ~/.config/yantrik/providers.yaml.
 
 use serde::{Deserialize, Serialize};
-use slint::ComponentHandle;
+use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use std::sync::{Arc, Mutex};
 
 use crate::app_context::AppContext;
-use crate::{App, AccentPreset, ThemeMode};
+use crate::{App, AccentPreset, ThemeMode, AIStatusData, AIProviderData, AIModelData, SettingsCategoryItem};
 
 /// Accent color preset names in cycle order (matches AccentPreset.index).
 const ACCENT_PRESETS: &[&str] = &["cyan", "amber", "purple", "green", "pink"];
@@ -402,9 +403,613 @@ pub fn wire(ui: &App, ctx: &AppContext) {
     });
 
     // Skill toggles are now handled by wire/skill_store.rs
+
+    // ── AI Provider Management ──
+
+    let providers = Arc::new(Mutex::new(ProviderStore::load()));
+
+    // Push initial AI status + providers to UI
+    {
+        let ps = providers.lock().unwrap();
+        push_providers_to_ui(ui, &ps);
+        push_ai_status_to_ui(ui, &ps, ctx.bridge.is_online());
+    }
+
+    // Settings search (sidebar category filtering)
+    let all_cats: Vec<SettingsCategoryItem> = vec![
+        SettingsCategoryItem { icon: "\u{25D0}".into(), label: "Appearance".into(), id: 0 },
+        SettingsCategoryItem { icon: "\u{25C9}".into(), label: "AI & Intelligence".into(), id: 1 },
+        SettingsCategoryItem { icon: "\u{25A3}".into(), label: "Desktop".into(), id: 2 },
+        SettingsCategoryItem { icon: "\u{25CE}".into(), label: "Network".into(), id: 3 },
+        SettingsCategoryItem { icon: "\u{1F517}".into(), label: "Accounts".into(), id: 4 },
+        SettingsCategoryItem { icon: "\u{2298}".into(), label: "Privacy & Security".into(), id: 5 },
+        SettingsCategoryItem { icon: "\u{2299}".into(), label: "System".into(), id: 6 },
+        SettingsCategoryItem { icon: "\u{26A1}".into(), label: "Skills".into(), id: 7 },
+    ];
+    // Push initial categories
+    ui.set_settings_categories(ModelRc::new(VecModel::from(all_cats.clone())));
+    let ui_weak = ui.as_weak();
+    ui.on_settings_search(move |query| {
+        let Some(ui) = ui_weak.upgrade() else { return };
+        let q = query.to_string().to_lowercase();
+        if q.is_empty() {
+            ui.set_settings_categories(ModelRc::new(VecModel::from(all_cats.clone())));
+            return;
+        }
+        let filtered: Vec<SettingsCategoryItem> = all_cats.iter()
+            .filter(|cat| cat.label.to_string().to_lowercase().contains(&q))
+            .cloned()
+            .collect();
+        ui.set_settings_categories(ModelRc::new(VecModel::from(filtered)));
+    });
+
+    // Add provider (opens panel — UI-side only, but we log it)
+    ui.on_add_provider(move || {
+        tracing::info!("Add provider panel opened");
+    });
+
+    // Save provider
+    let ui_weak = ui.as_weak();
+    let ps = providers.clone();
+    let bridge = ctx.bridge.clone();
+    ui.on_save_provider(move |name, ptype, url, key, auth| {
+        let entry = ProviderStoreEntry {
+            id: format!("{}-{}", ptype.to_string().to_lowercase(), uuid_short()),
+            name: name.to_string(),
+            provider_type: ptype.to_string(),
+            base_url: url.to_string(),
+            api_key: if key.is_empty() { None } else { Some(key.to_string()) },
+            auth_type: auth.to_string(),
+            is_primary: false,
+            is_fallback: false,
+        };
+        tracing::info!(name = %entry.name, provider_type = %entry.provider_type, "Saving provider");
+        if let Ok(mut store) = ps.lock() {
+            // If this is the first provider, make it primary
+            let make_primary = store.entries.is_empty();
+            store.entries.push(entry);
+            if make_primary {
+                if let Some(e) = store.entries.last_mut() {
+                    e.is_primary = true;
+                }
+            }
+            store.save();
+            if let Some(ui) = ui_weak.upgrade() {
+                push_providers_to_ui(&ui, &store);
+                push_ai_status_to_ui(&ui, &store, bridge.is_online());
+            }
+        }
+    });
+
+    // Delete provider
+    let ui_weak = ui.as_weak();
+    let ps = providers.clone();
+    let bridge = ctx.bridge.clone();
+    ui.on_delete_provider(move |id| {
+        let id = id.to_string();
+        tracing::info!(id = %id, "Deleting provider");
+        if let Ok(mut store) = ps.lock() {
+            store.entries.retain(|e| e.id != id);
+            store.save();
+            if let Some(ui) = ui_weak.upgrade() {
+                push_providers_to_ui(&ui, &store);
+                push_ai_status_to_ui(&ui, &store, bridge.is_online());
+            }
+        }
+    });
+
+    // Test existing provider
+    let ui_weak = ui.as_weak();
+    let ps = providers.clone();
+    ui.on_test_provider(move |id| {
+        let id_str = id.to_string();
+        tracing::info!(id = %id_str, "Testing provider");
+
+        let entry = {
+            let store = ps.lock().unwrap();
+            store.entries.iter().find(|e| e.id == id_str).cloned()
+        };
+
+        if let Some(entry) = entry {
+            let weak = ui_weak.clone();
+            let ps2 = ps.clone();
+            std::thread::spawn(move || {
+                let result = test_provider_connection(&entry.base_url, entry.api_key.as_deref(), &entry.auth_type);
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(ui) = weak.upgrade() {
+                        // Update the provider status in the store
+                        if let Ok(mut store) = ps2.lock() {
+                            if let Some(e) = store.entries.iter_mut().find(|e| e.id == id_str) {
+                                // We don't store status in the YAML, just push to UI
+                            }
+                            push_providers_to_ui_with_test(&ui, &store, &result);
+                        }
+                        ui.set_settings_provider_test_result(
+                            if result.success { "success".into() } else { format!("error: {}", result.message).into() }
+                        );
+                    }
+                });
+            });
+        }
+    });
+
+    // Test new provider (from add panel)
+    let ui_weak = ui.as_weak();
+    ui.on_test_new_provider(move |url, key, auth| {
+        let url_str = url.to_string();
+        let key_str = if key.is_empty() { None } else { Some(key.to_string()) };
+        let auth_str = auth.to_string();
+
+        tracing::info!(url = %url_str, "Testing new provider connection");
+
+        let weak = ui_weak.clone();
+        // Set testing state
+        if let Some(ui) = weak.upgrade() {
+            ui.set_settings_provider_test_result("testing".into());
+        }
+
+        let weak2 = weak.clone();
+        std::thread::spawn(move || {
+            let result = test_provider_connection(&url_str, key_str.as_deref(), &auth_str);
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(ui) = weak2.upgrade() {
+                    ui.set_settings_provider_test_result(
+                        if result.success { "success".into() } else { format!("error: {}", result.message).into() }
+                    );
+                }
+            });
+        });
+    });
+
+    // Set primary provider
+    let ui_weak = ui.as_weak();
+    let ps = providers.clone();
+    let bridge = ctx.bridge.clone();
+    ui.on_set_primary_provider(move |id| {
+        let id = id.to_string();
+        tracing::info!(id = %id, "Setting primary provider");
+        if let Ok(mut store) = ps.lock() {
+            for e in &mut store.entries {
+                e.is_primary = e.id == id;
+            }
+            store.save();
+            if let Some(ui) = ui_weak.upgrade() {
+                push_providers_to_ui(&ui, &store);
+                push_ai_status_to_ui(&ui, &store, bridge.is_online());
+            }
+        }
+    });
+
+    // Set fallback provider
+    let ui_weak = ui.as_weak();
+    let ps = providers.clone();
+    let bridge = ctx.bridge.clone();
+    ui.on_set_fallback_provider(move |id| {
+        let id = id.to_string();
+        tracing::info!(id = %id, "Setting fallback provider");
+        if let Ok(mut store) = ps.lock() {
+            for e in &mut store.entries {
+                e.is_fallback = e.id == id;
+            }
+            store.save();
+            if let Some(ui) = ui_weak.upgrade() {
+                push_providers_to_ui(&ui, &store);
+                push_ai_status_to_ui(&ui, &store, bridge.is_online());
+            }
+        }
+    });
+
+    // Select model
+    let ui_weak = ui.as_weak();
+    ui.on_select_model(move |model_id| {
+        let id = model_id.to_string();
+        tracing::info!(model = %id, "Model selected");
+        // Update the UI to show the selected model as active
+        if let Some(ui) = ui_weak.upgrade() {
+            let models = ui.get_settings_available_models();
+            let updated: Vec<AIModelData> = (0..models.row_count())
+                .filter_map(|i| {
+                    let mut m = models.row_data(i)?;
+                    m.is_active = m.id.to_string() == id;
+                    Some(m)
+                })
+                .collect();
+            ui.set_settings_available_models(ModelRc::new(VecModel::from(updated)));
+        }
+    });
+
+    // Refresh models — fetches from primary provider
+    let ui_weak = ui.as_weak();
+    let ps = providers.clone();
+    ui.on_refresh_models(move || {
+        tracing::info!("Refreshing model list");
+        let primary = {
+            let store = ps.lock().unwrap();
+            store.entries.iter().find(|e| e.is_primary).cloned()
+        };
+
+        if let Some(provider) = primary {
+            let weak = ui_weak.clone();
+            std::thread::spawn(move || {
+                let models = fetch_models(&provider.base_url, provider.api_key.as_deref(), &provider.auth_type, &provider.provider_type);
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(ui) = weak.upgrade() {
+                        let model_data: Vec<AIModelData> = models
+                            .into_iter()
+                            .map(|m| AIModelData {
+                                id: m.id.into(),
+                                name: m.name.into(),
+                                tier: m.tier.into(),
+                                param_count: m.param_count.into(),
+                                context_length: m.context_length.into(),
+                                is_active: m.is_active,
+                                is_local: m.is_local,
+                            })
+                            .collect();
+                        ui.set_settings_available_models(ModelRc::new(VecModel::from(model_data)));
+                        tracing::info!(count = ui.get_settings_available_models().row_count(), "Models refreshed");
+                    }
+                });
+            });
+        }
+    });
+
+    // Toggle auto-fallback
+    ui.on_toggle_auto_fallback(move || {
+        tracing::info!("Auto-fallback toggled");
+    });
 }
 
 /// Back-compat: load theme preference (delegates to full settings).
 pub fn load_theme_preference() -> bool {
     load().dark_mode
+}
+
+// ──────────────────────────────────────────────────────────────
+// Provider Store — YAML-persisted provider list
+// ──────────────────────────────────────────────────────────────
+
+fn providers_path() -> String {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/root".to_string());
+    format!("{}/.config/yantrik/providers.yaml", home)
+}
+
+/// A single AI provider entry persisted to YAML.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProviderStoreEntry {
+    pub id: String,
+    pub name: String,
+    #[serde(default = "default_provider_type")]
+    pub provider_type: String,
+    pub base_url: String,
+    #[serde(default)]
+    pub api_key: Option<String>,
+    #[serde(default = "default_auth_type")]
+    pub auth_type: String,
+    #[serde(default)]
+    pub is_primary: bool,
+    #[serde(default)]
+    pub is_fallback: bool,
+}
+
+fn default_provider_type() -> String { "custom".into() }
+fn default_auth_type() -> String { "bearer".into() }
+
+/// Manages the list of AI providers.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ProviderStore {
+    #[serde(default)]
+    pub entries: Vec<ProviderStoreEntry>,
+}
+
+impl ProviderStore {
+    pub fn load() -> Self {
+        let path = providers_path();
+        match std::fs::read_to_string(&path) {
+            Ok(content) => serde_yaml::from_str(&content).unwrap_or_else(|e| {
+                tracing::warn!("Corrupt providers.yaml, using empty: {e}");
+                Self::default()
+            }),
+            Err(_) => Self::default(),
+        }
+    }
+
+    pub fn save(&self) {
+        let path = providers_path();
+        if let Some(parent) = std::path::Path::new(&path).parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        match serde_yaml::to_string(self) {
+            Ok(yaml) => {
+                if let Err(e) = std::fs::write(&path, yaml) {
+                    tracing::warn!("Failed to write providers.yaml: {e}");
+                }
+            }
+            Err(e) => tracing::warn!("Failed to serialize providers: {e}"),
+        }
+    }
+
+    pub fn primary(&self) -> Option<&ProviderStoreEntry> {
+        self.entries.iter().find(|e| e.is_primary)
+    }
+
+    pub fn fallback(&self) -> Option<&ProviderStoreEntry> {
+        self.entries.iter().find(|e| e.is_fallback)
+    }
+}
+
+/// Generate a short unique ID.
+fn uuid_short() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis();
+    format!("{:x}", ts & 0xFFFFFFFF)
+}
+
+/// Push provider list to UI.
+fn push_providers_to_ui(ui: &App, store: &ProviderStore) {
+    let items: Vec<AIProviderData> = store.entries.iter().map(|e| AIProviderData {
+        id: e.id.clone().into(),
+        name: e.name.clone().into(),
+        provider_type: e.provider_type.clone().into(),
+        base_url: e.base_url.clone().into(),
+        status: "connected".into(), // default — will be updated by test
+        is_primary: e.is_primary,
+        is_fallback: e.is_fallback,
+        latency_ms: -1,
+        error_message: SharedString::default(),
+    }).collect();
+    ui.set_settings_ai_providers(ModelRc::new(VecModel::from(items)));
+}
+
+/// Push provider list with test result applied.
+fn push_providers_to_ui_with_test(ui: &App, store: &ProviderStore, result: &TestResult) {
+    let items: Vec<AIProviderData> = store.entries.iter().map(|e| AIProviderData {
+        id: e.id.clone().into(),
+        name: e.name.clone().into(),
+        provider_type: e.provider_type.clone().into(),
+        base_url: e.base_url.clone().into(),
+        status: if result.success { "connected".into() } else { "error".into() },
+        is_primary: e.is_primary,
+        is_fallback: e.is_fallback,
+        latency_ms: result.latency_ms,
+        error_message: if result.success { SharedString::default() } else { result.message.clone().into() },
+    }).collect();
+    ui.set_settings_ai_providers(ModelRc::new(VecModel::from(items)));
+}
+
+/// Push AI status derived from provider store + bridge state.
+fn push_ai_status_to_ui(ui: &App, store: &ProviderStore, online: bool) {
+    let primary = store.primary();
+    let fallback = store.fallback();
+
+    let status = AIStatusData {
+        provider_name: primary.map_or(SharedString::default(), |p| p.name.clone().into()),
+        provider_type: primary.map_or(SharedString::default(), |p| p.provider_type.clone().into()),
+        model_name: ui.get_settings_llm_api_model(),
+        model_tier: SharedString::default(), // filled by capability profile later
+        status: if online { "connected".into() } else { "disconnected".into() },
+        latency_ms: -1,
+        tokens_per_sec: 0.0,
+        tokens_today: 0,
+        using_fallback: !online && fallback.is_some(),
+        fallback_provider: fallback.map_or(SharedString::default(), |f| f.name.clone().into()),
+        fallback_model: SharedString::default(),
+    };
+    ui.set_settings_ai_status(status);
+}
+
+// ──────────────────────────────────────────────────────────────
+// Provider testing + model fetching
+// ──────────────────────────────────────────────────────────────
+
+struct TestResult {
+    success: bool,
+    message: String,
+    latency_ms: i32,
+}
+
+/// Test a provider connection by hitting its models endpoint.
+fn test_provider_connection(base_url: &str, api_key: Option<&str>, auth_type: &str) -> TestResult {
+    let url = if base_url.contains("/v1") {
+        format!("{}/models", base_url.trim_end_matches('/'))
+    } else {
+        // Ollama-style: /api/tags
+        format!("{}/api/tags", base_url.trim_end_matches('/'))
+    };
+
+    let start = std::time::Instant::now();
+
+    let agent = ureq::AgentBuilder::new()
+        .timeout(std::time::Duration::from_secs(10))
+        .build();
+
+    let mut request = agent.get(&url);
+    if let Some(key) = api_key {
+        match auth_type {
+            "x-api-key" => { request = request.set("x-api-key", key); }
+            "none" => {}
+            _ => { request = request.set("Authorization", &format!("Bearer {}", key)); }
+        }
+    }
+
+    match request.call() {
+        Ok(response) => {
+            let latency = start.elapsed().as_millis() as i32;
+            TestResult { success: true, message: "OK".into(), latency_ms: latency }
+        }
+        Err(ureq::Error::Status(code, _response)) => {
+            let latency = start.elapsed().as_millis() as i32;
+            TestResult {
+                success: false,
+                message: format!("HTTP {}", code),
+                latency_ms: latency,
+            }
+        }
+        Err(e) => TestResult {
+            success: false,
+            message: format!("{}", e),
+            latency_ms: -1,
+        },
+    }
+}
+
+/// A model entry from the provider API.
+struct FetchedModel {
+    id: String,
+    name: String,
+    tier: String,
+    param_count: String,
+    context_length: String,
+    is_active: bool,
+    is_local: bool,
+}
+
+/// Fetch available models from a provider.
+fn fetch_models(base_url: &str, api_key: Option<&str>, auth_type: &str, provider_type: &str) -> Vec<FetchedModel> {
+    let url = if provider_type == "ollama" || (!base_url.contains("/v1") && !base_url.contains("api.")) {
+        format!("{}/api/tags", base_url.trim_end_matches('/'))
+    } else {
+        format!("{}/models", base_url.trim_end_matches('/'))
+    };
+
+    let agent = ureq::AgentBuilder::new()
+        .timeout(std::time::Duration::from_secs(15))
+        .build();
+
+    let mut request = agent.get(&url);
+    if let Some(key) = api_key {
+        match auth_type {
+            "x-api-key" => { request = request.set("x-api-key", key); }
+            "none" => {}
+            _ => { request = request.set("Authorization", &format!("Bearer {}", key)); }
+        }
+    }
+
+    let response = match request.call() {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!(error = %e, "Failed to fetch models");
+            return vec![];
+        }
+    };
+
+    let body: String = match response.into_string() {
+        Ok(b) => b,
+        Err(e) => {
+            tracing::warn!(error = %e, "Failed to read model response body");
+            return vec![];
+        }
+    };
+
+    // Parse JSON — handle both Ollama and OpenAI formats
+    let json: serde_json::Value = match serde_json::from_str(&body) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!(error = %e, "Failed to parse model JSON");
+            return vec![];
+        }
+    };
+
+    let mut models = Vec::new();
+
+    // Ollama format: { "models": [ { "name": "...", "size": ... } ] }
+    if let Some(model_list) = json.get("models").and_then(|v| v.as_array()) {
+        for m in model_list {
+            let name = m.get("name").and_then(|v| v.as_str()).unwrap_or("unknown");
+            let size = m.get("size").and_then(|v| v.as_u64()).unwrap_or(0);
+            let param_count = format_param_count(size);
+            let tier = detect_tier(name);
+            models.push(FetchedModel {
+                id: name.to_string(),
+                name: name.to_string(),
+                tier,
+                param_count,
+                context_length: String::new(),
+                is_active: false,
+                is_local: true,
+            });
+        }
+    }
+    // OpenAI format: { "data": [ { "id": "..." } ] }
+    else if let Some(data_list) = json.get("data").and_then(|v| v.as_array()) {
+        for m in data_list {
+            let id = m.get("id").and_then(|v| v.as_str()).unwrap_or("unknown");
+            let tier = detect_tier(id);
+            models.push(FetchedModel {
+                id: id.to_string(),
+                name: id.to_string(),
+                tier,
+                param_count: String::new(),
+                context_length: String::new(),
+                is_active: false,
+                is_local: false,
+            });
+        }
+    }
+
+    models
+}
+
+/// Public wrapper for tier detection (used by system_monitor.rs).
+pub fn detect_tier_from_name(name: &str) -> String {
+    detect_tier(name)
+}
+
+/// Detect model tier from name (matches capability.rs logic).
+fn detect_tier(name: &str) -> String {
+    let lower = name.to_lowercase();
+
+    // Try to extract parameter count like "0.8b", "3b", "27b", "70b"
+    if let Some(b) = extract_param_billions(&lower) {
+        if b <= 1.5 { return "Tiny".into(); }
+        if b <= 4.0 { return "Small".into(); }
+        if b <= 14.0 { return "Medium".into(); }
+        return "Large".into();
+    }
+
+    // Name-based heuristics
+    if lower.contains("gpt-4") || lower.contains("claude") || lower.contains("opus") {
+        "Large".into()
+    } else if lower.contains("gpt-3.5") || lower.contains("sonnet") || lower.contains("haiku") {
+        "Medium".into()
+    } else {
+        String::new()
+    }
+}
+
+/// Extract parameter count in billions from model name (e.g. "qwen3.5:27b" → 27.0).
+fn extract_param_billions(name: &str) -> Option<f64> {
+    // Look for patterns like "0.8b", "3b", "27b-", "70b:"
+    let bytes = name.as_bytes();
+    let len = bytes.len();
+    for i in 0..len {
+        if bytes[i] == b'b' && (i + 1 >= len || !bytes[i + 1].is_ascii_alphanumeric()) {
+            // Walk backwards to find the number
+            let mut end = i;
+            let mut start = end;
+            while start > 0 && (bytes[start - 1].is_ascii_digit() || bytes[start - 1] == b'.') {
+                start -= 1;
+            }
+            if start < end {
+                if let Ok(val) = name[start..end].parse::<f64>() {
+                    if val > 0.0 && val < 10000.0 {
+                        return Some(val);
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Format byte size to parameter count string.
+fn format_param_count(size_bytes: u64) -> String {
+    if size_bytes == 0 { return String::new(); }
+    let gb = size_bytes as f64 / 1_073_741_824.0;
+    if gb >= 1.0 {
+        format!("{:.1}GB", gb)
+    } else {
+        let mb = size_bytes as f64 / 1_048_576.0;
+        format!("{:.0}MB", mb)
+    }
 }

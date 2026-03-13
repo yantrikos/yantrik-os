@@ -183,6 +183,7 @@ pub fn to_slint_data(entry: &NotificationEntry, now: f64) -> crate::Notification
         is_read: entry.read,
         is_group_header: false,
         group_name: entry.app.clone().into(),
+        group_icon: entry.app.chars().next().unwrap_or('?').to_uppercase().to_string().into(),
         group_count: 0,
     }
 }
@@ -221,6 +222,7 @@ pub fn sync_to_ui(store: &NotificationStore, ui_weak: &slint::Weak<crate::App>) 
                     is_read: true,
                     is_group_header: true,
                     group_name: entry.app.clone().into(),
+                    group_icon: entry.app.chars().next().unwrap_or('?').to_uppercase().to_string().into(),
                     group_count: group_count as i32,
                 });
                 current_app = Some(app_lower);

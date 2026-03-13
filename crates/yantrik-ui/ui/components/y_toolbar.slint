@@ -1,0 +1,83 @@
+// YToolbar — app toolbar with title, leading/trailing action groups, search.
+import { Theme } from "../theme.slint";
+
+export component YToolbar inherits Rectangle {
+    in property <string> title: "";
+    in property <bool> show-search: false;
+    in-out property <string> search-text: "";
+    in property <bool> show-divider: true;
+    callback search-edited(string);
+    callback search-accepted(string);
+
+    height: Theme.h-prominent;
+    background: Theme.bg-surface;
+
+    // Bottom divider
+    if root.show-divider : Rectangle {
+        y: parent.height - 1px;
+        height: 1px;
+        width: 100%;
+        background: Theme.separator;
+    }
+
+    HorizontalLayout {
+        padding-left: Theme.sp-4;
+        padding-right: Theme.sp-4;
+        spacing: Theme.sp-3;
+
+        // Leading slot
+        @children
+
+        // Title
+        if root.title != "" : Text {
+            text: root.title;
+            color: Theme.text-primary;
+            font-size: Theme.fs-headline;
+            font-weight: Theme.fw-headline;
+            vertical-alignment: center;
+        }
+
+        // Spacer
+        Rectangle { horizontal-stretch: 1; }
+
+        // Search field (inline)
+        if root.show-search : Rectangle {
+            width: 200px;
+            height: Theme.h-compact;
+            y: (parent.height - Theme.h-compact) / 2;
+            border-radius: Theme.r-md;
+            background: Theme.bg-input;
+            border-width: 1px;
+            border-color: search-input.has-focus ? Theme.accent : Theme.border-subtle;
+            clip: true;
+
+            HorizontalLayout {
+                padding-left: Theme.sp-2;
+                padding-right: Theme.sp-2;
+                spacing: Theme.sp-1;
+
+                Text {
+                    text: "⌕";
+                    color: Theme.text-dim;
+                    font-size: Theme.fs-caption;
+                    vertical-alignment: center;
+                    width: 16px;
+                }
+
+                search-input := TextInput {
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                    font-size: Theme.fs-caption;
+                    color: Theme.text-primary;
+                    text: root.search-text;
+
+                    edited => {
+                        root.search-text = self.text;
+                        root.search-edited(self.text);
+                    }
+                    accepted => { root.search-accepted(self.text); }
+                }
+            }
+        }
+    }
+}

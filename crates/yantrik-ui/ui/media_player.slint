@@ -192,9 +192,9 @@ export component MediaPlayer inherits Rectangle {
                                 width: parent.width * (root.player-ab-end - root.player-ab-start);
                                 height: 100%;
                                 border-radius: 2px;
-                                background: #ffb30030;
+                                background: Theme.amber-glow;
                                 border-width: 1px;
-                                border-color: #ffb300;
+                                border-color: Theme.amber;
                             }
 
                             Rectangle {
@@ -220,7 +220,7 @@ export component MediaPlayer inherits Rectangle {
                                 y: -8px;
                                 width: 8px;
                                 height: 8px;
-                                background: #ffb300;
+                                background: Theme.amber;
                                 border-radius: 2px;
                             }
 
@@ -230,7 +230,7 @@ export component MediaPlayer inherits Rectangle {
                                 y: -8px;
                                 width: 8px;
                                 height: 8px;
-                                background: #ffb300;
+                                background: Theme.amber;
                                 border-radius: 2px;
                             }
                         }
@@ -387,11 +387,11 @@ export component MediaPlayer inherits Rectangle {
 
                     Rectangle {
                         width: 32px; height: 32px; y: 4px; border-radius: 6px;
-                        background: root.player-ab-repeat-active ? #ffb30020 : (parent.has-hover ? Theme.hover-fill : transparent);
+                        background: root.player-ab-repeat-active ? Theme.tint-amber : (parent.has-hover ? Theme.hover-fill : transparent);
 
                         Text {
                             text: "A";
-                            color: root.player-ab-repeat-active ? #ffb300 : Theme.text-dim;
+                            color: root.player-ab-repeat-active ? Theme.amber : Theme.text-dim;
                             font-size: 12px;
                             font-weight: 600;
                             horizontal-alignment: center;
@@ -408,11 +408,11 @@ export component MediaPlayer inherits Rectangle {
 
                     Rectangle {
                         width: 32px; height: 32px; y: 4px; border-radius: 6px;
-                        background: root.player-ab-repeat-active ? #ffb30020 : (parent.has-hover ? Theme.hover-fill : transparent);
+                        background: root.player-ab-repeat-active ? Theme.tint-amber : (parent.has-hover ? Theme.hover-fill : transparent);
 
                         Text {
                             text: "B";
-                            color: root.player-ab-repeat-active ? #ffb300 : Theme.text-dim;
+                            color: root.player-ab-repeat-active ? Theme.amber : Theme.text-dim;
                             font-size: 12px;
                             font-weight: 600;
                             horizontal-alignment: center;
@@ -429,11 +429,11 @@ export component MediaPlayer inherits Rectangle {
 
                     Rectangle {
                         width: 40px; height: 40px; border-radius: 20px;
-                        background: root.player-ab-repeat-active ? #ffb30025 : (parent.has-hover ? Theme.hover-fill : transparent);
+                        background: root.player-ab-repeat-active ? Theme.tint-amber : (parent.has-hover ? Theme.hover-fill : transparent);
 
                         Text {
                             text: "A-B";
-                            color: root.player-ab-repeat-active ? #ffb300 : Theme.text-dim;
+                            color: root.player-ab-repeat-active ? Theme.amber : Theme.text-dim;
                             font-size: 10px;
                             font-weight: 600;
                             horizontal-alignment: center;
@@ -660,7 +660,7 @@ export component MediaPlayer inherits Rectangle {
             if root.ai-panel-open && root.ai-response != "" : Rectangle {
                 max-height: 120px;
                 border-radius: 8px;
-                background: #1a2332;
+                background: Theme.bg-card;
                 border-width: 1px;
                 border-color: Theme.accent-dim;
 

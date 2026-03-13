@@ -14,7 +14,7 @@ import { DesktopScreen } from "desktop.slint";
 import { BondScreen, BondData } from "bond.slint";
 import { PersonalityScreen, OpinionData, SharedRefData } from "personality.slint";
 import { LockScreen } from "lock.slint";
-import { SettingsScreen } from "settings.slint";
+import { SettingsScreen, SettingsCategoryItem, AIProviderData, AIModelData, AIStatusData } from "settings.slint";
 import { SkillData } from "skill_store.slint";
 import { MemoryBrowser, MemoryItem } from "memory_browser.slint";
 import { FileBrowser, FileEntry, BreadcrumbSegment, FileDetailData, FileTabData, FileOpItem } from "file_browser.slint";
@@ -24,13 +24,13 @@ import { VoiceOverlay } from "voice_overlay.slint";
 import { ImageViewer } from "image_viewer.slint";
 import { TextEditorScreen, EditorTabData } from "text_editor.slint";
 import { MediaPlayer } from "media_player.slint";
-import { TerminalScreen, TerminalTabData } from "terminal.slint";
+import { TerminalScreen, TerminalTabData, TerminalSegment } from "terminal.slint";
 import { NotesEditor, NoteEntry, NoteVersionEntry, NoteBacklink } from "notes_editor.slint";
 import { AboutScreen, ComponentVersionData } from "about.slint";
 import { EmailClient, EmailFolderData, EmailListItem, EmailDetailData, EmailThreadMessage, EmailAttachmentData, EmailSignatureData } from "email.slint";
 import { CalendarScreen, CalendarDay, CalendarEvent, CalendarTimeEvent, CalendarAttendee, CalendarTemplate } from "calendar.slint";
 import { PackageManager, PackageData, PendingAction } from "package_manager.slint";
-import { NetworkManager, WifiNetwork, EthernetInterface, BluetoothDevice, VpnConnection, FirewallRule, DiagTestResult, ConnectionEvent } from "network_manager.slint";
+import { NetworkManager, WifiNetwork, EthernetInterface, BluetoothDevice, VpnConnection, FirewallRule, DiagTestResult, ConnectionEvent, NetAIProviderStatus } from "network_manager.slint";
 import { SystemMonitor, CpuCoreData, DiskData, NetworkInterfaceData, MonitorProcessData } from "system_monitor.slint";
 import { WeatherDashboard, WeatherCurrent, WeatherHourly, WeatherDaily, WeatherSavedLocation, WeatherAlert } from "weather.slint";
 import { MusicPlayerScreen, MusicTrackData, MusicPlaylistData, MusicAlbumData, MusicArtistData, MusicGenreData, MusicScanFolderData } from "music_player.slint";
@@ -41,7 +41,7 @@ import { DeviceDashboardScreen, UsbDeviceData, PciDeviceData, InputDeviceData, S
 import { PermissionDashboardScreen, UserData, GroupData, PermFileData } from "permission_dashboard.slint";
 import { SpreadsheetScreen, SpreadsheetCell, SheetTab } from "spreadsheet.slint";
 import { DocumentEditorScreen, DocHeadingEntry, DocCommentEntry, DocChangeEntry, DocVersionEntry } from "document_editor.slint";
-import { PresentationScreen, SlideData, PresentTheme } from "presentation.slint";
+import { PresentationScreen, SlideData, PresentTheme, AiProposalState } from "presentation.slint";
 import { ToastBanner, ToastData } from "components/toast_banner.slint";
 import { CommandPalette, CommandItem } from "components/command_palette.slint";
 import { ContentBlock, MessageData } from "components/message_bubble.slint";
@@ -54,14 +54,25 @@ import { AppGridItem } from "components/app_grid.slint";
 import { WindowItem } from "components/window_switcher.slint";
 import { DockItem, AppDock } from "components/app_dock.slint";
 import { WindowFrame } from "components/window_frame.slint";
+import { YButton, YIconButton } from "components/y_button.slint";
+import { YInput } from "components/y_input.slint";
+import { YListItem } from "components/y_list_item.slint";
+import { YSidebar, YSidebarItem, YSidebarSection } from "components/y_sidebar.slint";
+import { YEmptyState } from "components/y_empty_state.slint";
+import { YToolbar } from "components/y_toolbar.slint";
+import { YTabs, YTabItem } from "components/y_tabs.slint";
+import { YDialog } from "components/y_dialog.slint";
+import { YContextMenu, YMenuAction } from "components/y_context_menu.slint";
+import { AppShell } from "components/app_shell.slint";
 import { Tr } from "translations.slint";
 
-export { Tr, ThemeMode, ThemeOverrides, AccentPreset, ContentBlock, MessageData, UrgeCardData, BondData, OpinionData, SharedRefData, MemoryItem, LensResult, WhisperCardItem, FileEntry, BreadcrumbSegment, FileDetailData, NotificationData, ProcessData, ClipboardEntryData, AppGridItem, WindowItem, DockItem, NoteEntry, ToastData, TerminalTabData, EmailFolderData, EmailListItem, EmailDetailData, EmailAttachmentData, EmailSignatureData, CalendarDay, CalendarEvent, CalendarAttendee, CalendarTemplate, PackageData, PendingAction, WifiNetwork, EthernetInterface, BluetoothDevice, VpnConnection, FirewallRule, CpuCoreData, DiskData, NetworkInterfaceData, MonitorProcessData, WeatherCurrent, WeatherHourly, WeatherDaily, WeatherSavedLocation, WeatherAlert, MusicTrackData, MusicPlaylistData, MusicAlbumData, MusicArtistData, MusicGenreData, MusicScanFolderData, DownloadItem, SnippetData, TagChip, CollectionData, LanguageOption, ContainerData, ImageData, VolumeData, UsbDeviceData, PciDeviceData, InputDeviceData, StorageDeviceData, DisplayDeviceData, UserData, GroupData, PermFileData, ComponentVersionData, BriefSection, SpreadsheetCell, SheetTab, DocHeadingEntry, SlideData, PresentTheme, CommandItem }
+export { Tr, ThemeMode, ThemeOverrides, AccentPreset, ContentBlock, MessageData, UrgeCardData, BondData, OpinionData, SharedRefData, MemoryItem, LensResult, WhisperCardItem, FileEntry, BreadcrumbSegment, FileDetailData, NotificationData, ProcessData, ClipboardEntryData, AppGridItem, WindowItem, DockItem, NoteEntry, ToastData, TerminalTabData, EmailFolderData, EmailListItem, EmailDetailData, EmailAttachmentData, EmailSignatureData, CalendarDay, CalendarEvent, CalendarAttendee, CalendarTemplate, PackageData, PendingAction, WifiNetwork, EthernetInterface, BluetoothDevice, VpnConnection, FirewallRule, CpuCoreData, DiskData, NetworkInterfaceData, MonitorProcessData, WeatherCurrent, WeatherHourly, WeatherDaily, WeatherSavedLocation, WeatherAlert, MusicTrackData, MusicPlaylistData, MusicAlbumData, MusicArtistData, MusicGenreData, MusicScanFolderData, DownloadItem, SnippetData, TagChip, CollectionData, LanguageOption, ContainerData, ImageData, VolumeData, UsbDeviceData, PciDeviceData, InputDeviceData, StorageDeviceData, DisplayDeviceData, UserData, GroupData, PermFileData, ComponentVersionData, BriefSection, SpreadsheetCell, SheetTab, DocHeadingEntry, SlideData, PresentTheme, CommandItem, YSidebarItem, YSidebarSection, YTabItem, YMenuAction }
 
 export component App inherits Window {
     title: "Yantrik OS";
     default-font-size: 14px;
     background: Theme.bg-deep;
+
 
     // Screen state: 0=boot, 1=desktop, 2=onboarding, 3=lock, 4=bond, 5=personality,
     //   6=memory, 7=settings, 8=files, 9=notifications, 10=system, 21=package_manager
@@ -254,6 +265,49 @@ export component App inherits Window {
     in-out property <bool> settings-dark-mode: true;
     in-out property <bool> settings-incognito-mode: false;
     in-out property <string> settings-accent-color: "cyan";
+
+    // AI Provider management
+    in property <AIStatusData> settings-ai-status;
+    in property <[AIProviderData]> settings-ai-providers: [];
+    in property <[AIModelData]> settings-available-models: [];
+    in property <string> settings-provider-test-result: "";
+    in property <[SettingsCategoryItem]> settings-categories;
+    callback settings-search(string);
+    callback add-provider();
+    callback save-provider(string, string, string, string, string);
+    callback delete-provider(string);
+    callback test-provider(string);
+    callback test-new-provider(string, string, string);
+    callback set-primary-provider(string);
+    callback set-fallback-provider(string);
+    callback select-model(string);
+    callback refresh-models();
+    callback toggle-auto-fallback();
+
+    // V60 — Task routing
+    in-out property <string> settings-route-fast: "";
+    in-out property <string> settings-route-balanced: "";
+    in-out property <string> settings-route-powerful: "";
+    callback save-task-routing(string, string, string);
+
+    // V60 — Privacy controls
+    in-out property <bool> settings-privacy-local-only: false;
+    in-out property <bool> settings-privacy-cloud-confirm: true;
+    in-out property <string> settings-privacy-preset: "balanced";
+    callback set-privacy-preset(string);
+
+    // V62 — Usage / Cost tracking
+    in property <string> settings-usage-period: "monthly";
+    in property <float> settings-usage-local-percent: 0.0;
+    in property <float> settings-usage-cloud-percent: 0.0;
+    in property <string> settings-usage-total-cost: "$0.00";
+    in property <string> settings-usage-daily-cost: "$0.00";
+    in property <string> settings-usage-tokens-today: "0";
+    in property <string> settings-usage-tokens-month: "0";
+    in property <string> settings-budget-limit: "";
+    in property <float> settings-budget-used-percent: 0.0;
+    in property <bool> settings-budget-warning: false;
+    callback save-budget(string);
 
     // Connected Services
     in property <string> conn-google-status: "disconnected";
@@ -550,6 +604,7 @@ export component App inherits Window {
 
     // Terminal state (screen 14)
     in property <string> terminal-output: "";
+    in property <[TerminalSegment]> terminal-segments: [];
     in property <int> terminal-cursor-row: 0;
     in property <int> terminal-cursor-col: 0;
     in property <bool> terminal-is-alive: true;
@@ -567,6 +622,20 @@ export component App inherits Window {
     in property <int> terminal-split-cursor-col: 0;
     // Profile
     in property <string> terminal-profile-name: "Default";
+    // AI command bar
+    in property <string> terminal-ai-generated-command: "";
+    in property <bool> terminal-ai-generating: false;
+    // Ghost autocomplete
+    in property <string> terminal-ghost-suggestion: "";
+    in property <int> terminal-ghost-row: 0;
+    in property <int> terminal-ghost-col: 0;
+    // Dangerous command warning
+    in property <bool> terminal-show-danger-warning: false;
+    in property <string> terminal-danger-message: "";
+    // CWD + duration
+    in property <string> terminal-current-directory: "";
+    in property <string> terminal-last-command-duration: "";
+    // Existing callbacks
     callback terminal-key-pressed(KeyEvent) -> EventResult;
     callback terminal-request-ai-help();
     callback terminal-dismiss-suggestion();
@@ -581,13 +650,21 @@ export component App inherits Window {
     callback terminal-switch-pane(int);
     callback terminal-split-input(string);
     callback terminal-set-profile(string);
+    // New AI-native callbacks
+    callback terminal-ai-bar-submit(string);
+    callback terminal-ai-run-command();
+    callback terminal-accept-ghost();
+    callback terminal-danger-proceed();
+    callback terminal-danger-cancel();
+    callback terminal-explain-line(int);
+    callback terminal-area-resized(int, int);
 
     // Notes Editor state (screen 15)
     in-out property <string> notes-current-content: "";
-    in property <string> notes-current-title: "";
-    in property <bool> notes-is-modified: false;
+    in-out property <string> notes-current-title: "";
+    in-out property <bool> notes-is-modified: false;
     in property <[NoteEntry]> notes-list: [];
-    in property <int> notes-selected-index: -1;
+    in-out property <int> notes-selected-index: -1;
     in-out property <string> notes-search-query: "";
     in property <int> notes-note-count: 0;
     callback notes-new();
@@ -841,6 +918,10 @@ export component App inherits Window {
     // Diagnostics
     in property <[DiagTestResult]> net-diag-tests: [];
     in property <[ConnectionEvent]> net-diag-connection-history: [];
+    // AI Provider Connectivity
+    in property <[NetAIProviderStatus]> net-ai-provider-connectivity: [];
+    in property <bool> net-ai-connectivity-testing: false;
+    callback net-test-ai-connectivity();
     // Status bar
     in property <string> net-status-connection-type: "";
     in property <string> net-status-ip-address: "";
@@ -910,6 +991,16 @@ export component App inherits Window {
     in-out property <string> mon-process-search: "";
     in-out property <int> mon-selected-process-pid: -1;
     in property <string> mon-uptime-text: "";
+    // AI Workloads
+    in property <string> mon-ai-model-name: "";
+    in property <string> mon-ai-model-tier: "";
+    in property <float> mon-ai-tokens-per-sec: 0.0;
+    in property <int> mon-ai-tokens-today: 0;
+    in property <int> mon-ai-provider-latency-ms: -1;
+    in property <float> mon-ai-error-rate: 0.0;
+    in property <bool> mon-ai-request-active: false;
+    in property <float> mon-ai-request-progress: 0.0;
+    // AI Assist panel
     in property <bool> mon-ai-is-working: false;
     in property <string> mon-ai-response: "";
     in-out property <bool> mon-ai-panel-open: false;
@@ -1231,7 +1322,7 @@ export component App inherits Window {
     // Spreadsheet state (screen 29)
     in-out property <int> sheet-active-row: 0;
     in-out property <int> sheet-active-col: 0;
-    in property <string> sheet-cell-data: "";
+    in-out property <string> sheet-cell-data: "";
     in property <[SheetTab]> sheet-tabs: [{ name: "Sheet 1", is-active: true }];
     in property <string> sheet-status-text: "Ready";
     in property <int> sheet-row-count: 50;
@@ -1315,6 +1406,7 @@ export component App inherits Window {
     callback sheet-ai-analyze();
     callback sheet-ai-suggest-chart();
     callback sheet-ai-insights();
+    callback sheet-ai-generate-data(string);
 
     // Document Editor state (screen 30)
     in-out property <string> doc-title: "Untitled";
@@ -1418,8 +1510,8 @@ export component App inherits Window {
     in-out property <int> pres-current-layout: 0;
     in property <[PresentTheme]> pres-themes: [];
     in-out property <bool> pres-is-presenting: false;
-    in property <string> pres-current-title: "Title Slide";
-    in property <string> pres-current-body: "Click to add subtitle";
+    in-out property <string> pres-current-title: "Title Slide";
+    in-out property <string> pres-current-body: "Click to add subtitle";
     in-out property <string> pres-current-notes: "";
     // Formatting
     in property <bool> pres-current-bold: false;
@@ -1490,17 +1582,29 @@ export component App inherits Window {
     callback pres-select-template(int);
     callback pres-save-speaker-note(string);
 
-    // ySlides AI Assist
+    // yPresent AI Assist
     in property <bool> pres-ai-working: false;
-    in property <string> pres-ai-response: "";
-    callback pres-ai-submit(string);
-    callback pres-ai-apply();
-    callback pres-ai-dismiss();
+    in property <string> pres-ai-status: "";
+    in property <bool> pres-ai-has-proposal: false;
+    in property <AiProposalState> pres-ai-proposal;
+    in-out property <bool> pres-ai-apply-title: true;
+    in-out property <bool> pres-ai-apply-body: true;
+    in-out property <bool> pres-ai-apply-notes: true;
+    in-out property <bool> pres-ai-apply-slide-type: true;
+    in-out property <string> pres-ai-instruction: "";
     callback pres-ai-generate-deck(string);
+    callback pres-ai-structure-text(string);
+    callback pres-ai-generate-all-notes();
     callback pres-ai-improve-slide();
     callback pres-ai-generate-notes();
-    callback pres-ai-suggest-visuals();
-    callback pres-ai-insights();
+    callback pres-ai-simplify(string);
+    callback pres-ai-split-slide();
+    callback pres-ai-suggest-layout();
+    callback pres-ai-freeform(string);
+    callback pres-ai-apply();
+    callback pres-ai-dismiss();
+    callback pres-ai-preview-slide(int);
+    callback pres-ai-regenerate();
 
     // Onboarding state (0=not onboarding, 1=step:terminal, 2=step:focus, 3=done)
     in-out property <int> onboarding-step: 0;
@@ -1508,6 +1612,50 @@ export component App inherits Window {
     callback onboarding-skip();
     callback onboarding-set-profile(/* interests */ string, /* home_location */ string,
                                      /* notif_pref */ string);
+
+    // AI onboarding setup (V59)
+    in property <bool> onboard-ai-hw-cpu-ok: false;
+    in property <bool> onboard-ai-hw-ram-ok: false;
+    in property <bool> onboard-ai-hw-gpu-ok: false;
+    in property <bool> onboard-ai-hw-disk-ok: false;
+    in property <bool> onboard-ai-hw-network-ok: false;
+    in property <bool> onboard-ai-hw-runtime-ok: false;
+    in property <string> onboard-ai-hw-cpu-label: "";
+    in property <string> onboard-ai-hw-ram-label: "";
+    in property <string> onboard-ai-hw-gpu-label: "";
+    in property <string> onboard-ai-hw-disk-label: "";
+    in property <string> onboard-ai-hw-recommend: "local";
+    in property <string> onboard-ai-test-status: "";
+    in property <string> onboard-ai-test-model: "";
+    in property <int> onboard-ai-test-latency-ms: 0;
+    in property <string> onboard-ai-test-privacy: "local";
+    callback onboard-ai-mode-selected(string);
+    callback onboard-ai-provider-selected(string);
+    callback onboard-ai-api-key-submitted(string, string);
+    callback onboard-ai-test-connection();
+    callback onboard-ai-skip-setup();
+
+    // V61 — Runtime provider state (status bar + quick switcher)
+    in property <string> ai-privacy-mode: "local";   // "local", "cloud", "hybrid"
+    in property <string> ai-active-provider-label: "";
+    in property <string> ai-fallback-banner: "";      // non-empty when fallback active
+    in-out property <bool> ai-quick-switcher-open: false;
+    callback ai-quick-switch-provider(string);
+
+    // V62 — Cost tracking / usage
+    in property <string> ai-usage-period: "monthly";
+    in property <float> ai-usage-local-percent: 0.0;
+    in property <float> ai-usage-cloud-percent: 0.0;
+    in property <string> ai-usage-total-cost: "$0.00";
+    in property <string> ai-usage-daily-cost: "$0.00";
+    in property <string> ai-usage-tokens-today: "0";
+    in property <string> ai-usage-tokens-month: "0";
+    in property <string> ai-budget-limit: "";
+    in property <float> ai-budget-used-percent: 0.0;
+    in property <bool> ai-budget-warning: false;
+    in-out property <bool> ai-cost-tooltip-visible: false;
+    in property <string> ai-cost-estimate: "";
+    callback ai-set-budget(string);
 
     // Callbacks to Rust
     callback send-message(string);
@@ -1550,6 +1698,22 @@ export component App inherits Window {
         if current-screen == 2 : OnboardingScreen {
             width: 100%; height: 100%;
             companion-name: root.settings-companion-name;
+            // AI hardware scan properties
+            ai-hw-cpu-ok: root.onboard-ai-hw-cpu-ok;
+            ai-hw-ram-ok: root.onboard-ai-hw-ram-ok;
+            ai-hw-gpu-ok: root.onboard-ai-hw-gpu-ok;
+            ai-hw-disk-ok: root.onboard-ai-hw-disk-ok;
+            ai-hw-network-ok: root.onboard-ai-hw-network-ok;
+            ai-hw-runtime-ok: root.onboard-ai-hw-runtime-ok;
+            ai-hw-cpu-label: root.onboard-ai-hw-cpu-label;
+            ai-hw-ram-label: root.onboard-ai-hw-ram-label;
+            ai-hw-gpu-label: root.onboard-ai-hw-gpu-label;
+            ai-hw-disk-label: root.onboard-ai-hw-disk-label;
+            ai-hw-recommend: root.onboard-ai-hw-recommend;
+            ai-test-status: root.onboard-ai-test-status;
+            ai-test-model: root.onboard-ai-test-model;
+            ai-test-latency-ms: root.onboard-ai-test-latency-ms;
+            ai-test-privacy: root.onboard-ai-test-privacy;
             set-names(user-name, comp-name) => {
                 if user-name != "" {
                     root.rename-user(user-name);
@@ -1563,6 +1727,11 @@ export component App inherits Window {
             set-profile(interests, home-loc, notif-pref) => {
                 root.onboarding-set-profile(interests, home-loc, notif-pref);
             }
+            ai-mode-selected(mode) => { root.onboard-ai-mode-selected(mode); }
+            ai-provider-selected(provider) => { root.onboard-ai-provider-selected(provider); }
+            ai-api-key-submitted(provider, key) => { root.onboard-ai-api-key-submitted(provider, key); }
+            ai-test-connection => { root.onboard-ai-test-connection(); }
+            ai-skip-setup => { root.onboard-ai-skip-setup(); }
             ready => {
                 root.current-screen = 1;
                 root.navigate(1);
@@ -1602,6 +1771,11 @@ export component App inherits Window {
             // Wallpaper
             wallpaper-path: root.wallpaper-path;
             wallpaper-image: root.wallpaper-image;
+            // V61 — AI privacy mode
+            ai-privacy-mode: root.ai-privacy-mode;
+            ai-provider-label: root.ai-active-provider-label;
+            ai-fallback-banner: root.ai-fallback-banner;
+            ai-privacy-clicked => { root.ai-quick-switcher-open = !root.ai-quick-switcher-open; }
             // Companion
             is-thinking: root.is-thinking;
             has-urges: root.has-urges;
@@ -1845,6 +2019,46 @@ export component App inherits Window {
                 connect-service(svc) => { root.connect-service(svc); }
                 disconnect-service(svc) => { root.disconnect-service(svc); }
                 sync-service(svc) => { root.sync-service(svc); }
+                // AI Provider management
+                ai-status: root.settings-ai-status;
+                ai-providers: root.settings-ai-providers;
+                available-models: root.settings-available-models;
+                provider-test-result: root.settings-provider-test-result;
+                categories: root.settings-categories;
+                settings-search(query) => { root.settings-search(query); }
+                add-provider => { root.add-provider(); }
+                save-provider(name, ptype, url, key, auth) => { root.save-provider(name, ptype, url, key, auth); }
+                delete-provider(id) => { root.delete-provider(id); }
+                test-provider(id) => { root.test-provider(id); }
+                test-new-provider(url, key, auth) => { root.test-new-provider(url, key, auth); }
+                set-primary-provider(id) => { root.set-primary-provider(id); }
+                set-fallback-provider(id) => { root.set-fallback-provider(id); }
+                select-model(id) => { root.select-model(id); }
+                refresh-models => { root.refresh-models(); }
+                toggle-auto-fallback => { root.toggle-auto-fallback(); }
+                // V60 — Task routing
+                route-fast-provider <=> root.settings-route-fast;
+                route-balanced-provider <=> root.settings-route-balanced;
+                route-powerful-provider <=> root.settings-route-powerful;
+                save-task-routing(fast, balanced, powerful) => { root.save-task-routing(fast, balanced, powerful); }
+                // V60 — Privacy controls
+                privacy-local-only <=> root.settings-privacy-local-only;
+                privacy-cloud-confirm <=> root.settings-privacy-cloud-confirm;
+                privacy-preset <=> root.settings-privacy-preset;
+                set-privacy-preset(preset) => { root.set-privacy-preset(preset); }
+                // V62 — Usage / Cost tracking
+                usage-period: root.settings-usage-period;
+                usage-local-percent: root.settings-usage-local-percent;
+                usage-cloud-percent: root.settings-usage-cloud-percent;
+                usage-total-cost: root.settings-usage-total-cost;
+                usage-daily-cost: root.settings-usage-daily-cost;
+                usage-tokens-today: root.settings-usage-tokens-today;
+                usage-tokens-month: root.settings-usage-tokens-month;
+                budget-limit: root.settings-budget-limit;
+                budget-used-percent: root.settings-budget-used-percent;
+                budget-warning: root.settings-budget-warning;
+                save-budget(val) => { root.save-budget(val); }
+                // Skills
                 skills: root.skills;
                 skill-categories: root.skill-categories;
                 toggle-skill(skill) => { root.toggle-skill(skill); }
@@ -2044,7 +2258,7 @@ export component App inherits Window {
             win-w <=> root.window-w;
             win-h <=> root.window-h;
             icon-char: "▣";
-            icon-color: #6a2d6a;
+            icon-color: Theme.color-purple-dim;
             title: Tr.title-image-viewer;
             close => { root.current-screen = 8; root.navigate(8); }
             minimize => { root.current-screen = 1; root.navigate(1); }
@@ -2115,7 +2329,7 @@ export component App inherits Window {
             win-w <=> root.window-w;
             win-h <=> root.window-h;
             icon-char: "≡";
-            icon-color: #3a4a6a;
+            icon-color: Theme.holo-blue-dim;
             title: Tr.title-editor;
             close => { root.current-screen = 8; root.navigate(8); }
             minimize => { root.current-screen = 1; root.navigate(1); }
@@ -2199,7 +2413,7 @@ export component App inherits Window {
             win-w <=> root.window-w;
             win-h <=> root.window-h;
             icon-char: "♪";
-            icon-color: #6a5a2d;
+            icon-color: Theme.amber-dim;
             title: Tr.title-now-playing;
             close => { root.current-screen = 8; root.navigate(8); }
             minimize => { root.current-screen = 1; root.navigate(1); }
@@ -2274,11 +2488,19 @@ export component App inherits Window {
             TerminalScreen {
                 width: 100%; height: 100%;
                 terminal-output: root.terminal-output;
+                terminal-segments: root.terminal-segments;
                 cursor-row: root.terminal-cursor-row;
                 cursor-col: root.terminal-cursor-col;
                 is-alive: root.terminal-is-alive;
                 ai-suggestion: root.terminal-ai-suggestion;
                 has-suggestion: root.terminal-has-suggestion;
+                ai-generated-command: root.terminal-ai-generated-command;
+                ai-generating: root.terminal-ai-generating;
+                ghost-suggestion: root.terminal-ghost-suggestion;
+                ghost-row: root.terminal-ghost-row;
+                ghost-col: root.terminal-ghost-col;
+                show-danger-warning: root.terminal-show-danger-warning;
+                danger-message: root.terminal-danger-message;
                 tab-count: root.terminal-tab-count;
                 active-tab: root.terminal-active-tab;
                 tabs: root.terminal-tabs;
@@ -2289,6 +2511,8 @@ export component App inherits Window {
                 terminal-split-cursor-row: root.terminal-split-cursor-row;
                 terminal-split-cursor-col: root.terminal-split-cursor-col;
                 terminal-profile-name: root.terminal-profile-name;
+                current-directory: root.terminal-current-directory;
+                last-command-duration: root.terminal-last-command-duration;
                 terminal-key-pressed(event) => { return root.terminal-key-pressed(event); }
                 request-ai-help => { root.terminal-request-ai-help(); }
                 dismiss-suggestion => { root.terminal-dismiss-suggestion(); }
@@ -2303,6 +2527,13 @@ export component App inherits Window {
                 terminal-switch-pane(idx) => { root.terminal-switch-pane(idx); }
                 terminal-split-input(text) => { root.terminal-split-input(text); }
                 terminal-set-profile(name) => { root.terminal-set-profile(name); }
+                ai-bar-submit(text) => { root.terminal-ai-bar-submit(text); }
+                ai-run-command => { root.terminal-ai-run-command(); }
+                accept-ghost => { root.terminal-accept-ghost(); }
+                danger-proceed => { root.terminal-danger-proceed(); }
+                danger-cancel => { root.terminal-danger-cancel(); }
+                explain-line(row) => { root.terminal-explain-line(row); }
+                terminal-area-resized(w, h) => { root.terminal-area-resized(w, h); }
             }
         }
 
@@ -2336,6 +2567,12 @@ export component App inherits Window {
                 new-note => { root.notes-new(); }
                 save-note => { root.notes-save(); }
                 delete-note => { root.notes-delete(); }
+                close-note => {
+                    root.notes-selected-index = -1;
+                    root.notes-current-content = "";
+                    root.notes-current-title = "";
+                    root.notes-is-modified = false;
+                }
                 select-note(idx) => { root.notes-select(idx); }
                 search-notes(query) => { root.notes-search(query); }
                 content-changed(text) => { root.notes-content-changed(text); }
@@ -2413,7 +2650,13 @@ export component App inherits Window {
                 components: root.about-components;
                 update-count: root.about-update-count;
                 update-status: root.about-update-status;
+                ai-model-name: root.settings-llm-api-model;
+                ai-provider-status: root.companion-online ? "Connected" : "Disconnected";
                 check-updates => { root.about-check-updates(); }
+                open-ai-settings => {
+                    root.current-screen = 7;
+                    root.navigate(7);
+                }
                 back-pressed => {
                     root.current-screen = 7;
                     root.navigate(7);
@@ -2687,6 +2930,9 @@ export component App inherits Window {
                 wifi-subnet: root.net-wifi-subnet;
                 diag-tests: root.net-diag-tests;
                 diag-connection-history: root.net-diag-connection-history;
+                ai-provider-connectivity: root.net-ai-provider-connectivity;
+                ai-connectivity-testing: root.net-ai-connectivity-testing;
+                test-ai-connectivity => { root.net-test-ai-connectivity(); }
                 status-connection-type: root.net-status-connection-type;
                 status-ip-address: root.net-status-ip-address;
                 status-signal-strength: root.net-status-signal-strength;
@@ -2922,6 +3168,14 @@ export component App inherits Window {
                 process-search <=> root.mon-process-search;
                 selected-process-pid <=> root.mon-selected-process-pid;
                 uptime-text: root.mon-uptime-text;
+                ai-model-name: root.mon-ai-model-name;
+                ai-model-tier: root.mon-ai-model-tier;
+                ai-tokens-per-sec: root.mon-ai-tokens-per-sec;
+                ai-tokens-today: root.mon-ai-tokens-today;
+                ai-provider-latency-ms: root.mon-ai-provider-latency-ms;
+                ai-error-rate: root.mon-ai-error-rate;
+                ai-request-active: root.mon-ai-request-active;
+                ai-request-progress: root.mon-ai-request-progress;
                 ai-is-working: root.mon-ai-is-working;
                 ai-response: root.mon-ai-response;
                 ai-panel-open <=> root.mon-ai-panel-open;
@@ -3230,7 +3484,7 @@ export component App inherits Window {
             win-w <=> root.window-w;
             win-h <=> root.window-h;
             icon-char: "YS";
-            icon-color: #2e9b47;
+            icon-color: Theme.color-success;
             title: "ySheets";
             close => { root.current-screen = 1; root.navigate(1); }
             minimize => { root.current-screen = 1; root.navigate(1); }
@@ -3240,7 +3494,7 @@ export component App inherits Window {
                 width: 100%; height: 100%;
                 active-row <=> root.sheet-active-row;
                 active-col <=> root.sheet-active-col;
-                cell-data: root.sheet-cell-data;
+                cell-data <=> root.sheet-cell-data;
                 sheet-tabs: root.sheet-tabs;
                 status-text: root.sheet-status-text;
                 row-count: root.sheet-row-count;
@@ -3312,6 +3566,7 @@ export component App inherits Window {
                 sheet-ai-analyze() => { root.sheet-ai-analyze(); }
                 sheet-ai-suggest-chart() => { root.sheet-ai-suggest-chart(); }
                 sheet-ai-insights() => { root.sheet-ai-insights(); }
+                sheet-ai-generate-data(prompt) => { root.sheet-ai-generate-data(prompt); }
             }
         }
 
@@ -3327,7 +3582,7 @@ export component App inherits Window {
             win-w <=> root.window-w;
             win-h <=> root.window-h;
             icon-char: "YD";
-            icon-color: #4a90d9;
+            icon-color: Theme.holo-blue;
             title: "yDoc";
             close => { root.current-screen = 1; root.navigate(1); }
             minimize => { root.current-screen = 1; root.navigate(1); }
@@ -3434,8 +3689,8 @@ export component App inherits Window {
             win-w <=> root.window-w;
             win-h <=> root.window-h;
             icon-char: "YP";
-            icon-color: #6c63ff;
-            title: "ySlides";
+            icon-color: Theme.accent;
+            title: "yPresent";
             close => { root.current-screen = 1; root.navigate(1); }
             minimize => { root.current-screen = 1; root.navigate(1); }
             animate x, y, width, height { duration: 200ms; easing: ease-out; }
@@ -3448,8 +3703,8 @@ export component App inherits Window {
                 current-layout <=> root.pres-current-layout;
                 themes: root.pres-themes;
                 is-presenting <=> root.pres-is-presenting;
-                current-title: root.pres-current-title;
-                current-body: root.pres-current-body;
+                current-title <=> root.pres-current-title;
+                current-body <=> root.pres-current-body;
                 current-notes <=> root.pres-current-notes;
                 timer-text: root.pres-timer-text;
                 next-title: root.pres-next-title;
@@ -3505,15 +3760,27 @@ export component App inherits Window {
                 pres-save-speaker-note(text) => { root.pres-save-speaker-note(text); }
                 // AI Assist
                 pres-ai-working: root.pres-ai-working;
-                pres-ai-response: root.pres-ai-response;
-                pres-ai-submit(prompt) => { root.pres-ai-submit(prompt); }
-                pres-ai-apply() => { root.pres-ai-apply(); }
-                pres-ai-dismiss() => { root.pres-ai-dismiss(); }
+                pres-ai-status: root.pres-ai-status;
+                pres-ai-has-proposal: root.pres-ai-has-proposal;
+                pres-ai-proposal: root.pres-ai-proposal;
+                pres-ai-apply-title <=> root.pres-ai-apply-title;
+                pres-ai-apply-body <=> root.pres-ai-apply-body;
+                pres-ai-apply-notes <=> root.pres-ai-apply-notes;
+                pres-ai-apply-slide-type <=> root.pres-ai-apply-slide-type;
+                pres-ai-instruction <=> root.pres-ai-instruction;
                 pres-ai-generate-deck(topic) => { root.pres-ai-generate-deck(topic); }
+                pres-ai-structure-text(text) => { root.pres-ai-structure-text(text); }
+                pres-ai-generate-all-notes() => { root.pres-ai-generate-all-notes(); }
                 pres-ai-improve-slide() => { root.pres-ai-improve-slide(); }
                 pres-ai-generate-notes() => { root.pres-ai-generate-notes(); }
-                pres-ai-suggest-visuals() => { root.pres-ai-suggest-visuals(); }
-                pres-ai-insights() => { root.pres-ai-insights(); }
+                pres-ai-simplify(audience) => { root.pres-ai-simplify(audience); }
+                pres-ai-split-slide() => { root.pres-ai-split-slide(); }
+                pres-ai-suggest-layout() => { root.pres-ai-suggest-layout(); }
+                pres-ai-freeform(prompt) => { root.pres-ai-freeform(prompt); }
+                pres-ai-apply() => { root.pres-ai-apply(); }
+                pres-ai-dismiss() => { root.pres-ai-dismiss(); }
+                pres-ai-preview-slide(idx) => { root.pres-ai-preview-slide(idx); }
+                pres-ai-regenerate() => { root.pres-ai-regenerate(); }
             }
         }
 
@@ -3562,7 +3829,7 @@ export component App inherits Window {
                         { app-id: "launchpad",     label: "Apps",     icon-char: "\u{229E}",  is-running: false },
                         { app-id: "spreadsheet",   label: "ySheets",  icon-char: "YS", is-running: false },
                         { app-id: "documents",     label: "yDoc",     icon-char: "YD", is-running: false },
-                        { app-id: "presentation",  label: "ySlides",  icon-char: "YP", is-running: false },
+                        { app-id: "presentation",  label: "yPresent", icon-char: "YP", is-running: false },
                         { app-id: "settings",      label: "Settings", icon-char: "\u{2699}",  is-running: false },
                     ];
                     launch-app(app-id) => { root.launch-app(app-id); }

@@ -11,9 +11,9 @@ Yantrik OS is a single Rust binary that combines three threads:
 ```
 crates/
   yantrik-os/        # SystemObserver, events, platform abstraction
-  yantrikdb-core/    # Memory DB (SQLite + vector search)
-  yantrikdb-ml/      # LLM backends (Candle GGUF, llama.cpp, OpenAI-compat API)
-  yantrikdb-companion/  # Agent brain: tools, instincts, bond, personality, context
+  yantrikdb-core/    # Memory DB (SQLite + HNSW vector search, knowledge graph, vault)
+  yantrik-ml/        # LLM backends (Ollama API, OpenAI API, Claude CLI, llama.cpp)
+  yantrik-companion/ # Agent brain: tools, instincts, bond, personality, cortex
   yantrik-ui/        # Slint desktop shell (all UI, wiring, features)
 ```
 
@@ -55,11 +55,11 @@ Permission levels: `Safe` (read-only) < `Standard` (reversible writes) < `Sensit
 
 ## Adding a New Tool
 
-1. Create `crates/yantrikdb-companion/src/tools/mytool.rs`
+1. Create `crates/yantrik-companion/src/tools/mytool.rs`
 2. Implement `Tool` trait for each tool (see `git.rs` for a complete example)
 3. Add `pub mod mytool;` to `tools/mod.rs`
 4. Add `mytool::register(&mut reg);` in `build_registry()`
-5. Run `cargo check -p yantrikdb-companion`
+5. Run `cargo check -p yantrik-companion`
 
 **Tips:**
 - Shell out to system CLIs when possible (no extra Rust deps)
@@ -147,8 +147,8 @@ CARGO_TARGET_DIR=/home/<user>/target-yantrik cargo check
 
 # Check specific crate
 cargo check -p yantrik-ui
-cargo check -p yantrikdb-companion
-cargo check -p yantrikdb-server
+cargo check -p yantrik-companion
+cargo check -p yantrik-ml
 ```
 
 ### Run in QEMU
@@ -164,4 +164,4 @@ bash deploy/yantrik-os/boot-desktop.sh
 ### Known Issues
 
 - **rustc 1.93.1 ICE in `check_mod_deathness`**: Add `#[allow(dead_code)]` to affected module declarations
-- **yantrikdb is private**: Needs `gh auth token` for cargo git deps
+- **Private repos**: yantrik-ml, yantrikdb-core, yantrik-companion are private. Needs `gh auth token` for cargo git deps. Use workspace `[patch]` sections for local development.

@@ -183,21 +183,14 @@ export component FileBrowser inherits Rectangle {
         // ── Tab bar — horizontal row of open tabs ──
         if root.file-tabs.length > 0 : Rectangle {
             height: 34px;
-            background: @linear-gradient(180deg,
-                #1a1830a0 0%,
-                #141228a0 100%
-            );
+            background: Theme.bg-surface;
 
             // Bottom edge
             Rectangle {
                 y: parent.height - 1px;
                 width: 100%;
                 height: 1px;
-                background: @linear-gradient(90deg,
-                    transparent 5%,
-                    #5ac8d420 50%,
-                    transparent 95%
-                );
+                background: Theme.separator;
             }
 
             HorizontalLayout {
@@ -212,13 +205,13 @@ export component FileBrowser inherits Rectangle {
                     clicked => { root.file-switch-tab(idx); }
 
                     tab-pill := Rectangle {
-                        border-radius: 8px;
+                        border-radius: Theme.r-md;
                         background: tab.is-active
-                            ? @radial-gradient(circle, #5ac8d818 0%, #1a183008 100%)
-                            : (parent.has-hover ? @radial-gradient(circle, #ffffff08 0%, transparent 100%) : transparent);
+                            ? Theme.accent-dim
+                            : (parent.has-hover ? Theme.hover-fill : transparent);
                         border-width: tab.is-active ? 1px : 0;
                         border-color: Theme.cyan-dim;
-                        animate background, border-width { duration: 120ms; }
+                        animate background, border-width { duration: Theme.dur-fast; }
 
                         HorizontalLayout {
                             padding-left: 10px;
@@ -229,12 +222,12 @@ export component FileBrowser inherits Rectangle {
                             Text {
                                 text: tab.label;
                                 color: tab.is-active ? Theme.cyan : Theme.text-secondary;
-                                font-size: 11px;
+                                font-size: Theme.fs-micro;
                                 font-weight: tab.is-active ? 600 : 400;
                                 vertical-alignment: center;
                                 overflow: elide;
                                 max-width: 120px;
-                                animate color { duration: 120ms; }
+                                animate color { duration: Theme.dur-fast; }
                             }
 
                             // Close button
@@ -243,11 +236,11 @@ export component FileBrowser inherits Rectangle {
                                 clicked => { root.file-close-tab(idx); }
                                 Rectangle {
                                     border-radius: 4px;
-                                    background: tab-close.has-hover ? #e0525230 : transparent;
-                                    animate background { duration: 120ms; }
+                                    background: tab-close.has-hover ? Theme.color-danger-dim : transparent;
+                                    animate background { duration: Theme.dur-fast; }
                                     Text {
                                         text: "\u{2715}";
-                                        color: tab-close.has-hover ? #e05252 : Theme.text-dim;
+                                        color: tab-close.has-hover ? Theme.color-danger : Theme.text-dim;
                                         font-size: 9px;
                                         horizontal-alignment: center;
                                         vertical-alignment: center;
@@ -263,18 +256,18 @@ export component FileBrowser inherits Rectangle {
                     width: 28px; height: 28px;
                     clicked => { root.file-new-tab(); }
                     Rectangle {
-                        border-radius: 8px;
+                        border-radius: Theme.r-md;
                         background: new-tab-btn.has-hover
-                            ? @radial-gradient(circle, #5ac8d818 0%, #12111a 100%)
+                            ? Theme.hover-fill
                             : transparent;
-                        animate background { duration: 120ms; }
+                        animate background { duration: Theme.dur-fast; }
                         Text {
                             text: "+";
                             color: new-tab-btn.has-hover ? Theme.cyan : Theme.text-dim;
-                            font-size: 16px;
+                            font-size: Theme.fs-headline;
                             horizontal-alignment: center;
                             vertical-alignment: center;
-                            animate color { duration: 120ms; }
+                            animate color { duration: Theme.dur-fast; }
                         }
                     }
                 }
@@ -286,23 +279,14 @@ export component FileBrowser inherits Rectangle {
         // ── Navigation bar — glass gradient with back/forward/up/home + breadcrumbs ──
         Rectangle {
             height: 40px;
-            background: @linear-gradient(180deg,
-                #1a1830c0 0%,
-                #141228b0 100%
-            );
+            background: Theme.bg-surface;
 
             // Bottom holographic edge
             Rectangle {
                 y: parent.height - 1px;
                 width: 100%;
                 height: 1px;
-                background: @linear-gradient(90deg,
-                    transparent 5%,
-                    #5ac8d430 20%,
-                    #5ac8d880 50%,
-                    #5ac8d430 80%,
-                    transparent 95%
-                );
+                background: Theme.separator;
             }
 
             HorizontalLayout {
@@ -315,18 +299,18 @@ export component FileBrowser inherits Rectangle {
                     width: 28px; height: 32px;
                     clicked => { root.selected-index = -1; root.clear-selection(); root.go-back(); }
                     Rectangle {
-                        border-radius: 6px;
+                        border-radius: Theme.r-sm;
                         background: back-btn.has-hover && root.can-go-back
-                            ? @radial-gradient(circle, #5ac8d418 0%, #12111a 100%)
+                            ? Theme.hover-fill
                             : transparent;
-                        animate background { duration: 120ms; }
+                        animate background { duration: Theme.dur-fast; }
                         Text {
                             text: "\u{25c1}";
                             color: root.can-go-back ? (back-btn.has-hover ? Theme.cyan : Theme.text-secondary) : Theme.text-dim;
-                            font-size: 14px;
+                            font-size: Theme.fs-body;
                             horizontal-alignment: center;
                             vertical-alignment: center;
-                            animate color { duration: 120ms; }
+                            animate color { duration: Theme.dur-fast; }
                         }
                     }
                 }
@@ -336,18 +320,18 @@ export component FileBrowser inherits Rectangle {
                     width: 28px; height: 32px;
                     clicked => { root.selected-index = -1; root.clear-selection(); root.go-forward(); }
                     Rectangle {
-                        border-radius: 6px;
+                        border-radius: Theme.r-sm;
                         background: fwd-btn.has-hover && root.can-go-forward
-                            ? @radial-gradient(circle, #5ac8d418 0%, #12111a 100%)
+                            ? Theme.hover-fill
                             : transparent;
-                        animate background { duration: 120ms; }
+                        animate background { duration: Theme.dur-fast; }
                         Text {
                             text: "\u{25b7}";
                             color: root.can-go-forward ? (fwd-btn.has-hover ? Theme.cyan : Theme.text-secondary) : Theme.text-dim;
-                            font-size: 14px;
+                            font-size: Theme.fs-body;
                             horizontal-alignment: center;
                             vertical-alignment: center;
-                            animate color { duration: 120ms; }
+                            animate color { duration: Theme.dur-fast; }
                         }
                     }
                 }
@@ -357,18 +341,18 @@ export component FileBrowser inherits Rectangle {
                     width: 28px; height: 32px;
                     clicked => { root.selected-index = -1; root.clear-selection(); root.go-up(); }
                     Rectangle {
-                        border-radius: 6px;
+                        border-radius: Theme.r-sm;
                         background: up-btn.has-hover
-                            ? @radial-gradient(circle, #5ac8d418 0%, #12111a 100%)
+                            ? Theme.hover-fill
                             : transparent;
-                        animate background { duration: 120ms; }
+                        animate background { duration: Theme.dur-fast; }
                         Text {
                             text: "\u{2191}";
                             color: up-btn.has-hover ? Theme.cyan : Theme.text-secondary;
-                            font-size: 16px;
+                            font-size: Theme.fs-headline;
                             horizontal-alignment: center;
                             vertical-alignment: center;
-                            animate color { duration: 120ms; }
+                            animate color { duration: Theme.dur-fast; }
                         }
                     }
                 }
@@ -378,18 +362,18 @@ export component FileBrowser inherits Rectangle {
                     width: 28px; height: 32px;
                     clicked => { root.selected-index = -1; root.clear-selection(); root.navigate-to-path("~"); }
                     Rectangle {
-                        border-radius: 6px;
+                        border-radius: Theme.r-sm;
                         background: home-btn.has-hover
-                            ? @radial-gradient(circle, #5ac8d418 0%, #12111a 100%)
+                            ? Theme.hover-fill
                             : transparent;
-                        animate background { duration: 120ms; }
+                        animate background { duration: Theme.dur-fast; }
                         Text {
                             text: "\u{2302}";
                             color: home-btn.has-hover ? Theme.cyan : Theme.text-secondary;
-                            font-size: 16px;
+                            font-size: Theme.fs-headline;
                             horizontal-alignment: center;
                             vertical-alignment: center;
-                            animate color { duration: 120ms; }
+                            animate color { duration: Theme.dur-fast; }
                         }
                     }
                 }
@@ -397,7 +381,7 @@ export component FileBrowser inherits Rectangle {
                 // Separator
                 Rectangle {
                     width: 1px; height: 24px;
-                    background: #ffffff14;
+                    background: Theme.border-subtle;
                 }
 
                 // Breadcrumb / editable address bar toggle
@@ -431,9 +415,9 @@ export component FileBrowser inherits Rectangle {
                                     Rectangle {
                                         border-radius: 4px;
                                         background: parent.has-hover
-                                            ? @radial-gradient(circle, #5ac8d410 0%, transparent 100%)
+                                            ? Theme.hover-fill
                                             : transparent;
-                                        animate background { duration: 120ms; }
+                                        animate background { duration: Theme.dur-fast; }
 
                                         seg-text := Text {
                                             text: seg.label;
@@ -473,10 +457,10 @@ export component FileBrowser inherits Rectangle {
                         width: 28px; height: 28px;
                         clicked => { root.address-editing = false; }
                         Rectangle {
-                            border-radius: 6px;
-                            background: addr-cancel.has-hover ? #e0525220 : transparent;
-                            animate background { duration: 120ms; }
-                            Text { text: "\u{2715}"; color: addr-cancel.has-hover ? #e05252 : Theme.text-dim; font-size: 12px; horizontal-alignment: center; vertical-alignment: center; }
+                            border-radius: Theme.r-sm;
+                            background: addr-cancel.has-hover ? Theme.color-danger-dim : transparent;
+                            animate background { duration: Theme.dur-fast; }
+                            Text { text: "\u{2715}"; color: addr-cancel.has-hover ? Theme.color-danger : Theme.text-dim; font-size: Theme.fs-caption; horizontal-alignment: center; vertical-alignment: center; }
                         }
                     }
                 }
@@ -494,11 +478,11 @@ export component FileBrowser inherits Rectangle {
                         width: 28px; height: 32px;
                         clicked => { root.search-active = true; root.search-text = ""; }
                         Rectangle {
-                            border-radius: 6px;
+                            border-radius: Theme.r-sm;
                             background: search-btn.has-hover
-                                ? @radial-gradient(circle, #5ac8d418 0%, #12111a 100%) : transparent;
-                            animate background { duration: 120ms; }
-                            Text { text: "\u{2315}"; color: search-btn.has-hover ? Theme.cyan : Theme.text-dim; font-size: 15px; horizontal-alignment: center; vertical-alignment: center; }
+                                ? Theme.hover-fill : transparent;
+                            animate background { duration: Theme.dur-fast; }
+                            Text { text: "\u{2315}"; color: search-btn.has-hover ? Theme.cyan : Theme.text-dim; font-size: Theme.fs-body; horizontal-alignment: center; vertical-alignment: center; }
                         }
                     }
 
@@ -517,10 +501,10 @@ export component FileBrowser inherits Rectangle {
                             width: 24px; height: 28px;
                             clicked => { root.search-active = false; root.search-text = ""; root.file-filter-changed(""); }
                             Rectangle {
-                                border-radius: 6px;
-                                background: filter-close.has-hover ? #e0525220 : transparent;
-                                animate background { duration: 120ms; }
-                                Text { text: "\u{2715}"; color: filter-close.has-hover ? #e05252 : Theme.text-dim; font-size: 11px; horizontal-alignment: center; vertical-alignment: center; }
+                                border-radius: Theme.r-sm;
+                                background: filter-close.has-hover ? Theme.color-danger-dim : transparent;
+                                animate background { duration: Theme.dur-fast; }
+                                Text { text: "\u{2715}"; color: filter-close.has-hover ? Theme.color-danger : Theme.text-dim; font-size: Theme.fs-micro; horizontal-alignment: center; vertical-alignment: center; }
                             }
                         }
                     }
@@ -530,17 +514,17 @@ export component FileBrowser inherits Rectangle {
                         width: 28px; height: 32px;
                         clicked => { root.address-editing = !root.address-editing; }
                         Rectangle {
-                            border-radius: 6px;
+                            border-radius: Theme.r-sm;
                             background: addr-btn.has-hover
-                                ? @radial-gradient(circle, #5ac8d418 0%, #12111a 100%) : transparent;
-                            animate background { duration: 120ms; }
+                                ? Theme.hover-fill : transparent;
+                            animate background { duration: Theme.dur-fast; }
                             Text {
                                 text: "/";
                                 color: root.address-editing ? Theme.cyan : (addr-btn.has-hover ? Theme.cyan : Theme.text-dim);
-                                font-size: 15px; font-weight: 700;
+                                font-size: Theme.fs-body; font-weight: 700;
                                 horizontal-alignment: center;
                                 vertical-alignment: center;
-                                animate color { duration: 120ms; }
+                                animate color { duration: Theme.dur-fast; }
                             }
                         }
                     }
@@ -550,17 +534,17 @@ export component FileBrowser inherits Rectangle {
                         width: 28px; height: 32px;
                         clicked => { root.new-file-name = ""; root.show-new-file-dialog = true; }
                         Rectangle {
-                            border-radius: 6px;
+                            border-radius: Theme.r-sm;
                             background: newfile-btn.has-hover
-                                ? @radial-gradient(circle, #3aad6a18 0%, #12111a 100%) : transparent;
-                            animate background { duration: 120ms; }
+                                ? Theme.color-success-dim : transparent;
+                            animate background { duration: Theme.dur-fast; }
                             Text {
                                 text: "\u{2610}";
-                                color: newfile-btn.has-hover ? #3aad6a : Theme.text-dim;
-                                font-size: 14px;
+                                color: newfile-btn.has-hover ? Theme.color-success : Theme.text-dim;
+                                font-size: Theme.fs-body;
                                 horizontal-alignment: center;
                                 vertical-alignment: center;
-                                animate color { duration: 120ms; }
+                                animate color { duration: Theme.dur-fast; }
                             }
                         }
                     }
@@ -570,17 +554,17 @@ export component FileBrowser inherits Rectangle {
                         width: 28px; height: 32px;
                         clicked => { root.new-folder-name = ""; root.show-new-folder-dialog = true; }
                         Rectangle {
-                            border-radius: 6px;
+                            border-radius: Theme.r-sm;
                             background: newfolder-btn.has-hover
-                                ? @radial-gradient(circle, #5ac8d418 0%, #12111a 100%) : transparent;
-                            animate background { duration: 120ms; }
+                                ? Theme.hover-fill : transparent;
+                            animate background { duration: Theme.dur-fast; }
                             Text {
                                 text: "+";
                                 color: newfolder-btn.has-hover ? Theme.cyan : Theme.cyan-dim;
-                                font-size: 18px;
+                                font-size: Theme.fs-headline;
                                 horizontal-alignment: center;
                                 vertical-alignment: center;
-                                animate color { duration: 120ms; }
+                                animate color { duration: Theme.dur-fast; }
                             }
                         }
                     }
@@ -590,11 +574,11 @@ export component FileBrowser inherits Rectangle {
                         width: 28px; height: 32px;
                         clicked => { root.file-paste(); }
                         Rectangle {
-                            border-radius: 6px;
+                            border-radius: Theme.r-sm;
                             background: parent.has-hover
-                                ? @radial-gradient(circle, #5ac8d418 0%, #12111a 100%) : transparent;
-                            animate background { duration: 120ms; }
-                            Text { text: "\u{1f4cb}"; font-size: 13px; horizontal-alignment: center; vertical-alignment: center; }
+                                ? Theme.hover-fill : transparent;
+                            animate background { duration: Theme.dur-fast; }
+                            Text { text: "\u{1f4cb}"; font-size: Theme.fs-caption; horizontal-alignment: center; vertical-alignment: center; }
                         }
                     }
 
@@ -603,14 +587,14 @@ export component FileBrowser inherits Rectangle {
                         width: 28px; height: 32px;
                         clicked => { root.selected-index = -1; root.clear-selection(); root.toggle-hidden(); }
                         Rectangle {
-                            border-radius: 6px;
+                            border-radius: Theme.r-sm;
                             background: hidden-btn.has-hover
-                                ? @radial-gradient(circle, #5ac8d418 0%, #12111a 100%) : transparent;
-                            animate background { duration: 120ms; }
+                                ? Theme.hover-fill : transparent;
+                            animate background { duration: Theme.dur-fast; }
                             Text {
                                 text: root.show-hidden ? "\u{25c9}" : "\u{25ce}";
                                 color: root.show-hidden ? Theme.cyan : Theme.text-dim;
-                                font-size: 14px;
+                                font-size: Theme.fs-body;
                                 horizontal-alignment: center;
                                 vertical-alignment: center;
                             }
@@ -622,17 +606,17 @@ export component FileBrowser inherits Rectangle {
                         width: 28px; height: 32px;
                         clicked => { root.detail-panel-visible = !root.detail-panel-visible; }
                         Rectangle {
-                            border-radius: 6px;
+                            border-radius: Theme.r-sm;
                             background: detail-toggle-btn.has-hover
-                                ? @radial-gradient(circle, #5ac8d418 0%, #12111a 100%) : transparent;
-                            animate background { duration: 120ms; }
+                                ? Theme.hover-fill : transparent;
+                            animate background { duration: Theme.dur-fast; }
                             Text {
                                 text: "\u{2261}";
                                 color: root.detail-panel-visible ? Theme.cyan : (detail-toggle-btn.has-hover ? Theme.cyan : Theme.text-dim);
-                                font-size: 16px;
+                                font-size: Theme.fs-headline;
                                 horizontal-alignment: center;
                                 vertical-alignment: center;
-                                animate color { duration: 120ms; }
+                                animate color { duration: Theme.dur-fast; }
                             }
                         }
                     }
@@ -642,17 +626,17 @@ export component FileBrowser inherits Rectangle {
                         width: 28px; height: 32px;
                         clicked => { root.grid-view = !root.grid-view; root.selected-index = -1; root.clear-selection(); }
                         Rectangle {
-                            border-radius: 6px;
+                            border-radius: Theme.r-sm;
                             background: view-toggle-btn.has-hover
-                                ? @radial-gradient(circle, #5ac8d418 0%, #12111a 100%) : transparent;
-                            animate background { duration: 120ms; }
+                                ? Theme.hover-fill : transparent;
+                            animate background { duration: Theme.dur-fast; }
                             Text {
                                 text: root.grid-view ? "\u{2261}" : "\u{229e}";
                                 color: view-toggle-btn.has-hover ? Theme.cyan : Theme.text-dim;
-                                font-size: 15px;
+                                font-size: Theme.fs-body;
                                 horizontal-alignment: center;
                                 vertical-alignment: center;
-                                animate color { duration: 120ms; }
+                                animate color { duration: Theme.dur-fast; }
                             }
                         }
                     }
@@ -662,18 +646,18 @@ export component FileBrowser inherits Rectangle {
                         width: 32px; height: 32px;
                         clicked => { root.file-toggle-trash(); }
                         Rectangle {
-                            border-radius: 6px;
+                            border-radius: Theme.r-sm;
                             background: root.file-trash-mode
-                                ? @radial-gradient(circle, #e0525218 0%, #12111a 100%)
-                                : (trash-toggle-btn.has-hover ? @radial-gradient(circle, #5ac8d418 0%, #12111a 100%) : transparent);
-                            animate background { duration: 120ms; }
+                                ? Theme.color-danger-dim
+                                : (trash-toggle-btn.has-hover ? Theme.hover-fill : transparent);
+                            animate background { duration: Theme.dur-fast; }
                             Text {
                                 text: "\u{2672}";
-                                color: root.file-trash-mode ? #e05252 : (trash-toggle-btn.has-hover ? Theme.cyan : Theme.text-dim);
-                                font-size: 14px;
+                                color: root.file-trash-mode ? Theme.color-danger : (trash-toggle-btn.has-hover ? Theme.cyan : Theme.text-dim);
+                                font-size: Theme.fs-body;
                                 horizontal-alignment: center;
                                 vertical-alignment: center;
-                                animate color { duration: 120ms; }
+                                animate color { duration: Theme.dur-fast; }
                             }
 
                             // Badge showing trash count
@@ -683,10 +667,10 @@ export component FileBrowser inherits Rectangle {
                                 width: 14px;
                                 height: 14px;
                                 border-radius: 7px;
-                                background: #e05252;
+                                background: Theme.color-danger;
                                 Text {
                                     text: root.file-trash-count < 100 ? root.file-trash-count : "99+";
-                                    color: #fff;
+                                    color: Theme.text-on-accent;
                                     font-size: 8px;
                                     font-weight: 700;
                                     horizontal-alignment: center;
@@ -701,18 +685,18 @@ export component FileBrowser inherits Rectangle {
                         width: 28px; height: 32px;
                         clicked => { root.file-batch-rename-open = true; root.file-batch-rename-pattern = ""; root.file-batch-rename-replace = ""; }
                         Rectangle {
-                            border-radius: 6px;
+                            border-radius: Theme.r-sm;
                             background: batch-rename-btn.has-hover
-                                ? @radial-gradient(circle, #d4a03c18 0%, #12111a 100%) : transparent;
-                            animate background { duration: 120ms; }
+                                ? Theme.hover-fill : transparent;
+                            animate background { duration: Theme.dur-fast; }
                             Text {
                                 text: "R";
                                 color: batch-rename-btn.has-hover ? Theme.amber : Theme.text-dim;
-                                font-size: 13px;
+                                font-size: Theme.fs-caption;
                                 font-weight: 700;
                                 horizontal-alignment: center;
                                 vertical-alignment: center;
-                                animate color { duration: 120ms; }
+                                animate color { duration: Theme.dur-fast; }
                             }
                         }
                     }
@@ -723,11 +707,11 @@ export component FileBrowser inherits Rectangle {
         // ── Multi-select action bar ──
         if root.selection-count > 1 : Rectangle {
             height: 36px;
-            background: @linear-gradient(180deg, #1a1830d0 0%, #141228c0 100%);
+            background: Theme.bg-surface;
 
             Rectangle {
                 y: parent.height - 1px; width: 100%; height: 1px;
-                background: @linear-gradient(90deg, transparent 5%, #5ac8d430 50%, transparent 95%);
+                background: Theme.separator;
             }
 
             HorizontalLayout {
@@ -737,14 +721,14 @@ export component FileBrowser inherits Rectangle {
                 Rectangle {
                     width: sel-badge-text.preferred-width + 16px;
                     height: 24px;
-                    border-radius: 12px;
-                    background: @radial-gradient(circle, #5ac8d820 0%, #5ac8d810 100%);
+                    border-radius: Theme.r-lg;
+                    background: Theme.accent-dim;
                     border-width: 1px; border-color: Theme.cyan-dim;
 
                     sel-badge-text := Text {
                         text: root.selection-count + " selected";
                         color: Theme.cyan;
-                        font-size: 11px; font-weight: 600;
+                        font-size: Theme.fs-micro; font-weight: 600;
                         horizontal-alignment: center;
                         vertical-alignment: center;
                     }
@@ -757,10 +741,10 @@ export component FileBrowser inherits Rectangle {
                     width: 56px; height: 28px;
                     clicked => { root.copy-selected(); }
                     Rectangle {
-                        border-radius: 6px;
-                        background: ms-copy-btn.has-hover ? @radial-gradient(circle, #ffffff0c 0%, transparent 100%) : transparent;
-                        animate background { duration: 120ms; }
-                        Text { text: "Copy"; color: ms-copy-btn.has-hover ? Theme.text-primary : Theme.text-secondary; font-size: 12px; horizontal-alignment: center; vertical-alignment: center; }
+                        border-radius: Theme.r-sm;
+                        background: ms-copy-btn.has-hover ? Theme.hover-fill : transparent;
+                        animate background { duration: Theme.dur-fast; }
+                        Text { text: "Copy"; color: ms-copy-btn.has-hover ? Theme.text-primary : Theme.text-secondary; font-size: Theme.fs-caption; horizontal-alignment: center; vertical-alignment: center; }
                     }
                 }
 
@@ -769,10 +753,10 @@ export component FileBrowser inherits Rectangle {
                     width: 48px; height: 28px;
                     clicked => { root.cut-selected(); }
                     Rectangle {
-                        border-radius: 6px;
-                        background: ms-cut-btn.has-hover ? @radial-gradient(circle, #ffffff0c 0%, transparent 100%) : transparent;
-                        animate background { duration: 120ms; }
-                        Text { text: "Cut"; color: ms-cut-btn.has-hover ? Theme.text-primary : Theme.text-secondary; font-size: 12px; horizontal-alignment: center; vertical-alignment: center; }
+                        border-radius: Theme.r-sm;
+                        background: ms-cut-btn.has-hover ? Theme.hover-fill : transparent;
+                        animate background { duration: Theme.dur-fast; }
+                        Text { text: "Cut"; color: ms-cut-btn.has-hover ? Theme.text-primary : Theme.text-secondary; font-size: Theme.fs-caption; horizontal-alignment: center; vertical-alignment: center; }
                     }
                 }
 
@@ -781,10 +765,10 @@ export component FileBrowser inherits Rectangle {
                     width: 60px; height: 28px;
                     clicked => { root.delete-target-name = root.selection-count + " items"; root.show-delete-dialog = true; }
                     Rectangle {
-                        border-radius: 6px;
-                        background: ms-del-btn.has-hover ? @radial-gradient(circle, #e0525218 0%, transparent 100%) : transparent;
-                        animate background { duration: 120ms; }
-                        Text { text: "Delete"; color: ms-del-btn.has-hover ? #e05252 : #c04040; font-size: 12px; horizontal-alignment: center; vertical-alignment: center; }
+                        border-radius: Theme.r-sm;
+                        background: ms-del-btn.has-hover ? Theme.color-danger-dim : transparent;
+                        animate background { duration: Theme.dur-fast; }
+                        Text { text: "Delete"; color: ms-del-btn.has-hover ? Theme.color-danger : Theme.color-danger; font-size: Theme.fs-caption; horizontal-alignment: center; vertical-alignment: center; }
                     }
                 }
 
@@ -793,10 +777,10 @@ export component FileBrowser inherits Rectangle {
                     width: 24px; height: 28px;
                     clicked => { root.clear-selection(); root.selected-index = -1; }
                     Rectangle {
-                        border-radius: 6px;
-                        background: ms-clear-btn.has-hover ? #e0525220 : transparent;
-                        animate background { duration: 120ms; }
-                        Text { text: "\u{2715}"; color: ms-clear-btn.has-hover ? #e05252 : Theme.text-dim; font-size: 11px; horizontal-alignment: center; vertical-alignment: center; }
+                        border-radius: Theme.r-sm;
+                        background: ms-clear-btn.has-hover ? Theme.color-danger-dim : transparent;
+                        animate background { duration: Theme.dur-fast; }
+                        Text { text: "\u{2715}"; color: ms-clear-btn.has-hover ? Theme.color-danger : Theme.text-dim; font-size: Theme.fs-micro; horizontal-alignment: center; vertical-alignment: center; }
                     }
                 }
             }
@@ -805,11 +789,11 @@ export component FileBrowser inherits Rectangle {
         // ── Trash mode action bar ──
         if root.file-trash-mode : Rectangle {
             height: 36px;
-            background: @linear-gradient(180deg, #2a1828d0 0%, #1a1020c0 100%);
+            background: Theme.bg-surface;
 
             Rectangle {
                 y: parent.height - 1px; width: 100%; height: 1px;
-                background: @linear-gradient(90deg, transparent 5%, #e0525230 50%, transparent 95%);
+                background: Theme.separator;
             }
 
             HorizontalLayout {
@@ -819,14 +803,14 @@ export component FileBrowser inherits Rectangle {
                 Rectangle {
                     width: trash-badge-txt.preferred-width + 16px;
                     height: 24px;
-                    border-radius: 12px;
-                    background: @radial-gradient(circle, #e0525220 0%, #e0525210 100%);
-                    border-width: 1px; border-color: #e0525240;
+                    border-radius: Theme.r-lg;
+                    background: Theme.color-danger-dim;
+                    border-width: 1px; border-color: Theme.color-danger-dim;
 
                     trash-badge-txt := Text {
                         text: "\u{2672} Trash (" + root.file-trash-count + ")";
-                        color: #e05252;
-                        font-size: 11px; font-weight: 600;
+                        color: Theme.color-danger;
+                        font-size: Theme.fs-micro; font-weight: 600;
                         horizontal-alignment: center;
                         vertical-alignment: center;
                     }
@@ -839,10 +823,10 @@ export component FileBrowser inherits Rectangle {
                     width: 72px; height: 28px;
                     clicked => { root.file-restore-from-trash(root.selected-index); }
                     Rectangle {
-                        border-radius: 6px;
-                        background: trash-restore-btn.has-hover ? @radial-gradient(circle, #3aad6a18 0%, transparent 100%) : transparent;
-                        animate background { duration: 120ms; }
-                        Text { text: "Restore"; color: trash-restore-btn.has-hover ? #3aad6a : #2a8a5a; font-size: 12px; horizontal-alignment: center; vertical-alignment: center; }
+                        border-radius: Theme.r-sm;
+                        background: trash-restore-btn.has-hover ? Theme.color-success-dim : transparent;
+                        animate background { duration: Theme.dur-fast; }
+                        Text { text: "Restore"; color: trash-restore-btn.has-hover ? Theme.color-success : Theme.color-success; font-size: Theme.fs-caption; horizontal-alignment: center; vertical-alignment: center; }
                     }
                 }
 
@@ -851,10 +835,10 @@ export component FileBrowser inherits Rectangle {
                     width: 88px; height: 28px;
                     clicked => { root.file-empty-trash(); }
                     Rectangle {
-                        border-radius: 6px;
-                        background: trash-empty-btn.has-hover ? @radial-gradient(circle, #e0525218 0%, transparent 100%) : transparent;
-                        animate background { duration: 120ms; }
-                        Text { text: "Empty Trash"; color: trash-empty-btn.has-hover ? #e05252 : #c04040; font-size: 12px; horizontal-alignment: center; vertical-alignment: center; }
+                        border-radius: Theme.r-sm;
+                        background: trash-empty-btn.has-hover ? Theme.color-danger-dim : transparent;
+                        animate background { duration: Theme.dur-fast; }
+                        Text { text: "Empty Trash"; color: trash-empty-btn.has-hover ? Theme.color-danger : Theme.color-danger; font-size: Theme.fs-caption; horizontal-alignment: center; vertical-alignment: center; }
                     }
                 }
 
@@ -863,10 +847,10 @@ export component FileBrowser inherits Rectangle {
                     width: 24px; height: 28px;
                     clicked => { root.file-toggle-trash(); }
                     Rectangle {
-                        border-radius: 6px;
-                        background: trash-exit-btn.has-hover ? #e0525220 : transparent;
-                        animate background { duration: 120ms; }
-                        Text { text: "\u{2715}"; color: trash-exit-btn.has-hover ? #e05252 : Theme.text-dim; font-size: 11px; horizontal-alignment: center; vertical-alignment: center; }
+                        border-radius: Theme.r-sm;
+                        background: trash-exit-btn.has-hover ? Theme.color-danger-dim : transparent;
+                        animate background { duration: Theme.dur-fast; }
+                        Text { text: "\u{2715}"; color: trash-exit-btn.has-hover ? Theme.color-danger : Theme.text-dim; font-size: Theme.fs-micro; horizontal-alignment: center; vertical-alignment: center; }
                     }
                 }
             }
@@ -880,21 +864,14 @@ export component FileBrowser inherits Rectangle {
             // ── Left sidebar — Places & Devices ──
             Rectangle {
                 width: 160px;
-                background: @linear-gradient(180deg,
-                    #12102808 0%,
-                    #0e0c2008 100%
-                );
+                background: Theme.bg-deep;
 
                 // Right border
                 Rectangle {
                     x: parent.width - 1px;
                     width: 1px;
                     height: 100%;
-                    background: @linear-gradient(180deg,
-                        #5ac8d420 0%,
-                        #ffffff10 50%,
-                        #5ac8d420 100%
-                    );
+                    background: Theme.border-default;
                 }
 
                 Flickable {
@@ -911,7 +888,7 @@ export component FileBrowser inherits Rectangle {
                         Text {
                             text: "Places";
                             color: Theme.text-dim;
-                            font-size: 11px;
+                            font-size: Theme.fs-micro;
                             font-weight: 600;
                             letter-spacing: 1.5px;
                         }
@@ -923,23 +900,23 @@ export component FileBrowser inherits Rectangle {
                             height: 30px;
                             clicked => { root.selected-index = -1; root.clear-selection(); root.navigate-to-path("~"); }
                             Rectangle {
-                                border-radius: 6px;
+                                border-radius: Theme.r-sm;
                                 background: sb-home.has-hover
-                                    ? @linear-gradient(90deg, #5ac8d418 0%, transparent 100%)
+                                    ? Theme.hover-fill
                                     : (root.current-path == "~" || root.current-path == "/home/yantrik"
-                                        ? @linear-gradient(90deg, #5ac8d410 0%, transparent 100%)
+                                        ? Theme.hover-fill
                                         : transparent);
-                                animate background { duration: 120ms; }
+                                animate background { duration: Theme.dur-fast; }
                                 HorizontalLayout {
                                     padding-left: 8px;
                                     spacing: 8px;
                                     Rectangle {
                                         width: 20px; height: 20px; border-radius: 5px;
-                                        background: @radial-gradient(circle, #3a9ac8 0%, #10101040 100%);
+                                        background: #3a9ac8;
                                         border-width: 1px; border-color: #3a9ac840;
-                                        Text { text: "\u{2302}"; color: #ffffffe0; font-size: 11px; horizontal-alignment: center; vertical-alignment: center; }
+                                        Text { text: "\u{2302}"; color: Theme.text-on-accent; font-size: Theme.fs-micro; horizontal-alignment: center; vertical-alignment: center; }
                                     }
-                                    Text { text: "Home"; color: sb-home.has-hover ? Theme.cyan : Theme.text-secondary; font-size: 12px; vertical-alignment: center; animate color { duration: 120ms; } }
+                                    Text { text: "Home"; color: sb-home.has-hover ? Theme.cyan : Theme.text-secondary; font-size: Theme.fs-caption; vertical-alignment: center; animate color { duration: Theme.dur-fast; } }
                                 }
                             }
                         }
@@ -949,20 +926,20 @@ export component FileBrowser inherits Rectangle {
                             height: 30px;
                             clicked => { root.selected-index = -1; root.clear-selection(); root.navigate-to-path("~/Documents"); }
                             Rectangle {
-                                border-radius: 6px;
+                                border-radius: Theme.r-sm;
                                 background: sb-docs.has-hover
-                                    ? @linear-gradient(90deg, #5ac8d418 0%, transparent 100%) : transparent;
-                                animate background { duration: 120ms; }
+                                    ? Theme.hover-fill : transparent;
+                                animate background { duration: Theme.dur-fast; }
                                 HorizontalLayout {
                                     padding-left: 8px;
                                     spacing: 8px;
                                     Rectangle {
                                         width: 20px; height: 20px; border-radius: 5px;
-                                        background: @radial-gradient(circle, #5a7abd 0%, #10101040 100%);
+                                        background: #5a7abd;
                                         border-width: 1px; border-color: #5a7abd40;
-                                        Text { text: "\u{2261}"; color: #ffffffe0; font-size: 11px; horizontal-alignment: center; vertical-alignment: center; }
+                                        Text { text: "\u{2261}"; color: Theme.text-on-accent; font-size: Theme.fs-micro; horizontal-alignment: center; vertical-alignment: center; }
                                     }
-                                    Text { text: "Documents"; color: sb-docs.has-hover ? Theme.cyan : Theme.text-secondary; font-size: 12px; vertical-alignment: center; animate color { duration: 120ms; } }
+                                    Text { text: "Documents"; color: sb-docs.has-hover ? Theme.cyan : Theme.text-secondary; font-size: Theme.fs-caption; vertical-alignment: center; animate color { duration: Theme.dur-fast; } }
                                 }
                             }
                         }
@@ -972,20 +949,20 @@ export component FileBrowser inherits Rectangle {
                             height: 30px;
                             clicked => { root.selected-index = -1; root.clear-selection(); root.navigate-to-path("~/Downloads"); }
                             Rectangle {
-                                border-radius: 6px;
+                                border-radius: Theme.r-sm;
                                 background: sb-dl.has-hover
-                                    ? @linear-gradient(90deg, #5ac8d418 0%, transparent 100%) : transparent;
-                                animate background { duration: 120ms; }
+                                    ? Theme.hover-fill : transparent;
+                                animate background { duration: Theme.dur-fast; }
                                 HorizontalLayout {
                                     padding-left: 8px;
                                     spacing: 8px;
                                     Rectangle {
                                         width: 20px; height: 20px; border-radius: 5px;
-                                        background: @radial-gradient(circle, #3aad6a 0%, #10101040 100%);
+                                        background: Theme.color-success;
                                         border-width: 1px; border-color: #3aad6a40;
-                                        Text { text: "\u{2193}"; color: #ffffffe0; font-size: 11px; horizontal-alignment: center; vertical-alignment: center; }
+                                        Text { text: "\u{2193}"; color: Theme.text-on-accent; font-size: Theme.fs-micro; horizontal-alignment: center; vertical-alignment: center; }
                                     }
-                                    Text { text: "Downloads"; color: sb-dl.has-hover ? Theme.cyan : Theme.text-secondary; font-size: 12px; vertical-alignment: center; animate color { duration: 120ms; } }
+                                    Text { text: "Downloads"; color: sb-dl.has-hover ? Theme.cyan : Theme.text-secondary; font-size: Theme.fs-caption; vertical-alignment: center; animate color { duration: Theme.dur-fast; } }
                                 }
                             }
                         }
@@ -995,20 +972,20 @@ export component FileBrowser inherits Rectangle {
                             height: 30px;
                             clicked => { root.selected-index = -1; root.clear-selection(); root.navigate-to-path("~/Pictures"); }
                             Rectangle {
-                                border-radius: 6px;
+                                border-radius: Theme.r-sm;
                                 background: sb-pics.has-hover
-                                    ? @linear-gradient(90deg, #5ac8d418 0%, transparent 100%) : transparent;
-                                animate background { duration: 120ms; }
+                                    ? Theme.hover-fill : transparent;
+                                animate background { duration: Theme.dur-fast; }
                                 HorizontalLayout {
                                     padding-left: 8px;
                                     spacing: 8px;
                                     Rectangle {
                                         width: 20px; height: 20px; border-radius: 5px;
-                                        background: @radial-gradient(circle, #9a4a9a 0%, #10101040 100%);
+                                        background: #9a4a9a;
                                         border-width: 1px; border-color: #9a4a9a40;
-                                        Text { text: "\u{25a3}"; color: #ffffffe0; font-size: 11px; horizontal-alignment: center; vertical-alignment: center; }
+                                        Text { text: "\u{25a3}"; color: Theme.text-on-accent; font-size: Theme.fs-micro; horizontal-alignment: center; vertical-alignment: center; }
                                     }
-                                    Text { text: "Pictures"; color: sb-pics.has-hover ? Theme.cyan : Theme.text-secondary; font-size: 12px; vertical-alignment: center; animate color { duration: 120ms; } }
+                                    Text { text: "Pictures"; color: sb-pics.has-hover ? Theme.cyan : Theme.text-secondary; font-size: Theme.fs-caption; vertical-alignment: center; animate color { duration: Theme.dur-fast; } }
                                 }
                             }
                         }
@@ -1018,20 +995,20 @@ export component FileBrowser inherits Rectangle {
                             height: 30px;
                             clicked => { root.selected-index = -1; root.clear-selection(); root.navigate-to-path("~/Music"); }
                             Rectangle {
-                                border-radius: 6px;
+                                border-radius: Theme.r-sm;
                                 background: sb-music.has-hover
-                                    ? @linear-gradient(90deg, #5ac8d418 0%, transparent 100%) : transparent;
-                                animate background { duration: 120ms; }
+                                    ? Theme.hover-fill : transparent;
+                                animate background { duration: Theme.dur-fast; }
                                 HorizontalLayout {
                                     padding-left: 8px;
                                     spacing: 8px;
                                     Rectangle {
                                         width: 20px; height: 20px; border-radius: 5px;
-                                        background: @radial-gradient(circle, #c89a3a 0%, #10101040 100%);
+                                        background: #c89a3a;
                                         border-width: 1px; border-color: #c89a3a40;
-                                        Text { text: "\u{266a}"; color: #ffffffe0; font-size: 11px; horizontal-alignment: center; vertical-alignment: center; }
+                                        Text { text: "\u{266a}"; color: Theme.text-on-accent; font-size: Theme.fs-micro; horizontal-alignment: center; vertical-alignment: center; }
                                     }
-                                    Text { text: "Music"; color: sb-music.has-hover ? Theme.cyan : Theme.text-secondary; font-size: 12px; vertical-alignment: center; animate color { duration: 120ms; } }
+                                    Text { text: "Music"; color: sb-music.has-hover ? Theme.cyan : Theme.text-secondary; font-size: Theme.fs-caption; vertical-alignment: center; animate color { duration: Theme.dur-fast; } }
                                 }
                             }
                         }
@@ -1042,7 +1019,7 @@ export component FileBrowser inherits Rectangle {
                         Text {
                             text: "Devices";
                             color: Theme.text-dim;
-                            font-size: 11px;
+                            font-size: Theme.fs-micro;
                             font-weight: 600;
                             letter-spacing: 1.5px;
                         }
@@ -1054,20 +1031,20 @@ export component FileBrowser inherits Rectangle {
                             height: 30px;
                             clicked => { root.selected-index = -1; root.clear-selection(); root.navigate-to-path("/"); }
                             Rectangle {
-                                border-radius: 6px;
+                                border-radius: Theme.r-sm;
                                 background: sb-root.has-hover
-                                    ? @linear-gradient(90deg, #5ac8d418 0%, transparent 100%) : transparent;
-                                animate background { duration: 120ms; }
+                                    ? Theme.hover-fill : transparent;
+                                animate background { duration: Theme.dur-fast; }
                                 HorizontalLayout {
                                     padding-left: 8px;
                                     spacing: 8px;
                                     Rectangle {
                                         width: 20px; height: 20px; border-radius: 5px;
-                                        background: @radial-gradient(circle, #6a6a7a 0%, #10101040 100%);
+                                        background: #6a6a7a;
                                         border-width: 1px; border-color: #6a6a7a40;
-                                        Text { text: "\u{25c9}"; color: #ffffffe0; font-size: 11px; horizontal-alignment: center; vertical-alignment: center; }
+                                        Text { text: "\u{25c9}"; color: Theme.text-on-accent; font-size: Theme.fs-micro; horizontal-alignment: center; vertical-alignment: center; }
                                     }
-                                    Text { text: "File System"; color: sb-root.has-hover ? Theme.cyan : Theme.text-secondary; font-size: 12px; vertical-alignment: center; animate color { duration: 120ms; } }
+                                    Text { text: "File System"; color: sb-root.has-hover ? Theme.cyan : Theme.text-secondary; font-size: Theme.fs-caption; vertical-alignment: center; animate color { duration: Theme.dur-fast; } }
                                 }
                             }
                         }
@@ -1077,20 +1054,20 @@ export component FileBrowser inherits Rectangle {
                             height: 30px;
                             clicked => { root.selected-index = -1; root.clear-selection(); root.navigate-to-path("/tmp"); }
                             Rectangle {
-                                border-radius: 6px;
+                                border-radius: Theme.r-sm;
                                 background: sb-tmp.has-hover
-                                    ? @linear-gradient(90deg, #5ac8d418 0%, transparent 100%) : transparent;
-                                animate background { duration: 120ms; }
+                                    ? Theme.hover-fill : transparent;
+                                animate background { duration: Theme.dur-fast; }
                                 HorizontalLayout {
                                     padding-left: 8px;
                                     spacing: 8px;
                                     Rectangle {
                                         width: 20px; height: 20px; border-radius: 5px;
-                                        background: @radial-gradient(circle, #bd5a4a 0%, #10101040 100%);
+                                        background: #bd5a4a;
                                         border-width: 1px; border-color: #bd5a4a40;
-                                        Text { text: "T"; color: #ffffffe0; font-size: 11px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; }
+                                        Text { text: "T"; color: Theme.text-on-accent; font-size: Theme.fs-micro; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; }
                                     }
-                                    Text { text: "Temp"; color: sb-tmp.has-hover ? Theme.cyan : Theme.text-secondary; font-size: 12px; vertical-alignment: center; animate color { duration: 120ms; } }
+                                    Text { text: "Temp"; color: sb-tmp.has-hover ? Theme.cyan : Theme.text-secondary; font-size: Theme.fs-caption; vertical-alignment: center; animate color { duration: Theme.dur-fast; } }
                                 }
                             }
                         }
@@ -1106,12 +1083,12 @@ export component FileBrowser inherits Rectangle {
                 // ── Column headers (list view only) ──
                 if !root.grid-view : Rectangle {
                     height: 28px;
-                    background: @linear-gradient(180deg, #16142808 0%, #12102808 100%);
+                    background: Theme.bg-surface;
 
                     // Bottom edge
                     Rectangle {
                         y: parent.height - 1px; width: 100%; height: 1px;
-                        background: @linear-gradient(90deg, transparent 5%, #ffffff10 30%, #ffffff10 70%, transparent 95%);
+                        background: Theme.separator;
                     }
 
                     HorizontalLayout {
@@ -1132,9 +1109,9 @@ export component FileBrowser inherits Rectangle {
                                 Text {
                                     text: "Name";
                                     color: root.sort-field == "name" ? Theme.cyan : (name-hdr.has-hover ? Theme.text-secondary : Theme.text-dim);
-                                    font-size: 11px; font-weight: 600;
+                                    font-size: Theme.fs-micro; font-weight: 600;
                                     vertical-alignment: center;
-                                    animate color { duration: 120ms; }
+                                    animate color { duration: Theme.dur-fast; }
                                 }
                                 if root.sort-field == "name" : Text {
                                     text: root.sort-ascending ? "\u{25b2}" : "\u{25bc}";
@@ -1156,9 +1133,9 @@ export component FileBrowser inherits Rectangle {
                                 Text {
                                     text: "Size";
                                     color: root.sort-field == "size" ? Theme.cyan : (size-hdr.has-hover ? Theme.text-secondary : Theme.text-dim);
-                                    font-size: 11px; font-weight: 600;
+                                    font-size: Theme.fs-micro; font-weight: 600;
                                     vertical-alignment: center;
-                                    animate color { duration: 120ms; }
+                                    animate color { duration: Theme.dur-fast; }
                                 }
                                 if root.sort-field == "size" : Text {
                                     text: root.sort-ascending ? "\u{25b2}" : "\u{25bc}";
@@ -1180,9 +1157,9 @@ export component FileBrowser inherits Rectangle {
                                 Text {
                                     text: "Modified";
                                     color: root.sort-field == "modified" ? Theme.cyan : (mod-hdr.has-hover ? Theme.text-secondary : Theme.text-dim);
-                                    font-size: 11px; font-weight: 600;
+                                    font-size: Theme.fs-micro; font-weight: 600;
                                     vertical-alignment: center;
-                                    animate color { duration: 120ms; }
+                                    animate color { duration: Theme.dur-fast; }
                                 }
                                 if root.sort-field == "modified" : Text {
                                     text: root.sort-ascending ? "\u{25b2}" : "\u{25bc}";
@@ -1245,13 +1222,13 @@ export component FileBrowser inherits Rectangle {
                             width: parent.width - 8px;
                             height: parent.height - 8px;
                             background: entry.selected
-                                ? @radial-gradient(circle, #5ac8d41c 0%, #5ac8d808 60%, transparent 100%)
+                                ? Theme.accent-dim
                                 : (grid-card-touch.has-hover
-                                    ? @radial-gradient(circle, #ffffff0c 0%, #ffffff04 60%, transparent 100%)
+                                    ? Theme.hover-fill
                                     : transparent);
                             border-width: entry.selected ? 1px : (grid-card-touch.has-hover ? 1px : 0);
-                            border-color: entry.selected ? Theme.cyan-dim : #ffffff10;
-                            animate background, border-width, border-color { duration: 120ms; }
+                            border-color: entry.selected ? Theme.cyan-dim : Theme.border-subtle;
+                            animate background, border-width, border-color { duration: Theme.dur-fast; }
 
                             VerticalLayout {
                                 alignment: center;
@@ -1264,17 +1241,17 @@ export component FileBrowser inherits Rectangle {
                                     width: 36px;
                                     height: 36px;
                                     border-radius: 10px;
-                                    background: @radial-gradient(circle, badge-color, #10101040);
+                                    background: badge-color;
                                     border-width: 1px;
                                     border-color: badge-color;
                                     drop-shadow-blur: grid-card-touch.has-hover ? 12px : 4px;
                                     drop-shadow-color: badge-color;
-                                    animate drop-shadow-blur { duration: 120ms; }
+                                    animate drop-shadow-blur { duration: Theme.dur-fast; }
 
                                     Text {
                                         text: entry.icon-char;
-                                        color: #ffffffe0;
-                                        font-size: 16px;
+                                        color: Theme.text-on-accent;
+                                        font-size: Theme.fs-headline;
                                         font-weight: 700;
                                         horizontal-alignment: center;
                                         vertical-alignment: center;
@@ -1285,7 +1262,7 @@ export component FileBrowser inherits Rectangle {
                                 Text {
                                     text: entry.name;
                                     color: entry.is-dir ? Theme.cyan-light : Theme.text-primary;
-                                    font-size: 11px;
+                                    font-size: Theme.fs-micro;
                                     font-weight: entry.is-dir ? 600 : 400;
                                     horizontal-alignment: center;
                                     overflow: elide;
@@ -1303,11 +1280,11 @@ export component FileBrowser inherits Rectangle {
                     for entry[idx] in entries : Rectangle {
                         height: 44px;
                         background: entry.selected
-                            ? @linear-gradient(90deg, #5ac8d420 0%, #5ac8d80c 40%, transparent 100%)
+                            ? Theme.accent-dim
                             : (file-touch.has-hover
-                                ? @linear-gradient(90deg, #ffffff0a 0%, #ffffff04 40%, transparent 100%)
+                                ? Theme.hover-fill
                                 : transparent);
-                        animate background { duration: 120ms; }
+                        animate background { duration: Theme.dur-fast; }
 
                         // Left edge glow on selected
                         if entry.selected : Rectangle {
@@ -1357,17 +1334,17 @@ export component FileBrowser inherits Rectangle {
                                 width: 28px;
                                 height: 28px;
                                 border-radius: 7px;
-                                background: @radial-gradient(circle, badge-color, #10101040);
+                                background: badge-color;
                                 border-width: 1px;
                                 border-color: badge-color;
                                 drop-shadow-blur: file-touch.has-hover ? 10px : 3px;
                                 drop-shadow-color: badge-color;
-                                animate drop-shadow-blur { duration: 120ms; }
+                                animate drop-shadow-blur { duration: Theme.dur-fast; }
 
                                 Text {
                                     text: entry.icon-char;
-                                    color: #ffffffe0;
-                                    font-size: 13px;
+                                    color: Theme.text-on-accent;
+                                    font-size: Theme.fs-caption;
                                     font-weight: 700;
                                     horizontal-alignment: center;
                                     vertical-alignment: center;
@@ -1413,12 +1390,12 @@ export component FileBrowser inherits Rectangle {
                                 }
                                 Rectangle {
                                     border-radius: 4px;
-                                    background: ctx-btn.has-hover ? #ffffff10 : transparent;
-                                    animate background { duration: 120ms; }
+                                    background: ctx-btn.has-hover ? Theme.border-subtle : transparent;
+                                    animate background { duration: Theme.dur-fast; }
                                     Text {
                                         text: "\u{22ee}";
                                         color: ctx-btn.has-hover ? Theme.text-primary : Theme.text-dim;
-                                        font-size: 14px;
+                                        font-size: Theme.fs-body;
                                         horizontal-alignment: center;
                                         vertical-alignment: center;
                                     }
@@ -1430,9 +1407,7 @@ export component FileBrowser inherits Rectangle {
                         Rectangle {
                             y: parent.height - 1px;
                             height: 1px;
-                            background: @linear-gradient(90deg,
-                                #5ac8d410 0%, #ffffff14 20%, #ffffff14 80%, #5ac8d410 100%
-                            );
+                            background: Theme.separator;
                         }
                     }
                 }
@@ -1440,11 +1415,11 @@ export component FileBrowser inherits Rectangle {
                 // ── Single-select action bar ──
                 if root.selected-index >= 0 && root.selected-index < root.entries.length && root.selection-count <= 1 : Rectangle {
                     height: 48px;
-                    background: @linear-gradient(180deg, #1a1830c0 0%, #141228b0 100%);
+                    background: Theme.bg-surface;
                     // Top holographic edge
                     Rectangle {
                         y: 0; width: 100%; height: 1px;
-                        background: @linear-gradient(90deg, transparent 5%, #5ac8d430 20%, #5ac8d880 50%, #5ac8d430 80%, transparent 95%);
+                        background: Theme.separator;
                     }
 
                     HorizontalLayout {
@@ -1454,11 +1429,11 @@ export component FileBrowser inherits Rectangle {
                             width: 56px; height: 36px;
                             clicked => { root.open-file(root.entries[root.selected-index].name); root.selected-index = -1; root.clear-selection(); }
                             Rectangle {
-                                border-radius: 8px;
-                                background: open-btn.has-hover ? @radial-gradient(circle, #5ac8d418 0%, #12111a 100%) : transparent;
+                                border-radius: Theme.r-md;
+                                background: open-btn.has-hover ? Theme.hover-fill : transparent;
                                 border-width: open-btn.has-hover ? 1px : 0; border-color: Theme.cyan-dim;
-                                animate background, border-width { duration: 120ms; }
-                                Text { text: "Open"; color: open-btn.has-hover ? Theme.cyan : Theme.cyan-dim; font-size: 12px; horizontal-alignment: center; vertical-alignment: center; animate color { duration: 120ms; } }
+                                animate background, border-width { duration: Theme.dur-fast; }
+                                Text { text: "Open"; color: open-btn.has-hover ? Theme.cyan : Theme.cyan-dim; font-size: Theme.fs-caption; horizontal-alignment: center; vertical-alignment: center; animate color { duration: Theme.dur-fast; } }
                             }
                         }
 
@@ -1467,11 +1442,11 @@ export component FileBrowser inherits Rectangle {
                             width: 72px; height: 36px;
                             clicked => { root.file-quick-look(root.selected-index); }
                             Rectangle {
-                                border-radius: 8px;
-                                background: ql-btn.has-hover ? @radial-gradient(circle, #d4a03c18 0%, #12111a 100%) : transparent;
+                                border-radius: Theme.r-md;
+                                background: ql-btn.has-hover ? Theme.hover-fill : transparent;
                                 border-width: ql-btn.has-hover ? 1px : 0; border-color: Theme.amber-dim;
-                                animate background, border-width { duration: 120ms; }
-                                Text { text: "Preview"; color: ql-btn.has-hover ? Theme.amber : Theme.amber-dim; font-size: 12px; horizontal-alignment: center; vertical-alignment: center; animate color { duration: 120ms; } }
+                                animate background, border-width { duration: Theme.dur-fast; }
+                                Text { text: "Preview"; color: ql-btn.has-hover ? Theme.amber : Theme.amber-dim; font-size: Theme.fs-caption; horizontal-alignment: center; vertical-alignment: center; animate color { duration: Theme.dur-fast; } }
                             }
                         }
 
@@ -1479,10 +1454,10 @@ export component FileBrowser inherits Rectangle {
                             width: 56px; height: 36px;
                             clicked => { root.file-copy(root.entries[root.selected-index].name); root.selected-index = -1; root.clear-selection(); }
                             Rectangle {
-                                border-radius: 8px;
-                                background: copy-btn.has-hover ? @radial-gradient(circle, #ffffff0c 0%, transparent 100%) : transparent;
-                                animate background { duration: 120ms; }
-                                Text { text: "Copy"; color: copy-btn.has-hover ? Theme.text-primary : Theme.text-secondary; font-size: 12px; horizontal-alignment: center; vertical-alignment: center; animate color { duration: 120ms; } }
+                                border-radius: Theme.r-md;
+                                background: copy-btn.has-hover ? Theme.hover-fill : transparent;
+                                animate background { duration: Theme.dur-fast; }
+                                Text { text: "Copy"; color: copy-btn.has-hover ? Theme.text-primary : Theme.text-secondary; font-size: Theme.fs-caption; horizontal-alignment: center; vertical-alignment: center; animate color { duration: Theme.dur-fast; } }
                             }
                         }
 
@@ -1490,10 +1465,10 @@ export component FileBrowser inherits Rectangle {
                             width: 56px; height: 36px;
                             clicked => { root.file-cut(root.entries[root.selected-index].name); root.selected-index = -1; root.clear-selection(); }
                             Rectangle {
-                                border-radius: 8px;
-                                background: cut-btn.has-hover ? @radial-gradient(circle, #ffffff0c 0%, transparent 100%) : transparent;
-                                animate background { duration: 120ms; }
-                                Text { text: "Cut"; color: cut-btn.has-hover ? Theme.text-primary : Theme.text-secondary; font-size: 12px; horizontal-alignment: center; vertical-alignment: center; animate color { duration: 120ms; } }
+                                border-radius: Theme.r-md;
+                                background: cut-btn.has-hover ? Theme.hover-fill : transparent;
+                                animate background { duration: Theme.dur-fast; }
+                                Text { text: "Cut"; color: cut-btn.has-hover ? Theme.text-primary : Theme.text-secondary; font-size: Theme.fs-caption; horizontal-alignment: center; vertical-alignment: center; animate color { duration: Theme.dur-fast; } }
                             }
                         }
 
@@ -1501,10 +1476,10 @@ export component FileBrowser inherits Rectangle {
                             width: 64px; height: 36px;
                             clicked => { root.rename-old-name = root.entries[root.selected-index].name; root.rename-new-name = root.entries[root.selected-index].name; root.show-rename-dialog = true; }
                             Rectangle {
-                                border-radius: 8px;
-                                background: rename-btn.has-hover ? @radial-gradient(circle, #ffffff0c 0%, transparent 100%) : transparent;
-                                animate background { duration: 120ms; }
-                                Text { text: "Rename"; color: rename-btn.has-hover ? Theme.text-primary : Theme.text-secondary; font-size: 12px; horizontal-alignment: center; vertical-alignment: center; animate color { duration: 120ms; } }
+                                border-radius: Theme.r-md;
+                                background: rename-btn.has-hover ? Theme.hover-fill : transparent;
+                                animate background { duration: Theme.dur-fast; }
+                                Text { text: "Rename"; color: rename-btn.has-hover ? Theme.text-primary : Theme.text-secondary; font-size: Theme.fs-caption; horizontal-alignment: center; vertical-alignment: center; animate color { duration: Theme.dur-fast; } }
                             }
                         }
 
@@ -1512,11 +1487,11 @@ export component FileBrowser inherits Rectangle {
                             width: 64px; height: 36px;
                             clicked => { root.delete-target-name = root.entries[root.selected-index].name; root.show-delete-dialog = true; }
                             Rectangle {
-                                border-radius: 8px;
-                                background: del-btn.has-hover ? @radial-gradient(circle, #e0525218 0%, transparent 100%) : transparent;
-                                border-width: del-btn.has-hover ? 1px : 0; border-color: #e0525240;
-                                animate background, border-width { duration: 120ms; }
-                                Text { text: "Delete"; color: del-btn.has-hover ? #e05252 : #c04040; font-size: 12px; horizontal-alignment: center; vertical-alignment: center; animate color { duration: 120ms; } }
+                                border-radius: Theme.r-md;
+                                background: del-btn.has-hover ? Theme.color-danger-dim : transparent;
+                                border-width: del-btn.has-hover ? 1px : 0; border-color: Theme.color-danger-dim;
+                                animate background, border-width { duration: Theme.dur-fast; }
+                                Text { text: "Delete"; color: del-btn.has-hover ? Theme.color-danger : Theme.color-danger; font-size: Theme.fs-caption; horizontal-alignment: center; vertical-alignment: center; animate color { duration: Theme.dur-fast; } }
                             }
                         }
                     }
@@ -1530,9 +1505,9 @@ export component FileBrowser inherits Rectangle {
                     Rectangle {
                         width: 48px; height: 48px; x: (parent.width - 48px) / 2;
                         border-radius: 24px; border-width: 1px; border-color: Theme.cyan-dim;
-                        background: @radial-gradient(circle, #5ac8d40c 0%, transparent 70%);
+                        background: Theme.accent-dim;
                         drop-shadow-blur: 8px; drop-shadow-color: Theme.cyan-glow;
-                        Text { text: "\u{2205}"; color: Theme.cyan-dim; font-size: 20px; horizontal-alignment: center; vertical-alignment: center; }
+                        Text { text: "\u{2205}"; color: Theme.cyan-dim; font-size: Theme.fs-display; horizontal-alignment: center; vertical-alignment: center; }
                     }
                     Rectangle { height: 12px; }
                     Text { text: "Empty directory"; color: Theme.text-dim; font-size: Theme.font-body; horizontal-alignment: center; }
@@ -1550,12 +1525,12 @@ export component FileBrowser inherits Rectangle {
             if root.detail-panel-visible && root.selected-index >= 0 && root.file-details.name != "" : Rectangle {
                 width: 260px;
 
-                background: @linear-gradient(180deg, #161430e8 0%, #0e0c20e0 50%, #161430e8 100%);
+                background: Theme.bg-card;
 
                 // Left holographic border
                 Rectangle {
                     x: 0; y: 0; width: 2px; height: parent.height;
-                    background: @linear-gradient(180deg, #5ac8d8a0 0%, Theme.cyan-dim 30%, Theme.separator 50%, Theme.amber-dim 70%, Theme.amber-glow 100%);
+                    background: Theme.border-strong;
                     opacity: 0.6;
                 }
 
@@ -1564,10 +1539,10 @@ export component FileBrowser inherits Rectangle {
                     x: parent.width - 36px; y: 4px; width: 28px; height: 28px;
                     clicked => { root.detail-panel-visible = false; }
                     Rectangle {
-                        border-radius: 6px;
-                        background: detail-close.has-hover ? #e0525230 : transparent;
-                        animate background { duration: 120ms; }
-                        Text { text: "\u{2715}"; color: detail-close.has-hover ? #e05252 : Theme.text-dim; font-size: 14px; horizontal-alignment: center; vertical-alignment: center; animate color { duration: 120ms; } }
+                        border-radius: Theme.r-sm;
+                        background: detail-close.has-hover ? Theme.color-danger-dim : transparent;
+                        animate background { duration: Theme.dur-fast; }
+                        Text { text: "\u{2715}"; color: detail-close.has-hover ? Theme.color-danger : Theme.text-dim; font-size: Theme.fs-body; horizontal-alignment: center; vertical-alignment: center; animate color { duration: Theme.dur-fast; } }
                     }
                 }
 
@@ -1593,47 +1568,47 @@ export component FileBrowser inherits Rectangle {
                                     root.file-details.icon-char == "\u{2699}" ? #4a7abd :
                                     root.file-details.icon-char == "\u{00b7}" ? #6a6a7a :
                                     #5a5a7a;
-                                width: 48px; height: 48px; border-radius: 12px;
-                                background: @radial-gradient(circle, detail-badge-color, #10101040);
+                                width: 48px; height: 48px; border-radius: Theme.r-lg;
+                                background: detail-badge-color;
                                 border-width: 1px; border-color: detail-badge-color;
                                 drop-shadow-blur: 16px; drop-shadow-color: detail-badge-color;
-                                Text { text: root.file-details.icon-char; color: #ffffffd0; font-size: 22px; horizontal-alignment: center; vertical-alignment: center; }
+                                Text { text: root.file-details.icon-char; color: Theme.text-on-accent; font-size: Theme.fs-display; horizontal-alignment: center; vertical-alignment: center; }
                             }
                             VerticalLayout {
                                 alignment: center; horizontal-stretch: 1;
-                                Text { text: root.file-details.name; color: Theme.text-primary; font-size: 15px; font-weight: 600; wrap: word-wrap; }
-                                Text { text: root.file-details.file-type; color: Theme.text-dim; font-size: 12px; }
+                                Text { text: root.file-details.name; color: Theme.text-primary; font-size: Theme.fs-body; font-weight: 600; wrap: word-wrap; }
+                                Text { text: root.file-details.file-type; color: Theme.text-dim; font-size: Theme.fs-caption; }
                             }
                         }
 
                         // Separator
-                        Rectangle { height: 1px; background: @linear-gradient(90deg, transparent 5%, Theme.separator 30%, Theme.separator 70%, transparent 95%); opacity: 0.5; }
+                        Rectangle { height: 1px; background: Theme.separator; opacity: 0.5; }
 
                         // Info rows
                         VerticalLayout {
                             spacing: 10px;
-                            if root.file-details.size-text != "" : HorizontalLayout { spacing: 8px; Text { text: "Size"; color: Theme.text-dim; font-size: 12px; width: 72px; vertical-alignment: center; } Text { text: root.file-details.size-text; color: Theme.text-secondary; font-size: 12px; vertical-alignment: center; } }
-                            if root.file-details.modified-text != "" : HorizontalLayout { spacing: 8px; Text { text: "Modified"; color: Theme.text-dim; font-size: 12px; width: 72px; } Text { text: root.file-details.modified-text; color: Theme.text-secondary; font-size: 12px; wrap: word-wrap; horizontal-stretch: 1; } }
-                            HorizontalLayout { spacing: 8px; Text { text: "Path"; color: Theme.text-dim; font-size: 12px; width: 72px; } Text { text: root.file-details.path-text; color: Theme.text-secondary; font-size: 12px; wrap: char-wrap; horizontal-stretch: 1; } }
-                            if root.file-details.permissions != "" : HorizontalLayout { spacing: 8px; Text { text: "Perms"; color: Theme.text-dim; font-size: 12px; width: 72px; vertical-alignment: center; } Text { text: root.file-details.permissions; color: Theme.text-secondary; font-size: 12px; vertical-alignment: center; } }
+                            if root.file-details.size-text != "" : HorizontalLayout { spacing: 8px; Text { text: "Size"; color: Theme.text-dim; font-size: Theme.fs-caption; width: 72px; vertical-alignment: center; } Text { text: root.file-details.size-text; color: Theme.text-secondary; font-size: Theme.fs-caption; vertical-alignment: center; } }
+                            if root.file-details.modified-text != "" : HorizontalLayout { spacing: 8px; Text { text: "Modified"; color: Theme.text-dim; font-size: Theme.fs-caption; width: 72px; } Text { text: root.file-details.modified-text; color: Theme.text-secondary; font-size: Theme.fs-caption; wrap: word-wrap; horizontal-stretch: 1; } }
+                            HorizontalLayout { spacing: 8px; Text { text: "Path"; color: Theme.text-dim; font-size: Theme.fs-caption; width: 72px; } Text { text: root.file-details.path-text; color: Theme.text-secondary; font-size: Theme.fs-caption; wrap: char-wrap; horizontal-stretch: 1; } }
+                            if root.file-details.permissions != "" : HorizontalLayout { spacing: 8px; Text { text: "Perms"; color: Theme.text-dim; font-size: Theme.fs-caption; width: 72px; vertical-alignment: center; } Text { text: root.file-details.permissions; color: Theme.text-secondary; font-size: Theme.fs-caption; vertical-alignment: center; } }
                         }
 
                         // Preview
                         if root.file-details.is-text-file : VerticalLayout {
                             spacing: 8px;
-                            Rectangle { height: 1px; background: @linear-gradient(90deg, transparent 5%, Theme.separator 30%, Theme.separator 70%, transparent 95%); opacity: 0.5; }
-                            Text { text: "Preview"; color: Theme.cyan-dim; font-size: 12px; font-weight: 600; letter-spacing: 2px; }
+                            Rectangle { height: 1px; background: Theme.separator; opacity: 0.5; }
+                            Text { text: "Preview"; color: Theme.cyan-dim; font-size: Theme.fs-caption; font-weight: 600; letter-spacing: 2px; }
                             Rectangle {
-                                clip: true; border-radius: 6px; height: 180px;
-                                background: @linear-gradient(180deg, #08080c 0%, #060610 50%, #08080c 100%);
-                                border-width: 1px; border-color: #ffffff08;
-                                Rectangle { x: 8px; y: 0; width: parent.width - 16px; height: 1px; background: @linear-gradient(90deg, transparent 0%, #ffffff08 30%, #ffffff0c 50%, #ffffff08 70%, transparent 100%); }
-                                Text { x: 8px; y: 8px; width: parent.width - 16px; text: root.file-details.preview-text; color: Theme.text-dim; font-size: 11px; wrap: word-wrap; }
+                                clip: true; border-radius: Theme.r-sm; height: 180px;
+                                background: Theme.bg-deep;
+                                border-width: 1px; border-color: Theme.border-subtle;
+                                Rectangle { x: 8px; y: 0; width: parent.width - 16px; height: 1px; background: Theme.separator; }
+                                Text { x: 8px; y: 8px; width: parent.width - 16px; text: root.file-details.preview-text; color: Theme.text-dim; font-size: Theme.fs-micro; wrap: word-wrap; }
                             }
                         }
 
                         // ── AI Actions ──
-                        Rectangle { height: 1px; background: @linear-gradient(90deg, transparent 5%, Theme.separator 30%, Theme.separator 70%, transparent 95%); opacity: 0.5; }
+                        Rectangle { height: 1px; background: Theme.separator; opacity: 0.5; }
 
                         HorizontalLayout {
                             spacing: 8px;
@@ -1645,18 +1620,18 @@ export component FileBrowser inherits Rectangle {
                                 height: 32px;
                                 clicked => { root.show-summary-dialog = true; root.request-summarize(); }
                                 Rectangle {
-                                    border-radius: 8px;
+                                    border-radius: Theme.r-md;
                                     background: summarize-btn.has-hover
-                                        ? @radial-gradient(circle, #d4a03c18 0%, #12111a 100%)
-                                        : @radial-gradient(circle, #d4a03c08 0%, transparent 100%);
+                                        ? Theme.hover-fill
+                                        : transparent;
                                     border-width: 1px;
-                                    border-color: summarize-btn.has-hover ? Theme.amber-dim : #ffffff08;
-                                    animate background, border-color { duration: 120ms; }
+                                    border-color: summarize-btn.has-hover ? Theme.amber-dim : Theme.border-subtle;
+                                    animate background, border-color { duration: Theme.dur-fast; }
                                     HorizontalLayout {
                                         spacing: 6px;
                                         alignment: center;
-                                        Text { text: "\u{2726}"; color: Theme.amber; font-size: 12px; vertical-alignment: center; }
-                                        Text { text: "Summarize"; color: summarize-btn.has-hover ? Theme.amber : Theme.amber-dim; font-size: 12px; vertical-alignment: center; animate color { duration: 120ms; } }
+                                        Text { text: "\u{2726}"; color: Theme.amber; font-size: Theme.fs-caption; vertical-alignment: center; }
+                                        Text { text: "Summarize"; color: summarize-btn.has-hover ? Theme.amber : Theme.amber-dim; font-size: Theme.fs-caption; vertical-alignment: center; animate color { duration: Theme.dur-fast; } }
                                     }
                                 }
                             }
@@ -1667,25 +1642,25 @@ export component FileBrowser inherits Rectangle {
                                 height: 32px;
                                 clicked => { root.request-ask-ai(); }
                                 Rectangle {
-                                    border-radius: 8px;
+                                    border-radius: Theme.r-md;
                                     background: ask-ai-btn.has-hover
-                                        ? @radial-gradient(circle, #5ac8d818 0%, #12111a 100%)
-                                        : @radial-gradient(circle, #5ac8d808 0%, transparent 100%);
+                                        ? Theme.hover-fill
+                                        : transparent;
                                     border-width: 1px;
-                                    border-color: ask-ai-btn.has-hover ? Theme.cyan-dim : #ffffff08;
-                                    animate background, border-color { duration: 120ms; }
+                                    border-color: ask-ai-btn.has-hover ? Theme.cyan-dim : Theme.border-subtle;
+                                    animate background, border-color { duration: Theme.dur-fast; }
                                     HorizontalLayout {
                                         spacing: 6px;
                                         alignment: center;
-                                        Text { text: "\u{25c8}"; color: Theme.cyan; font-size: 12px; vertical-alignment: center; }
-                                        Text { text: "Ask AI"; color: ask-ai-btn.has-hover ? Theme.cyan : Theme.cyan-dim; font-size: 12px; vertical-alignment: center; animate color { duration: 120ms; } }
+                                        Text { text: "\u{25c8}"; color: Theme.cyan; font-size: Theme.fs-caption; vertical-alignment: center; }
+                                        Text { text: "Ask AI"; color: ask-ai-btn.has-hover ? Theme.cyan : Theme.cyan-dim; font-size: Theme.fs-caption; vertical-alignment: center; animate color { duration: Theme.dur-fast; } }
                                     }
                                 }
                             }
                         }
 
                         // Quick actions
-                        Rectangle { height: 1px; background: @linear-gradient(90deg, transparent 5%, Theme.separator 30%, Theme.separator 70%, transparent 95%); opacity: 0.5; }
+                        Rectangle { height: 1px; background: Theme.separator; opacity: 0.5; }
 
                         VerticalLayout {
                             spacing: 4px;
@@ -1695,13 +1670,13 @@ export component FileBrowser inherits Rectangle {
                                 height: 28px;
                                 clicked => { root.context-copy-path(root.file-details.path-text); }
                                 Rectangle {
-                                    border-radius: 6px;
-                                    background: cp-path-btn.has-hover ? #ffffff0a : transparent;
-                                    animate background { duration: 120ms; }
+                                    border-radius: Theme.r-sm;
+                                    background: cp-path-btn.has-hover ? Theme.hover-fill : transparent;
+                                    animate background { duration: Theme.dur-fast; }
                                     HorizontalLayout {
                                         padding-left: 8px; spacing: 8px;
-                                        Text { text: "\u{2398}"; color: Theme.text-dim; font-size: 12px; vertical-alignment: center; }
-                                        Text { text: "Copy Path"; color: cp-path-btn.has-hover ? Theme.text-primary : Theme.text-secondary; font-size: 12px; vertical-alignment: center; }
+                                        Text { text: "\u{2398}"; color: Theme.text-dim; font-size: Theme.fs-caption; vertical-alignment: center; }
+                                        Text { text: "Copy Path"; color: cp-path-btn.has-hover ? Theme.text-primary : Theme.text-secondary; font-size: Theme.fs-caption; vertical-alignment: center; }
                                     }
                                 }
                             }
@@ -1711,13 +1686,13 @@ export component FileBrowser inherits Rectangle {
                                 height: 28px;
                                 clicked => { root.context-open-terminal(); }
                                 Rectangle {
-                                    border-radius: 6px;
-                                    background: term-btn.has-hover ? #ffffff0a : transparent;
-                                    animate background { duration: 120ms; }
+                                    border-radius: Theme.r-sm;
+                                    background: term-btn.has-hover ? Theme.hover-fill : transparent;
+                                    animate background { duration: Theme.dur-fast; }
                                     HorizontalLayout {
                                         padding-left: 8px; spacing: 8px;
-                                        Text { text: ">_"; color: Theme.text-dim; font-size: 11px; font-weight: 700; vertical-alignment: center; }
-                                        Text { text: "Open Terminal Here"; color: term-btn.has-hover ? Theme.text-primary : Theme.text-secondary; font-size: 12px; vertical-alignment: center; }
+                                        Text { text: ">_"; color: Theme.text-dim; font-size: Theme.fs-micro; font-weight: 700; vertical-alignment: center; }
+                                        Text { text: "Open Terminal Here"; color: term-btn.has-hover ? Theme.text-primary : Theme.text-secondary; font-size: Theme.fs-caption; vertical-alignment: center; }
                                     }
                                 }
                             }
@@ -1730,14 +1705,14 @@ export component FileBrowser inherits Rectangle {
         // ── File operations queue drawer ──
         if root.file-op-queue.length > 0 : Rectangle {
             height: root.file-op-queue-visible ? min(root.file-op-queue.length * 32px + 36px, 160px) : 28px;
-            background: @linear-gradient(180deg, #1a1830d0 0%, #141228c0 100%);
+            background: Theme.bg-surface;
             clip: true;
-            animate height { duration: 200ms; easing: ease-out; }
+            animate height { duration: Theme.dur-normal; easing: ease-out; }
 
             // Top edge
             Rectangle {
                 y: 0; width: 100%; height: 1px;
-                background: @linear-gradient(90deg, transparent 10%, #5ac8d420 50%, transparent 90%);
+                background: Theme.separator;
             }
 
             VerticalLayout {
@@ -1760,7 +1735,7 @@ export component FileBrowser inherits Rectangle {
                         Text {
                             text: root.file-op-queue.length + " operation(s)";
                             color: Theme.cyan-dim;
-                            font-size: 11px;
+                            font-size: Theme.fs-micro;
                             font-weight: 600;
                             vertical-alignment: center;
                         }
@@ -1783,8 +1758,8 @@ export component FileBrowser inherits Rectangle {
 
                             Text {
                                 text: op.operation;
-                                color: op.status == "error" ? #e05252 : (op.status == "done" ? #3aad6a : Theme.text-secondary);
-                                font-size: 11px;
+                                color: op.status == "error" ? Theme.color-danger : (op.status == "done" ? Theme.color-success : Theme.text-secondary);
+                                font-size: Theme.fs-micro;
                                 width: 56px;
                                 vertical-alignment: center;
                             }
@@ -1792,7 +1767,7 @@ export component FileBrowser inherits Rectangle {
                             Text {
                                 text: op.filename;
                                 color: Theme.text-primary;
-                                font-size: 11px;
+                                font-size: Theme.fs-micro;
                                 horizontal-stretch: 1;
                                 vertical-alignment: center;
                                 overflow: elide;
@@ -1802,21 +1777,21 @@ export component FileBrowser inherits Rectangle {
                             Rectangle {
                                 width: 80px; height: 6px;
                                 border-radius: 3px;
-                                background: #ffffff0c;
+                                background: Theme.hover-fill;
 
                                 Rectangle {
                                     width: parent.width * op.progress;
                                     height: 100%;
                                     border-radius: 3px;
-                                    background: op.status == "error" ? #e05252 : (op.status == "done" ? #3aad6a : Theme.cyan);
-                                    animate width { duration: 100ms; }
+                                    background: op.status == "error" ? Theme.color-danger : (op.status == "done" ? Theme.color-success : Theme.cyan);
+                                    animate width { duration: Theme.dur-fast; }
                                 }
                             }
 
                             Text {
                                 text: op.status == "done" ? "\u{2713}" : (op.status == "error" ? "\u{2715}" : "");
-                                color: op.status == "done" ? #3aad6a : #e05252;
-                                font-size: 12px;
+                                color: op.status == "done" ? Theme.color-success : Theme.color-danger;
+                                font-size: Theme.fs-caption;
                                 width: 16px;
                                 vertical-alignment: center;
                                 horizontal-alignment: center;
@@ -1830,12 +1805,12 @@ export component FileBrowser inherits Rectangle {
         // ── Status bar — file count + selection info + sort order + free space ──
         Rectangle {
             height: 26px;
-            background: @linear-gradient(180deg, #141228a0 0%, #12102898 100%);
+            background: Theme.bg-surface;
 
             // Top edge
             Rectangle {
                 y: 0; width: 100%; height: 1px;
-                background: @linear-gradient(90deg, transparent 10%, #ffffff0c 50%, transparent 90%);
+                background: Theme.separator;
             }
 
             HorizontalLayout {
@@ -1847,7 +1822,7 @@ export component FileBrowser inherits Rectangle {
                 Text {
                     text: root.entries.length == 1 ? "1 item" : root.entries.length + " items";
                     color: Theme.text-dim;
-                    font-size: 11px;
+                    font-size: Theme.fs-micro;
                     vertical-alignment: center;
                 }
 
@@ -1855,14 +1830,14 @@ export component FileBrowser inherits Rectangle {
                 if root.selection-count > 0 : Text {
                     text: "\u{2502}";
                     color: Theme.text-dim;
-                    font-size: 11px;
+                    font-size: Theme.fs-micro;
                     vertical-alignment: center;
                 }
 
                 if root.selection-count > 0 : Text {
                     text: root.selection-count + " selected";
                     color: Theme.cyan-dim;
-                    font-size: 11px;
+                    font-size: Theme.fs-micro;
                     font-weight: 600;
                     vertical-alignment: center;
                 }
@@ -1871,7 +1846,7 @@ export component FileBrowser inherits Rectangle {
                 if root.selection-size-text != "" : Text {
                     text: "(" + root.selection-size-text + ")";
                     color: Theme.text-dim;
-                    font-size: 11px;
+                    font-size: Theme.fs-micro;
                     vertical-alignment: center;
                 }
 
@@ -1879,28 +1854,28 @@ export component FileBrowser inherits Rectangle {
                 Text {
                     text: "\u{2502}";
                     color: Theme.text-dim;
-                    font-size: 11px;
+                    font-size: Theme.fs-micro;
                     vertical-alignment: center;
                 }
 
                 Text {
                     text: root.sort-order-text();
                     color: Theme.text-dim;
-                    font-size: 11px;
+                    font-size: Theme.fs-micro;
                     vertical-alignment: center;
                 }
 
                 if root.dir-type-badge != "" : Text {
                     text: "\u{2502}";
                     color: Theme.text-dim;
-                    font-size: 11px;
+                    font-size: Theme.fs-micro;
                     vertical-alignment: center;
                 }
 
                 if root.dir-type-badge != "" : Text {
                     text: root.dir-type-badge;
                     color: Theme.amber-dim;
-                    font-size: 11px;
+                    font-size: Theme.fs-micro;
                     font-weight: 600;
                     vertical-alignment: center;
                 }
@@ -1908,14 +1883,14 @@ export component FileBrowser inherits Rectangle {
                 if root.free-space-text != "" : Text {
                     text: "\u{2502}";
                     color: Theme.text-dim;
-                    font-size: 11px;
+                    font-size: Theme.fs-micro;
                     vertical-alignment: center;
                 }
 
                 if root.free-space-text != "" : Text {
                     text: "Free: " + root.free-space-text;
                     color: Theme.text-dim;
-                    font-size: 11px;
+                    font-size: Theme.fs-micro;
                     vertical-alignment: center;
                 }
 
@@ -1924,7 +1899,7 @@ export component FileBrowser inherits Rectangle {
                 Text {
                     text: root.current-path;
                     color: Theme.text-dim;
-                    font-size: 11px;
+                    font-size: Theme.fs-micro;
                     vertical-alignment: center;
                     overflow: elide;
                 }
@@ -1934,7 +1909,7 @@ export component FileBrowser inherits Rectangle {
 
     // ═══ Context menu overlay ═══
     if root.show-context-menu && root.context-menu-index >= 0 && root.context-menu-index < root.entries.length : Rectangle {
-        width: 100%; height: 100%; background: #00000040;
+        width: 100%; height: 100%; background: Theme.overlay-backdrop;
         // Click outside to dismiss
         TouchArea {
             clicked => { root.show-context-menu = false; }
@@ -1946,10 +1921,10 @@ export component FileBrowser inherits Rectangle {
             y: (parent.height - 380px) / 2;
             width: 200px;
             height: 380px;
-            border-radius: 12px;
-            background: @linear-gradient(180deg, #1e1a38f0 0%, #141228f0 50%, #1e1a38f0 100%);
-            border-width: 1px; border-color: #ffffff14;
-            drop-shadow-blur: 24px; drop-shadow-color: #000000a0;
+            border-radius: Theme.r-lg;
+            background: Theme.bg-elevated;
+            border-width: 1px; border-color: Theme.border-subtle;
+            drop-shadow-blur: 24px; drop-shadow-color: Theme.overlay-shadow;
             clip: true;
 
             // Block clicks from passing through
@@ -1966,13 +1941,13 @@ export component FileBrowser inherits Rectangle {
                         Text {
                             text: root.entries[root.context-menu-index].name;
                             color: Theme.text-primary;
-                            font-size: 12px; font-weight: 600;
+                            font-size: Theme.fs-caption; font-weight: 600;
                             vertical-alignment: center;
                             overflow: elide;
                         }
                     }
                 }
-                Rectangle { height: 1px; background: #ffffff10; }
+                Rectangle { height: 1px; background: Theme.border-subtle; }
 
                 // Open
                 ctx-open := TouchArea {
@@ -1986,22 +1961,22 @@ export component FileBrowser inherits Rectangle {
                         root.show-context-menu = false;
                     }
                     Rectangle {
-                        border-radius: 6px;
-                        background: ctx-open.has-hover ? #5ac8d818 : transparent;
-                        HorizontalLayout { padding-left: 12px; spacing: 10px; Text { text: "Open"; color: ctx-open.has-hover ? Theme.cyan : Theme.text-secondary; font-size: 12px; vertical-alignment: center; } }
+                        border-radius: Theme.r-sm;
+                        background: ctx-open.has-hover ? Theme.hover-fill : transparent;
+                        HorizontalLayout { padding-left: 12px; spacing: 10px; Text { text: "Open"; color: ctx-open.has-hover ? Theme.cyan : Theme.text-secondary; font-size: Theme.fs-caption; vertical-alignment: center; } }
                     }
                 }
 
-                Rectangle { height: 1px; background: #ffffff08; }
+                Rectangle { height: 1px; background: Theme.border-subtle; }
 
                 // Copy
                 ctx-copy := TouchArea {
                     height: 32px;
                     clicked => { root.file-copy(root.entries[root.context-menu-index].name); root.show-context-menu = false; }
                     Rectangle {
-                        border-radius: 6px;
-                        background: ctx-copy.has-hover ? #ffffff0c : transparent;
-                        HorizontalLayout { padding-left: 12px; spacing: 10px; Text { text: "Copy"; color: ctx-copy.has-hover ? Theme.text-primary : Theme.text-secondary; font-size: 12px; vertical-alignment: center; } }
+                        border-radius: Theme.r-sm;
+                        background: ctx-copy.has-hover ? Theme.hover-fill : transparent;
+                        HorizontalLayout { padding-left: 12px; spacing: 10px; Text { text: "Copy"; color: ctx-copy.has-hover ? Theme.text-primary : Theme.text-secondary; font-size: Theme.fs-caption; vertical-alignment: center; } }
                     }
                 }
 
@@ -2010,9 +1985,9 @@ export component FileBrowser inherits Rectangle {
                     height: 32px;
                     clicked => { root.file-cut(root.entries[root.context-menu-index].name); root.show-context-menu = false; }
                     Rectangle {
-                        border-radius: 6px;
-                        background: ctx-cut.has-hover ? #ffffff0c : transparent;
-                        HorizontalLayout { padding-left: 12px; spacing: 10px; Text { text: "Cut"; color: ctx-cut.has-hover ? Theme.text-primary : Theme.text-secondary; font-size: 12px; vertical-alignment: center; } }
+                        border-radius: Theme.r-sm;
+                        background: ctx-cut.has-hover ? Theme.hover-fill : transparent;
+                        HorizontalLayout { padding-left: 12px; spacing: 10px; Text { text: "Cut"; color: ctx-cut.has-hover ? Theme.text-primary : Theme.text-secondary; font-size: Theme.fs-caption; vertical-alignment: center; } }
                     }
                 }
 
@@ -2021,13 +1996,13 @@ export component FileBrowser inherits Rectangle {
                     height: 32px;
                     clicked => { root.file-paste(); root.show-context-menu = false; }
                     Rectangle {
-                        border-radius: 6px;
-                        background: ctx-paste.has-hover ? #ffffff0c : transparent;
-                        HorizontalLayout { padding-left: 12px; spacing: 10px; Text { text: "Paste"; color: ctx-paste.has-hover ? Theme.text-primary : Theme.text-secondary; font-size: 12px; vertical-alignment: center; } }
+                        border-radius: Theme.r-sm;
+                        background: ctx-paste.has-hover ? Theme.hover-fill : transparent;
+                        HorizontalLayout { padding-left: 12px; spacing: 10px; Text { text: "Paste"; color: ctx-paste.has-hover ? Theme.text-primary : Theme.text-secondary; font-size: Theme.fs-caption; vertical-alignment: center; } }
                     }
                 }
 
-                Rectangle { height: 1px; background: #ffffff08; }
+                Rectangle { height: 1px; background: Theme.border-subtle; }
 
                 // Rename
                 ctx-rename := TouchArea {
@@ -2039,9 +2014,9 @@ export component FileBrowser inherits Rectangle {
                         root.show-context-menu = false;
                     }
                     Rectangle {
-                        border-radius: 6px;
-                        background: ctx-rename.has-hover ? #ffffff0c : transparent;
-                        HorizontalLayout { padding-left: 12px; spacing: 10px; Text { text: "Rename"; color: ctx-rename.has-hover ? Theme.text-primary : Theme.text-secondary; font-size: 12px; vertical-alignment: center; } }
+                        border-radius: Theme.r-sm;
+                        background: ctx-rename.has-hover ? Theme.hover-fill : transparent;
+                        HorizontalLayout { padding-left: 12px; spacing: 10px; Text { text: "Rename"; color: ctx-rename.has-hover ? Theme.text-primary : Theme.text-secondary; font-size: Theme.fs-caption; vertical-alignment: center; } }
                     }
                 }
 
@@ -2054,22 +2029,22 @@ export component FileBrowser inherits Rectangle {
                         root.show-context-menu = false;
                     }
                     Rectangle {
-                        border-radius: 6px;
-                        background: ctx-del.has-hover ? #e0525218 : transparent;
-                        HorizontalLayout { padding-left: 12px; spacing: 10px; Text { text: "Delete"; color: ctx-del.has-hover ? #e05252 : #c04040; font-size: 12px; vertical-alignment: center; } }
+                        border-radius: Theme.r-sm;
+                        background: ctx-del.has-hover ? Theme.color-danger-dim : transparent;
+                        HorizontalLayout { padding-left: 12px; spacing: 10px; Text { text: "Delete"; color: ctx-del.has-hover ? Theme.color-danger : Theme.color-danger; font-size: Theme.fs-caption; vertical-alignment: center; } }
                     }
                 }
 
-                Rectangle { height: 1px; background: #ffffff08; }
+                Rectangle { height: 1px; background: Theme.border-subtle; }
 
                 // Compress
                 ctx-compress := TouchArea {
                     height: 32px;
                     clicked => { root.context-compress(root.entries[root.context-menu-index].name); root.show-context-menu = false; }
                     Rectangle {
-                        border-radius: 6px;
-                        background: ctx-compress.has-hover ? #ffffff0c : transparent;
-                        HorizontalLayout { padding-left: 12px; spacing: 10px; Text { text: "Compress"; color: ctx-compress.has-hover ? Theme.text-primary : Theme.text-secondary; font-size: 12px; vertical-alignment: center; } }
+                        border-radius: Theme.r-sm;
+                        background: ctx-compress.has-hover ? Theme.hover-fill : transparent;
+                        HorizontalLayout { padding-left: 12px; spacing: 10px; Text { text: "Compress"; color: ctx-compress.has-hover ? Theme.text-primary : Theme.text-secondary; font-size: Theme.fs-caption; vertical-alignment: center; } }
                     }
                 }
 
@@ -2078,9 +2053,9 @@ export component FileBrowser inherits Rectangle {
                     height: 32px;
                     clicked => { root.context-copy-path(root.entries[root.context-menu-index].name); root.show-context-menu = false; }
                     Rectangle {
-                        border-radius: 6px;
-                        background: ctx-cp-path.has-hover ? #ffffff0c : transparent;
-                        HorizontalLayout { padding-left: 12px; spacing: 10px; Text { text: "Copy Path"; color: ctx-cp-path.has-hover ? Theme.text-primary : Theme.text-secondary; font-size: 12px; vertical-alignment: center; } }
+                        border-radius: Theme.r-sm;
+                        background: ctx-cp-path.has-hover ? Theme.hover-fill : transparent;
+                        HorizontalLayout { padding-left: 12px; spacing: 10px; Text { text: "Copy Path"; color: ctx-cp-path.has-hover ? Theme.text-primary : Theme.text-secondary; font-size: Theme.fs-caption; vertical-alignment: center; } }
                     }
                 }
 
@@ -2089,9 +2064,9 @@ export component FileBrowser inherits Rectangle {
                     height: 32px;
                     clicked => { root.context-open-terminal(); root.show-context-menu = false; }
                     Rectangle {
-                        border-radius: 6px;
-                        background: ctx-term.has-hover ? #ffffff0c : transparent;
-                        HorizontalLayout { padding-left: 12px; spacing: 10px; Text { text: "Open Terminal Here"; color: ctx-term.has-hover ? Theme.text-primary : Theme.text-secondary; font-size: 12px; vertical-alignment: center; } }
+                        border-radius: Theme.r-sm;
+                        background: ctx-term.has-hover ? Theme.hover-fill : transparent;
+                        HorizontalLayout { padding-left: 12px; spacing: 10px; Text { text: "Open Terminal Here"; color: ctx-term.has-hover ? Theme.text-primary : Theme.text-secondary; font-size: Theme.fs-caption; vertical-alignment: center; } }
                     }
                 }
             }
@@ -2105,10 +2080,10 @@ export component FileBrowser inherits Rectangle {
         Rectangle {
             x: (parent.width - 340px) / 2; y: (parent.height - 180px) / 2; width: 340px; height: 180px;
             border-radius: 16px;
-            background: @linear-gradient(180deg, #12111ae0 0%, #0c0b10d0 50%, #12111ae0 100%);
-            border-width: 1px; border-color: @linear-gradient(180deg, #ffffff14 0%, #ffffff08 50%, #ffffff04 100%);
-            drop-shadow-blur: 24px; drop-shadow-color: #000000aa;
-            Rectangle { x: 16px; y: 1px; width: parent.width - 32px; height: 1px; border-radius: 0.5px; background: @linear-gradient(90deg, transparent 0%, #ffffff0c 30%, #ffffff10 50%, #ffffff0c 70%, transparent 100%); }
+            background: Theme.bg-elevated;
+            border-width: 1px; border-color: Theme.border-subtle;
+            drop-shadow-blur: 24px; drop-shadow-color: Theme.overlay-shadow;
+            Rectangle { x: 16px; y: 1px; width: parent.width - 32px; height: 1px; border-radius: 0.5px; background: Theme.separator; }
             TouchArea {}
             VerticalLayout {
                 padding: 20px; spacing: 16px;
@@ -2116,8 +2091,8 @@ export component FileBrowser inherits Rectangle {
                 rename-input := LineEdit { text: root.rename-new-name; edited(t) => { root.rename-new-name = t; } accepted(t) => { root.file-rename(root.rename-old-name, t); root.show-rename-dialog = false; root.selected-index = -1; root.clear-selection(); } }
                 HorizontalLayout {
                     spacing: 12px; alignment: end;
-                    TouchArea { width: 80px; height: 36px; clicked => { root.show-rename-dialog = false; root.selected-index = -1; root.clear-selection(); } Rectangle { border-radius: 8px; background: parent.has-hover ? @radial-gradient(circle, #ffffff0c 0%, transparent 100%) : transparent; animate background { duration: 120ms; } Text { text: "Cancel"; color: Theme.text-dim; font-size: 14px; horizontal-alignment: center; vertical-alignment: center; } } }
-                    TouchArea { width: 80px; height: 36px; clicked => { root.file-rename(root.rename-old-name, root.rename-new-name); root.show-rename-dialog = false; root.selected-index = -1; root.clear-selection(); } Rectangle { border-radius: 8px; background: parent.has-hover ? @radial-gradient(circle, #5ac8d418 0%, #12111a 100%) : Theme.bg-elevated; animate background { duration: 120ms; } Text { text: "Rename"; color: Theme.cyan; font-size: 14px; horizontal-alignment: center; vertical-alignment: center; } } }
+                    TouchArea { width: 80px; height: 36px; clicked => { root.show-rename-dialog = false; root.selected-index = -1; root.clear-selection(); } Rectangle { border-radius: Theme.r-md; background: parent.has-hover ? Theme.hover-fill : transparent; animate background { duration: Theme.dur-fast; } Text { text: "Cancel"; color: Theme.text-dim; font-size: Theme.fs-body; horizontal-alignment: center; vertical-alignment: center; } } }
+                    TouchArea { width: 80px; height: 36px; clicked => { root.file-rename(root.rename-old-name, root.rename-new-name); root.show-rename-dialog = false; root.selected-index = -1; root.clear-selection(); } Rectangle { border-radius: Theme.r-md; background: parent.has-hover ? Theme.hover-fill : Theme.bg-elevated; animate background { duration: Theme.dur-fast; } Text { text: "Rename"; color: Theme.cyan; font-size: Theme.fs-body; horizontal-alignment: center; vertical-alignment: center; } } }
                 }
             }
         }
@@ -2130,10 +2105,10 @@ export component FileBrowser inherits Rectangle {
         Rectangle {
             x: (parent.width - 340px) / 2; y: (parent.height - 160px) / 2; width: 340px; height: 160px;
             border-radius: 16px;
-            background: @linear-gradient(180deg, #12111ae0 0%, #0c0b10d0 50%, #12111ae0 100%);
-            border-width: 1px; border-color: @linear-gradient(180deg, #ffffff14 0%, #ffffff08 50%, #ffffff04 100%);
-            drop-shadow-blur: 24px; drop-shadow-color: #000000aa;
-            Rectangle { x: 16px; y: 1px; width: parent.width - 32px; height: 1px; border-radius: 0.5px; background: @linear-gradient(90deg, transparent 0%, #ffffff0c 30%, #ffffff10 50%, #ffffff0c 70%, transparent 100%); }
+            background: Theme.bg-elevated;
+            border-width: 1px; border-color: Theme.border-subtle;
+            drop-shadow-blur: 24px; drop-shadow-color: Theme.overlay-shadow;
+            Rectangle { x: 16px; y: 1px; width: parent.width - 32px; height: 1px; border-radius: 0.5px; background: Theme.separator; }
             TouchArea {}
             VerticalLayout {
                 padding: 20px; spacing: 16px;
@@ -2141,7 +2116,7 @@ export component FileBrowser inherits Rectangle {
                 Text { text: "This cannot be undone."; color: Theme.text-dim; font-size: Theme.font-small; }
                 HorizontalLayout {
                     spacing: 12px; alignment: end;
-                    TouchArea { width: 80px; height: 36px; clicked => { root.show-delete-dialog = false; root.selected-index = -1; root.clear-selection(); } Rectangle { border-radius: 8px; background: parent.has-hover ? @radial-gradient(circle, #ffffff0c 0%, transparent 100%) : transparent; animate background { duration: 120ms; } Text { text: "Cancel"; color: Theme.text-dim; font-size: 14px; horizontal-alignment: center; vertical-alignment: center; } } }
+                    TouchArea { width: 80px; height: 36px; clicked => { root.show-delete-dialog = false; root.selected-index = -1; root.clear-selection(); } Rectangle { border-radius: Theme.r-md; background: parent.has-hover ? Theme.hover-fill : transparent; animate background { duration: Theme.dur-fast; } Text { text: "Cancel"; color: Theme.text-dim; font-size: Theme.fs-body; horizontal-alignment: center; vertical-alignment: center; } } }
                     TouchArea { width: 80px; height: 36px; clicked => {
                         if root.selection-count > 1 {
                             root.delete-selected();
@@ -2149,7 +2124,7 @@ export component FileBrowser inherits Rectangle {
                             root.file-delete(root.delete-target-name);
                         }
                         root.show-delete-dialog = false; root.selected-index = -1; root.clear-selection();
-                    } Rectangle { border-radius: 8px; background: parent.has-hover ? @radial-gradient(circle, #e0525230 0%, #e0525218 100%) : #c04040; drop-shadow-blur: parent.has-hover ? 8px : 0; drop-shadow-color: #e0525260; animate background, drop-shadow-blur { duration: 120ms; } Text { text: "Delete"; color: #fff; font-size: 14px; horizontal-alignment: center; vertical-alignment: center; } } }
+                    } Rectangle { border-radius: Theme.r-md; background: parent.has-hover ? Theme.color-danger-dim : Theme.color-danger; drop-shadow-blur: parent.has-hover ? 8px : 0; drop-shadow-color: Theme.color-danger-dim; animate background, drop-shadow-blur { duration: Theme.dur-fast; } Text { text: "Delete"; color: Theme.text-on-accent; font-size: Theme.fs-body; horizontal-alignment: center; vertical-alignment: center; } } }
                 }
             }
         }
@@ -2162,10 +2137,10 @@ export component FileBrowser inherits Rectangle {
         Rectangle {
             x: (parent.width - 340px) / 2; y: (parent.height - 180px) / 2; width: 340px; height: 180px;
             border-radius: 16px;
-            background: @linear-gradient(180deg, #12111ae0 0%, #0c0b10d0 50%, #12111ae0 100%);
-            border-width: 1px; border-color: @linear-gradient(180deg, #ffffff14 0%, #ffffff08 50%, #ffffff04 100%);
-            drop-shadow-blur: 24px; drop-shadow-color: #000000aa;
-            Rectangle { x: 16px; y: 1px; width: parent.width - 32px; height: 1px; border-radius: 0.5px; background: @linear-gradient(90deg, transparent 0%, #ffffff0c 30%, #ffffff10 50%, #ffffff0c 70%, transparent 100%); }
+            background: Theme.bg-elevated;
+            border-width: 1px; border-color: Theme.border-subtle;
+            drop-shadow-blur: 24px; drop-shadow-color: Theme.overlay-shadow;
+            Rectangle { x: 16px; y: 1px; width: parent.width - 32px; height: 1px; border-radius: 0.5px; background: Theme.separator; }
             TouchArea {}
             VerticalLayout {
                 padding: 20px; spacing: 16px;
@@ -2173,8 +2148,8 @@ export component FileBrowser inherits Rectangle {
                 folder-input := LineEdit { text: root.new-folder-name; placeholder-text: "Folder name"; edited(t) => { root.new-folder-name = t; } accepted(t) => { root.create-folder(t); root.show-new-folder-dialog = false; } }
                 HorizontalLayout {
                     spacing: 12px; alignment: end;
-                    TouchArea { width: 80px; height: 36px; clicked => { root.show-new-folder-dialog = false; } Rectangle { border-radius: 8px; background: parent.has-hover ? @radial-gradient(circle, #ffffff0c 0%, transparent 100%) : transparent; animate background { duration: 120ms; } Text { text: "Cancel"; color: Theme.text-dim; font-size: 14px; horizontal-alignment: center; vertical-alignment: center; } } }
-                    TouchArea { width: 80px; height: 36px; clicked => { root.create-folder(root.new-folder-name); root.show-new-folder-dialog = false; } Rectangle { border-radius: 8px; background: parent.has-hover ? @radial-gradient(circle, #5ac8d418 0%, #12111a 100%) : Theme.bg-elevated; animate background { duration: 120ms; } Text { text: "Create"; color: Theme.cyan; font-size: 14px; horizontal-alignment: center; vertical-alignment: center; } } }
+                    TouchArea { width: 80px; height: 36px; clicked => { root.show-new-folder-dialog = false; } Rectangle { border-radius: Theme.r-md; background: parent.has-hover ? Theme.hover-fill : transparent; animate background { duration: Theme.dur-fast; } Text { text: "Cancel"; color: Theme.text-dim; font-size: Theme.fs-body; horizontal-alignment: center; vertical-alignment: center; } } }
+                    TouchArea { width: 80px; height: 36px; clicked => { root.create-folder(root.new-folder-name); root.show-new-folder-dialog = false; } Rectangle { border-radius: Theme.r-md; background: parent.has-hover ? Theme.hover-fill : Theme.bg-elevated; animate background { duration: Theme.dur-fast; } Text { text: "Create"; color: Theme.cyan; font-size: Theme.fs-body; horizontal-alignment: center; vertical-alignment: center; } } }
                 }
             }
         }
@@ -2187,10 +2162,10 @@ export component FileBrowser inherits Rectangle {
         Rectangle {
             x: (parent.width - 340px) / 2; y: (parent.height - 180px) / 2; width: 340px; height: 180px;
             border-radius: 16px;
-            background: @linear-gradient(180deg, #12111ae0 0%, #0c0b10d0 50%, #12111ae0 100%);
-            border-width: 1px; border-color: @linear-gradient(180deg, #ffffff14 0%, #ffffff08 50%, #ffffff04 100%);
-            drop-shadow-blur: 24px; drop-shadow-color: #000000aa;
-            Rectangle { x: 16px; y: 1px; width: parent.width - 32px; height: 1px; border-radius: 0.5px; background: @linear-gradient(90deg, transparent 0%, #ffffff0c 30%, #ffffff10 50%, #ffffff0c 70%, transparent 100%); }
+            background: Theme.bg-elevated;
+            border-width: 1px; border-color: Theme.border-subtle;
+            drop-shadow-blur: 24px; drop-shadow-color: Theme.overlay-shadow;
+            Rectangle { x: 16px; y: 1px; width: parent.width - 32px; height: 1px; border-radius: 0.5px; background: Theme.separator; }
             TouchArea {}
             VerticalLayout {
                 padding: 20px; spacing: 16px;
@@ -2198,8 +2173,8 @@ export component FileBrowser inherits Rectangle {
                 file-input := LineEdit { text: root.new-file-name; placeholder-text: "File name"; edited(t) => { root.new-file-name = t; } accepted(t) => { root.create-file(t); root.show-new-file-dialog = false; } }
                 HorizontalLayout {
                     spacing: 12px; alignment: end;
-                    TouchArea { width: 80px; height: 36px; clicked => { root.show-new-file-dialog = false; } Rectangle { border-radius: 8px; background: parent.has-hover ? @radial-gradient(circle, #ffffff0c 0%, transparent 100%) : transparent; animate background { duration: 120ms; } Text { text: "Cancel"; color: Theme.text-dim; font-size: 14px; horizontal-alignment: center; vertical-alignment: center; } } }
-                    TouchArea { width: 80px; height: 36px; clicked => { root.create-file(root.new-file-name); root.show-new-file-dialog = false; } Rectangle { border-radius: 8px; background: parent.has-hover ? @radial-gradient(circle, #3aad6a18 0%, #12111a 100%) : Theme.bg-elevated; animate background { duration: 120ms; } Text { text: "Create"; color: #3aad6a; font-size: 14px; horizontal-alignment: center; vertical-alignment: center; } } }
+                    TouchArea { width: 80px; height: 36px; clicked => { root.show-new-file-dialog = false; } Rectangle { border-radius: Theme.r-md; background: parent.has-hover ? Theme.hover-fill : transparent; animate background { duration: Theme.dur-fast; } Text { text: "Cancel"; color: Theme.text-dim; font-size: Theme.fs-body; horizontal-alignment: center; vertical-alignment: center; } } }
+                    TouchArea { width: 80px; height: 36px; clicked => { root.create-file(root.new-file-name); root.show-new-file-dialog = false; } Rectangle { border-radius: Theme.r-md; background: parent.has-hover ? Theme.color-success-dim : Theme.bg-elevated; animate background { duration: Theme.dur-fast; } Text { text: "Create"; color: Theme.color-success; font-size: Theme.fs-body; horizontal-alignment: center; vertical-alignment: center; } } }
                 }
             }
         }
@@ -2212,15 +2187,15 @@ export component FileBrowser inherits Rectangle {
         Rectangle {
             x: (parent.width - 420px) / 2; y: (parent.height - 300px) / 2; width: 420px; height: 300px;
             border-radius: 16px;
-            background: @linear-gradient(180deg, #1e1a38f0 0%, #141228f0 50%, #1e1a38f0 100%);
+            background: Theme.bg-elevated;
             border-width: 1px; border-color: root.is-summarizing ? Theme.amber : Theme.amber-dim;
-            drop-shadow-blur: 32px; drop-shadow-color: #d4a03c30;
-            animate border-color { duration: 400ms; }
+            drop-shadow-blur: 32px; drop-shadow-color: Theme.amber-glow;
+            animate border-color { duration: Theme.dur-slow; }
 
             // Top holographic edge
             Rectangle {
                 y: 0; width: parent.width; height: 1px; border-radius: 16px;
-                background: @linear-gradient(90deg, transparent 10%, #d4a03c60 30%, #d4a03ca0 50%, #d4a03c60 70%, transparent 90%);
+                background: Theme.separator;
             }
 
             VerticalLayout {
@@ -2232,7 +2207,7 @@ export component FileBrowser inherits Rectangle {
                     Text {
                         text: "\u{2726}";
                         color: Theme.amber;
-                        font-size: 18px;
+                        font-size: Theme.fs-headline;
                         vertical-alignment: center;
                     }
                     VerticalLayout {
@@ -2240,13 +2215,13 @@ export component FileBrowser inherits Rectangle {
                         Text {
                             text: "AI Summary";
                             color: Theme.text-primary;
-                            font-size: 16px;
+                            font-size: Theme.fs-headline;
                             font-weight: 600;
                         }
                         Text {
                             text: root.file-details.name;
                             color: Theme.text-dim;
-                            font-size: 12px;
+                            font-size: Theme.fs-caption;
                         }
                     }
                     // Close button
@@ -2254,24 +2229,24 @@ export component FileBrowser inherits Rectangle {
                         width: 28px; height: 28px;
                         clicked => { root.show-summary-dialog = false; }
                         Rectangle {
-                            border-radius: 6px;
-                            background: summary-close.has-hover ? #e0525230 : transparent;
-                            animate background { duration: 120ms; }
-                            Text { text: "\u{2715}"; color: summary-close.has-hover ? #e05252 : Theme.text-dim; font-size: 14px; horizontal-alignment: center; vertical-alignment: center; }
+                            border-radius: Theme.r-sm;
+                            background: summary-close.has-hover ? Theme.color-danger-dim : transparent;
+                            animate background { duration: Theme.dur-fast; }
+                            Text { text: "\u{2715}"; color: summary-close.has-hover ? Theme.color-danger : Theme.text-dim; font-size: Theme.fs-body; horizontal-alignment: center; vertical-alignment: center; }
                         }
                     }
                 }
 
                 // Separator
-                Rectangle { height: 1px; background: @linear-gradient(90deg, transparent 5%, Theme.amber-dim 30%, Theme.amber-dim 70%, transparent 95%); opacity: 0.4; }
+                Rectangle { height: 1px; background: Theme.separator; opacity: 0.4; }
 
                 // Summary content area
                 Rectangle {
                     vertical-stretch: 1;
                     clip: true;
-                    border-radius: 8px;
-                    background: @linear-gradient(180deg, #0c0a1880 0%, #08061080 50%, #0c0a1880 100%);
-                    border-width: 1px; border-color: #ffffff08;
+                    border-radius: Theme.r-md;
+                    background: Theme.bg-deep;
+                    border-width: 1px; border-color: Theme.border-subtle;
 
                     Flickable {
                         x: 0; y: 0; width: parent.width; height: parent.height;
@@ -2283,7 +2258,7 @@ export component FileBrowser inherits Rectangle {
                             width: parent.width - 28px;
                             text: root.is-summarizing && root.ai-summary == "" ? "Thinking..." : root.ai-summary;
                             color: root.is-summarizing && root.ai-summary == "" ? Theme.text-dim : Theme.text-secondary;
-                            font-size: 13px;
+                            font-size: Theme.fs-caption;
                             font-italic: root.is-summarizing && root.ai-summary == "";
                             wrap: word-wrap;
                             horizontal-alignment: left;
@@ -2293,11 +2268,11 @@ export component FileBrowser inherits Rectangle {
                     // Pulsing glow while summarizing
                     if root.is-summarizing : Rectangle {
                         x: 0; y: 0; width: parent.width; height: parent.height;
-                        border-radius: 8px;
+                        border-radius: Theme.r-md;
                         border-width: 1px;
                         border-color: Theme.amber;
                         opacity: 0.4;
-                        animate opacity { duration: 800ms; }
+                        animate opacity { duration: Theme.dur-slow; }
                     }
                 }
 
@@ -2305,7 +2280,7 @@ export component FileBrowser inherits Rectangle {
                 if root.is-summarizing : Text {
                     text: "\u{27f3} Generating summary...";
                     color: Theme.amber-dim;
-                    font-size: 11px;
+                    font-size: Theme.fs-micro;
                     horizontal-alignment: center;
                 }
             }
@@ -2319,14 +2294,14 @@ export component FileBrowser inherits Rectangle {
         Rectangle {
             x: (parent.width - 400px) / 2; y: (parent.height - 260px) / 2; width: 400px; height: 260px;
             border-radius: 16px;
-            background: @linear-gradient(180deg, #1e1a38f0 0%, #141228f0 50%, #1e1a38f0 100%);
+            background: Theme.bg-elevated;
             border-width: 1px; border-color: Theme.amber-dim;
-            drop-shadow-blur: 24px; drop-shadow-color: #d4a03c30;
+            drop-shadow-blur: 24px; drop-shadow-color: Theme.amber-glow;
 
             // Top edge
             Rectangle {
                 y: 0; width: parent.width; height: 1px; border-radius: 16px;
-                background: @linear-gradient(90deg, transparent 10%, #d4a03c60 30%, #d4a03ca0 50%, #d4a03c60 70%, transparent 90%);
+                background: Theme.separator;
             }
 
             TouchArea {}
@@ -2337,16 +2312,16 @@ export component FileBrowser inherits Rectangle {
                 // Header
                 HorizontalLayout {
                     spacing: 10px;
-                    Text { text: "R"; color: Theme.amber; font-size: 16px; font-weight: 700; vertical-alignment: center; }
-                    Text { text: "Batch Rename"; color: Theme.text-primary; font-size: 16px; font-weight: 600; vertical-alignment: center; horizontal-stretch: 1; }
+                    Text { text: "R"; color: Theme.amber; font-size: Theme.fs-headline; font-weight: 700; vertical-alignment: center; }
+                    Text { text: "Batch Rename"; color: Theme.text-primary; font-size: Theme.fs-headline; font-weight: 600; vertical-alignment: center; horizontal-stretch: 1; }
                     batch-close := TouchArea {
                         width: 28px; height: 28px;
                         clicked => { root.file-batch-rename-open = false; }
                         Rectangle {
-                            border-radius: 6px;
-                            background: batch-close.has-hover ? #e0525230 : transparent;
-                            animate background { duration: 120ms; }
-                            Text { text: "\u{2715}"; color: batch-close.has-hover ? #e05252 : Theme.text-dim; font-size: 14px; horizontal-alignment: center; vertical-alignment: center; }
+                            border-radius: Theme.r-sm;
+                            background: batch-close.has-hover ? Theme.color-danger-dim : transparent;
+                            animate background { duration: Theme.dur-fast; }
+                            Text { text: "\u{2715}"; color: batch-close.has-hover ? Theme.color-danger : Theme.text-dim; font-size: Theme.fs-body; horizontal-alignment: center; vertical-alignment: center; }
                         }
                     }
                 }
@@ -2354,7 +2329,7 @@ export component FileBrowser inherits Rectangle {
                 // Pattern input
                 VerticalLayout {
                     spacing: 4px;
-                    Text { text: "Find pattern"; color: Theme.text-dim; font-size: 11px; font-weight: 600; letter-spacing: 1px; }
+                    Text { text: "Find pattern"; color: Theme.text-dim; font-size: Theme.fs-micro; font-weight: 600; letter-spacing: 1px; }
                     batch-pattern-input := LineEdit {
                         text: root.file-batch-rename-pattern;
                         placeholder-text: "e.g. .txt";
@@ -2365,7 +2340,7 @@ export component FileBrowser inherits Rectangle {
                 // Replace input
                 VerticalLayout {
                     spacing: 4px;
-                    Text { text: "Replace with"; color: Theme.text-dim; font-size: 11px; font-weight: 600; letter-spacing: 1px; }
+                    Text { text: "Replace with"; color: Theme.text-dim; font-size: Theme.fs-micro; font-weight: 600; letter-spacing: 1px; }
                     batch-replace-input := LineEdit {
                         text: root.file-batch-rename-replace;
                         placeholder-text: "e.g. .md";
@@ -2377,15 +2352,15 @@ export component FileBrowser inherits Rectangle {
                 Text {
                     text: root.selection-count + " file(s) will be renamed";
                     color: Theme.text-dim;
-                    font-size: 11px;
+                    font-size: Theme.fs-micro;
                     font-italic: true;
                 }
 
                 // Buttons
                 HorizontalLayout {
                     spacing: 12px; alignment: end;
-                    TouchArea { width: 80px; height: 36px; clicked => { root.file-batch-rename-open = false; } Rectangle { border-radius: 8px; background: parent.has-hover ? @radial-gradient(circle, #ffffff0c 0%, transparent 100%) : transparent; animate background { duration: 120ms; } Text { text: "Cancel"; color: Theme.text-dim; font-size: 14px; horizontal-alignment: center; vertical-alignment: center; } } }
-                    TouchArea { width: 88px; height: 36px; clicked => { root.file-batch-rename-execute(); root.file-batch-rename-open = false; } Rectangle { border-radius: 8px; background: parent.has-hover ? @radial-gradient(circle, #d4a03c18 0%, #12111a 100%) : Theme.bg-elevated; animate background { duration: 120ms; } Text { text: "Rename All"; color: Theme.amber; font-size: 14px; horizontal-alignment: center; vertical-alignment: center; } } }
+                    TouchArea { width: 80px; height: 36px; clicked => { root.file-batch-rename-open = false; } Rectangle { border-radius: Theme.r-md; background: parent.has-hover ? Theme.hover-fill : transparent; animate background { duration: Theme.dur-fast; } Text { text: "Cancel"; color: Theme.text-dim; font-size: Theme.fs-body; horizontal-alignment: center; vertical-alignment: center; } } }
+                    TouchArea { width: 88px; height: 36px; clicked => { root.file-batch-rename-execute(); root.file-batch-rename-open = false; } Rectangle { border-radius: Theme.r-md; background: parent.has-hover ? Theme.hover-fill : Theme.bg-elevated; animate background { duration: Theme.dur-fast; } Text { text: "Rename All"; color: Theme.amber; font-size: Theme.fs-body; horizontal-alignment: center; vertical-alignment: center; } } }
                 }
             }
         }
@@ -2398,14 +2373,14 @@ export component FileBrowser inherits Rectangle {
         Rectangle {
             x: (parent.width - 520px) / 2; y: (parent.height - 420px) / 2; width: 520px; height: 420px;
             border-radius: 16px;
-            background: @linear-gradient(180deg, #1e1a38f0 0%, #141228f0 50%, #1e1a38f0 100%);
+            background: Theme.bg-elevated;
             border-width: 1px; border-color: Theme.cyan-dim;
-            drop-shadow-blur: 32px; drop-shadow-color: #5ac8d830;
+            drop-shadow-blur: 32px; drop-shadow-color: Theme.cyan-glow;
 
             // Top holographic edge
             Rectangle {
                 y: 0; width: parent.width; height: 1px; border-radius: 16px;
-                background: @linear-gradient(90deg, transparent 10%, #5ac8d860 30%, #5ac8d8a0 50%, #5ac8d860 70%, transparent 90%);
+                background: Theme.separator;
             }
 
             TouchArea {}
@@ -2416,34 +2391,34 @@ export component FileBrowser inherits Rectangle {
                 // Header
                 HorizontalLayout {
                     spacing: 10px;
-                    Text { text: "\u{25a3}"; color: Theme.cyan; font-size: 18px; vertical-alignment: center; }
+                    Text { text: "\u{25a3}"; color: Theme.cyan; font-size: Theme.fs-headline; vertical-alignment: center; }
                     VerticalLayout {
                         horizontal-stretch: 1;
-                        Text { text: "Quick Look"; color: Theme.text-primary; font-size: 16px; font-weight: 600; }
-                        Text { text: root.file-quick-look-name; color: Theme.text-dim; font-size: 12px; overflow: elide; }
+                        Text { text: "Quick Look"; color: Theme.text-primary; font-size: Theme.fs-headline; font-weight: 600; }
+                        Text { text: root.file-quick-look-name; color: Theme.text-dim; font-size: Theme.fs-caption; overflow: elide; }
                     }
                     ql-close := TouchArea {
                         width: 28px; height: 28px;
                         clicked => { root.file-quick-look-open = false; root.file-close-quick-look(); }
                         Rectangle {
-                            border-radius: 6px;
-                            background: ql-close.has-hover ? #e0525230 : transparent;
-                            animate background { duration: 120ms; }
-                            Text { text: "\u{2715}"; color: ql-close.has-hover ? #e05252 : Theme.text-dim; font-size: 14px; horizontal-alignment: center; vertical-alignment: center; }
+                            border-radius: Theme.r-sm;
+                            background: ql-close.has-hover ? Theme.color-danger-dim : transparent;
+                            animate background { duration: Theme.dur-fast; }
+                            Text { text: "\u{2715}"; color: ql-close.has-hover ? Theme.color-danger : Theme.text-dim; font-size: Theme.fs-body; horizontal-alignment: center; vertical-alignment: center; }
                         }
                     }
                 }
 
                 // Separator
-                Rectangle { height: 1px; background: @linear-gradient(90deg, transparent 5%, #5ac8d430 30%, #5ac8d430 70%, transparent 95%); opacity: 0.5; }
+                Rectangle { height: 1px; background: Theme.separator; opacity: 0.5; }
 
                 // Content area
                 Rectangle {
                     vertical-stretch: 1;
                     clip: true;
-                    border-radius: 8px;
-                    background: @linear-gradient(180deg, #08080c 0%, #060610 50%, #08080c 100%);
-                    border-width: 1px; border-color: #ffffff08;
+                    border-radius: Theme.r-md;
+                    background: Theme.bg-deep;
+                    border-width: 1px; border-color: Theme.border-subtle;
 
                     Flickable {
                         x: 0; y: 0; width: parent.width; height: parent.height;
@@ -2455,7 +2430,7 @@ export component FileBrowser inherits Rectangle {
                             width: parent.width - 28px;
                             text: root.file-quick-look-content != "" ? root.file-quick-look-content : "No preview available";
                             color: root.file-quick-look-content != "" ? Theme.text-secondary : Theme.text-dim;
-                            font-size: 12px;
+                            font-size: Theme.fs-caption;
                             font-italic: root.file-quick-look-content == "";
                             wrap: word-wrap;
                             horizontal-alignment: left;

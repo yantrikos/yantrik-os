@@ -1,7 +1,7 @@
 // Terminal — AI-native terminal emulator.
-// Screen 14. Opens from dock "Terminal" icon.
-// PTY-backed with vt100 emulation; AI watches output for errors.
-// Supports up to 8 tabs, each with an independent PTY session.
+// Screen 14. PTY-backed with vt100 emulation + ANSI color rendering.
+// AI watches output for errors, offers autocomplete, command generation,
+// and dangerous command warnings.
 
 import { Theme } from "theme.slint";
 
@@ -11,11 +11,20 @@ export struct TerminalTabData {
     is-alive: bool,
 }
 
-export component TerminalScreen inherits Rectangle {
-    background: #0c0c10;
+export struct TerminalSegment {
+    text: string,
+    fg-color: color,
+    bold: bool,
+    row: int,
+    col-start: int,
+}
 
-    // Terminal content (plain text, rows joined by newlines)
+export component TerminalScreen inherits Rectangle {
+    background: Theme.bg-deep;
+
+    // Terminal content
     in property <string> terminal-output: "";
+    in property <[TerminalSegment]> terminal-segments: [];
     in property <int> cursor-row: 0;
     in property <int> cursor-col: 0;
     in property <bool> is-alive: true;
@@ -23,6 +32,20 @@ export component TerminalScreen inherits Rectangle {
     // AI suggestion state
     in property <string> ai-suggestion: "";
     in property <bool> has-suggestion: false;
+
+    // AI command bar
+    in-out property <bool> show-ai-bar: false;
+    in property <string> ai-generated-command: "";
+    in property <bool> ai-generating: false;
+
+    // Ghost autocomplete
+    in property <string> ghost-suggestion: "";
+    in property <int> ghost-row: 0;
+    in property <int> ghost-col: 0;
+
+    // Dangerous command warning
+    in property <bool> show-danger-warning: false;
+    in property <string> danger-message: "";
 
     // Tab state
     in property <int> tab-count: 1;
@@ -45,6 +68,15 @@ export component TerminalScreen inherits Rectangle {
     in property <string> terminal-profile-name: "Default";
     in-out property <bool> terminal-show-profiles: false;
 
+    // CWD + duration
+    in property <string> current-directory: "";
+    in property <string> last-command-duration: "";
+
+    // Layout constants
+    property <length> char-width: 7.8px;
+    property <length> line-height: 17px;
+    property <length> term-padding: Theme.sp-2;
+
     // Callbacks to Rust
     callback terminal-key-pressed(KeyEvent) -> EventResult;
     callback request-ai-help();
@@ -60,29 +92,36 @@ export component TerminalScreen inherits Rectangle {
     callback terminal-switch-pane(int);
     callback terminal-split-input(string);
     callback terminal-set-profile(string);
+    callback ai-bar-submit(string);
+    callback ai-run-command();
+    callback accept-ghost();
+    callback danger-proceed();
+    callback danger-cancel();
+    callback explain-line(int);
+    callback terminal-area-resized(int, int); // width_px, height_px
 
     VerticalLayout {
         spacing: 0px;
 
         // ── Toolbar ──
         Rectangle {
-            height: 36px;
+            height: Theme.h-prominent;
             background: Theme.bg-surface;
 
             HorizontalLayout {
-                padding-left: 14px;
-                padding-right: 14px;
+                padding-left: Theme.sp-4;
+                padding-right: Theme.sp-4;
                 alignment: space-between;
 
-                // Left: title + status
+                // Left: title + status + CWD
                 HorizontalLayout {
-                    spacing: 8px;
+                    spacing: Theme.sp-2;
                     alignment: start;
 
                     Text {
                         text: ">_";
-                        color: Theme.cyan;
-                        font-size: 16px;
+                        color: Theme.accent;
+                        font-size: Theme.fs-title-2;
                         font-weight: 700;
                         vertical-alignment: center;
                     }
@@ -90,48 +129,115 @@ export component TerminalScreen inherits Rectangle {
                     Text {
                         text: "Terminal";
                         color: Theme.text-primary;
-                        font-size: 14px;
-                        font-weight: 500;
+                        font-size: Theme.fs-headline;
+                        font-weight: Theme.fw-headline;
                         vertical-alignment: center;
                     }
 
                     // Process alive indicator
-                    Text {
-                        text: root.is-alive ? "●" : "○";
-                        color: root.is-alive ? Theme.cyan : Theme.text-dim;
-                        font-size: 10px;
-                        vertical-alignment: center;
+                    Rectangle {
+                        width: 8px;
+                        height: 8px;
+                        y: (parent.height - 8px) / 2;
+                        border-radius: 4px;
+                        background: root.is-alive ? Theme.color-success : Theme.color-danger;
+                        animate background { duration: Theme.dur-normal; }
+                    }
+
+                    // CWD breadcrumbs
+                    if root.current-directory != "" : Rectangle {
+                        width: cwd-text.preferred-width + Theme.sp-4;
+                        height: 22px;
+                        border-radius: Theme.r-sm;
+                        background: Theme.hover-fill;
+                        border-width: 1px;
+                        border-color: Theme.border-subtle;
+
+                        cwd-text := Text {
+                            text: root.current-directory;
+                            color: Theme.text-dim;
+                            font-size: Theme.fs-micro;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
+
+                    // Command duration badge
+                    if root.last-command-duration != "" : Rectangle {
+                        width: dur-text.preferred-width + Theme.sp-3;
+                        height: 20px;
+                        border-radius: Theme.r-pill;
+                        background: Theme.tint-amber;
+
+                        dur-text := Text {
+                            text: root.last-command-duration;
+                            color: Theme.amber;
+                            font-size: Theme.fs-micro;
+                            font-weight: 500;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
                     }
                 }
 
                 // Right: toolbar buttons
                 HorizontalLayout {
-                    spacing: 6px;
+                    spacing: 4px;
                     alignment: end;
+
+                    // AI command bar toggle
+                    ai-btn-ta := TouchArea {
+                        width: 40px;
+                        height: 28px;
+                        clicked => { root.show-ai-bar = !root.show-ai-bar; }
+                        mouse-cursor: pointer;
+
+                        Rectangle {
+                            width: 40px;
+                            height: 28px;
+                            border-radius: Theme.r-sm;
+                            background: root.show-ai-bar
+                                ? Theme.amber-glow
+                                : (ai-btn-ta.has-hover ? Theme.hover-fill : transparent);
+                            border-width: 1px;
+                            border-color: root.show-ai-bar ? Theme.amber-dim : Theme.border-subtle;
+                            animate background { duration: Theme.dur-fast; }
+
+                            Text {
+                                text: "AI";
+                                color: root.show-ai-bar ? Theme.amber : Theme.text-secondary;
+                                font-size: 11px;
+                                font-weight: 700;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
 
                     // Profile selector
                     Rectangle {
-                        width: profile-name-text.preferred-width + 20px;
+                        width: prof-name-text.preferred-width + 20px;
                         height: 28px;
 
-                        profile-ta := TouchArea {
+                        prof-ta := TouchArea {
                             width: parent.width;
                             height: parent.height;
                             clicked => { root.terminal-show-profiles = !root.terminal-show-profiles; }
+                            mouse-cursor: pointer;
 
                             Rectangle {
                                 width: parent.width;
                                 height: 28px;
-                                border-radius: 6px;
+                                border-radius: Theme.r-sm;
                                 background: root.terminal-show-profiles
                                     ? Theme.hover-fill-strong
-                                    : (profile-ta.has-hover ? Theme.hover-fill : transparent);
+                                    : (prof-ta.has-hover ? Theme.hover-fill : transparent);
                                 border-width: 1px;
-                                border-color: root.terminal-show-profiles ? Theme.cyan-dim : Theme.border-subtle;
+                                border-color: root.terminal-show-profiles ? Theme.accent-dim : Theme.border-subtle;
 
-                                profile-name-text := Text {
+                                prof-name-text := Text {
                                     text: root.terminal-profile-name;
-                                    color: root.terminal-show-profiles ? Theme.cyan : Theme.text-secondary;
+                                    color: root.terminal-show-profiles ? Theme.accent : Theme.text-secondary;
                                     font-size: 11px;
                                     font-weight: root.terminal-show-profiles ? 600 : 400;
                                     horizontal-alignment: center;
@@ -146,87 +252,36 @@ export component TerminalScreen inherits Rectangle {
                             y: parent.height + 4px;
                             width: 120px;
                             height: 96px;
-                            border-radius: 8px;
-                            background: @linear-gradient(135deg, #18172ae0 0%, #0e0d14c0 100%);
+                            border-radius: Theme.r-md;
+                            background: Theme.bg-elevated;
                             border-width: 1px;
-                            border-color: Theme.cyan-dim;
+                            border-color: Theme.accent-dim;
 
                             VerticalLayout {
                                 padding: 4px;
                                 spacing: 2px;
 
-                                // Default profile
-                                prof-default-ta := TouchArea {
+                                for profile-name in ["Default", "Root", "Dev"] : TouchArea {
                                     height: 28px;
+                                    property <bool> hov: self.has-hover;
                                     clicked => {
-                                        root.terminal-set-profile("Default");
+                                        root.terminal-set-profile(profile-name);
                                         root.terminal-show-profiles = false;
                                     }
+                                    mouse-cursor: pointer;
                                     Rectangle {
                                         height: 28px;
-                                        border-radius: 6px;
-                                        background: root.terminal-profile-name == "Default"
+                                        border-radius: Theme.r-sm;
+                                        background: root.terminal-profile-name == profile-name
                                             ? Theme.tint-cyan
-                                            : (prof-default-ta.has-hover ? Theme.hover-fill : transparent);
+                                            : (parent.hov ? Theme.hover-fill : transparent);
                                         HorizontalLayout {
                                             padding-left: 10px;
                                             Text {
-                                                text: "Default";
-                                                color: root.terminal-profile-name == "Default" ? Theme.cyan : Theme.text-secondary;
-                                                font-size: 12px;
-                                                font-weight: root.terminal-profile-name == "Default" ? 600 : 400;
-                                                vertical-alignment: center;
-                                            }
-                                        }
-                                    }
-                                }
-
-                                // Root profile
-                                prof-root-ta := TouchArea {
-                                    height: 28px;
-                                    clicked => {
-                                        root.terminal-set-profile("Root");
-                                        root.terminal-show-profiles = false;
-                                    }
-                                    Rectangle {
-                                        height: 28px;
-                                        border-radius: 6px;
-                                        background: root.terminal-profile-name == "Root"
-                                            ? Theme.tint-cyan
-                                            : (prof-root-ta.has-hover ? Theme.hover-fill : transparent);
-                                        HorizontalLayout {
-                                            padding-left: 10px;
-                                            Text {
-                                                text: "Root";
-                                                color: root.terminal-profile-name == "Root" ? Theme.cyan : Theme.text-secondary;
-                                                font-size: 12px;
-                                                font-weight: root.terminal-profile-name == "Root" ? 600 : 400;
-                                                vertical-alignment: center;
-                                            }
-                                        }
-                                    }
-                                }
-
-                                // Dev profile
-                                prof-dev-ta := TouchArea {
-                                    height: 28px;
-                                    clicked => {
-                                        root.terminal-set-profile("Dev");
-                                        root.terminal-show-profiles = false;
-                                    }
-                                    Rectangle {
-                                        height: 28px;
-                                        border-radius: 6px;
-                                        background: root.terminal-profile-name == "Dev"
-                                            ? Theme.tint-cyan
-                                            : (prof-dev-ta.has-hover ? Theme.hover-fill : transparent);
-                                        HorizontalLayout {
-                                            padding-left: 10px;
-                                            Text {
-                                                text: "Dev";
-                                                color: root.terminal-profile-name == "Dev" ? Theme.cyan : Theme.text-secondary;
-                                                font-size: 12px;
-                                                font-weight: root.terminal-profile-name == "Dev" ? 600 : 400;
+                                                text: profile-name;
+                                                color: root.terminal-profile-name == profile-name ? Theme.accent : Theme.text-secondary;
+                                                font-size: Theme.fs-caption;
+                                                font-weight: root.terminal-profile-name == profile-name ? 600 : 400;
                                                 vertical-alignment: center;
                                             }
                                         }
@@ -236,26 +291,27 @@ export component TerminalScreen inherits Rectangle {
                         }
                     }
 
-                    // Split pane toggle button
-                    split-btn-ta := TouchArea {
-                        width: 56px;
+                    // Split pane toggle
+                    split-ta := TouchArea {
+                        width: 52px;
                         height: 28px;
                         clicked => { root.terminal-split-toggle(); }
+                        mouse-cursor: pointer;
 
                         Rectangle {
-                            width: 56px;
+                            width: 52px;
                             height: 28px;
-                            border-radius: 6px;
+                            border-radius: Theme.r-sm;
                             background: root.terminal-split-active
                                 ? Theme.hover-fill-strong
-                                : (split-btn-ta.has-hover ? Theme.hover-fill : transparent);
+                                : (split-ta.has-hover ? Theme.hover-fill : transparent);
                             border-width: 1px;
-                            border-color: root.terminal-split-active ? Theme.cyan-dim : Theme.border-subtle;
+                            border-color: root.terminal-split-active ? Theme.accent-dim : Theme.border-subtle;
 
                             Text {
                                 text: "Split";
-                                color: root.terminal-split-active ? Theme.cyan : Theme.text-secondary;
-                                font-size: 12px;
+                                color: root.terminal-split-active ? Theme.accent : Theme.text-secondary;
+                                font-size: 11px;
                                 font-weight: root.terminal-split-active ? 600 : 400;
                                 horizontal-alignment: center;
                                 vertical-alignment: center;
@@ -264,26 +320,26 @@ export component TerminalScreen inherits Rectangle {
                     }
 
                     // Search button
-                    search-btn-ta := TouchArea {
-                        width: 56px;
+                    srch-ta := TouchArea {
+                        width: 28px;
                         height: 28px;
                         clicked => { root.show-search = !root.show-search; }
+                        mouse-cursor: pointer;
 
                         Rectangle {
-                            width: 56px;
+                            width: 28px;
                             height: 28px;
-                            border-radius: 6px;
+                            border-radius: Theme.r-sm;
                             background: root.show-search
                                 ? Theme.hover-fill-strong
-                                : (search-btn-ta.has-hover ? Theme.hover-fill : transparent);
+                                : (srch-ta.has-hover ? Theme.hover-fill : transparent);
                             border-width: 1px;
-                            border-color: root.show-search ? Theme.cyan-dim : Theme.border-subtle;
+                            border-color: root.show-search ? Theme.accent-dim : Theme.border-subtle;
 
                             Text {
-                                text: "Search";
-                                color: root.show-search ? Theme.cyan : Theme.text-secondary;
+                                text: "\u{1F50D}";
+                                color: root.show-search ? Theme.accent : Theme.text-secondary;
                                 font-size: 12px;
-                                font-weight: root.show-search ? 600 : 400;
                                 horizontal-alignment: center;
                                 vertical-alignment: center;
                             }
@@ -292,22 +348,24 @@ export component TerminalScreen inherits Rectangle {
 
                     // Restart button (when dead)
                     if !root.is-alive : TouchArea {
-                        width: 80px;
+                        width: 72px;
                         height: 28px;
                         clicked => { root.restart-terminal(); }
+                        mouse-cursor: pointer;
 
                         Rectangle {
-                            width: 80px;
+                            width: 72px;
                             height: 28px;
-                            border-radius: 6px;
-                            background: parent.has-hover ? Theme.hover-fill-strong : Theme.hover-fill;
+                            border-radius: Theme.r-sm;
+                            background: parent.has-hover ? Theme.color-success-dim : Theme.hover-fill;
                             border-width: 1px;
-                            border-color: Theme.border-subtle;
+                            border-color: Theme.color-success;
 
                             Text {
                                 text: "Restart";
-                                color: Theme.cyan;
+                                color: Theme.color-success;
                                 font-size: 12px;
+                                font-weight: 600;
                                 horizontal-alignment: center;
                                 vertical-alignment: center;
                             }
@@ -317,88 +375,92 @@ export component TerminalScreen inherits Rectangle {
             }
         }
 
-        // Separator
+        // Toolbar separator
         Rectangle { height: 1px; background: Theme.separator; }
 
         // ── Tab bar ──
         if root.tab-count > 0 : Rectangle {
-            height: 30px;
+            height: Theme.h-regular;
             background: Theme.bg-surface;
 
             HorizontalLayout {
-                padding-left: 4px;
-                padding-right: 4px;
+                padding-left: Theme.sp-1;
+                padding-right: Theme.sp-1;
                 spacing: 0px;
                 alignment: start;
 
-                // Tab items
-                for tab[idx] in root.tabs : TouchArea {
-                    width: 130px;
-                    height: 30px;
-                    clicked => { root.switch-tab(idx); }
+                for tab[idx] in root.tabs : Rectangle {
+                    property <bool> hovered: tab-ta.has-hover;
+                    width: 160px;
+                    height: Theme.h-regular;
+                    background: tab.is-active ? Theme.bg-deep
+                              : hovered ? Theme.hover-fill
+                              : transparent;
+                    animate background { duration: Theme.dur-fast; }
 
-                    Rectangle {
-                        width: 130px;
-                        height: 30px;
-                        background: tab.is-active ? #0c0c10 : (parent.has-hover ? Theme.hover-fill : Theme.bg-surface);
+                    // Active tab accent line
+                    if tab.is-active : Rectangle {
+                        y: parent.height - 2px;
+                        width: parent.width;
+                        height: 2px;
+                        background: Theme.accent;
+                    }
 
-                        // Active tab top accent line
-                        if tab.is-active : Rectangle {
-                            x: 0px;
-                            y: 0px;
-                            width: parent.width;
-                            height: 2px;
-                            background: Theme.cyan;
-                        }
+                    tab-ta := TouchArea {
+                        clicked => { root.switch-tab(idx); }
+                        mouse-cursor: pointer;
+                    }
+
+                    HorizontalLayout {
+                        padding-left: Theme.sp-3;
+                        padding-right: Theme.sp-1;
+                        spacing: Theme.sp-1;
+                        alignment: space-between;
 
                         HorizontalLayout {
-                            padding-left: 10px;
-                            padding-right: 4px;
-                            spacing: 4px;
-                            alignment: space-between;
+                            spacing: Theme.sp-2;
+                            alignment: start;
 
-                            HorizontalLayout {
-                                spacing: 5px;
-                                alignment: start;
-
-                                // Alive indicator dot
-                                Text {
-                                    text: tab.is-alive ? "●" : "○";
-                                    color: tab.is-alive ? (tab.is-active ? Theme.cyan : Theme.text-dim) : Theme.text-dim;
-                                    font-size: 7px;
-                                    vertical-alignment: center;
-                                }
-
-                                // Tab title
-                                Text {
-                                    text: tab.title;
-                                    color: tab.is-active ? Theme.text-primary : Theme.text-secondary;
-                                    font-size: 12px;
-                                    font-weight: tab.is-active ? 600 : 400;
-                                    vertical-alignment: center;
-                                    overflow: elide;
-                                }
+                            Rectangle {
+                                width: 6px;
+                                height: 6px;
+                                y: (parent.height - 6px) / 2;
+                                border-radius: 3px;
+                                background: tab.is-alive
+                                    ? (tab.is-active ? Theme.color-success : Theme.text-dim)
+                                    : Theme.color-danger;
                             }
 
-                            // Close button (x)
-                            close-ta := TouchArea {
-                                width: 18px;
-                                height: 18px;
-                                clicked => { root.close-tab(idx); }
+                            Text {
+                                text: tab.title;
+                                color: tab.is-active ? Theme.text-primary : Theme.text-secondary;
+                                font-size: Theme.fs-caption;
+                                font-weight: tab.is-active ? Theme.fw-headline : Theme.fw-body;
+                                vertical-alignment: center;
+                                overflow: elide;
+                            }
+                        }
 
-                                Rectangle {
-                                    width: 18px;
-                                    height: 18px;
-                                    border-radius: 4px;
-                                    background: close-ta.has-hover ? Theme.hover-fill-strong : transparent;
+                        // Close button
+                        close-ta := TouchArea {
+                            width: 20px;
+                            height: 20px;
+                            clicked => { root.close-tab(idx); }
+                            mouse-cursor: pointer;
 
-                                    Text {
-                                        text: "×";
-                                        color: close-ta.has-hover ? Theme.text-primary : Theme.text-dim;
-                                        font-size: 13px;
-                                        horizontal-alignment: center;
-                                        vertical-alignment: center;
-                                    }
+                            Rectangle {
+                                width: 20px;
+                                height: 20px;
+                                border-radius: Theme.r-sm;
+                                background: close-ta.has-hover ? Theme.hover-fill-strong : transparent;
+                                animate background { duration: Theme.dur-fast; }
+
+                                Text {
+                                    text: "×";
+                                    color: close-ta.has-hover ? Theme.text-primary : Theme.text-dim;
+                                    font-size: Theme.fs-body;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
                                 }
                             }
                         }
@@ -407,20 +469,23 @@ export component TerminalScreen inherits Rectangle {
 
                 // New tab button (+)
                 if root.tab-count < 8 : TouchArea {
-                    width: 28px;
-                    height: 30px;
+                    property <bool> hov: self.has-hover;
+                    width: 32px;
+                    height: Theme.h-regular;
                     clicked => { root.new-tab(); }
+                    mouse-cursor: pointer;
 
                     Rectangle {
-                        width: 28px;
-                        height: 30px;
-                        background: parent.has-hover ? Theme.hover-fill : transparent;
+                        width: 32px;
+                        property <bool> is-hov: parent.hov;
+                        height: Theme.h-regular;
+                        background: parent.hov ? Theme.hover-fill : transparent;
+                        animate background { duration: Theme.dur-fast; }
 
                         Text {
                             text: "+";
-                            color: Theme.text-dim;
-                            font-size: 16px;
-                            font-weight: 400;
+                            color: parent.is-hov ? Theme.accent : Theme.text-dim;
+                            font-size: Theme.fs-title-2;
                             horizontal-alignment: center;
                             vertical-alignment: center;
                         }
@@ -429,142 +494,207 @@ export component TerminalScreen inherits Rectangle {
             }
         }
 
-        // Tab bar separator
+        // Tab separator
         Rectangle { height: 1px; background: Theme.separator; }
 
-        // ── Search bar ──
-        if root.show-search : Rectangle {
-            height: search-bar-layout.preferred-height;
-            background: @linear-gradient(135deg, #12111ae0 0%, #0c0b10c0 100%);
+        // ── AI Command Bar ──
+        if root.show-ai-bar : Rectangle {
+            height: 44px;
+            background: Theme.bg-surface;
             border-width: 1px;
-            border-color: Theme.cyan-dim;
+            border-color: Theme.amber-dim;
 
-            search-bar-layout := HorizontalLayout {
-                padding: 8px;
-                padding-left: 12px;
-                padding-right: 12px;
-                spacing: 6px;
+            HorizontalLayout {
+                padding: Theme.sp-2;
+                padding-left: Theme.sp-3;
+                padding-right: Theme.sp-3;
+                spacing: Theme.sp-2;
 
-                // Search icon
+                // AI icon
                 Text {
-                    text: "\u{26B2}";
-                    color: Theme.cyan;
+                    text: "◉";
+                    color: Theme.amber;
                     font-size: 14px;
                     vertical-alignment: center;
                     width: 18px;
                 }
 
-                // Search input
+                // Input field
                 Rectangle {
                     horizontal-stretch: 1;
                     height: 30px;
-                    border-radius: 8px;
-                    background: #0a091080;
+                    border-radius: Theme.r-md;
+                    background: Theme.bg-input;
+                    border-width: 1px;
+                    border-color: Theme.amber-dim;
+                    clip: true;
+
+                    ai-input := TextInput {
+                        x: 10px;
+                        y: (parent.height - self.preferred-height) / 2;
+                        width: parent.width - 20px;
+                        color: Theme.text-primary;
+                        font-size: Theme.fs-body;
+                        single-line: true;
+                        accepted => { root.ai-bar-submit(self.text); }
+                    }
+
+                    // Placeholder
+                    if ai-input.text == "" : Text {
+                        x: 10px;
+                        text: "Describe what you want to do...";
+                        color: Theme.text-dim;
+                        font-size: Theme.fs-body;
+                        vertical-alignment: center;
+                    }
+                }
+
+                // Generated command display
+                if root.ai-generated-command != "" : Rectangle {
+                    horizontal-stretch: 1;
+                    height: 30px;
+                    border-radius: Theme.r-md;
+                    background: Theme.bg-deep;
+                    border-width: 1px;
+                    border-color: Theme.accent-dim;
+                    clip: true;
+
+                    Text {
+                        x: 10px;
+                        text: root.ai-generating ? "Generating..." : root.ai-generated-command;
+                        color: root.ai-generating ? Theme.text-dim : Theme.accent;
+                        font-family: "monospace";
+                        font-size: Theme.fs-mono;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+                }
+
+                // Run button
+                if root.ai-generated-command != "" && !root.ai-generating : TouchArea {
+                    width: 48px;
+                    height: 30px;
+                    clicked => { root.ai-run-command(); }
+                    mouse-cursor: pointer;
+
+                    Rectangle {
+                        property <bool> is-hov: parent.has-hover;
+                        width: 48px;
+                        height: 30px;
+                        border-radius: Theme.r-sm;
+                        background: parent.has-hover ? Theme.color-success : Theme.color-success-dim;
+                        border-width: 1px;
+                        border-color: Theme.color-success;
+
+                        Text {
+                            text: "Run";
+                            color: parent.is-hov ? Theme.bg-deep : Theme.color-success;
+                            font-size: 12px;
+                            font-weight: 600;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+            }
+        }
+
+        if root.show-ai-bar : Rectangle { height: 1px; background: Theme.separator; }
+
+        // ── Search bar ──
+        if root.show-search : Rectangle {
+            height: 40px;
+            background: Theme.bg-surface;
+            border-width: 1px;
+            border-color: Theme.accent-dim;
+
+            HorizontalLayout {
+                padding: Theme.sp-2;
+                padding-left: Theme.sp-3;
+                padding-right: Theme.sp-3;
+                spacing: Theme.sp-2;
+
+                // Search input
+                Rectangle {
+                    horizontal-stretch: 1;
+                    height: 28px;
+                    border-radius: Theme.r-md;
+                    background: Theme.bg-input;
                     border-width: 1px;
                     border-color: root.search-query != "" && root.search-match-count > 0
-                        ? Theme.cyan-dim
-                        : (root.search-query != "" ? Theme.color-emotional : Theme.border-subtle);
+                        ? Theme.accent-dim
+                        : (root.search-query != "" ? Theme.color-danger : Theme.border-subtle);
+                    clip: true;
 
                     search-input := TextInput {
                         x: 10px;
                         y: (parent.height - self.preferred-height) / 2;
                         width: parent.width - 20px;
                         color: Theme.text-primary;
-                        font-size: 13px;
+                        font-size: Theme.fs-body;
                         text <=> root.search-query;
-                        input-type: text;
                         single-line: true;
                         accepted => { root.search-next(); }
                         edited => { root.search-query-changed(self.text); }
                     }
+
+                    if search-input.text == "" : Text {
+                        x: 10px;
+                        text: "Search terminal...";
+                        color: Theme.text-dim;
+                        font-size: Theme.fs-body;
+                        vertical-alignment: center;
+                    }
                 }
 
-                // Match count badge
+                // Match count
                 if root.search-query != "" : Rectangle {
-                    width: search-match-text.preferred-width + 16px;
+                    width: smatch-text.preferred-width + Theme.sp-4;
                     height: 24px;
-                    border-radius: 12px;
-                    background: root.search-match-count > 0 ? Theme.tint-cyan : #ff444430;
+                    border-radius: Theme.r-pill;
+                    background: root.search-match-count > 0 ? Theme.tint-cyan : Theme.color-danger-dim;
 
-                    search-match-text := Text {
+                    smatch-text := Text {
                         text: root.search-match-count > 0
-                            ? "\{root.search-current-match} of \{root.search-match-count}"
+                            ? "\{root.search-current-match}/\{root.search-match-count}"
                             : "0";
-                        color: root.search-match-count > 0 ? Theme.cyan : Theme.color-emotional;
-                        font-size: 11px;
+                        color: root.search-match-count > 0 ? Theme.accent : Theme.color-danger;
+                        font-size: Theme.fs-micro;
                         font-weight: 500;
                         horizontal-alignment: center;
                         vertical-alignment: center;
                     }
                 }
 
-                // Prev match
-                search-prev-ta := TouchArea {
-                    width: 28px;
-                    height: 28px;
+                // Nav buttons
+                TouchArea {
+                    width: 24px; height: 24px;
                     clicked => { root.search-prev(); }
-
+                    mouse-cursor: pointer;
                     Rectangle {
-                        width: 28px;
-                        height: 28px;
-                        border-radius: 6px;
-                        background: search-prev-ta.has-hover ? Theme.hover-fill-strong : transparent;
-
-                        Text {
-                            text: "\u{25B2}";
-                            color: Theme.text-secondary;
-                            font-size: 10px;
-                            horizontal-alignment: center;
-                            vertical-alignment: center;
-                        }
+                        width: 24px; height: 24px; border-radius: Theme.r-sm;
+                        background: parent.has-hover ? Theme.hover-fill-strong : transparent;
+                        Text { text: "▲"; color: Theme.text-secondary; font-size: 10px; horizontal-alignment: center; vertical-alignment: center; }
                     }
                 }
-
-                // Next match
-                search-next-ta := TouchArea {
-                    width: 28px;
-                    height: 28px;
+                TouchArea {
+                    width: 24px; height: 24px;
                     clicked => { root.search-next(); }
-
+                    mouse-cursor: pointer;
                     Rectangle {
-                        width: 28px;
-                        height: 28px;
-                        border-radius: 6px;
-                        background: search-next-ta.has-hover ? Theme.hover-fill-strong : transparent;
-
-                        Text {
-                            text: "\u{25BC}";
-                            color: Theme.text-secondary;
-                            font-size: 10px;
-                            horizontal-alignment: center;
-                            vertical-alignment: center;
-                        }
+                        width: 24px; height: 24px; border-radius: Theme.r-sm;
+                        background: parent.has-hover ? Theme.hover-fill-strong : transparent;
+                        Text { text: "▼"; color: Theme.text-secondary; font-size: 10px; horizontal-alignment: center; vertical-alignment: center; }
                     }
                 }
-
-                // Close search bar
-                search-close-ta := TouchArea {
-                    width: 24px;
-                    height: 24px;
-                    clicked => {
-                        root.show-search = false;
-                        root.search-query = "";
-                        root.search-query-changed("");
-                    }
-
+                TouchArea {
+                    width: 24px; height: 24px;
+                    clicked => { root.show-search = false; root.search-query = ""; root.search-query-changed(""); }
+                    mouse-cursor: pointer;
                     Rectangle {
-                        width: 24px;
-                        height: 24px;
-                        border-radius: 6px;
-                        background: search-close-ta.has-hover ? Theme.hover-fill-strong : transparent;
-
-                        Text {
-                            text: "×";
-                            color: Theme.text-dim;
-                            font-size: 16px;
-                            horizontal-alignment: center;
-                            vertical-alignment: center;
-                        }
+                        width: 24px; height: 24px; border-radius: Theme.r-sm;
+                        background: parent.has-hover ? Theme.hover-fill-strong : transparent;
+                        Text { text: "×"; color: Theme.text-dim; font-size: 14px; horizontal-alignment: center; vertical-alignment: center; }
                     }
                 }
             }
@@ -579,28 +709,29 @@ export component TerminalScreen inherits Rectangle {
 
             // Primary pane
             Rectangle {
-                background: #0c0c10;
+                background: Theme.bg-deep;
                 horizontal-stretch: 1;
-                border-width: root.terminal-split-active ? 1px : 0px;
-                border-color: Theme.cyan-dim;
+                clip: true;
+
+                // Track size for dynamic PTY resize
+                changed width => { root.terminal-area-resized(Math.round(self.width / 1px), Math.round(self.height / 1px)); }
+                changed height => { root.terminal-area-resized(Math.round(self.width / 1px), Math.round(self.height / 1px)); }
 
                 Flickable {
-                    x: 0px;
-                    y: 0px;
+                    x: 0px; y: 0px;
                     width: parent.width;
                     height: parent.height;
                     viewport-width: self.width;
-                    viewport-height: Math.max(term-text.preferred-height + 16px, self.height);
+                    viewport-height: Math.max(term-text.preferred-height + 32px, self.height);
 
                     fs := FocusScope {
-                        x: 0px;
-                        y: 0px;
+                        x: 0px; y: 0px;
                         width: parent.width;
                         height: parent.viewport-height;
                         enabled: true;
 
                         key-pressed(event) => {
-                            // Ctrl+F toggles search bar
+                            // Ctrl+F toggles search
                             if (event.modifiers.control && (event.text == "f" || event.text == "F" || event.text == "\u{0006}")) {
                                 root.show-search = !root.show-search;
                                 if (!root.show-search) {
@@ -609,17 +740,28 @@ export component TerminalScreen inherits Rectangle {
                                 }
                                 return accept;
                             }
-                            // Escape closes search bar if open
-                            if (event.text == Key.Escape && root.show-search) {
-                                root.show-search = false;
-                                root.search-query = "";
-                                root.search-query-changed("");
+                            // Escape closes search or AI bar
+                            if (event.text == Key.Escape) {
+                                if (root.show-search) {
+                                    root.show-search = false;
+                                    root.search-query = "";
+                                    root.search-query-changed("");
+                                    return accept;
+                                }
+                                if (root.show-ai-bar) {
+                                    root.show-ai-bar = false;
+                                    return accept;
+                                }
+                            }
+                            // Tab accepts ghost suggestion
+                            if (event.text == Key.Tab && root.ghost-suggestion != "") {
+                                root.accept-ghost();
                                 return accept;
                             }
                             return root.terminal-key-pressed(event);
                         }
 
-                        // Click to focus (switches to pane 0)
+                        // Click to focus
                         TouchArea {
                             width: 100%;
                             height: 100%;
@@ -629,16 +771,72 @@ export component TerminalScreen inherits Rectangle {
                             }
                         }
 
-                        term-text := Text {
-                            x: 8px;
-                            y: 8px;
-                            width: parent.width - 16px;
-                            text: root.terminal-output;
-                            color: #c8c8d0;
+                        // Colored segments rendering
+                        for seg in root.terminal-segments : Text {
+                            x: seg.col-start * root.char-width + root.term-padding;
+                            y: seg.row * root.line-height + root.term-padding;
+                            text: seg.text;
+                            color: seg.fg-color;
                             font-family: "monospace";
-                            font-size: 14px;
+                            font-size: Theme.fs-mono;
+                            font-weight: seg.bold ? 700 : 400;
+                        }
+
+                        // Fallback: plain text (used when segments empty)
+                        if root.terminal-segments.length == 0 : Text {
+                            x: root.term-padding;
+                            y: root.term-padding;
+                            width: parent.width - root.term-padding * 2;
+                            text: root.terminal-output;
+                            color: Theme.text-primary;
+                            font-family: "monospace";
+                            font-size: Theme.fs-mono;
                             wrap: no-wrap;
                             overflow: elide;
+                        }
+
+                        // Keep for viewport height calculation
+                        term-text := Text {
+                            x: root.term-padding;
+                            y: root.term-padding;
+                            width: parent.width - root.term-padding * 2;
+                            text: root.terminal-output;
+                            color: transparent;
+                            font-family: "monospace";
+                            font-size: Theme.fs-mono;
+                            wrap: no-wrap;
+                        }
+
+                        // Blinking cursor
+                        Rectangle {
+                            property <float> blink-opacity: 1.0;
+                            x: root.cursor-col * root.char-width + root.term-padding;
+                            y: root.cursor-row * root.line-height + root.term-padding;
+                            width: root.char-width;
+                            height: root.line-height;
+                            background: Theme.accent;
+                            opacity: blink-opacity * 0.7;
+                            border-radius: 1px;
+
+                            animate blink-opacity {
+                                duration: 600ms;
+                                iteration-count: -1;
+                                easing: ease-in-out;
+                            }
+
+                            // Keep blinking by toggling
+                            init => { self.blink-opacity = 0.0; }
+                        }
+
+                        // Ghost autocomplete suggestion
+                        if root.ghost-suggestion != "" : Text {
+                            x: root.ghost-col * root.char-width + root.term-padding;
+                            y: root.ghost-row * root.line-height + root.term-padding;
+                            text: root.ghost-suggestion;
+                            color: Theme.text-dim;
+                            font-family: "monospace";
+                            font-size: Theme.fs-mono;
+                            opacity: 0.4;
                         }
                     }
                 }
@@ -647,188 +845,209 @@ export component TerminalScreen inherits Rectangle {
             // Split pane divider
             if root.terminal-split-active : Rectangle {
                 width: 2px;
-                background: Theme.cyan-dim;
+                background: Theme.accent-dim;
             }
 
-            // Secondary pane (only visible when split is active)
+            // Secondary pane
             if root.terminal-split-active : Rectangle {
-                background: #0c0c10;
+                background: Theme.bg-deep;
                 horizontal-stretch: 1;
-                border-width: 1px;
-                border-color: transparent;
+                clip: true;
 
                 Flickable {
-                    x: 0px;
-                    y: 0px;
+                    x: 0px; y: 0px;
                     width: parent.width;
                     height: parent.height;
                     viewport-width: self.width;
-                    viewport-height: Math.max(split-term-text.preferred-height + 16px, self.height);
+                    viewport-height: Math.max(split-term-text.preferred-height + 32px, self.height);
 
                     split-fs := FocusScope {
-                        x: 0px;
-                        y: 0px;
+                        x: 0px; y: 0px;
                         width: parent.width;
                         height: parent.viewport-height;
                         enabled: true;
 
                         key-pressed(event) => {
-                            // Forward key input to split pane
                             if (event.modifiers.control && (event.text == "f" || event.text == "F" || event.text == "\u{0006}")) {
                                 root.show-search = !root.show-search;
-                                if (!root.show-search) {
-                                    root.search-query = "";
-                                    root.search-query-changed("");
-                                }
                                 return accept;
                             }
                             if (event.text == Key.Escape && root.show-search) {
                                 root.show-search = false;
-                                root.search-query = "";
-                                root.search-query-changed("");
                                 return accept;
                             }
                             root.terminal-split-input(event.text);
                             return accept;
                         }
 
-                        // Click to focus (switches to pane 1)
                         TouchArea {
-                            width: 100%;
-                            height: 100%;
-                            clicked => {
-                                split-fs.focus();
-                                root.terminal-switch-pane(1);
-                            }
+                            width: 100%; height: 100%;
+                            clicked => { split-fs.focus(); root.terminal-switch-pane(1); }
                         }
 
                         split-term-text := Text {
-                            x: 8px;
-                            y: 8px;
-                            width: parent.width - 16px;
+                            x: root.term-padding;
+                            y: root.term-padding;
+                            width: parent.width - root.term-padding * 2;
                             text: root.terminal-split-output;
-                            color: #c8c8d0;
+                            color: Theme.text-primary;
                             font-family: "monospace";
-                            font-size: 14px;
+                            font-size: Theme.fs-mono;
                             wrap: no-wrap;
                             overflow: elide;
+                        }
+
+                        // Split cursor
+                        Rectangle {
+                            x: root.terminal-split-cursor-col * root.char-width + root.term-padding;
+                            y: root.terminal-split-cursor-row * root.line-height + root.term-padding;
+                            width: root.char-width;
+                            height: root.line-height;
+                            background: Theme.accent;
+                            opacity: 0.5;
+                            border-radius: 1px;
                         }
                     }
                 }
             }
         }
 
-        // ── AI suggestion panel (column, slides up when error detected) ──
+        // ── Dangerous command warning overlay ──
+        if root.show-danger-warning : Rectangle {
+            height: 52px;
+            background: Theme.color-danger-dim;
+            border-width: 1px;
+            border-color: Theme.color-danger;
+
+            HorizontalLayout {
+                padding: Theme.sp-3;
+                spacing: Theme.sp-3;
+                alignment: space-between;
+
+                HorizontalLayout {
+                    spacing: Theme.sp-2;
+                    alignment: start;
+
+                    Text {
+                        text: "⚠";
+                        color: Theme.color-danger;
+                        font-size: 16px;
+                        vertical-alignment: center;
+                    }
+
+                    Text {
+                        text: root.danger-message;
+                        color: Theme.text-primary;
+                        font-size: Theme.fs-body;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+                }
+
+                HorizontalLayout {
+                    spacing: Theme.sp-2;
+                    alignment: end;
+
+                    TouchArea {
+                        width: 64px; height: 30px;
+                        clicked => { root.danger-cancel(); }
+                        mouse-cursor: pointer;
+                        Rectangle {
+                            width: 64px; height: 30px; border-radius: Theme.r-sm;
+                            background: parent.has-hover ? Theme.hover-fill-strong : Theme.hover-fill;
+                            border-width: 1px; border-color: Theme.border-default;
+                            Text { text: "Cancel"; color: Theme.text-secondary; font-size: 12px; font-weight: 500; horizontal-alignment: center; vertical-alignment: center; }
+                        }
+                    }
+
+                    TouchArea {
+                        width: 72px; height: 30px;
+                        clicked => { root.danger-proceed(); }
+                        mouse-cursor: pointer;
+                        Rectangle {
+                            property <bool> is-hov: parent.has-hover;
+                            width: 72px; height: 30px; border-radius: Theme.r-sm;
+                            background: parent.has-hover ? Theme.color-danger : Theme.color-danger-dim;
+                            border-width: 1px; border-color: Theme.color-danger;
+                            Text { text: "Proceed"; color: parent.is-hov ? Theme.bg-deep : Theme.color-danger; font-size: 12px; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; }
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── AI suggestion panel ──
         if root.has-suggestion : Rectangle {
             min-height: 60px;
             max-height: 200px;
-            background: Theme.bg-elevated;
+            background: Theme.bg-surface;
             border-width: 1px;
             border-color: Theme.amber-dim;
 
             VerticalLayout {
                 spacing: 0px;
 
-                // Header row: icon + label + buttons
                 Rectangle {
                     height: 32px;
-                    background: transparent;
 
                     HorizontalLayout {
-                        padding-left: 14px;
-                        padding-right: 10px;
-                        spacing: 8px;
+                        padding-left: Theme.sp-3;
+                        padding-right: Theme.sp-3;
+                        spacing: Theme.sp-2;
                         alignment: space-between;
 
                         HorizontalLayout {
-                            spacing: 6px;
+                            spacing: Theme.sp-2;
                             alignment: start;
 
-                            Text {
-                                text: "◉";
-                                color: Theme.amber;
-                                font-size: 14px;
-                                vertical-alignment: center;
-                            }
-
-                            Text {
-                                text: "AI Assistant";
-                                color: Theme.amber;
-                                font-size: 12px;
-                                font-weight: 600;
-                                vertical-alignment: center;
-                            }
+                            Text { text: "◉"; color: Theme.amber; font-size: 14px; vertical-alignment: center; }
+                            Text { text: "AI Assistant"; color: Theme.amber; font-size: Theme.fs-caption; font-weight: 600; vertical-alignment: center; }
                         }
 
                         HorizontalLayout {
-                            spacing: 6px;
+                            spacing: 4px;
                             alignment: end;
 
-                            // "Help" button
                             help-ta := TouchArea {
-                                width: 56px;
-                                height: 26px;
+                                width: 52px; height: 26px;
                                 clicked => { root.request-ai-help(); }
-
+                                mouse-cursor: pointer;
                                 Rectangle {
-                                    width: 56px;
-                                    height: 26px;
-                                    border-radius: 6px;
+                                    width: 52px; height: 26px; border-radius: Theme.r-sm;
                                     background: help-ta.has-hover ? Theme.amber : Theme.hover-fill-strong;
                                     border-width: help-ta.has-hover ? 0px : 1px;
                                     border-color: Theme.amber-dim;
-
-                                    Text {
-                                        text: "Help";
-                                        color: help-ta.has-hover ? Theme.bg-deep : Theme.amber;
-                                        font-size: 11px;
-                                        font-weight: 600;
-                                        horizontal-alignment: center;
-                                        vertical-alignment: center;
-                                    }
+                                    Text { text: "Help"; color: help-ta.has-hover ? Theme.bg-deep : Theme.amber; font-size: 11px; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; }
                                 }
                             }
 
-                            // Dismiss
                             dismiss-ta := TouchArea {
-                                width: 26px;
-                                height: 26px;
+                                width: 26px; height: 26px;
                                 clicked => { root.dismiss-suggestion(); }
-
+                                mouse-cursor: pointer;
                                 Rectangle {
-                                    width: 26px;
-                                    height: 26px;
-                                    border-radius: 6px;
+                                    width: 26px; height: 26px; border-radius: Theme.r-sm;
                                     background: dismiss-ta.has-hover ? Theme.hover-fill-strong : transparent;
-
-                                    Text {
-                                        text: "×";
-                                        color: Theme.text-dim;
-                                        font-size: 16px;
-                                        horizontal-alignment: center;
-                                        vertical-alignment: center;
-                                    }
+                                    Text { text: "×"; color: Theme.text-dim; font-size: 14px; horizontal-alignment: center; vertical-alignment: center; }
                                 }
                             }
                         }
                     }
                 }
 
-                // Separator
                 Rectangle { height: 1px; background: Theme.separator; }
 
-                // Scrollable content area
                 Flickable {
                     vertical-stretch: 1;
-                    viewport-height: suggestion-text.preferred-height + 16px;
+                    viewport-height: sugg-text.preferred-height + Theme.sp-4;
 
-                    suggestion-text := Text {
-                        x: 14px;
-                        y: 8px;
-                        width: parent.width - 28px;
+                    sugg-text := Text {
+                        x: Theme.sp-3;
+                        y: Theme.sp-2;
+                        width: parent.width - Theme.sp-6;
                         text: root.ai-suggestion;
                         color: Theme.text-secondary;
-                        font-size: 13px;
+                        font-size: Theme.fs-mono;
                         wrap: word-wrap;
                     }
                 }

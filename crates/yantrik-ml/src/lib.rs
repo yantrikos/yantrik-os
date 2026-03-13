@@ -30,6 +30,14 @@ mod token_stream;
 // LLM backend modules
 mod llm;
 
+// Provider registry (multi-provider management, secret storage, key validation)
+#[cfg(feature = "api-llm")]
+pub mod provider;
+
+// Hardware detection & AI recommendation engine
+#[cfg(feature = "api-llm")]
+pub mod hardware;
+
 // Voice modules
 pub mod stt;
 pub mod tts;
@@ -43,7 +51,7 @@ pub use model_loader::{GGUFFiles, ModelFiles};
 
 // ── Shared type + trait exports ──────────────────────────────────────
 
-pub use types::{ApiToolCall, ApiToolCallFunction, ChatMessage, GenerationConfig, LLMResponse, ToolCall, TranscribeResult, VoiceParams};
+pub use types::{ApiToolCall, ApiToolCallFunction, ChatMessage, GenerationConfig, LLMResponse, ToolCall, TranscribeResult, VoiceParams, ProviderConfigEntry};
 pub use traits::{LLMBackend, STTBackend, Embedder};
 pub use capability::{ModelCapabilityProfile, ModelTier, ToolCallMode, SlotMode, ToolFamily};
 
@@ -64,6 +72,27 @@ pub use llm::ClaudeCliLLM;
 #[cfg(feature = "llamacpp")]
 pub use llm::LlamaCppLLM;
 pub use llm::{FallbackLLM, FallbackConfig};
+
+// ── Provider registry exports ──────────────────────────────────────
+
+#[cfg(feature = "api-llm")]
+pub use provider::{
+    ProviderRegistry, RegisteredProvider, ProviderId, UsageStats,
+    ProviderDescriptor, ProviderKind, AuthScheme, SetupTier, KNOWN_PROVIDERS,
+    GenericOpenAIBackend, AnthropicBackend, GoogleGeminiBackend,
+    ProviderHealth, HealthStatus, TaskType,
+    SecretStore, AutoSecretStore, KeyringSecretStore, EncryptedFileStore, SecretRef,
+    KeyValidator, KeyValidationResult, KeyValidationError,
+};
+
+// ── Hardware detection exports ───────────────────────────────────────
+
+#[cfg(feature = "api-llm")]
+pub use hardware::{
+    HardwareProfile, GpuProfile, LocalRuntime, RuntimeKind,
+    SetupMode, SetupRecommendation, ModeScores,
+    detect_hardware, recommend_setup,
+};
 
 // ── Voice exports ────────────────────────────────────────────────────
 

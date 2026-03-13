@@ -73,9 +73,10 @@ export component SkillStore inherits Rectangle {
         Rectangle {
             height: 36px;
             border-radius: 8px;
-            background: #ffffff08;
+            background: Theme.hover-fill;
             border-width: 1px;
-            border-color: search-input.has-focus ? Theme.cyan-dim : #ffffff10;
+            border-color: search-input.has-focus ? Theme.cyan-dim : Theme.hover-fill-strong;
+            clip: true;
 
             HorizontalLayout {
                 padding-left: 12px;
@@ -121,7 +122,7 @@ export component SkillStore inherits Rectangle {
 
                 Rectangle {
                     border-radius: 6px;
-                    background: root.active-category == cat ? Theme.cyan-dim : (cat-ta.has-hover ? #ffffff08 : transparent);
+                    background: root.active-category == cat ? Theme.cyan-dim : (cat-ta.has-hover ? Theme.hover-fill : transparent);
                     border-width: root.active-category == cat ? 1px : 0px;
                     border-color: Theme.cyan;
 
@@ -162,9 +163,9 @@ export component SkillStore inherits Rectangle {
 
                     Rectangle {
                         border-radius: 10px;
-                        background: skill-ta.has-hover ? #ffffff06 : #12111a60;
+                        background: skill-ta.has-hover ? Theme.border-subtle : Theme.bg-card;
                         border-width: 1px;
-                        border-color: skill.enabled ? #34a85330 : #ffffff08;
+                        border-color: skill.enabled ? Theme.color-success-dim : Theme.hover-fill;
 
                         HorizontalLayout {
                             padding: 12px;
@@ -175,12 +176,12 @@ export component SkillStore inherits Rectangle {
                                 width: 40px;
                                 height: 40px;
                                 border-radius: 10px;
-                                background: skill.enabled ? #34a85315 : #ffffff08;
+                                background: skill.enabled ? Theme.color-success-dim : Theme.hover-fill;
 
                                 Text {
                                     text: skill.icon;
                                     font-size: 18px;
-                                    color: skill.enabled ? #34a853 : Theme.text-dim;
+                                    color: skill.enabled ? Theme.color-success : Theme.text-dim;
                                     horizontal-alignment: center;
                                     vertical-alignment: center;
                                 }
@@ -207,7 +208,7 @@ export component SkillStore inherits Rectangle {
                                         width: cat-badge-text.preferred-width + 10px;
                                         height: 16px;
                                         border-radius: 4px;
-                                        background: #ffffff08;
+                                        background: Theme.hover-fill;
 
                                         cat-badge-text := Text {
                                             text: skill.category;
@@ -234,7 +235,7 @@ export component SkillStore inherits Rectangle {
                                 width: 44px;
                                 height: 24px;
                                 border-radius: 12px;
-                                background: skill.enabled ? #34a853 : #333;
+                                background: skill.enabled ? Theme.color-success : Theme.bg-card;
 
                                 animate background { duration: 150ms; }
 
@@ -244,7 +245,7 @@ export component SkillStore inherits Rectangle {
                                     border-radius: 9px;
                                     y: 3px;
                                     x: skill.enabled ? parent.width - self.width - 3px : 3px;
-                                    background: white;
+                                    background: Theme.text-on-accent;
 
                                     animate x { duration: 150ms; }
                                 }
@@ -268,7 +269,7 @@ export component SkillStore inherits Rectangle {
                         }
                         Text {
                             text: root.search-query != "" ? "Try a different search term" : "Skills will appear here once loaded";
-                            color: #ffffff30;
+                            color: Theme.text-dim;
                             font-size: 11px;
                             horizontal-alignment: center;
                         }

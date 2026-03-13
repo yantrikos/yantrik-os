@@ -149,7 +149,7 @@ pub fn builtin_apps() -> Vec<DesktopEntry> {
             app_id: "documents".into(), icon_char: "YD".into(),
         },
         DesktopEntry {
-            name: "ySlides".into(), exec: "__builtin__".into(), icon: String::new(),
+            name: "yPresent".into(), exec: "__builtin__".into(), icon: String::new(),
             categories: "Office;Presentation;".into(), comment: "Presentation slide editor".into(),
             app_id: "presentation".into(), icon_char: "YP".into(),
         },

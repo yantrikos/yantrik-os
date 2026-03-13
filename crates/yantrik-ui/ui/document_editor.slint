@@ -5,6 +5,12 @@
 
 import { Theme } from "theme.slint";
 import { ListView, LineEdit, TextEdit, ScrollView } from "std-widgets.slint";
+import { YButton, YIconButton } from "components/y_button.slint";
+import { YInput } from "components/y_input.slint";
+import { YEmptyState } from "components/y_empty_state.slint";
+import { RibbonToolButton, RibbonToolButtonWide, RibbonSeparator, RibbonTabButton,
+         RibbonQuickAction, RibbonGroupLabel, RibbonColorButton, RibbonDropdown,
+         RibbonAccentButton } from "components/app_ribbon.slint";
 
 export struct DocHeadingEntry {
     title: string,
@@ -33,111 +39,6 @@ export struct DocVersionEntry {
     label: string,
     timestamp: string,
     index: int,
-}
-
-// ── Toolbar button — increased hit targets (36x32) ──
-component ToolbarButton inherits Rectangle {
-    in property <string> label;
-    in property <bool> is-active: false;
-    in property <string> tooltip-text: "";
-    callback clicked();
-
-    width: 36px;
-    height: 32px;
-    border-radius: 5px;
-    background: ta.has-hover ? Theme.hover-fill-strong
-        : (is-active ? Theme.accent.transparentize(0.75) : transparent);
-
-    ta := TouchArea {
-        mouse-cursor: pointer;
-        clicked => { root.clicked(); }
-    }
-
-    Text {
-        text: root.label;
-        color: root.is-active ? Theme.accent : Theme.text-primary;
-        font-size: 13px;
-        font-weight: root.is-active ? 700 : 500;
-        horizontal-alignment: center;
-        vertical-alignment: center;
-    }
-}
-
-// ── Wide toolbar button — increased hit targets ──
-component ToolbarButtonWide inherits Rectangle {
-    in property <string> label;
-    in property <bool> is-active: false;
-    callback clicked();
-
-    width: 56px;
-    height: 32px;
-    border-radius: 5px;
-    background: ta.has-hover ? Theme.hover-fill-strong
-        : (is-active ? Theme.accent.transparentize(0.75) : transparent);
-
-    ta := TouchArea {
-        mouse-cursor: pointer;
-        clicked => { root.clicked(); }
-    }
-
-    Text {
-        text: root.label;
-        color: root.is-active ? Theme.accent : Theme.text-secondary;
-        font-size: 11px;
-        font-weight: root.is-active ? 600 : 500;
-        horizontal-alignment: center;
-        vertical-alignment: center;
-    }
-}
-
-// ── File action button — distinct from formatting controls ──
-component FileActionButton inherits Rectangle {
-    in property <string> label;
-    callback clicked();
-
-    width: 52px;
-    height: 30px;
-    border-radius: 5px;
-    border-width: 1px;
-    border-color: ta.has-hover ? Theme.accent.transparentize(0.5) : Theme.border-subtle;
-    background: ta.has-hover ? Theme.accent.transparentize(0.85) : Theme.bg-elevated;
-
-    ta := TouchArea {
-        mouse-cursor: pointer;
-        clicked => { root.clicked(); }
-    }
-
-    Text {
-        text: root.label;
-        color: ta.has-hover ? Theme.accent : Theme.text-primary;
-        font-size: 11px;
-        font-weight: 600;
-        horizontal-alignment: center;
-        vertical-alignment: center;
-    }
-}
-
-// ── Toolbar group separator — thin vertical line ──
-component ToolbarSeparator inherits Rectangle {
-    width: 1px;
-    height: 20px;
-    background: Theme.separator;
-}
-
-// ── Group label above toolbar section ──
-component ToolbarGroupLabel inherits Rectangle {
-    in property <string> label;
-    height: 32px;
-
-    Text {
-        text: root.label;
-        color: Theme.text-dim;
-        font-size: 9px;
-        font-weight: 600;
-        letter-spacing: 0.5px;
-        vertical-alignment: center;
-        horizontal-alignment: center;
-    }
 }
 
 export component DocumentEditorScreen inherits Rectangle {
@@ -266,99 +167,46 @@ export component DocumentEditorScreen inherits Rectangle {
     callback doc-ai-translate(string);
     callback doc-ai-insights();
 
+    // Ribbon tab state: 0=Home, 1=Insert, 2=Review, 3=Export
+    property <int> ribbon-tab: 0;
+
     VerticalLayout {
-        // ── Top Toolbar — grouped with labels ──
+        // ═══ Row 1: Tab strip + Quick Actions (36px) ═══
         Rectangle {
-            height: 48px;
-            background: Theme.bg-surface;
-            border-width: 0px;
+            height: 36px;
+            background: Theme.bg-elevated;
 
             HorizontalLayout {
-                padding-left: 10px;
-                padding-right: 10px;
-                spacing: 3px;
-                alignment: start;
+                padding-left: 8px;
+                padding-right: 8px;
+                spacing: 0px;
 
-                // ── File actions — visually distinct ──
-                FileActionButton { label: "New"; clicked => { root.doc-new(); } }
-                FileActionButton { label: "Open"; clicked => { root.doc-open(); } }
-                FileActionButton { label: "Save"; clicked => { root.doc-save(); } }
+                // Quick actions: Save, Undo, Redo
+                RibbonQuickAction { label: "💾"; tooltip-text: "Save"; clicked => { root.doc-save(); } }
+                RibbonQuickAction { label: "↶"; tooltip-text: "Undo"; clicked => { root.doc-undo(); } }
+                RibbonQuickAction { label: "↷"; tooltip-text: "Redo"; clicked => { root.doc-redo(); } }
 
-                // Breathing room after file actions
-                Rectangle { width: 8px; }
-                ToolbarSeparator {}
-                Rectangle { width: 4px; }
+                Rectangle { width: 12px; }
 
-                // ── Write group: headings, lists, formatting ──
-                ToolbarGroupLabel { label: "WRITE"; width: 36px; }
-                ToolbarButton { label: "H1"; clicked => { root.doc-format-heading(1); } }
-                ToolbarButton { label: "H2"; clicked => { root.doc-format-heading(2); } }
-                ToolbarButton { label: "H3"; clicked => { root.doc-format-heading(3); } }
-                ToolbarButton { label: "B"; clicked => { root.doc-format-bold(); } }
-                ToolbarButton { label: "I"; clicked => { root.doc-format-italic(); } }
-                ToolbarButton { label: "U"; clicked => { root.doc-format-underline(); } }
-                ToolbarButton { label: "S"; clicked => { root.doc-format-strikethrough(); } }
-                ToolbarButton { label: "=="; clicked => { root.doc-format-highlight(); } }
-                ToolbarButton { label: "•"; clicked => { root.doc-format-bullet(); } }
-                ToolbarButton { label: "☑"; clicked => { root.doc-format-checklist(); } }
-                ToolbarButton { label: "Q"; clicked => { root.doc-format-quote(); } }
-                ToolbarButton { label: "🔗"; clicked => { root.doc-format-link(""); } }
+                // Tab strip
+                RibbonTabButton { label: "Home"; is-active: root.ribbon-tab == 0; clicked => { root.ribbon-tab = 0; } }
+                RibbonTabButton { label: "Insert"; is-active: root.ribbon-tab == 1; clicked => { root.ribbon-tab = 1; } }
+                RibbonTabButton { label: "Review"; is-active: root.ribbon-tab == 2; clicked => { root.ribbon-tab = 2; } }
+                RibbonTabButton { label: "Export"; is-active: root.ribbon-tab == 3; clicked => { root.ribbon-tab = 3; } }
 
-                Rectangle { width: 2px; }
-                ToolbarSeparator {}
-                Rectangle { width: 2px; }
+                // Spacer
+                Rectangle {}
 
-                // ── Insert group ──
-                ToolbarGroupLabel { label: "INSERT"; width: 42px; }
-                ToolbarButtonWide { label: "Table"; clicked => { root.doc-insert-table(3, 3); } }
-                ToolbarButton { label: "< >"; clicked => { root.doc-format-code(); } }
-                ToolbarButton { label: "‹›"; clicked => { root.doc-format-inline-code(); } }
-                ToolbarButtonWide { label: "TOC"; clicked => { root.doc-insert-toc(); } }
-                ToolbarButton { label: "—"; clicked => { root.doc-format-divider(); } }
-
-                Rectangle { width: 2px; }
-                ToolbarSeparator {}
-                Rectangle { width: 2px; }
-
-                // ── Review group ──
-                ToolbarGroupLabel { label: "REVIEW"; width: 44px; }
-                ToolbarButtonWide {
-                    label: "Track";
-                    is-active: root.doc-track-changes-on;
-                    clicked => { root.doc-toggle-track-changes(); }
-                }
-                ToolbarButton {
+                // Far-right: Find + AI
+                RibbonQuickAction {
                     label: "🔍";
-                    is-active: root.doc-show-find;
+                    tooltip-text: "Find";
                     clicked => { root.doc-show-find = !root.doc-show-find; }
                 }
-                ToolbarButton { label: "↶"; clicked => { root.doc-undo(); } }
-                ToolbarButton { label: "↷"; clicked => { root.doc-redo(); } }
-
-                Rectangle { width: 2px; }
-                ToolbarSeparator {}
-                Rectangle { width: 2px; }
-
-                // ── Export group ──
-                ToolbarGroupLabel { label: "EXPORT"; width: 44px; }
-                ToolbarButtonWide { label: "MD↑"; clicked => { root.doc-import-md(); } }
-                ToolbarButtonWide { label: "MD↓"; clicked => { root.doc-export-md(); } }
-                ToolbarButtonWide { label: "HTML"; clicked => { root.doc-export-html(); } }
-                ToolbarButtonWide { label: "PDF"; clicked => { root.doc-export-pdf(); } }
-                ToolbarButtonWide {
-                    label: "Page";
-                    is-active: root.doc-page-layout-visible;
-                    clicked => { root.doc-page-layout-visible = !root.doc-page-layout-visible; }
-                }
-
-                Rectangle { width: 2px; }
-                ToolbarSeparator {}
-                Rectangle { width: 4px; }
-
-                // AI Assist toggle
-                ToolbarButtonWide {
+                RibbonToolButton {
                     label: "AI";
                     is-active: root.show-ai-panel;
+                    tooltip-text: "AI Assist";
                     clicked => { root.show-ai-panel = !root.show-ai-panel; }
                 }
             }
@@ -367,7 +215,133 @@ export component DocumentEditorScreen inherits Rectangle {
             Rectangle {
                 y: parent.height - 1px;
                 height: 1px;
-                background: Theme.separator;
+                background: Theme.border-subtle;
+            }
+        }
+
+        // ═══ Row 2: Grouped command band (44px) — swaps by tab ═══
+        Rectangle {
+            height: 44px;
+            background: Theme.bg-elevated;
+
+            // ── HOME tab: Style + Font + Paragraph ──
+            if root.ribbon-tab == 0 : HorizontalLayout {
+                padding-left: 10px;
+                padding-right: 10px;
+                spacing: 3px;
+                alignment: start;
+
+                // Style group
+                RibbonGroupLabel { label: "STYLE"; }
+                RibbonToolButton { label: "H1"; tooltip-text: "Heading 1"; clicked => { root.doc-format-heading(1); } }
+                RibbonToolButton { label: "H2"; tooltip-text: "Heading 2"; clicked => { root.doc-format-heading(2); } }
+                RibbonToolButton { label: "H3"; tooltip-text: "Heading 3"; clicked => { root.doc-format-heading(3); } }
+
+                RibbonSeparator {}
+
+                // Font group
+                RibbonGroupLabel { label: "FONT"; }
+                RibbonToolButton { label: "B"; tooltip-text: "Bold"; clicked => { root.doc-format-bold(); } }
+                RibbonToolButton { label: "I"; tooltip-text: "Italic"; clicked => { root.doc-format-italic(); } }
+                RibbonToolButton { label: "U"; tooltip-text: "Underline"; clicked => { root.doc-format-underline(); } }
+                RibbonToolButton { label: "S"; tooltip-text: "Strikethrough"; clicked => { root.doc-format-strikethrough(); } }
+                RibbonToolButton { label: "=="; tooltip-text: "Highlight"; clicked => { root.doc-format-highlight(); } }
+
+                RibbonSeparator {}
+
+                // Paragraph group
+                RibbonGroupLabel { label: "PARAGRAPH"; }
+                RibbonToolButton { label: "•"; tooltip-text: "Bullet list"; clicked => { root.doc-format-bullet(); } }
+                RibbonToolButton { label: "☑"; tooltip-text: "Checklist"; clicked => { root.doc-format-checklist(); } }
+                RibbonToolButton { label: "Q"; tooltip-text: "Quote"; clicked => { root.doc-format-quote(); } }
+                RibbonToolButton { label: "🔗"; tooltip-text: "Link"; clicked => { root.doc-format-link(""); } }
+            }
+
+            // ── INSERT tab: Objects + Code ──
+            if root.ribbon-tab == 1 : HorizontalLayout {
+                padding-left: 10px;
+                padding-right: 10px;
+                spacing: 3px;
+                alignment: start;
+
+                RibbonGroupLabel { label: "OBJECTS"; }
+                RibbonToolButtonWide { label: "Table"; tooltip-text: "Insert table"; clicked => { root.doc-insert-table(3, 3); } }
+                RibbonToolButtonWide { label: "Image"; tooltip-text: "Insert image"; clicked => { root.doc-insert-image(""); } }
+                RibbonToolButtonWide { label: "TOC"; tooltip-text: "Table of contents"; clicked => { root.doc-insert-toc(); } }
+                RibbonToolButton { label: "—"; tooltip-text: "Divider"; clicked => { root.doc-format-divider(); } }
+
+                RibbonSeparator {}
+
+                RibbonGroupLabel { label: "CODE"; }
+                RibbonToolButtonWide { label: "< >"; tooltip-text: "Code block"; clicked => { root.doc-format-code(); } }
+                RibbonToolButtonWide { label: "‹›"; tooltip-text: "Inline code"; clicked => { root.doc-format-inline-code(); } }
+            }
+
+            // ── REVIEW tab: Track changes + Comments ──
+            if root.ribbon-tab == 2 : HorizontalLayout {
+                padding-left: 10px;
+                padding-right: 10px;
+                spacing: 3px;
+                alignment: start;
+
+                RibbonGroupLabel { label: "TRACKING"; }
+                RibbonToolButtonWide {
+                    label: "Track";
+                    is-active: root.doc-track-changes-on;
+                    tooltip-text: "Toggle track changes";
+                    clicked => { root.doc-toggle-track-changes(); }
+                }
+
+                RibbonSeparator {}
+
+                RibbonGroupLabel { label: "NAVIGATE"; }
+                RibbonToolButtonWide {
+                    label: "Outline";
+                    is-active: root.doc-sidebar-mode == 0;
+                    tooltip-text: "Toggle outline";
+                    clicked => { root.doc-sidebar-mode = root.doc-sidebar-mode == 0 ? -1 : 0; }
+                }
+            }
+
+            // ── EXPORT tab: Import/Export + Page layout ──
+            if root.ribbon-tab == 3 : HorizontalLayout {
+                padding-left: 10px;
+                padding-right: 10px;
+                spacing: 3px;
+                alignment: start;
+
+                RibbonGroupLabel { label: "FILE"; }
+                RibbonToolButtonWide { label: "New"; clicked => { root.doc-new(); } }
+                RibbonToolButtonWide { label: "Open"; clicked => { root.doc-open(); } }
+
+                RibbonSeparator {}
+
+                RibbonGroupLabel { label: "IMPORT"; }
+                RibbonToolButtonWide { label: "MD↑"; tooltip-text: "Import Markdown"; clicked => { root.doc-import-md(); } }
+
+                RibbonSeparator {}
+
+                RibbonGroupLabel { label: "EXPORT"; }
+                RibbonToolButtonWide { label: "MD↓"; tooltip-text: "Export Markdown"; clicked => { root.doc-export-md(); } }
+                RibbonToolButtonWide { label: "HTML"; tooltip-text: "Export HTML"; clicked => { root.doc-export-html(); } }
+                RibbonToolButtonWide { label: "PDF"; tooltip-text: "Export PDF"; clicked => { root.doc-export-pdf(); } }
+
+                RibbonSeparator {}
+
+                RibbonGroupLabel { label: "LAYOUT"; }
+                RibbonToolButtonWide {
+                    label: "Page";
+                    is-active: root.doc-page-layout-visible;
+                    tooltip-text: "Page layout settings";
+                    clicked => { root.doc-page-layout-visible = !root.doc-page-layout-visible; }
+                }
+            }
+
+            // Bottom border
+            Rectangle {
+                y: parent.height - 1px;
+                height: 1px;
+                background: Theme.border-subtle;
             }
         }
 
@@ -375,7 +349,7 @@ export component DocumentEditorScreen inherits Rectangle {
         Rectangle {
             height: root.doc-export-status != "" ? 28px : 0px;
             visible: root.doc-export-status != "";
-            background: #2ecc7120;
+            background: Theme.color-success-dim;
 
             HorizontalLayout {
                 padding-left: 12px;
@@ -384,7 +358,7 @@ export component DocumentEditorScreen inherits Rectangle {
 
                 Text {
                     text: root.doc-export-status;
-                    color: #2ecc71;
+                    color: Theme.color-success;
                     font-size: 11px;
                     font-weight: 500;
                     vertical-alignment: center;
@@ -396,9 +370,9 @@ export component DocumentEditorScreen inherits Rectangle {
         Rectangle {
             height: root.doc-page-layout-visible ? 64px : 0px;
             visible: root.doc-page-layout-visible;
-            background: #ffffff08;
+            background: Theme.border-subtle;
             border-width: 1px;
-            border-color: #ffffff10;
+            border-color: Theme.hover-fill-strong;
 
             HorizontalLayout {
                 padding-left: 16px;
@@ -475,7 +449,7 @@ export component DocumentEditorScreen inherits Rectangle {
                 Text {
                     text: "Find:";
                     color: Theme.text-secondary;
-                    font-size: Theme.font-small;
+                    font-size: Theme.fs-caption;
                     vertical-alignment: center;
                 }
 
@@ -489,19 +463,19 @@ export component DocumentEditorScreen inherits Rectangle {
                 Text {
                     text: root.doc-find-count >= 0 ? root.doc-find-count + " matches" : "";
                     color: Theme.text-secondary;
-                    font-size: Theme.font-small;
+                    font-size: Theme.fs-caption;
                     vertical-alignment: center;
                 }
 
-                ToolbarButton { label: "↑"; clicked => { root.doc-find-prev(); } }
-                ToolbarButton { label: "↓"; clicked => { root.doc-find-next(); } }
+                RibbonToolButton { label: "↑"; clicked => { root.doc-find-prev(); } }
+                RibbonToolButton { label: "↓"; clicked => { root.doc-find-next(); } }
 
-                ToolbarSeparator {}
+                RibbonSeparator {}
 
                 Text {
                     text: "Replace:";
                     color: Theme.text-secondary;
-                    font-size: Theme.font-small;
+                    font-size: Theme.fs-caption;
                     vertical-alignment: center;
                 }
 
@@ -512,8 +486,8 @@ export component DocumentEditorScreen inherits Rectangle {
                     accepted => { root.doc-replace-one(); }
                 }
 
-                ToolbarButton { label: "One"; clicked => { root.doc-replace-one(); } }
-                ToolbarButton { label: "All"; clicked => { root.doc-replace-all(); } }
+                RibbonToolButtonWide { label: "One"; clicked => { root.doc-replace-one(); } }
+                RibbonToolButtonWide { label: "All"; clicked => { root.doc-replace-all(); } }
             }
 
             // Bottom border
@@ -609,7 +583,7 @@ export component DocumentEditorScreen inherits Rectangle {
 
                                         Text {
                                             text: root.doc-comments.length;
-                                            color: #000000;
+                                            color: Theme.text-on-accent;
                                             font-size: 9px;
                                             font-weight: 700;
                                             horizontal-alignment: center;
@@ -658,7 +632,7 @@ export component DocumentEditorScreen inherits Rectangle {
 
                                         Text {
                                             text: root.doc-changes.length;
-                                            color: #000000;
+                                            color: Theme.text-on-accent;
                                             font-size: 9px;
                                             font-weight: 700;
                                             horizontal-alignment: center;
@@ -755,7 +729,7 @@ export component DocumentEditorScreen inherits Rectangle {
                             // Add comment input
                             Rectangle {
                                 height: 60px;
-                                background: Theme.bg-input;
+                                background: Theme.bg-input; clip: true;
                                 border-radius: 6px;
                                 border-width: 1px;
                                 border-color: Theme.border-subtle;
@@ -804,7 +778,7 @@ export component DocumentEditorScreen inherits Rectangle {
                                     background: Theme.bg-card;
                                     border-radius: 6px;
                                     border-width: 1px;
-                                    border-color: comment.resolved ? #2ecc7140 : Theme.border-subtle;
+                                    border-color: comment.resolved ? Theme.color-success-dim : Theme.border-subtle;
 
                                     VerticalLayout {
                                         padding: 8px;
@@ -836,12 +810,12 @@ export component DocumentEditorScreen inherits Rectangle {
                                                 width: 16px;
                                                 height: 16px;
                                                 border-radius: 3px;
-                                                background: resolve-ta.has-hover ? #2ecc71 : transparent;
+                                                background: resolve-ta.has-hover ? Theme.color-success : transparent;
                                                 border-width: 1px;
-                                                border-color: #2ecc71;
+                                                border-color: Theme.color-success;
 
                                                 resolve-ta := TouchArea { clicked => { root.doc-resolve-comment(comment.id); } }
-                                                Text { text: "✓"; font-size: 10px; color: #2ecc71; horizontal-alignment: center; vertical-alignment: center; }
+                                                Text { text: "✓"; font-size: 10px; color: Theme.color-success; horizontal-alignment: center; vertical-alignment: center; }
                                             }
 
                                             // Delete button
@@ -849,12 +823,12 @@ export component DocumentEditorScreen inherits Rectangle {
                                                 width: 16px;
                                                 height: 16px;
                                                 border-radius: 3px;
-                                                background: del-c-ta.has-hover ? #e74c3c : transparent;
+                                                background: del-c-ta.has-hover ? Theme.color-danger : transparent;
                                                 border-width: 1px;
-                                                border-color: #e74c3c;
+                                                border-color: Theme.color-danger;
 
                                                 del-c-ta := TouchArea { clicked => { root.doc-delete-comment(comment.id); } }
-                                                Text { text: "×"; font-size: 10px; color: #e74c3c; horizontal-alignment: center; vertical-alignment: center; }
+                                                Text { text: "×"; font-size: 10px; color: Theme.color-danger; horizontal-alignment: center; vertical-alignment: center; }
                                             }
                                         }
 
@@ -886,7 +860,7 @@ export component DocumentEditorScreen inherits Rectangle {
                                 Rectangle {
                                     height: 24px;
                                     border-radius: 4px;
-                                    background: root.doc-track-changes-on ? #2ecc71 : Theme.bg-card;
+                                    background: root.doc-track-changes-on ? Theme.color-success : Theme.bg-card;
 
                                     TouchArea { clicked => { root.doc-toggle-track-changes(); } }
 
@@ -904,24 +878,24 @@ export component DocumentEditorScreen inherits Rectangle {
                                     height: 24px;
                                     width: 40px;
                                     border-radius: 4px;
-                                    background: accept-all-ta.has-hover ? #2ecc71 : transparent;
+                                    background: accept-all-ta.has-hover ? Theme.color-success : transparent;
                                     border-width: 1px;
-                                    border-color: #2ecc71;
+                                    border-color: Theme.color-success;
 
                                     accept-all-ta := TouchArea { clicked => { root.doc-accept-all-changes(); } }
-                                    Text { text: "✓All"; font-size: 9px; color: #2ecc71; horizontal-alignment: center; vertical-alignment: center; }
+                                    Text { text: "✓All"; font-size: 9px; color: Theme.color-success; horizontal-alignment: center; vertical-alignment: center; }
                                 }
 
                                 Rectangle {
                                     height: 24px;
                                     width: 40px;
                                     border-radius: 4px;
-                                    background: reject-all-ta.has-hover ? #e74c3c : transparent;
+                                    background: reject-all-ta.has-hover ? Theme.color-danger : transparent;
                                     border-width: 1px;
-                                    border-color: #e74c3c;
+                                    border-color: Theme.color-danger;
 
                                     reject-all-ta := TouchArea { clicked => { root.doc-reject-all-changes(); } }
-                                    Text { text: "×All"; font-size: 9px; color: #e74c3c; horizontal-alignment: center; vertical-alignment: center; }
+                                    Text { text: "×All"; font-size: 9px; color: Theme.color-danger; horizontal-alignment: center; vertical-alignment: center; }
                                 }
                             }
 
@@ -934,9 +908,9 @@ export component DocumentEditorScreen inherits Rectangle {
                                     background: Theme.bg-card;
                                     border-radius: 6px;
                                     border-width: 1px;
-                                    border-color: change.change-type == "insert" ? #2ecc7140
-                                        : change.change-type == "delete" ? #e74c3c40
-                                        : #f39c1240;
+                                    border-color: change.change-type == "insert" ? Theme.color-success-dim
+                                        : change.change-type == "delete" ? Theme.color-danger-dim
+                                        : Theme.color-warning-dim;
 
                                     VerticalLayout {
                                         padding: 6px;
@@ -947,8 +921,8 @@ export component DocumentEditorScreen inherits Rectangle {
 
                                             Text {
                                                 text: change.change-type == "insert" ? "+" : change.change-type == "delete" ? "-" : "~";
-                                                color: change.change-type == "insert" ? #2ecc71
-                                                    : change.change-type == "delete" ? #e74c3c : #f39c12;
+                                                color: change.change-type == "insert" ? Theme.color-success
+                                                    : change.change-type == "delete" ? Theme.color-danger : Theme.color-warning;
                                                 font-size: 12px;
                                                 font-weight: 700;
                                                 vertical-alignment: center;
@@ -965,16 +939,16 @@ export component DocumentEditorScreen inherits Rectangle {
 
                                             Rectangle {
                                                 width: 20px; height: 20px; border-radius: 3px;
-                                                background: acc-ta.has-hover ? #2ecc71 : transparent;
+                                                background: acc-ta.has-hover ? Theme.color-success : transparent;
                                                 acc-ta := TouchArea { clicked => { root.doc-accept-change(change.id); } }
-                                                Text { text: "✓"; font-size: 12px; color: #2ecc71; horizontal-alignment: center; vertical-alignment: center; }
+                                                Text { text: "✓"; font-size: 12px; color: Theme.color-success; horizontal-alignment: center; vertical-alignment: center; }
                                             }
 
                                             Rectangle {
                                                 width: 20px; height: 20px; border-radius: 3px;
-                                                background: rej-ta.has-hover ? #e74c3c : transparent;
+                                                background: rej-ta.has-hover ? Theme.color-danger : transparent;
                                                 rej-ta := TouchArea { clicked => { root.doc-reject-change(change.id); } }
-                                                Text { text: "×"; font-size: 12px; color: #e74c3c; horizontal-alignment: center; vertical-alignment: center; }
+                                                Text { text: "×"; font-size: 12px; color: Theme.color-danger; horizontal-alignment: center; vertical-alignment: center; }
                                             }
                                         }
 
@@ -1070,7 +1044,7 @@ export component DocumentEditorScreen inherits Rectangle {
 
             // ── Center: Page editing area — editorial canvas ──
             Rectangle {
-                background: #12111a;
+                background: Theme.bg-card;
 
                 ScrollView {
                     width: 100%;
@@ -1087,10 +1061,10 @@ export component DocumentEditorScreen inherits Rectangle {
                         Rectangle {
                             width: 620px;
                             min-height: 842px;
-                            background: #f8f8fa;
+                            background: Theme.bg-elevated;
                             border-radius: 3px;
                             drop-shadow-blur: 24px;
-                            drop-shadow-color: #00000028;
+                            drop-shadow-color: Theme.overlay-backdrop;
                             drop-shadow-offset-y: 6px;
 
                             VerticalLayout {
@@ -1104,6 +1078,7 @@ export component DocumentEditorScreen inherits Rectangle {
                                 // Using TextInput for editability but styled to look editorial
                                 Rectangle {
                                     height: 52px;
+                                    clip: true;
 
                                     title-input := TextInput {
                                         x: 0px;
@@ -1111,7 +1086,7 @@ export component DocumentEditorScreen inherits Rectangle {
                                         width: parent.width;
                                         height: parent.height;
                                         text <=> root.doc-title;
-                                        color: #1a1a2e;
+                                        color: Theme.text-primary;
                                         font-size: 28px;
                                         font-weight: 700;
                                         vertical-alignment: bottom;
@@ -1130,7 +1105,7 @@ export component DocumentEditorScreen inherits Rectangle {
                                         y: 10px;
                                         height: 1px;
                                         width: 64px;
-                                        background: #c0c0c8;
+                                        background: Theme.border-default;
                                     }
                                 }
 
@@ -1169,35 +1144,35 @@ export component DocumentEditorScreen inherits Rectangle {
                 Text {
                     text: root.doc-word-count + " words";
                     color: Theme.text-secondary;
-                    font-size: Theme.font-small;
+                    font-size: Theme.fs-caption;
                     vertical-alignment: center;
                 }
 
                 Text {
                     text: root.doc-char-count + " chars";
                     color: Theme.text-secondary;
-                    font-size: Theme.font-small;
+                    font-size: Theme.fs-caption;
                     vertical-alignment: center;
                 }
 
                 Text {
                     text: root.doc-sentence-count + " sentences";
                     color: Theme.text-secondary;
-                    font-size: Theme.font-small;
+                    font-size: Theme.fs-caption;
                     vertical-alignment: center;
                 }
 
                 Text {
                     text: "~" + root.doc-page-estimate + " pages";
                     color: Theme.text-secondary;
-                    font-size: Theme.font-small;
+                    font-size: Theme.fs-caption;
                     vertical-alignment: center;
                 }
 
                 Text {
                     text: root.doc-reading-time + " min read";
                     color: Theme.text-secondary;
-                    font-size: Theme.font-small;
+                    font-size: Theme.fs-caption;
                     vertical-alignment: center;
                 }
 
@@ -1207,12 +1182,12 @@ export component DocumentEditorScreen inherits Rectangle {
                     width: 80px;
                     height: 18px;
                     border-radius: 3px;
-                    background: #2ecc7130;
+                    background: Theme.color-success-dim;
 
                     Text {
                         text: "Tracking";
                         font-size: 9px;
-                        color: #2ecc71;
+                        color: Theme.color-success;
                         font-weight: 600;
                         horizontal-alignment: center;
                         vertical-alignment: center;
@@ -1223,15 +1198,15 @@ export component DocumentEditorScreen inherits Rectangle {
 
                 Text {
                     text: root.doc-save-status;
-                    color: root.doc-is-modified ? #e8a838 : Theme.text-secondary;
-                    font-size: Theme.font-small;
+                    color: root.doc-is-modified ? Theme.color-warning : Theme.text-secondary;
+                    font-size: Theme.fs-caption;
                     vertical-alignment: center;
                 }
 
                 Text {
                     text: root.doc-file-path != "" ? root.doc-file-path : "No file";
                     color: Theme.text-secondary;
-                    font-size: Theme.font-small;
+                    font-size: Theme.fs-caption;
                     vertical-alignment: center;
                     overflow: elide;
                     max-width: 250px;
@@ -1330,12 +1305,12 @@ export component DocumentEditorScreen inherits Rectangle {
             Rectangle {
                 height: 28px;
                 border-radius: 4px;
-                background: doc-insights-ta.has-hover ? #9b59b6cc : #9b59b680;
+                background: doc-insights-ta.has-hover ? Theme.color-purple : Theme.color-purple-dim;
                 border-width: 1px;
-                border-color: #9b59b6;
+                border-color: Theme.color-purple;
 
                 doc-insights-ta := TouchArea { clicked => { root.doc-ai-insights(); } }
-                Text { text: "Contextual Insights"; color: #d2b4de; font-size: 10px; horizontal-alignment: center; vertical-alignment: center; }
+                Text { text: "Contextual Insights"; color: Theme.color-purple; font-size: 10px; horizontal-alignment: center; vertical-alignment: center; }
             }
 
             Rectangle { height: 1px; background: Theme.separator; }
@@ -1345,7 +1320,7 @@ export component DocumentEditorScreen inherits Rectangle {
             Rectangle {
                 height: 60px;
                 border-radius: 6px;
-                background: Theme.bg-elevated;
+                background: Theme.bg-elevated; clip: true;
                 border-width: 1px;
                 border-color: Theme.separator;
 
@@ -1355,8 +1330,7 @@ export component DocumentEditorScreen inherits Rectangle {
                     height: parent.height - 12px;
                     color: Theme.text-primary;
                     font-size: 11px;
-                    text: root.doc-ai-prompt;
-                    edited => { root.doc-ai-prompt = self.text; }
+                    text <=> root.doc-ai-prompt;
                     accepted => { root.doc-ai-submit(self.text); }
                 }
             }
@@ -1401,13 +1375,13 @@ export component DocumentEditorScreen inherits Rectangle {
 
                 Rectangle {
                     border-radius: 4px;
-                    background: doc-apply-ta.has-hover ? #2ecc71 : #2ecc71cc;
+                    background: doc-apply-ta.has-hover ? Theme.color-success : Theme.color-success;
                     doc-apply-ta := TouchArea { clicked => { root.doc-ai-apply(); } }
                     Text { text: "Apply"; color: white; font-size: 11px; horizontal-alignment: center; vertical-alignment: center; }
                 }
                 Rectangle {
                     border-radius: 4px;
-                    background: doc-dismiss-ta.has-hover ? #e74c3c : #e74c3ccc;
+                    background: doc-dismiss-ta.has-hover ? Theme.color-danger : Theme.color-danger;
                     doc-dismiss-ta := TouchArea { clicked => { root.doc-ai-dismiss(); } }
                     Text { text: "Dismiss"; color: white; font-size: 11px; horizontal-alignment: center; vertical-alignment: center; }
                 }
