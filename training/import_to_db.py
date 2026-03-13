@@ -18,7 +18,7 @@ def import_jsonl(filepath, dataset, batch):
     imported = 0
     skipped = 0
 
-    with open(filepath) as f:
+    with open(filepath, encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if not line:
@@ -31,6 +31,12 @@ def import_jsonl(filepath, dataset, batch):
 
             conversations = data.get("conversations", data)
             metadata = data.get("metadata", {})
+
+            # Preserve DPO chosen/rejected in metadata
+            if "chosen" in data:
+                metadata["chosen"] = data["chosen"]
+            if "rejected" in data:
+                metadata["rejected"] = data["rejected"]
             content_hash = hashlib.md5(json.dumps(conversations, sort_keys=True).encode()).hexdigest()
 
             # Extract tools used from conversations
@@ -105,6 +111,8 @@ def import_all():
            "agent" in filename or "comms" in filename or "vision" in filename or \
            "cross_family" in filename:
             dataset = "tool_calling"
+        elif "dpo" in filename:
+            dataset = "dpo"
         elif "bond" in filename:
             dataset = "bond"
         elif "degrade" in filename:
