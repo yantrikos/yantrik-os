@@ -1,7 +1,7 @@
 // ── Directory modules ──
 mod base;
 pub mod engine;
-mod cognition;
+pub mod cognition;
 mod distributed;
 mod knowledge;
 mod vector;

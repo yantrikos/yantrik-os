@@ -702,6 +702,12 @@ impl CompanionService {
         crate::memory_lifecycle::MemoryLifecycle::ensure_table(db.conn());
         crate::memory_repair::MemoryRepair::ensure_table(db.conn());
 
+        // Brain loop tables (detectors, curiosity, expectations, baselines)
+        yantrikdb_core::cognition::detectors::ensure_detector_tables(db.conn());
+        yantrikdb_core::cognition::curiosity::ensure_curiosity_tables(db.conn());
+        crate::brain_loop::seed_from_existing_data(db.conn());
+        // Curiosity sources are seeded after user_interests/location are loaded (see below)
+
         // Connector manager — OAuth flows for external services
         // Must be registered before native_core_tools computation.
         let connector_state = {
@@ -816,6 +822,11 @@ impl CompanionService {
         // Load user interests and location from memory (before db moves)
         let user_interests = load_user_interests(db.conn());
         let user_location = load_user_location(db.conn());
+
+        // Seed curiosity sources from user interests and location
+        yantrikdb_core::cognition::curiosity::seed_default_sources(
+            db.conn(), &user_interests, &user_location,
+        );
 
         // V25: Load trust state + silence policy history
         let trust_state = crate::trust_model::TrustModel::get_state(db.conn());
@@ -2979,11 +2990,19 @@ impl CompanionService {
         }
     }
 
-    /// Record a proactive message outcome for the silence policy.
+    /// Record a proactive message outcome for the silence policy and brain feedback.
     pub fn record_proactive_outcome(&mut self, source: &str, outcome: crate::silence_policy::InterventionOutcome) {
         let is_positive = outcome.is_positive();
         let is_negative = outcome.is_negative();
         self.silence_policy.record_outcome(source, outcome, self.db.conn());
+
+        // Brain feedback: map outcome to reward for source learning
+        let reward = if is_positive { 1.0 } else if is_negative { 0.0 } else { 0.5 };
+        // Infer signal type from the source instinct name
+        let signal_type_str = yantrikdb_core::cognition::brain::infer_signal_type(
+            source, "", &serde_json::json!({}),
+        ).as_str();
+        crate::brain_loop::record_brain_feedback(self.db.conn(), source, signal_type_str, reward);
 
         // Also update taste trust
         let trust_event = if is_positive {

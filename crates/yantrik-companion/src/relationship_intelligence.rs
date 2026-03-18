@@ -303,6 +303,17 @@ impl RelationshipIntelligence {
 
         // Update person profile
         Self::update_from_event(conn, event);
+
+        // Feed brain: record entity event for pattern break detection
+        let entity_id = format!("contact:{}", event.person_id);
+        crate::brain_loop::record_entity_event(conn, &entity_id, event.channel.as_str());
+
+        // Feed brain: record response time metric for baseline deviation
+        if let Some(hours) = event.response_hours {
+            crate::brain_loop::record_metric(
+                conn, &entity_id, "response_hours", hours,
+            );
+        }
     }
 
     /// Update person profile from a communication event.

@@ -42,3 +42,7 @@ pub mod counterfactual;
 pub mod belief_network;
 pub mod replay;
 pub mod perspective;
+pub mod brain;
+pub mod brain_consolidation;
+pub mod curiosity;
+pub mod detectors;

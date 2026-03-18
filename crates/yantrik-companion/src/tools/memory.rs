@@ -15,6 +15,7 @@ pub fn register(reg: &mut ToolRegistry) {
     reg.register(Box::new(CheckBondTool));
     reg.register(Box::new(SaveUserFactTool));
     reg.register(Box::new(ForgetTopicTool));
+    reg.register(Box::new(BrainStatusTool));
 }
 
 // ── Remember ──
@@ -750,5 +751,122 @@ impl Tool for ForgetTopicTool {
              cancelled {cancelled_tasks} scheduled tasks. \
              Added suppression rule — I won't bring this up again."
         )
+    }
+}
+
+// ── Brain Status ──
+
+pub struct BrainStatusTool;
+
+impl Tool for BrainStatusTool {
+    fn name(&self) -> &'static str { "brain_status" }
+    fn permission(&self) -> PermissionLevel { PermissionLevel::Standard }
+    fn category(&self) -> &'static str { "memory" }
+
+    fn definition(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "function",
+            "function": {
+                "name": "brain_status",
+                "description": "Show the brain's current state: homeostatic drives, scoring threshold, detector stats, curiosity sources, and recent signal distribution. Useful for understanding what the brain is 'thinking about' and why certain things are being surfaced.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "section": {
+                            "type": "string",
+                            "enum": ["all", "drives", "detectors", "curiosity", "feedback"],
+                            "description": "Which section to show (default: all)"
+                        }
+                    }
+                }
+            }
+        })
+    }
+
+    fn execute(&self, ctx: &ToolContext, args: &serde_json::Value) -> String {
+        let conn = ctx.db.conn();
+        let section = args.get("section").and_then(|v| v.as_str()).unwrap_or("all");
+
+        let mut out = String::new();
+
+        if section == "all" || section == "drives" {
+            let diag = crate::brain_loop::brain_diagnostics(conn);
+            out.push_str("## Brain State\n");
+            out.push_str(&format!("- Tick count: {}\n", diag["tick_count"]));
+            out.push_str(&format!("- Surfacing threshold: {:.2}\n", diag["threshold"].as_f64().unwrap_or(0.0)));
+            out.push_str(&format!("- Scan interval: {:.0}s\n", diag["scan_interval_secs"].as_f64().unwrap_or(0.0)));
+            out.push_str(&format!("- Total emitted: {} | suppressed: {}\n", diag["total_emitted"], diag["total_suppressed"]));
+            out.push_str(&format!("- Source diversity: {:.2}\n", diag["source_diversity"].as_f64().unwrap_or(0.0)));
+
+            if let Some(drives) = diag.get("drives") {
+                out.push_str("\n### Homeostatic Drives\n");
+                out.push_str(&format!("- Information hunger: {:.2}\n", drives["information_hunger"].as_f64().unwrap_or(0.0)));
+                out.push_str(&format!("- Novelty hunger: {:.2}\n", drives["novelty_hunger"].as_f64().unwrap_or(0.0)));
+                out.push_str(&format!("- Tension pressure: {:.2}\n", drives["tension_pressure"].as_f64().unwrap_or(0.0)));
+                out.push_str(&format!("- Usefulness pressure: {:.2}\n", drives["usefulness_pressure"].as_f64().unwrap_or(0.0)));
+            }
+        }
+
+        if section == "all" || section == "detectors" {
+            out.push_str("\n### Detector Data\n");
+
+            let expectations: i64 = conn
+                .query_row("SELECT COUNT(*) FROM entity_expectations", [], |r| r.get(0))
+                .unwrap_or(0);
+            let baselines: i64 = conn
+                .query_row("SELECT COUNT(*) FROM entity_metric_baselines", [], |r| r.get(0))
+                .unwrap_or(0);
+
+            out.push_str(&format!("- Entity expectations tracked: {}\n", expectations));
+            out.push_str(&format!("- Metric baselines tracked: {}\n", baselines));
+
+            // Top 5 expectations by confidence
+            if expectations > 0 {
+                out.push_str("\nTop entity expectations:\n");
+                let mut stmt = conn.prepare(
+                    "SELECT entity_id, expectation_kind, expected_interval_sec, confidence, miss_count
+                     FROM entity_expectations ORDER BY confidence DESC LIMIT 5"
+                ).ok();
+                if let Some(ref mut stmt) = stmt {
+                    let rows: Vec<String> = stmt.query_map([], |row| {
+                        let entity: String = row.get(0)?;
+                        let kind: String = row.get(1)?;
+                        let interval: f64 = row.get(2)?;
+                        let conf: f64 = row.get(3)?;
+                        let misses: i64 = row.get(4)?;
+                        let interval_human = if interval < 3600.0 {
+                            format!("{:.0}m", interval / 60.0)
+                        } else if interval < 86400.0 {
+                            format!("{:.1}h", interval / 3600.0)
+                        } else {
+                            format!("{:.1}d", interval / 86400.0)
+                        };
+                        Ok(format!("  - {entity} [{kind}]: every {interval_human}, confidence={conf:.2}, misses={misses}"))
+                    }).ok().map(|r| r.flatten().collect()).unwrap_or_default();
+                    for row in rows { out.push_str(&row); out.push('\n'); }
+                }
+            }
+        }
+
+        if section == "all" || section == "curiosity" {
+            let stats = yantrikdb_core::cognition::curiosity::curiosity_stats(conn);
+            out.push_str("\n### Curiosity Engine\n");
+            out.push_str(&format!("- Active sources: {}\n", stats["total_sources"]));
+            out.push_str(&format!("- Total fetches: {}\n", stats["total_fetches"]));
+            out.push_str(&format!("- Avg yield EMA: {:.2}\n", stats["avg_yield_ema"].as_f64().unwrap_or(0.0)));
+            out.push_str(&format!("- Backed off: {}\n", stats["backed_off_sources"]));
+        }
+
+        if section == "all" || section == "feedback" {
+            let diag = crate::brain_loop::brain_diagnostics(conn);
+            out.push_str("\n### Feedback Learning\n");
+            out.push_str(&format!("- Tracked sources: {}\n", diag["feedback_sources"]));
+        }
+
+        if out.is_empty() {
+            "Brain status: no data available. The brain loop hasn't run yet.".into()
+        } else {
+            out
+        }
     }
 }

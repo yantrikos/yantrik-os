@@ -144,16 +144,24 @@ pub fn run_think_cycle(service: &mut CompanionService) {
         valence_avg,
     );
 
-    // 6. Evaluate instincts
-    let state = service.build_state();
+    // 6. Evaluate instincts via brain loop (signal-aware scoring + homeostatic drives)
+    let brain_result = crate::brain_loop::run_brain_loop(service);
     let mut high_urgency_urges = Vec::new();
-    let instinct_urges = service.evaluate_instincts(&state);
 
-    for spec in &instinct_urges {
+    for spec in &brain_result.emitted_urges {
         if spec.guaranteed || spec.urgency >= proactive_threshold {
             high_urgency_urges.push(spec.clone());
         }
         service.urge_queue.push(service.db.conn(), spec);
+    }
+
+    // Brain-driven external fetch (if info-hungry and nothing interesting found)
+    if brain_result.should_fetch_external {
+        tracing::info!(
+            hunger = format!("{:.2}", brain_result.drives.information_hunger),
+            "Brain requesting external data fetch"
+        );
+        // Future: trigger RSS/weather/news fetch here
     }
 
     // 7. Generate proactive message if urgency is high
@@ -327,10 +335,11 @@ pub fn run_think_cycle(service: &mut CompanionService) {
     }
 
     tracing::debug!(
-        triggers = state.pending_triggers.len(),
         patterns = patterns.len(),
         conflicts = conflicts_count,
         bond = service.bond_level().name(),
+        brain_emitted = brain_result.emitted_urges.len(),
+        brain_suppressed = brain_result.suppressed_count,
         "Think cycle complete"
     );
 }

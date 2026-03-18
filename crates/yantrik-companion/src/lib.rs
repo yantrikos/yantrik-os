@@ -18,6 +18,7 @@ pub mod agent_loop;
 pub mod audio_convert;
 pub mod automation;
 pub mod background;
+pub mod brain_loop;
 pub mod bond;
 pub mod companion;
 pub mod config;
