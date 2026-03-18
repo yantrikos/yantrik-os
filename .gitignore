@@ -24,3 +24,39 @@ memory.db.bak
 # Claude Code (local settings with permissions, API keys in MCP config)
 .mcp.json
 .claude/settings.local.json
+
+# Python
+__pycache__/
+unsloth_compiled_cache/
+
+# Cargo local config
+.cargo/
+
+# VM backup
+.vm-backup/
+
+# Brainstorm / MCP tool outputs
+brainstorm_*.md
+mcp__brainstorm__*.txt
+
+# Compiler long-type diagnostics
+lib.long-type-*.txt
+
+# Large binaries
+*.iso
+*.gguf
+*.png
+
+# Secrets
+google_client_*
+
+# Training artifacts
+training/checkpoints*/
+training/model_*/
+training/unsloth_compiled_cache/
+
+# Deploy cache
+deploy/yantrik-os/cache/
+
+# Tracker DB
+.tracker.db
