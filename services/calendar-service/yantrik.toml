@@ -1,0 +1,22 @@
+[package]
+id = "com.yantrikos.calendar"
+name = "Calendar Service"
+version = "0.1.0"
+description = "Calendar event management — create, update, delete, and query events"
+publisher = "Yantrik OS"
+roles = ["service"]
+icon = "calendar"
+
+[[permissions]]
+capability = "filesystem.user_data"
+reason = "Stores calendar events as JSON files in user data directory"
+
+[service]
+binary = "calendar-service"
+methods = [
+    "calendar.events",
+    "calendar.create_event",
+    "calendar.update_event",
+    "calendar.delete_event",
+]
+autostart = false

@@ -17,6 +17,10 @@ members = [
     "services/weather-service",
     "services/system-monitor-service",
     "services/notes-service",
+    "services/notifications-service",
+    "services/calendar-service",
+    "services/network-service",
+    "services/email-service",
 ]
 
 # ── Shared dependencies ──────────────────────────────────────────────

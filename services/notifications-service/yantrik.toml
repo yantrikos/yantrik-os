@@ -1,0 +1,19 @@
+[package]
+id = "com.yantrikos.notifications"
+name = "Notifications Service"
+version = "0.1.0"
+description = "In-memory notification store — add, list, dismiss, and action notifications"
+publisher = "Yantrik OS"
+roles = ["service"]
+icon = "bell"
+
+[service]
+binary = "notifications-service"
+methods = [
+    "notifications.list",
+    "notifications.add",
+    "notifications.dismiss",
+    "notifications.dismiss_all",
+    "notifications.action",
+]
+autostart = true

@@ -908,6 +908,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1e748733b7cbc798e1434b6ac524f0c1ff2ab456fe201501e6497c8417a4fc33"
 
 [[package]]
+name = "calendar-service"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "uuid7",
+ "yantrik-ipc-contracts",
+ "yantrik-ipc-transport",
+]
+
+[[package]]
 name = "calloop"
 version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2041,6 +2056,26 @@ checksum = "9298e6504d9b9e780ed3f7dfd43a61be8cd0e09eb07f7706a945b0072b6670b6"
 dependencies = [
  "base64 0.22.1",
  "memchr",
+]
+
+[[package]]
+name = "email-service"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "chrono",
+ "html2text",
+ "imap",
+ "lettre",
+ "mailparse",
+ "native-tls",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "yantrik-ipc-contracts",
+ "yantrik-ipc-transport",
 ]
 
 [[package]]
@@ -4691,6 +4726,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "network-service"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "yantrik-ipc-contracts",
+ "yantrik-ipc-transport",
+]
+
+[[package]]
 name = "new_debug_unreachable"
 version = "1.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4746,6 +4794,21 @@ checksum = "0676bb32a98c1a483ce53e500a81ad9c3d5b3f7c920c28c24e9cb0980d0b5bc8"
 
 [[package]]
 name = "notes-service"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "uuid7",
+ "yantrik-ipc-contracts",
+ "yantrik-ipc-transport",
+]
+
+[[package]]
+name = "notifications-service"
 version = "0.1.0"
 dependencies = [
  "chrono",

@@ -1,0 +1,31 @@
+[package]
+id = "com.yantrikos.email"
+name = "Email Service"
+version = "0.1.0"
+description = "IMAP email fetch, SMTP send, folder management, search"
+publisher = "Yantrik OS"
+roles = ["service"]
+icon = "email"
+
+[[permissions]]
+capability = "network.internet"
+reason = "Connects to IMAP/SMTP mail servers"
+
+[[permissions]]
+capability = "credentials.email"
+reason = "Accesses stored email account credentials"
+
+[service]
+binary = "email-service"
+methods = [
+    "email.list_folders",
+    "email.list_messages",
+    "email.get_message",
+    "email.send_message",
+    "email.mark_read",
+    "email.mark_starred",
+    "email.move_message",
+    "email.delete_message",
+    "email.search",
+]
+autostart = false

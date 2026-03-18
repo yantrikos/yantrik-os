@@ -1,0 +1,21 @@
+[package]
+id = "com.yantrikos.network"
+name = "Network Service"
+version = "0.1.0"
+description = "Network interfaces, connectivity status, and DNS configuration via /proc"
+publisher = "Yantrik OS"
+roles = ["service"]
+icon = "network"
+
+[[permissions]]
+capability = "system.proc"
+reason = "Reads /proc/net/dev and /etc/resolv.conf for network information"
+
+[service]
+binary = "network-service"
+methods = [
+    "network.interfaces",
+    "network.status",
+    "network.dns",
+]
+autostart = true
