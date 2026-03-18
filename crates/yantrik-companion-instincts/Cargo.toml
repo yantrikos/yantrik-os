@@ -1,0 +1,11 @@
+[package]
+name = "yantrik-companion-instincts"
+version = "0.1.0"
+edition = "2021"
+description = "Companion instinct implementations — proactive behavior drivers"
+
+[dependencies]
+yantrik-companion-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }

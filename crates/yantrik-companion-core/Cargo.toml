@@ -1,0 +1,11 @@
+[package]
+name = "yantrik-companion-core"
+version = "0.1.0"
+edition = "2021"
+description = "Shared types, config, and traits for the Yantrik companion agent"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+yantrik-ml = { workspace = true }
