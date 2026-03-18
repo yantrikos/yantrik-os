@@ -7,6 +7,7 @@ pub fn register(reg: &mut ToolRegistry) {
     reg.register(Box::new(CreateRecipeTool));
     reg.register(Box::new(ListRecipesTool));
     reg.register(Box::new(RunRecipeTool));
+    reg.register(Box::new(FindRecipeTool));
 }
 
 // ── create_recipe ──
@@ -221,15 +222,21 @@ impl Tool for RunRecipeTool {
     }
 
     fn execute(&self, ctx: &ToolContext, args: &serde_json::Value) -> String {
-        let recipe_id = match args.get("recipe_id").and_then(|v| v.as_str()) {
+        let id_or_name = match args.get("recipe_id").and_then(|v| v.as_str()) {
             Some(s) => s,
             None => return "Missing required parameter: recipe_id".to_string(),
         };
 
-        let recipe = match RecipeStore::get(ctx.db.conn(), recipe_id) {
+        // Try by ID first, then by name (case-insensitive)
+        let recipe = RecipeStore::get(ctx.db.conn(), id_or_name)
+            .or_else(|| RecipeStore::find_by_name(ctx.db.conn(), id_or_name));
+
+        let recipe = match recipe {
             Some(r) => r,
-            None => return format!("Recipe not found: {}", recipe_id),
+            None => return format!("Recipe not found: {}", id_or_name),
         };
+
+        let recipe_id = &recipe.id;
 
         // Set initial variables if provided
         if let Some(vars) = args.get("variables").and_then(|v| v.as_object()) {
@@ -252,5 +259,75 @@ impl Tool for RunRecipeTool {
             "Recipe '{}' [{}] queued for execution. It will start processing immediately.",
             recipe.name, recipe_id
         )
+    }
+}
+
+// ── find_recipe ──
+
+struct FindRecipeTool;
+
+impl Tool for FindRecipeTool {
+    fn name(&self) -> &'static str { "find_recipe" }
+    fn permission(&self) -> PermissionLevel { PermissionLevel::Safe }
+    fn category(&self) -> &'static str { "automation" }
+
+    fn definition(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "function",
+            "function": {
+                "name": "find_recipe",
+                "description": "Find a recipe template matching a user's intent. \
+                    Use this when the user asks for a multi-step task that might match \
+                    a built-in recipe (e.g., 'check my emails', 'morning briefing', \
+                    'research topic X', 'system health check'). Returns matching recipes \
+                    with their required variables.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "The user's request to match against recipe templates"
+                        }
+                    },
+                    "required": ["query"]
+                }
+            }
+        })
+    }
+
+    fn execute(&self, _ctx: &ToolContext, args: &serde_json::Value) -> String {
+        let query = match args.get("query").and_then(|v| v.as_str()) {
+            Some(s) => s,
+            None => return "Missing required parameter: query".to_string(),
+        };
+
+        let matches = crate::recipe_templates::match_intent(query, 5);
+
+        if matches.is_empty() {
+            return format!(
+                "No recipe templates match '{}'. You can create a custom recipe with create_recipe.",
+                query
+            );
+        }
+
+        let mut result = format!("Matching recipes for '{}':\n\n", query);
+        for (id, name, score) in &matches {
+            // Get template details for required vars
+            if let Some(template) = crate::recipe_templates::get_template(id) {
+                result.push_str(&format!(
+                    "- {} [{}] (score: {:.1})\n  {}\n",
+                    name, id, score, template.description
+                ));
+                if !template.required_vars.is_empty() {
+                    result.push_str("  Required variables:\n");
+                    for (var_name, var_desc) in template.required_vars {
+                        result.push_str(&format!("    - {}: {}\n", var_name, var_desc));
+                    }
+                }
+                result.push('\n');
+            }
+        }
+        result.push_str("Use run_recipe with the recipe ID and any required variables to execute.");
+        result
     }
 }

@@ -49,6 +49,15 @@ pub enum RecipeStep {
     Notify {
         message: String,
     },
+    /// Pause recipe and ask user a question. Stores response in variable.
+    /// Recipe transitions to Waiting until user responds.
+    AskUser {
+        question: String,
+        store_as: String,
+        /// Optional choices for multiple-choice (UI can render as buttons).
+        #[serde(default)]
+        choices: Option<Vec<String>>,
+    },
 }
 
 /// What to do when a Tool step fails.

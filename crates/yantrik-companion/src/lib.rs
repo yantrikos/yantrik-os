@@ -50,6 +50,8 @@ pub mod telegram;
 pub mod task_manager;
 pub mod query_planner;
 pub mod recipe;
+pub mod recipe_executor;
+pub mod recipe_templates;
 pub mod task_queue;
 pub mod trust_model;
 pub mod tool_cache;

@@ -685,8 +685,9 @@ impl CompanionService {
 
         // Persistent task queue for multi-cycle autonomous work
         crate::task_queue::TaskQueue::ensure_table(db.conn());
-        // Recipe engine tables
+        // Recipe engine tables + built-in templates
         crate::recipe::RecipeStore::ensure_tables(db.conn());
+        crate::recipe_templates::register_all(db.conn());
         // Calendar local cache
         crate::calendar::ensure_table(db.conn());
         // Vault tables (encrypted credential storage)

@@ -313,7 +313,15 @@ pub fn run_think_cycle(service: &mut CompanionService) {
         }
     }
 
-    // 11. Record workflow observation (Phase 2: Predictive Workflow)
+    // 11. Recipe executor — process pending/running recipes
+    {
+        let steps_run = crate::recipe_executor::tick(service);
+        if steps_run > 0 {
+            tracing::debug!(steps_run, "Recipe executor processed steps");
+        }
+    }
+
+    // 12. Record workflow observation (Phase 2: Predictive Workflow)
     if !service.incognito && service.idle_seconds() < 300.0 {
         record_workflow_observation(service);
     }
