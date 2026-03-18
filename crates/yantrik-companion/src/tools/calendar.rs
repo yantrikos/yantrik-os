@@ -1,6 +1,8 @@
-//! Calendar tools — list events, create, update, delete via Google Calendar API.
+//! Calendar tools — list events, create, update, delete.
 //!
-//! Reuses email account OAuth2 tokens for Google Calendar access.
+//! Local-first: all events are stored in SQLite. Google Calendar sync is
+//! attempted when OAuth2 tokens are available, but the calendar works fully
+//! offline. Reuses email account OAuth2 tokens for Google Calendar access.
 
 use std::sync::Arc;
 use super::{Tool, ToolContext, ToolRegistry, PermissionLevel};
@@ -8,12 +10,13 @@ use crate::config::EmailAccountConfig;
 use crate::calendar;
 
 /// Register all calendar tools.
+///
+/// Calendar works local-first (SQLite). Google sync is optional — if no OAuth2
+/// account is configured, events are stored locally only.
 pub fn register(reg: &mut ToolRegistry, accounts: Vec<EmailAccountConfig>, cal_account: Option<String>) {
-    // Find the calendar account (by name/email match, or first OAuth2 account)
-    let account = find_cal_account(&accounts, cal_account.as_deref());
-    if account.is_none() {
-        tracing::warn!("Calendar enabled but no OAuth2 email account found — skipping");
-        return;
+    let _account = find_cal_account(&accounts, cal_account.as_deref());
+    if _account.is_none() {
+        tracing::info!("Calendar: no OAuth2 account — running in local-only mode");
     }
     let accounts = Arc::new(accounts);
     reg.register(Box::new(CalendarTodayTool { accounts: accounts.clone() }));
@@ -134,7 +137,7 @@ impl Tool for CalendarTodayTool {
             "type": "function",
             "function": {
                 "name": "calendar_today",
-                "description": "Get today's calendar events; read-only",
+                "description": "Get TODAY's calendar events only. For tomorrow or other dates, use calendar_list_events instead.",
                 "parameters": {
                     "type": "object",
                     "properties": {}
@@ -148,40 +151,29 @@ impl Tool for CalendarTodayTool {
         let time_min = format!("{}T00:00:00Z", today);
         let time_max = format!("{}T23:59:59Z", today);
 
-        // Try local cache first (< 30 min old)
-        let cached = calendar::get_cached_events(ctx.db.conn(), &time_min, &time_max);
+        // Always check local events first
+        let local = calendar::get_cached_events(ctx.db.conn(), &time_min, &time_max);
         let cache_fresh = calendar::cache_age_secs(ctx.db.conn()) < 1800.0;
 
-        if !cached.is_empty() && cache_fresh {
-            return format_event_list(&cached, &format!("Today's events ({}) — {} events (cached):", today, cached.len()));
+        if !local.is_empty() && cache_fresh {
+            return format_event_list(&local, &format!("Today's events ({}) — {} events:", today, local.len()));
         }
 
-        // Try API, cache results
-        match get_token(&self.accounts) {
-            Ok(token) => {
-                match calendar::list_events(&token, None, Some(&time_min), Some(&time_max), 20, None) {
-                    Ok(events) => {
-                        calendar::cache_events(ctx.db.conn(), &events, &time_min, &time_max);
-                        format_event_list(&events, &format!("Today's events ({}) — {} events:", today, events.len()))
-                    }
-                    Err(e) => {
-                        // API failed — fall back to cache (even if stale)
-                        if !cached.is_empty() {
-                            format_event_list(&cached, &format!("Today's events ({}) — {} events (from cache, API unavailable):", today, cached.len()))
-                        } else {
-                            format!("Failed to fetch today's events: {}", e)
-                        }
-                    }
-                }
+        // Try API to get fresh data + merge with local
+        if let Ok(token) = get_token(&self.accounts) {
+            if let Ok(api_events) = calendar::list_events(&token, None, Some(&time_min), Some(&time_max), 20, None) {
+                calendar::cache_events(ctx.db.conn(), &api_events, &time_min, &time_max);
+                // Re-read to include both API + local events
+                let all = calendar::get_cached_events(ctx.db.conn(), &time_min, &time_max);
+                return format_event_list(&all, &format!("Today's events ({}) — {} events:", today, all.len()));
             }
-            Err(_) => {
-                // No token — use cache
-                if !cached.is_empty() {
-                    format_event_list(&cached, &format!("Today's events ({}) — {} events (offline):", today, cached.len()))
-                } else {
-                    format!("No events scheduled for today ({}) — calendar not connected.", today)
-                }
-            }
+        }
+
+        // API unavailable — show local events (even if stale)
+        if !local.is_empty() {
+            format_event_list(&local, &format!("Today's events ({}) — {} events (offline):", today, local.len()))
+        } else {
+            format!("No events scheduled for today ({}).\nTip: if the user asked about a different date, use calendar_list_events with start_date and end_date parameters.", today)
         }
     }
 }
@@ -246,46 +238,37 @@ impl Tool for CalendarListEventsTool {
         let time_min = format!("{}T00:00:00Z", start);
         let time_max = format!("{}T23:59:59Z", end);
 
-        // Try local cache first
-        let cached = calendar::get_cached_events(ctx.db.conn(), &time_min, &time_max);
+        // Always check local events first
+        let local = calendar::get_cached_events(ctx.db.conn(), &time_min, &time_max);
         let cache_fresh = calendar::cache_age_secs(ctx.db.conn()) < 1800.0;
 
-        // For queries, always try API (cache doesn't support text search)
-        let use_cache = query.is_none() && !cached.is_empty() && cache_fresh;
-
-        if use_cache {
-            let events: Vec<_> = cached.into_iter().take(max).collect();
-            return format_event_list_detailed(&events, &format!("Events from {} to {} — {} found (cached):", start, end, events.len()));
+        // For non-query requests with fresh cache, return immediately
+        if query.is_none() && !local.is_empty() && cache_fresh {
+            let events: Vec<_> = local.into_iter().take(max).collect();
+            return format_event_list_detailed(&events, &format!("Events from {} to {} — {} found:", start, end, events.len()));
         }
 
-        match get_token(&self.accounts) {
-            Ok(token) => {
-                match calendar::list_events(&token, None, Some(&time_min), Some(&time_max), max, query) {
-                    Ok(events) => {
-                        if query.is_none() {
-                            calendar::cache_events(ctx.db.conn(), &events, &time_min, &time_max);
-                        }
-                        format_event_list_detailed(&events, &format!("Events from {} to {} — {} found:", start, end, events.len()))
-                    }
-                    Err(e) => {
-                        // API failed — fall back to cache
-                        if !cached.is_empty() {
-                            let events: Vec<_> = cached.into_iter().take(max).collect();
-                            format_event_list_detailed(&events, &format!("Events from {} to {} — {} found (from cache, API unavailable):", start, end, events.len()))
-                        } else {
-                            format!("Failed to list events: {}", e)
-                        }
-                    }
-                }
-            }
-            Err(_) => {
-                if !cached.is_empty() {
-                    let events: Vec<_> = cached.into_iter().take(max).collect();
-                    format_event_list_detailed(&events, &format!("Events from {} to {} — {} found (offline):", start, end, events.len()))
+        // Try API to get fresh data
+        if let Ok(token) = get_token(&self.accounts) {
+            if let Ok(api_events) = calendar::list_events(&token, None, Some(&time_min), Some(&time_max), max, query) {
+                if query.is_none() {
+                    calendar::cache_events(ctx.db.conn(), &api_events, &time_min, &time_max);
+                    // Re-read to include both API + local events
+                    let all = calendar::get_cached_events(ctx.db.conn(), &time_min, &time_max);
+                    let events: Vec<_> = all.into_iter().take(max).collect();
+                    return format_event_list_detailed(&events, &format!("Events from {} to {} — {} found:", start, end, events.len()));
                 } else {
-                    format!("No events found between {} and {} — calendar not connected.", start, end)
+                    return format_event_list_detailed(&api_events, &format!("Events from {} to {} — {} found:", start, end, api_events.len()));
                 }
             }
+        }
+
+        // API unavailable — show local events
+        if !local.is_empty() {
+            let events: Vec<_> = local.into_iter().take(max).collect();
+            format_event_list_detailed(&events, &format!("Events from {} to {} — {} found (offline):", start, end, events.len()))
+        } else {
+            format!("No events found between {} and {}.\nTip: use calendar_create_event to add a new event.", start, end)
         }
     }
 }
@@ -306,7 +289,7 @@ impl Tool for CalendarCreateEventTool {
             "type": "function",
             "function": {
                 "name": "calendar_create_event",
-                "description": "Create a new calendar event on Google Calendar",
+                "description": "Create a new calendar event. Saves locally and syncs to Google if available.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -341,12 +324,7 @@ impl Tool for CalendarCreateEventTool {
         })
     }
 
-    fn execute(&self, _ctx: &ToolContext, args: &serde_json::Value) -> String {
-        let token = match get_token(&self.accounts) {
-            Ok(t) => t,
-            Err(e) => return e,
-        };
-
+    fn execute(&self, ctx: &ToolContext, args: &serde_json::Value) -> String {
         let summary = match args.get("summary").and_then(|v| v.as_str()) {
             Some(s) => s,
             None => return "Missing required parameter: summary".to_string(),
@@ -364,8 +342,11 @@ impl Tool for CalendarCreateEventTool {
         let location = args.get("location").and_then(|v| v.as_str());
         let all_day = args.get("all_day").and_then(|v| v.as_bool()).unwrap_or(false);
 
-        match calendar::create_event(&token, None, summary, start, end, description, location, all_day) {
-            Ok(event) => {
+        // Try Google Calendar API first
+        if let Ok(token) = get_token(&self.accounts) {
+            if let Ok(event) = calendar::create_event(&token, None, summary, start, end, description, location, all_day) {
+                // Also cache locally
+                calendar::cache_events(ctx.db.conn(), &[event.clone()], start, end);
                 let mut result = format!("Event created: {}\n", event.summary);
                 result.push_str(&format!("ID: {}\n", event.id));
                 result.push_str(&format!("When: {} - {}\n", event.start, event.end));
@@ -375,10 +356,20 @@ impl Tool for CalendarCreateEventTool {
                 if let Some(ref link) = event.html_link {
                     result.push_str(&format!("Link: {}\n", link));
                 }
-                result
+                return result;
             }
-            Err(e) => format!("Failed to create event: {}", e),
         }
+
+        // Google unavailable — save locally
+        let event = calendar::create_local_event(ctx.db.conn(), summary, start, end, description, location, all_day);
+        let mut result = format!("Event created (local): {}\n", event.summary);
+        result.push_str(&format!("ID: {}\n", event.id));
+        result.push_str(&format!("When: {} - {}\n", event.start, event.end));
+        if let Some(ref loc) = event.location {
+            result.push_str(&format!("Where: {}\n", loc));
+        }
+        result.push_str("Note: Saved locally. Will sync to Google Calendar when connection is restored.\n");
+        result
     }
 }
 
@@ -413,19 +404,32 @@ impl Tool for CalendarDeleteEventTool {
         })
     }
 
-    fn execute(&self, _ctx: &ToolContext, args: &serde_json::Value) -> String {
-        let token = match get_token(&self.accounts) {
-            Ok(t) => t,
-            Err(e) => return e,
-        };
-
+    fn execute(&self, ctx: &ToolContext, args: &serde_json::Value) -> String {
         let event_id = match args.get("event_id").and_then(|v| v.as_str()) {
             Some(s) => s,
             None => return "Missing required parameter: event_id".to_string(),
         };
 
-        match calendar::delete_event(&token, None, event_id) {
-            Ok(()) => format!("Event {} deleted successfully.", event_id),
+        // Local events (local_*) — delete from SQLite only
+        if event_id.starts_with("local_") {
+            return match calendar::delete_local_event(ctx.db.conn(), event_id) {
+                Ok(()) => format!("Event {} deleted successfully.", event_id),
+                Err(e) => format!("Failed to delete event: {}", e),
+            };
+        }
+
+        // Google event — try API, then fall back to local delete
+        if let Ok(token) = get_token(&self.accounts) {
+            if let Ok(()) = calendar::delete_event(&token, None, event_id) {
+                // Also remove from local cache
+                calendar::delete_local_event(ctx.db.conn(), event_id).ok();
+                return format!("Event {} deleted successfully.", event_id);
+            }
+        }
+
+        // API unavailable — mark deleted locally
+        match calendar::delete_local_event(ctx.db.conn(), event_id) {
+            Ok(()) => format!("Event {} deleted locally. Will sync to Google when connection is restored.", event_id),
             Err(e) => format!("Failed to delete event: {}", e),
         }
     }
@@ -482,12 +486,7 @@ impl Tool for CalendarUpdateEventTool {
         })
     }
 
-    fn execute(&self, _ctx: &ToolContext, args: &serde_json::Value) -> String {
-        let token = match get_token(&self.accounts) {
-            Ok(t) => t,
-            Err(e) => return e,
-        };
-
+    fn execute(&self, ctx: &ToolContext, args: &serde_json::Value) -> String {
         let event_id = match args.get("event_id").and_then(|v| v.as_str()) {
             Some(s) => s,
             None => return "Missing required parameter: event_id".to_string(),
@@ -499,13 +498,44 @@ impl Tool for CalendarUpdateEventTool {
         let description = args.get("description").and_then(|v| v.as_str());
         let location = args.get("location").and_then(|v| v.as_str());
 
-        match calendar::update_event(&token, None, event_id, summary, start, end, description, location, None) {
-            Ok(event) => {
+        // Local events — update SQLite only
+        if event_id.starts_with("local_") {
+            return match calendar::update_local_event(ctx.db.conn(), event_id, summary, start, end, description, location) {
+                Ok(event) => {
+                    let mut result = format!("Event updated (local): {}\n", event.summary);
+                    result.push_str(&format!("When: {} - {}\n", event.start, event.end));
+                    if let Some(ref loc) = event.location {
+                        result.push_str(&format!("Where: {}\n", loc));
+                    }
+                    result
+                }
+                Err(e) => format!("Failed to update event: {}", e),
+            };
+        }
+
+        // Google event — try API, fall back to local update
+        if let Ok(token) = get_token(&self.accounts) {
+            if let Ok(event) = calendar::update_event(&token, None, event_id, summary, start, end, description, location, None) {
+                // Update local cache too
+                calendar::cache_events(ctx.db.conn(), &[event.clone()], &event.start, &event.end);
                 let mut result = format!("Event updated: {}\n", event.summary);
                 result.push_str(&format!("When: {} - {}\n", event.start, event.end));
                 if let Some(ref loc) = event.location {
                     result.push_str(&format!("Where: {}\n", loc));
                 }
+                return result;
+            }
+        }
+
+        // API unavailable — update locally
+        match calendar::update_local_event(ctx.db.conn(), event_id, summary, start, end, description, location) {
+            Ok(event) => {
+                let mut result = format!("Event updated (local): {}\n", event.summary);
+                result.push_str(&format!("When: {} - {}\n", event.start, event.end));
+                if let Some(ref loc) = event.location {
+                    result.push_str(&format!("Where: {}\n", loc));
+                }
+                result.push_str("Note: Updated locally. Will sync to Google when connection is restored.\n");
                 result
             }
             Err(e) => format!("Failed to update event: {}", e),

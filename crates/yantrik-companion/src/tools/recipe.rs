@@ -162,8 +162,8 @@ impl Tool for ListRecipesTool {
 
         if recipes.is_empty() {
             return match status {
-                Some(s) => format!("No {} recipes.", s),
-                None => "No recipes found.".to_string(),
+                Some(s) => format!("No {} recipes. Tip: use find_recipe to search built-in templates by intent.", s),
+                None => "No recipes found. Tip: use find_recipe to search 50 built-in templates by intent, or create_recipe to build a custom one.".to_string(),
             };
         }
 

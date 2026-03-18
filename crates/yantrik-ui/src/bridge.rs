@@ -1726,7 +1726,11 @@ fn worker_loop(
                     let final_vars = RecipeStore::get_vars(companion.db.conn(), &recipe_id);
                     let last_step_result = steps.last()
                         .and_then(|s| match &s.step {
-                            RecipeStep::Think { store_as, .. } | RecipeStep::Tool { store_as, .. } => {
+                            RecipeStep::Think { store_as, .. }
+                            | RecipeStep::Tool { store_as, .. }
+                            | RecipeStep::ThinkCited { store_as, .. }
+                            | RecipeStep::Validate { store_as, .. }
+                            | RecipeStep::Render { store_as, .. } => {
                                 final_vars.get(store_as)
                                     .and_then(|v| v.as_str())
                                     .map(|s| if s.len() > 500 { format!("{}...", &s[..500]) } else { s.to_string() })
@@ -2001,6 +2005,62 @@ fn worker_loop(
                         RecipeStore::update_status(companion.db.conn(), &recipe_id, &RecipeStatus::Waiting, step_idx + 1);
                         tracing::info!(recipe_id = %recipe_id, step = step_idx, "Recipe waiting");
                         // Don't self-signal — will be resumed by Think cycle trigger check
+                    }
+
+                    RecipeStep::AskUser { question, store_as: _, choices } => {
+                        // Present question to user and pause recipe
+                        let resolved_q = resolve_vars(question, &vars);
+                        let display = if let Some(opts) = choices {
+                            let opts_str = opts.iter().enumerate()
+                                .map(|(i, c)| format!("{}. {}", i + 1, resolve_vars(c, &vars)))
+                                .collect::<Vec<_>>().join("\n");
+                            format!("{}\n{}", resolved_q, opts_str)
+                        } else {
+                            resolved_q
+                        };
+                        let msg = yantrik_companion::types::ProactiveMessage {
+                            text: display,
+                            urge_ids: vec![format!("recipe:{}", recipe_id)],
+                            generated_at: std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs_f64(),
+                        };
+                        companion.set_proactive_message(msg);
+                        // Mark step done and set recipe to Waiting
+                        RecipeStore::complete_step(companion.db.conn(), &recipe_id, step_idx, "asked");
+                        RecipeStore::update_status(companion.db.conn(), &recipe_id, &RecipeStatus::Waiting, step_idx + 1);
+                        // Don't self-signal — interjection handler will resume on user answer
+                    }
+
+                    RecipeStep::ThinkCited { prompt, store_as, source_vars: _ } => {
+                        // Delegated to recipe_executor::tick() for full citation pipeline
+                        // In bridge, do a simple Think fallback
+                        let resolved_prompt = resolve_vars(prompt, &vars);
+                        let resp = companion.handle_message(&resolved_prompt);
+                        RecipeStore::complete_step(companion.db.conn(), &recipe_id, step_idx, &resp.message);
+                        RecipeStore::set_var(companion.db.conn(), &recipe_id, store_as,
+                            &serde_json::Value::String(resp.message));
+                        RecipeStore::update_status(companion.db.conn(), &recipe_id, &RecipeStatus::Running, step_idx + 1);
+                        let _ = cmd_tx.send(CompanionCommand::ProcessRecipeStep { recipe_id: recipe_id.clone() });
+                    }
+
+                    RecipeStep::Validate { input_var, store_as } => {
+                        // Pass through — validation is best handled by recipe_executor
+                        let val = vars.get(input_var).cloned().unwrap_or(serde_json::Value::Null);
+                        RecipeStore::set_var(companion.db.conn(), &recipe_id, store_as, &val);
+                        RecipeStore::complete_step(companion.db.conn(), &recipe_id, step_idx, "validated");
+                        RecipeStore::update_status(companion.db.conn(), &recipe_id, &RecipeStatus::Running, step_idx + 1);
+                        let _ = cmd_tx.send(CompanionCommand::ProcessRecipeStep { recipe_id: recipe_id.clone() });
+                    }
+
+                    RecipeStep::Render { input_var, store_as, format: _ } => {
+                        // Pass through — render is best handled by recipe_executor
+                        let val = vars.get(input_var).cloned().unwrap_or(serde_json::Value::Null);
+                        let rendered = val.as_str().unwrap_or("").to_string();
+                        RecipeStore::set_var(companion.db.conn(), &recipe_id, store_as,
+                            &serde_json::Value::String(rendered));
+                        RecipeStore::complete_step(companion.db.conn(), &recipe_id, step_idx, "rendered");
+                        RecipeStore::update_status(companion.db.conn(), &recipe_id, &RecipeStatus::Running, step_idx + 1);
+                        let _ = cmd_tx.send(CompanionCommand::ProcessRecipeStep { recipe_id: recipe_id.clone() });
                     }
 
                     RecipeStep::Notify { message } => {
