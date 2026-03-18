@@ -9,19 +9,19 @@ name = "yantrik"
 path = "src/main.rs"
 
 [dependencies]
-yantrik-companion = { path = "../yantrik-companion" }
-yantrikdb-server = { path = "../yantrikdb-server" }
-yantrik-ml = { git = "https://github.com/yantrikos/yantrik-ml.git", features = ["api-llm", "claude-cli"] }
-serde_json = "1"
-yantrikdb-core = { git = "https://github.com/yantrikos/yantrikdb.git" }
-axum = "0.8"
+yantrik-companion = { workspace = true }
+yantrikdb-server = { workspace = true }
+yantrik-ml = { workspace = true, features = ["api-llm", "claude-cli"] }
+yantrikdb-core = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+axum = { workspace = true }
 clap = { version = "4", features = ["derive"] }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-serde_yaml = "0.9"
-cpal = "0.15"
-rubato = "0.16"
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+cpal = { workspace = true }
+rubato = { workspace = true }
 ctrlc = "3"
 
 [features]

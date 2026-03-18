@@ -1,13 +1,12 @@
 //! Background timers — clock, think cycle, card tick, morning brief.
 
-use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Duration;
 
 use slint::{ComponentHandle, Timer, TimerMode};
 
 use crate::app_context::{self, AppContext};
-use crate::{cards, streaming, App};
+use crate::{cards, App};
 
 /// Wire all background timers.
 pub fn wire(ui: &App, ctx: &AppContext) {
@@ -66,43 +65,29 @@ fn wire_think(ctx: &AppContext) {
     std::mem::forget(timer);
 }
 
-/// Morning brief — fires once 5s after boot, proactively greets the user.
-/// The prompt is hidden; only the AI's response appears in chat.
-/// Personalized with user name and bond-level tone.
-fn wire_morning_brief(ui: &App, ctx: &AppContext) {
+/// Morning brief — fires once 5s after boot.
+/// Sends a natural prompt to the companion, which uses its own tools and memory
+/// to compose a personalized morning brief. The companion decides what to include
+/// based on available tools, user preferences (remembered via memory), and context.
+fn wire_morning_brief(_ui: &App, ctx: &AppContext) {
     let bridge = ctx.bridge.clone();
-    let ui_weak = ui.as_weak();
     let user_name = ctx.user_name.clone();
-    let timer_slot: Rc<RefCell<Option<Timer>>> = Rc::new(RefCell::new(None));
-    let slot = timer_slot.clone();
-
     let timer = Timer::default();
     timer.start(TimerMode::SingleShot, Duration::from_secs(5), move || {
-        // Only fire if companion is online
         if !bridge.is_online() {
             tracing::info!("Morning brief skipped — companion offline");
             return;
         }
-        let bond = bridge.bond_level_cached();
-        let tone = match bond {
-            0..=2 => "Keep it polite and professional.",
-            3..=4 => "Be friendly and casual.",
-            _ => "Be warm and personal — we know each other well.",
-        };
+        tracing::info!("Composing morning brief");
         let prompt = format!(
-            "You just started up. Greet {} by name. \
-             Give a short morning brief (3-5 sentences max). \
-             First use recall_workspace to check for a previous session snapshot. \
-             Mention: the time of day, any system status worth noting from your context \
-             (battery, memory, disk, network), and if you found a workspace snapshot, \
-             briefly mention what they were last working on and suggest continuing. \
-             End with something warm. {} \
-             Be concise — this is the first thing they see when they log in. \
-             Do NOT use bullet points or headers. Just natural sentences.",
-            user_name, tone
+            "You just started up. Compose a morning brief for {user_name}. \
+             Use your tools to check email, calendar, weather, system status, \
+             and recall recent topics of interest. Skip any sources that fail \
+             or that {user_name} has asked you not to include. \
+             Keep it natural and concise — a few flowing sentences, no bullet points."
         );
-        tracing::info!(bond, user = %user_name, "Generating personalized morning brief");
-        streaming::start_proactive_stream(ui_weak.clone(), &bridge, &prompt, &slot);
+        // Fire-and-forget: the response flows through the normal notification path
+        let _rx = bridge.send_message(prompt);
     });
     std::mem::forget(timer);
 }

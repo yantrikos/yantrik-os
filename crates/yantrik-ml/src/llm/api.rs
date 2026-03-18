@@ -5,11 +5,13 @@
 //! thinking mode control.
 
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read as _};
 
 use anyhow::{Context, Result};
 
 use crate::chat_template;
+use crate::chat_templates;
+use crate::capability::ModelFamily;
 use crate::llm::strip_think_tags;
 use crate::traits::LLMBackend;
 use crate::types::{ApiToolCall, ApiToolCallFunction, ChatMessage, GenerationConfig, LLMResponse, ToolCall};
@@ -21,23 +23,33 @@ pub struct ApiLLM {
     model: String,
     /// True when talking to Ollama — use native /api/chat for think control.
     is_ollama: bool,
+    /// Model family for family-aware template selection.
+    family: ModelFamily,
 }
 
 impl ApiLLM {
     pub fn new(base_url: impl Into<String>, api_key: Option<String>, model: impl Into<String>) -> Self {
         let base_url: String = base_url.into();
+        let model: String = model.into();
         let is_ollama = base_url.contains(":11434");
+        let family = ModelFamily::from_model_name(&model);
         Self {
             base_url,
             api_key,
-            model: model.into(),
             is_ollama,
+            family,
+            model,
         }
     }
 
     /// Get the model name/identifier for capability profiling.
     pub fn model_name(&self) -> &str {
         &self.model
+    }
+
+    /// Get the family-aware chat template for this model.
+    fn template(&self) -> Box<dyn chat_templates::ChatTemplate> {
+        chat_templates::template_for_family(self.family)
     }
 
     /// Serialize a ChatMessage to JSON, including tool_calls/tool_call_id/name when present.
@@ -95,7 +107,7 @@ impl ApiLLM {
         let mut options = serde_json::json!({
             "temperature": config.temperature,
             "num_predict": config.max_tokens,
-            "num_ctx": 32768,
+            "num_ctx": config.max_context.unwrap_or(4096),
         });
 
         if let Some(p) = config.top_p {
@@ -112,9 +124,14 @@ impl ApiLLM {
             "model": self.model,
             "messages": msgs,
             "stream": stream,
-            "think": false,
+            "keep_alive": -1,
             "options": options,
         });
+
+        // Disable thinking mode for families that need it (Qwen, Nemotron, etc.)
+        if self.template().disable_thinking() {
+            body["think"] = serde_json::json!(false);
+        }
 
         if let Some(tools) = tools {
             if !tools.is_empty() {
@@ -144,7 +161,14 @@ impl ApiLLM {
                 .build()
         );
 
-        let resp = agent.post(&url)
+        let agent_no_err = ureq::Agent::new_with_config(
+            ureq::config::Config::builder()
+                .timeout_global(Some(std::time::Duration::from_secs(300)))
+                .http_status_as_error(false)
+                .build()
+        );
+
+        let resp = agent_no_err.post(&url)
             .header("Content-Type", "application/json")
             .send(body_str.as_bytes())
             .map_err(|e| {
@@ -152,6 +176,20 @@ impl ApiLLM {
                 e
             })
             .context("Ollama API request failed")?;
+
+        let status = resp.status();
+        if status != 200 {
+            let err_body = resp.into_body().read_to_string().unwrap_or_default();
+            let preview = &err_body[..err_body.len().min(1000)];
+            tracing::error!(
+                status = status.as_u16(),
+                body_bytes = body_str.len(),
+                tools = tool_count,
+                error_response = %preview,
+                "Ollama API returned error"
+            );
+            anyhow::bail!("Ollama API request failed: http status: {}", status.as_u16());
+        }
 
         Ok(resp.into_body())
     }
@@ -163,7 +201,29 @@ impl ApiLLM {
         config: &GenerationConfig,
         tools: Option<&[serde_json::Value]>,
     ) -> Result<LLMResponse> {
-        let body = self.build_ollama_body(messages, config, tools, false);
+        // Text-injection: for non-Ollama backends OR when Ollama's native template
+        // can't handle the tool count (e.g. Nemotron with >12 tools).
+        let tool_count = tools.map(|t| t.len()).unwrap_or(0);
+        let force_text = self.use_text_injection_tools()
+            || self.needs_text_injection_for_tool_count(tool_count);
+        let patched_messages;
+        let (final_messages, final_tools) = if force_text {
+            if let Some(tools) = tools.filter(|t| !t.is_empty()) {
+                if self.needs_text_injection_for_tool_count(tool_count) {
+                    tracing::info!(
+                        tool_count, max = Self::MAX_OLLAMA_NEMOTRON_NATIVE_TOOLS,
+                        "Nemotron: too many tools for native, falling back to text-injection"
+                    );
+                }
+                patched_messages = self.inject_tools_into_messages(messages, tools);
+                (patched_messages.as_slice(), None)
+            } else {
+                (messages, None)
+            }
+        } else {
+            (messages, tools)
+        };
+        let body = self.build_ollama_body(final_messages, config, final_tools, false);
         let mut resp_body = self.send_ollama_request(&body)?;
 
         let json: serde_json::Value = resp_body.read_json()?;
@@ -180,7 +240,7 @@ impl ApiLLM {
         let tool_calls = if !api_tool_calls.is_empty() {
             api_tool_calls.iter().filter_map(ToolCall::from_api).collect()
         } else {
-            chat_template::parse_tool_calls(&text)
+            self.template().parse_tool_calls(&text)
         };
 
         Ok(LLMResponse {
@@ -201,7 +261,29 @@ impl ApiLLM {
         tools: Option<&[serde_json::Value]>,
         on_token: &mut dyn FnMut(&str),
     ) -> Result<LLMResponse> {
-        let body = self.build_ollama_body(messages, config, tools, true);
+        // Text-injection: for non-Ollama backends OR when Ollama's native template
+        // can't handle the tool count (e.g. Nemotron with >12 tools).
+        let tool_count = tools.map(|t| t.len()).unwrap_or(0);
+        let force_text = self.use_text_injection_tools()
+            || self.needs_text_injection_for_tool_count(tool_count);
+        let patched_messages;
+        let (final_messages, final_tools) = if force_text {
+            if let Some(tools) = tools.filter(|t| !t.is_empty()) {
+                if self.needs_text_injection_for_tool_count(tool_count) {
+                    tracing::info!(
+                        tool_count, max = Self::MAX_OLLAMA_NEMOTRON_NATIVE_TOOLS,
+                        "Nemotron: too many tools for native, falling back to text-injection"
+                    );
+                }
+                patched_messages = self.inject_tools_into_messages(messages, tools);
+                (patched_messages.as_slice(), None)
+            } else {
+                (messages, None)
+            }
+        } else {
+            (messages, tools)
+        };
+        let body = self.build_ollama_body(final_messages, config, final_tools, true);
         let resp_body = self.send_ollama_request(&body)?;
 
         let reader = BufReader::new(resp_body.into_reader());
@@ -290,7 +372,7 @@ impl ApiLLM {
         let tool_calls = if !api_tool_calls.is_empty() {
             api_tool_calls.iter().filter_map(ToolCall::from_api).collect()
         } else {
-            chat_template::parse_tool_calls(&full_text)
+            self.template().parse_tool_calls(&full_text)
         };
 
         Ok(LLMResponse {
@@ -305,6 +387,62 @@ impl ApiLLM {
 
     // ── OpenAI-compatible API (/v1/chat/completions) ──
 
+    /// Whether this backend should use text-injection for tools (vs native API tools).
+    ///
+    /// Text-injection injects tool definitions into the system prompt and parses
+    /// tool calls from the model's text output using family-specific templates.
+    ///
+    /// Used when:
+    /// - Nemotron models (always): Ollama's native tool template for nemotron produces
+    ///   XML parsing errors with many tools. Our text-injection parser is more robust.
+    /// - Non-Ollama local models (llama-server, etc.): typically lack proper jinja
+    ///   templates for native tool calling.
+    /// - NOT used for cloud APIs (OpenAI, Anthropic) which handle tools natively.
+    /// Maximum tools Ollama's nemotron template can handle natively before
+    /// its Go XML renderer hits "XML syntax error: unexpected EOF".
+    /// Empirically safe at 12; above this we fall back to text-injection.
+    const MAX_OLLAMA_NEMOTRON_NATIVE_TOOLS: usize = 12;
+
+    fn use_text_injection_tools(&self) -> bool {
+        // Cloud APIs handle tools natively
+        if matches!(self.family, ModelFamily::OpenAI | ModelFamily::Anthropic) {
+            return false;
+        }
+        // Other local models on non-Ollama servers need text-injection
+        !self.is_ollama
+    }
+
+    /// Whether to fall back to text-injection for this specific call due to
+    /// Ollama template limitations with many tools.
+    fn needs_text_injection_for_tool_count(&self, tool_count: usize) -> bool {
+        self.is_ollama
+            && matches!(self.family, ModelFamily::Nemotron)
+            && tool_count > Self::MAX_OLLAMA_NEMOTRON_NATIVE_TOOLS
+    }
+
+    /// Inject tool definitions into the system message using the family-specific template.
+    fn inject_tools_into_messages(
+        &self,
+        messages: &[ChatMessage],
+        tools: &[serde_json::Value],
+    ) -> Vec<ChatMessage> {
+        let template = self.template();
+        let tool_block = template.format_tools(tools);
+        if tool_block.is_empty() {
+            return messages.to_vec();
+        }
+
+        let mut patched = messages.to_vec();
+        if !patched.is_empty() && patched[0].role == "system" {
+            patched[0] = ChatMessage::system(
+                format!("{}{}", patched[0].content, tool_block),
+            );
+        } else {
+            patched.insert(0, ChatMessage::system(tool_block));
+        }
+        patched
+    }
+
     fn build_openai_body(
         &self,
         messages: &[ChatMessage],
@@ -312,7 +450,26 @@ impl ApiLLM {
         tools: Option<&[serde_json::Value]>,
         stream: bool,
     ) -> serde_json::Value {
-        let msgs: Vec<serde_json::Value> = messages
+        // For local models on non-Ollama servers (e.g. llama-server), inject tools
+        // into the system prompt instead of passing them via the API tools field.
+        let use_text_injection = self.use_text_injection_tools();
+        let patched_messages;
+        let (final_messages, final_tools) = if use_text_injection {
+            if let Some(tools) = tools.filter(|t| !t.is_empty()) {
+                patched_messages = self.inject_tools_into_messages(messages, tools);
+                tracing::debug!(
+                    tool_count = tools.len(),
+                    "Text-injecting tools into system prompt for non-Ollama endpoint"
+                );
+                (patched_messages.as_slice(), None)
+            } else {
+                (messages, None)
+            }
+        } else {
+            (messages, tools)
+        };
+
+        let msgs: Vec<serde_json::Value> = final_messages
             .iter()
             .map(|m| Self::serialize_message(m, false))
             .collect();
@@ -337,10 +494,12 @@ impl ApiLLM {
             body["frequency_penalty"] = serde_json::json!((config.repeat_penalty - 1.0).clamp(-2.0, 2.0));
         }
 
-        // Disable thinking mode (Qwen3.5 etc.) — saves tokens and latency
-        body["think"] = serde_json::json!(false);
+        // Disable thinking mode for families that need it (Qwen, Nemotron, etc.)
+        if self.template().disable_thinking() {
+            body["think"] = serde_json::json!(false);
+        }
 
-        if let Some(tools) = tools {
+        if let Some(tools) = final_tools {
             if !tools.is_empty() {
                 body["tools"] = serde_json::json!(tools);
             }
@@ -360,6 +519,7 @@ impl ApiLLM {
         let agent = ureq::Agent::new_with_config(
             ureq::config::Config::builder()
                 .timeout_global(Some(std::time::Duration::from_secs(300)))
+                .http_status_as_error(false)
                 .build()
         );
 
@@ -373,6 +533,19 @@ impl ApiLLM {
         let resp = req
             .send(body_str.as_bytes())
             .context("API request failed")?;
+
+        let status = resp.status();
+        if status != 200 {
+            let err_body = resp.into_body().read_to_string().unwrap_or_default();
+            let preview = &err_body[..err_body.len().min(1000)];
+            tracing::error!(
+                status = status.as_u16(),
+                body_bytes = body_str.len(),
+                error_response = %preview,
+                "OpenAI-compatible API returned error"
+            );
+            anyhow::bail!("API request failed: http status: {}", status.as_u16());
+        }
 
         Ok(resp.into_body())
     }
@@ -448,7 +621,7 @@ impl LLMBackend for ApiLLM {
                 .filter_map(ToolCall::from_api)
                 .collect()
         } else {
-            chat_template::parse_tool_calls(&text)
+            self.template().parse_tool_calls(&text)
         };
 
         Ok(LLMResponse {
@@ -593,7 +766,7 @@ impl LLMBackend for ApiLLM {
                 .filter_map(ToolCall::from_api)
                 .collect()
         } else {
-            chat_template::parse_tool_calls(&full_text)
+            self.template().parse_tool_calls(&full_text)
         };
 
         Ok(LLMResponse {
@@ -611,7 +784,7 @@ impl LLMBackend for ApiLLM {
     }
 
     fn backend_name(&self) -> &str {
-        "api" // Both Ollama native and OpenAI support native tool calling
+        "api"
     }
 
     fn model_id(&self) -> &str {

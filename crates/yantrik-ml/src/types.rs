@@ -138,6 +138,9 @@ pub struct GenerationConfig {
     pub seed: u64,
     /// Stop sequences — generation halts when any of these is produced.
     pub stop: Vec<String>,
+    /// Maximum context window size (num_ctx for Ollama). None = use model default.
+    #[serde(default)]
+    pub max_context: Option<usize>,
 }
 
 impl Default for GenerationConfig {
@@ -151,6 +154,7 @@ impl Default for GenerationConfig {
             repeat_last_n: 64,
             seed: 42,
             stop: vec![],
+            max_context: None,
         }
     }
 }

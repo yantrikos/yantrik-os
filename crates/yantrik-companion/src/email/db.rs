@@ -267,6 +267,63 @@ pub fn search_emails(conn: &Connection, account_id: i64, query: &str, limit: usi
     }
 }
 
+/// Mark an email as read in the cache.
+pub fn mark_read(conn: &Connection, email_id: i64) {
+    conn.execute(
+        "UPDATE emails SET is_read = 1 WHERE id = ?1",
+        rusqlite::params![email_id],
+    ).unwrap_or(0);
+}
+
+/// Mark an email as unread in the cache.
+pub fn mark_unread(conn: &Connection, email_id: i64) {
+    conn.execute(
+        "UPDATE emails SET is_read = 0 WHERE id = ?1",
+        rusqlite::params![email_id],
+    ).unwrap_or(0);
+}
+
+/// Mark all emails in a folder as read in the cache.
+pub fn mark_all_read(conn: &Connection, account_id: i64, folder: &str) -> usize {
+    conn.execute(
+        "UPDATE emails SET is_read = 1 WHERE account_id = ?1 AND folder = ?2 AND is_read = 0",
+        rusqlite::params![account_id, folder],
+    ).unwrap_or(0)
+}
+
+/// Set flagged status on an email in the cache.
+pub fn set_flagged(conn: &Connection, email_id: i64, flagged: bool) {
+    conn.execute(
+        "UPDATE emails SET is_flagged = ?1 WHERE id = ?2",
+        rusqlite::params![flagged as i32, email_id],
+    ).unwrap_or(0);
+}
+
+/// Delete an email from the cache.
+pub fn delete_email(conn: &Connection, email_id: i64) {
+    conn.execute(
+        "DELETE FROM emails WHERE id = ?1",
+        rusqlite::params![email_id],
+    ).unwrap_or(0);
+}
+
+/// Get all unread email UIDs in a folder (for bulk IMAP operations).
+pub fn get_unread_uids(conn: &Connection, account_id: i64, folder: &str) -> Vec<u32> {
+    let mut stmt = match conn.prepare(
+        "SELECT uid FROM emails WHERE account_id = ?1 AND folder = ?2 AND is_read = 0"
+    ) {
+        Ok(s) => s,
+        Err(_) => return Vec::new(),
+    };
+    let rows = stmt.query_map(rusqlite::params![account_id, folder], |row| {
+        row.get::<_, i64>(0).map(|u| u as u32)
+    });
+    match rows {
+        Ok(mapped) => mapped.filter_map(|r| r.ok()).collect(),
+        Err(_) => Vec::new(),
+    }
+}
+
 /// Count unread emails in a folder.
 pub fn count_unread(conn: &Connection, account_id: i64, folder: &str) -> i64 {
     conn.query_row(

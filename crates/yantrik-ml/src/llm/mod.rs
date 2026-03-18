@@ -32,6 +32,15 @@ pub type LLMEngine = CandleLLM;
 /// some models still emit thinking tags.
 pub fn strip_think_tags(text: &str) -> String {
     let mut result = text.to_string();
+
+    // Handle bare </think> at the start (llama-server's template may prepend <think>
+    // as the assistant prefix, so the model output starts with </think>)
+    if let Some(pos) = result.find("</think>") {
+        if !result[..pos].contains("<think>") {
+            result = result[pos + "</think>".len()..].trim_start().to_string();
+        }
+    }
+
     while let Some(start) = result.find("<think>") {
         if let Some(end) = result.find("</think>") {
             let tag_end = end + "</think>".len();

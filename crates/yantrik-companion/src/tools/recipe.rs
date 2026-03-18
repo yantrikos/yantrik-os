@@ -41,10 +41,14 @@ impl Tool for CreateRecipeTool {
                             "type": "array",
                             "description": "Ordered list of steps. Each step is an object with 'type' field. \
                                 Types: 'Tool' (direct tool call, no LLM), 'Think' (LLM reasoning), \
-                                'JumpIf' (conditional jump), 'Notify' (send message to user). \
-                                Tool steps need: tool_name, args (object), store_as (variable name). \
+                                'JumpIf' (conditional jump), 'WaitFor' (pause until condition), 'Notify' (send message to user). \
+                                Tool steps need: tool_name, args (object), store_as (variable name), \
+                                on_error (optional: {\"action\":\"Fail\"}, {\"action\":\"Skip\"}, {\"action\":\"Retry\",\"max\":3}, \
+                                {\"action\":\"JumpTo\",\"step\":N}, or {\"action\":\"Replan\"} for auto-healing). \
+                                PREFER on_error={\"action\":\"Replan\"} for critical steps — it auto-diagnoses failures and generates new steps. \
                                 Think steps need: prompt (use {{var}} for variable references), store_as. \
                                 JumpIf steps need: condition (object with 'op' field), target_step (index). \
+                                WaitFor steps need: condition ({\"type\":\"Duration\",\"seconds\":N} or {\"type\":\"Time\",\"hour\":H,\"minute\":M}), timeout_secs (optional). \
                                 Notify steps need: message (use {{var}} for variables).",
                             "items": { "type": "object" }
                         },
@@ -91,6 +95,15 @@ impl Tool for CreateRecipeTool {
         });
 
         let description = args.get("description").and_then(|v| v.as_str()).unwrap_or("");
+
+        // Inject past failure learnings as warnings
+        let learnings = RecipeStore::get_failure_learnings(ctx.db.conn(), 5);
+        if !learnings.is_empty() {
+            tracing::debug!(
+                count = learnings.len(),
+                "Past recipe failure learnings available for context"
+            );
+        }
 
         let recipe_id = RecipeStore::create(
             ctx.db.conn(),

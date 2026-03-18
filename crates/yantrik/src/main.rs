@@ -150,8 +150,7 @@ fn build_companion(config: CompanionConfig) -> CompanionService {
             .expect("gguf_path required for llamacpp backend");
         let gpu_layers = config.llm.fallback.as_ref()
             .map(|f| f.n_gpu_layers).unwrap_or(99);
-        let ctx_size = config.llm.fallback.as_ref()
-            .map(|f| f.context_size).unwrap_or(4096);
+        let ctx_size = config.llm.max_context_tokens as u32;
         tracing::info!(gguf, gpu_layers, ctx_size, "Using llama.cpp backend");
         #[cfg(feature = "llamacpp")]
         { std::sync::Arc::new(LlamaCppLLM::from_gguf(

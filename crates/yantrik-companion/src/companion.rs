@@ -7,8 +7,9 @@
 use yantrikdb_core::YantrikDB;
 use yantrik_ml::{
     ChatMessage, GenerationConfig, LLMBackend, ToolCall, ToolCallMode,
-    ModelCapabilityProfile, ToolFamily,
-    format_tools, parse_tool_calls, extract_text_content,
+    ModelCapabilityProfile, ModelFamily, ToolFamily,
+    parse_tool_calls, extract_text_content,
+    ChatTemplate, template_for_family,
 };
 
 use crate::active_context::ActiveDayContext;
@@ -37,6 +38,7 @@ use crate::tool_traces::ToolTraces;
 use crate::tools::{self, PermissionLevel, ToolContext, ToolRegistry, parse_permission};
 use crate::types::{AgentResponse, CompanionState, ProactiveMessage};
 use crate::resonance::ResonanceEngine;
+use crate::query_planner::{self, PlanDecision};
 use crate::urges::UrgeQueue;
 
 /// Core tools always included in the LLM prompt — no discover_tools needed for these.
@@ -45,6 +47,7 @@ use crate::urges::UrgeQueue;
 pub const ALWAYS_TOOLS: &[&str] = &[
     "remember", "recall", "discover_tools",
     "run_command", "web_search", "calculate",
+    "create_schedule", "create_recipe",
 ];
 
 /// Minimal tools for fallback/degraded mode — tiny models can't handle many tools.
@@ -72,8 +75,11 @@ pub const TOOL_CATEGORIES: &[(&str, &[&str], &[&str])] = &[
      &["vault_store", "vault_get", "vault_list", "vault_delete", "vault_generate_password", "vault_set_pin"]),
     ("coder", &["code", "script", "execute", "python", "javascript", "run code", "program", "coding"],
      &["code_execute", "script_write", "script_run", "script_patch", "script_list", "script_read"]),
-    ("email", &["email", "inbox", "mail", "send email", "check email", "reply"],
-     &["email_check", "email_list", "email_read", "email_send", "email_reply", "email_search"]),
+    ("email", &["email", "inbox", "mail", "send email", "check email", "reply", "forward",
+                "unread", "mark read", "archive", "flag", "star", "delete email", "trash", "move email", "folders"],
+     &["email_check", "email_list", "email_read", "email_send", "email_reply", "email_reply_all",
+       "email_forward", "email_search", "email_mark_read", "email_mark_unread",
+       "email_flag", "email_unflag", "email_delete", "email_move", "email_archive", "email_list_folders"]),
     ("calendar", &["calendar", "event", "meeting", "schedule", "appointment", "today"],
      &["calendar_today", "calendar_list_events", "calendar_create_event", "calendar_update_event", "calendar_delete_event"]),
     ("scheduling", &["reminder", "alarm", "schedule", "timer", "cron"],
@@ -126,12 +132,14 @@ pub const CORE_TOOLS: &[&str] = &[
     "browser_cleanup", "browser_status",
     "http_fetch", "web_fetch", "network_diagnose",
     "calculate", "screenshot",
-    "email_check", "email_list", "email_read", "email_send", "email_reply", "email_search",
+    "email_check", "email_list", "email_read", "email_send", "email_reply", "email_reply_all",
+    "email_forward", "email_search", "email_mark_read", "email_mark_unread",
+    "email_flag", "email_unflag", "email_delete", "email_move", "email_archive", "email_list_folders",
     "calendar_today", "calendar_list_events", "calendar_create_event", "calendar_update_event", "calendar_delete_event",
     "memory_stats", "resolve_conflicts", "review_memories", "forget_topic",
     "queue_task", "list_tasks", "update_task", "complete_task",
     "create_recipe", "list_recipes", "run_recipe",
-    "claude_think", "claude_code",
+    "claude_think", "claude_code", "spawn_agents",
     "get_weather", "check_bond",
     "list_connections", "connect_service", "sync_service", "disconnect_service",
     "vault_store", "vault_get", "vault_list", "vault_delete", "vault_generate_password", "vault_set_pin",
@@ -141,12 +149,18 @@ pub const CORE_TOOLS: &[&str] = &[
 /// Select tools for a specific query using keyword routing + embedding fallback.
 /// Returns a deduplicated list of tool names (ALWAYS_TOOLS + routed + embedding top-K).
 /// Target: 8-15 tools per query instead of 83+.
+/// Select tools for a query using YantrikDB embedding similarity as the primary
+/// method, with keyword categories as a fast boost layer.
+///
+/// Flow: ALWAYS_TOOLS → keyword boost → YantrikDB cosine similarity (top-K).
+/// The embedding layer handles paraphrases and novel phrasing that keywords miss.
 pub fn select_tools_for_query(query: &str, db: &YantrikDB, max_extra: usize) -> Vec<&'static str> {
     let mut selected: Vec<&'static str> = ALWAYS_TOOLS.to_vec();
-    let query_lower = query.to_lowercase();
+    let budget = max_extra.saturating_sub(selected.len());
 
-    // Tier 2: keyword routing — match query against category patterns
-    let mut matched_categories = 0u32;
+    // Layer 1: keyword boost — fast, catches obvious matches
+    let query_lower = query.to_lowercase();
+    let mut keyword_hits = 0u32;
     for &(_cat_name, keywords, tools) in TOOL_CATEGORIES {
         let hit = keywords.iter().any(|kw| query_lower.contains(kw));
         if hit {
@@ -155,27 +169,25 @@ pub fn select_tools_for_query(query: &str, db: &YantrikDB, max_extra: usize) -> 
                     selected.push(tool);
                 }
             }
-            matched_categories += 1;
+            keyword_hits += 1;
         }
     }
 
-    // Tier 3: embedding fallback — if no categories matched, use semantic similarity
-    if matched_categories == 0 {
+    // Layer 2: YantrikDB embedding similarity — always runs, fills remaining budget
+    // This catches tools that keywords missed (paraphrases, novel phrasing)
+    if selected.len() < max_extra {
+        let remaining = max_extra.saturating_sub(selected.len());
         let relevant = crate::tool_cache::ToolCache::select_relevant(
-            db.conn(), db, query, max_extra,
+            db.conn(), db, query, remaining + 10, // fetch extra to filter dupes
         );
         for def in &relevant {
+            if selected.len() >= max_extra {
+                break;
+            }
             if let Some(name) = def["function"]["name"].as_str() {
-                // Check if it's a known tool name from any category
-                let is_known = TOOL_CATEGORIES.iter().any(|&(_, _, tools)| tools.contains(&name));
-                if is_known && !selected.iter().any(|&s| s == name) {
-                    // We can't push &str from a String, so we need to find the static ref
-                    for &(_, _, tools) in TOOL_CATEGORIES {
-                        for &tool in tools {
-                            if tool == name && !selected.contains(&tool) {
-                                selected.push(tool);
-                            }
-                        }
+                if let Some(&static_name) = CORE_TOOLS.iter().find(|&&t| t == name) {
+                    if !selected.contains(&static_name) {
+                        selected.push(static_name);
                     }
                 }
             }
@@ -184,98 +196,321 @@ pub fn select_tools_for_query(query: &str, db: &YantrikDB, max_extra: usize) -> 
 
     tracing::info!(
         query_short = &query[..query.len().min(60)],
-        categories = matched_categories,
+        keyword_hits,
         total = selected.len(),
-        "Dynamic tool selection"
+        "Dynamic tool selection (keywords + embeddings)"
     );
 
     selected
 }
 
-/// Adaptive tool selection using ToolFamily routing + ModelCapabilityProfile.
+/// Adaptive tool selection — embeddings-first with ToolFamily as a boost layer.
 ///
-/// For models with `use_family_routing = true`, routes the query to semantic
-/// tool families first, then exposes only that family's tools (up to `max_tools_per_prompt`).
-/// Falls back to the legacy `select_tools_for_query` when family routing is disabled
-/// or when no family matches.
+/// For all tiers: ALWAYS_TOOLS → YantrikDB embedding search → ToolFamily keyword boost.
+/// The embedding search in YantrikDB is the primary selector — it handles paraphrases
+/// and novel phrasing that keyword routing misses.
 pub fn select_tools_adaptive(
     query: &str,
     db: &YantrikDB,
     profile: &ModelCapabilityProfile,
 ) -> Vec<&'static str> {
-    // Always start with ALWAYS_TOOLS
     let mut selected: Vec<&'static str> = ALWAYS_TOOLS.to_vec();
+    let budget = profile.max_tools_per_prompt;
 
-    if !profile.use_family_routing {
-        // Large models or disabled routing: use legacy category-based selection
-        let legacy = select_tools_for_query(query, db, profile.max_tools_per_prompt);
-        return legacy;
-    }
-
-    // Family-based routing: route to best-matching families
-    let families = ToolFamily::route_query(query);
-
-    if families.is_empty() {
-        // No family matched — fall back to ALWAYS_TOOLS + embedding fallback
-        let relevant = crate::tool_cache::ToolCache::select_relevant(
-            db.conn(), db, query, profile.max_tools_per_prompt.saturating_sub(selected.len()),
-        );
-        for def in &relevant {
-            if let Some(name) = def["function"]["name"].as_str() {
-                // Find the static &str reference from TOOL_CATEGORIES
-                for &(_, _, tools) in TOOL_CATEGORIES {
-                    for &tool in tools {
-                        if tool == name && !selected.contains(&tool) {
-                            selected.push(tool);
-                        }
+    // Layer 1: YantrikDB embedding similarity — primary selector
+    // Use pure similarity search (no built-in ALWAYS_INCLUDE) so the most relevant
+    // tools surface regardless of hardcoded lists. ALWAYS_TOOLS are already in `selected`.
+    let embed_limit = budget.saturating_sub(selected.len()) + 5;
+    let relevant = crate::tool_cache::ToolCache::select_by_similarity(
+        db.conn(), db, query, embed_limit,
+    );
+    let mut embed_added = 0usize;
+    for def in &relevant {
+        if selected.len() >= budget {
+            break;
+        }
+        if let Some(name) = def["function"]["name"].as_str() {
+            if !selected.iter().any(|&s| s == name) {
+                // Find the static &str reference from CORE_TOOLS or TOOL_CATEGORIES
+                if let Some(&static_name) = CORE_TOOLS.iter().find(|&&t| t == name) {
+                    if !selected.contains(&static_name) {
+                        selected.push(static_name);
+                        embed_added += 1;
                     }
                 }
             }
         }
-        tracing::info!(
-            query_short = &query[..query.len().min(60)],
-            family = "none",
-            total = selected.len(),
-            tier = %profile.tier,
-            "Adaptive tool selection (embedding fallback)"
-        );
-        return selected;
     }
 
-    // Add tools from matched families (best match first, up to budget)
-    let budget = profile.max_tools_per_prompt.saturating_sub(selected.len());
-    let mut tools_added = 0usize;
-    let mut matched_family_names = Vec::new();
-
-    for (family, _score) in &families {
-        if tools_added >= budget {
-            break;
-        }
-        matched_family_names.push(family.to_string());
-        for &tool_name in family.tools() {
-            if tools_added >= budget {
+    // Layer 2: ToolFamily keyword boost — fills gaps that embeddings might miss
+    if profile.use_family_routing && selected.len() < budget {
+        let families = ToolFamily::route_query(query);
+        for (family, _score) in &families {
+            if selected.len() >= budget {
                 break;
             }
-            // Only add if the tool exists in our TOOL_CATEGORIES (registered in this build)
-            let is_registered = TOOL_CATEGORIES.iter()
-                .any(|&(_, _, cat_tools)| cat_tools.contains(&tool_name));
-            if is_registered && !selected.contains(&tool_name) {
-                selected.push(tool_name);
-                tools_added += 1;
+            for &tool_name in family.tools() {
+                if selected.len() >= budget {
+                    break;
+                }
+                let is_registered = CORE_TOOLS.contains(&tool_name);
+                if is_registered && !selected.contains(&tool_name) {
+                    selected.push(tool_name);
+                }
             }
         }
     }
 
+    // Log selected tool names for debugging
+    let selected_str: Vec<&str> = selected.iter().copied().collect();
     tracing::info!(
         query_short = &query[..query.len().min(60)],
-        families = ?matched_family_names,
+        embed_matched = embed_added,
         total = selected.len(),
         tier = %profile.tier,
-        max_budget = profile.max_tools_per_prompt,
-        "Adaptive tool selection (family routing)"
+        max_budget = budget,
+        tools = ?selected_str,
+        "Adaptive tool selection (embeddings-first)"
     );
 
     selected
+}
+
+// ── Batched MCQ Tool Selection (for Tiny/Small models) ───────────────
+
+/// MCQ labels for batch tool selection.
+const MCQ_LABELS: &[char] = &['A', 'B', 'C', 'D', 'E'];
+
+/// Check if embedding scores are confident enough to auto-select without LLM.
+///
+/// Returns the tool name if top-1 score is high and margin over top-2 is large.
+fn embedding_auto_select(ranked: &[(f32, String, String)]) -> Option<&str> {
+    if ranked.len() < 2 {
+        return None;
+    }
+    let (score1, ref name1, _) = ranked[0];
+    let (score2, _, _) = ranked[1];
+    let margin = score1 - score2;
+
+    if score1 > 0.85 && margin > 0.10 {
+        tracing::info!(
+            tool = name1.as_str(),
+            score = score1,
+            margin,
+            "Embedding auto-select — skipping LLM"
+        );
+        Some(name1.as_str())
+    } else {
+        None
+    }
+}
+
+/// Build an MCQ prompt for a batch of tools.
+///
+/// Returns a compact prompt (~300-500 tokens) asking the model to pick A-E or NO_TOOL.
+fn build_mcq_prompt(query: &str, batch: &[(f32, String, String)]) -> String {
+    let mut prompt = String::with_capacity(512);
+    prompt.push_str(
+        "Select the best tool for the user's request.\n\
+         Output exactly one of: A, B, C, D, E, NO_TOOL\n\n"
+    );
+
+    for (i, (_score, _name, card)) in batch.iter().enumerate() {
+        if i >= MCQ_LABELS.len() {
+            break;
+        }
+        prompt.push(MCQ_LABELS[i]);
+        prompt.push_str(". ");
+        prompt.push_str(card);
+        prompt.push('\n');
+    }
+
+    prompt.push_str("\nUser request: \"");
+    prompt.push_str(query);
+    prompt.push_str("\"\n\nAnswer:");
+    prompt
+}
+
+/// Parse an MCQ response to extract the selected label (A-E) or NO_TOOL.
+///
+/// Returns the index (0-4) of the selected tool, or None for NO_TOOL / invalid.
+fn parse_mcq_response(response: &str) -> Option<usize> {
+    let trimmed = response.trim();
+
+    // Check for NO_TOOL first
+    if trimmed.contains("NO_TOOL") || trimmed.contains("no_tool") || trimmed.contains("NONE") {
+        return None;
+    }
+
+    // Look for a single letter A-E (possibly with period or parenthesis)
+    for ch in trimmed.chars() {
+        match ch {
+            'A' | 'a' => return Some(0),
+            'B' | 'b' => return Some(1),
+            'C' | 'c' => return Some(2),
+            'D' | 'd' => return Some(3),
+            'E' | 'e' => return Some(4),
+            _ => continue,
+        }
+    }
+
+    None
+}
+
+/// Run batched MCQ tool selection for small models.
+///
+/// Sends batches of 5 tools to the LLM as an MCQ prompt. If the model picks a tool,
+/// returns its name. If NO_TOOL, advances to the next batch. Max `max_rounds` rounds.
+fn mcq_batch_select(
+    llm: &dyn LLMBackend,
+    query: &str,
+    ranked_tools: &[(f32, String, String)],
+    gen_config: &GenerationConfig,
+    batch_size: usize,
+    max_rounds: usize,
+) -> Option<String> {
+    for round in 0..max_rounds {
+        let start = round * batch_size;
+        if start >= ranked_tools.len() {
+            break;
+        }
+        let end = (start + batch_size).min(ranked_tools.len());
+        let batch = &ranked_tools[start..end];
+
+        if batch.is_empty() {
+            break;
+        }
+
+        let prompt = build_mcq_prompt(query, batch);
+
+        // Use a tight config for MCQ — we just need 1-2 tokens
+        let mcq_config = GenerationConfig {
+            max_tokens: 16, // Just need "A" or "NO_TOOL"
+            temperature: 0.1, // Low temperature for deterministic selection
+            max_context: gen_config.max_context,
+            ..Default::default()
+        };
+
+        let messages = vec![ChatMessage::user(&prompt)];
+        match llm.chat(&messages, &mcq_config, None) {
+            Ok(response) => {
+                let text = response.text.trim().to_string();
+                tracing::info!(
+                    round = round + 1,
+                    batch_start = start,
+                    batch_end = end,
+                    response = text.as_str(),
+                    "MCQ batch selection round"
+                );
+
+                if let Some(idx) = parse_mcq_response(&text) {
+                    if idx < batch.len() {
+                        let tool_name = batch[idx].1.clone();
+                        tracing::info!(
+                            tool = tool_name.as_str(),
+                            round = round + 1,
+                            label = %MCQ_LABELS[idx],
+                            "MCQ selected tool"
+                        );
+                        return Some(tool_name);
+                    }
+                }
+                // NO_TOOL or invalid — continue to next batch
+                tracing::debug!(round = round + 1, "MCQ round returned NO_TOOL, trying next batch");
+            }
+            Err(e) => {
+                tracing::warn!(round = round + 1, error = %e, "MCQ batch LLM call failed");
+                break;
+            }
+        }
+    }
+
+    tracing::info!(rounds = max_rounds, "MCQ batch selection exhausted — no tool selected");
+    None
+}
+
+/// Extract tool arguments from a user query for a specific tool.
+///
+/// For tools with no required parameters, returns empty object.
+/// For tools with parameters, uses a simple LLM prompt to extract values.
+fn extract_tool_arguments(
+    llm: &dyn LLMBackend,
+    query: &str,
+    tool_name: &str,
+    tool_def: &serde_json::Value,
+    gen_config: &GenerationConfig,
+) -> serde_json::Value {
+    let params = &tool_def["function"]["parameters"]["properties"];
+    if params.is_null() || params.as_object().map_or(true, |o| o.is_empty()) {
+        return serde_json::json!({});
+    }
+
+    // Build a compact parameter extraction prompt
+    let required = tool_def["function"]["parameters"]["required"]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
+        .unwrap_or_default();
+
+    let params_desc = if let Some(obj) = params.as_object() {
+        obj.iter()
+            .map(|(k, v)| {
+                let desc = v["description"].as_str().unwrap_or("");
+                let typ = v["type"].as_str().unwrap_or("string");
+                format!("  \"{}\": ({}) {}", k, typ, desc)
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    } else {
+        String::new()
+    };
+
+    let prompt = format!(
+        "Extract arguments for the tool \"{}\" from the user's request.\n\
+         Output ONLY a JSON object with the required fields.\n\n\
+         Parameters:\n{}\n\
+         Required: {}\n\n\
+         User request: \"{}\"\n\n\
+         JSON:",
+        tool_name, params_desc, required, query
+    );
+
+    let extract_config = GenerationConfig {
+        max_tokens: 256,
+        temperature: 0.1,
+        max_context: gen_config.max_context,
+        ..Default::default()
+    };
+
+    let messages = vec![ChatMessage::user(&prompt)];
+    match llm.chat(&messages, &extract_config, None) {
+        Ok(response) => {
+            // Try to parse JSON from response
+            let text = response.text.trim();
+            // Find JSON object in response
+            if let Some(start) = text.find('{') {
+                if let Some(end) = text.rfind('}') {
+                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text[start..=end]) {
+                        return v;
+                    }
+                }
+            }
+            tracing::warn!(
+                tool = tool_name,
+                response = text,
+                "Failed to parse tool arguments from LLM response"
+            );
+            serde_json::json!({})
+        }
+        Err(e) => {
+            tracing::warn!(tool = tool_name, error = %e, "Argument extraction LLM call failed");
+            serde_json::json!({})
+        }
+    }
 }
 
 /// The companion agent — memory + inference + instincts + bond + evolution in one struct.
@@ -330,6 +565,9 @@ pub struct CompanionService {
 
     // Whether to use native OpenAI tool calling format (API backend with --jinja).
     use_native_tools: bool,
+
+    // Model family for family-aware chat templates (tool format, tool results).
+    model_family: ModelFamily,
 
     // Background task manager for long-running processes.
     pub(crate) task_manager: std::sync::Mutex<crate::task_manager::TaskManager>,
@@ -459,6 +697,10 @@ impl CompanionService {
         memory_evolution::ensure_weaving_tables(db.conn());
         memory_evolution::backfill_tiers(db.conn(), &config.memory_evolution);
 
+        // Memory lifecycle + repair tables (contradiction detection, scoping, exclusions)
+        crate::memory_lifecycle::MemoryLifecycle::ensure_table(db.conn());
+        crate::memory_repair::MemoryRepair::ensure_table(db.conn());
+
         // Connector manager — OAuth flows for external services
         // Must be registered before native_core_tools computation.
         let connector_state = {
@@ -517,7 +759,7 @@ impl CompanionService {
                 "Tools prefix: text-injected for {} backend (dynamic selection active)",
                 llm.backend_name(),
             );
-            format_tools(&core_defs)
+            template_for_family(capability_profile.family).format_tools(&core_defs)
         } else {
             if config.tools.enabled {
                 tracing::info!(
@@ -604,6 +846,7 @@ impl CompanionService {
             native_core_tools,
             skill_extra_tools: Vec::new(),
             use_native_tools,
+            model_family: capability_profile.family,
             task_manager: std::sync::Mutex::new(task_mgr),
             recent_events: Vec::new(),
             incognito: false,
@@ -634,6 +877,11 @@ impl CompanionService {
     /// Attach a cognitive event bus for tool execution tracing.
     pub fn set_event_bus(&mut self, bus: yantrik_os::EventBus) {
         self.event_bus = Some(bus);
+    }
+
+    /// Get the family-aware chat template for this model.
+    fn template(&self) -> Box<dyn ChatTemplate> {
+        template_for_family(self.model_family)
     }
 
     /// Build and attach a ProviderRegistry from the config's `providers` list.
@@ -828,6 +1076,136 @@ impl CompanionService {
         self.registry.execute(&ctx, tool_name, args)
     }
 
+    /// Execute a recipe synchronously and return the final answer.
+    /// Used by the query planner when it decides a complex query needs a recipe.
+    fn execute_recipe_sync(
+        &mut self,
+        user_text: &str,
+        steps: &[crate::recipe::RecipeStep],
+        goal: &str,
+    ) -> Option<AgentResponse> {
+        use crate::recipe::RecipeStep;
+        use std::collections::HashMap;
+
+        let mut vars: HashMap<String, String> = HashMap::new();
+        let mut tool_calls_made: Vec<String> = Vec::new();
+        let mut notify_messages: Vec<String> = Vec::new();
+
+        for (i, step) in steps.iter().enumerate() {
+            match step {
+                RecipeStep::Tool { tool_name, args, store_as, .. } => {
+                    // Resolve {{var}} references in args
+                    let args_str = serde_json::to_string(args).unwrap_or_default();
+                    let resolved_args_str = resolve_template_vars(&args_str, &vars);
+                    let resolved_args: serde_json::Value =
+                        serde_json::from_str(&resolved_args_str).unwrap_or(args.clone());
+
+                    tracing::info!(
+                        step = i, tool = tool_name.as_str(),
+                        "QueryPlanner: executing tool step"
+                    );
+                    let result = self.execute_tool_direct(tool_name, &resolved_args);
+                    tool_calls_made.push(tool_name.clone());
+
+                    // Truncate large results to save token budget
+                    let truncated = if result.len() > 2000 {
+                        format!("{}...(truncated)", &result[..2000])
+                    } else {
+                        result
+                    };
+                    vars.insert(store_as.clone(), truncated);
+                }
+                RecipeStep::Think { prompt, store_as } => {
+                    // Resolve variables in prompt
+                    let resolved_prompt = resolve_template_vars(prompt, &vars);
+
+                    // Build a focused synthesis prompt
+                    let messages = vec![
+                        ChatMessage::system(&format!(
+                            "You are {}, a personal AI companion. Answer based ONLY on the \
+                             provided data. Never invent prices, ratings, or availability. \
+                             If data is missing, say so.",
+                            self.config.personality.name
+                        )),
+                        ChatMessage::user(&format!(
+                            "User asked: \"{}\"\n\n{}", user_text, resolved_prompt
+                        )),
+                    ];
+
+                    let gen_config = GenerationConfig {
+                        max_tokens: self.config.llm.max_tokens,
+                        temperature: self.config.llm.temperature,
+                        ..Default::default()
+                    };
+
+                    match self.llm.chat(&messages, &gen_config, None) {
+                        Ok(r) => {
+                            let text = extract_text_content(&r.text);
+                            let text = if text.is_empty() { r.text } else { text };
+                            let text = strip_think_tags(&text);
+                            vars.insert(store_as.clone(), text);
+                        }
+                        Err(e) => {
+                            tracing::warn!("QueryPlanner Think step failed: {e}");
+                            vars.insert(store_as.clone(), String::new());
+                        }
+                    }
+                }
+                RecipeStep::Notify { message } => {
+                    let resolved = resolve_template_vars(message, &vars);
+                    notify_messages.push(resolved);
+                }
+                _ => {} // JumpIf/WaitFor not used in planner recipes
+            }
+        }
+
+        // Get the final answer from the last Think step
+        let final_answer = vars.get("final_answer").cloned().unwrap_or_default();
+        if final_answer.is_empty() {
+            tracing::warn!("QueryPlanner: recipe produced no final answer, falling back");
+            return None;
+        }
+
+        // Update conversation history
+        self.conversation_history.push(ChatMessage::user(user_text));
+        self.conversation_history.push(ChatMessage::assistant(&final_answer));
+        self.compress_history_if_needed();
+        self.last_interaction_ts = now_ts();
+        self.session_turn_count += 1;
+
+        // Learning + bond
+        if !self.incognito {
+            let smart = if self.config.memory_evolution.smart_recall_enabled {
+                memory_evolution::smart_recall(&self.db, user_text, &self.config.memory_evolution)
+            } else {
+                let mems = self.db.recall_text(user_text, 5).unwrap_or_default();
+                memory_evolution::SmartRecallResult::from_primary(mems)
+            };
+            let memories = smart.all_unique();
+
+            let clean = sanitize::clean_response_for_learning(&final_answer, &tool_calls_made);
+            learning::extract_and_learn(
+                &self.db, &*self.llm, user_text, &clean, &self.config.memory_evolution,
+            );
+            memory_evolution::update_conversation_context(self.db.conn(), user_text, &memories);
+            if self.config.bond.enabled {
+                let (new_level, level_changed) = BondTracker::score_interaction(
+                    self.db.conn(), user_text, &final_answer, memories.len(),
+                );
+                self.bond_level = new_level;
+                self.bond_level_changed = level_changed;
+            }
+        }
+
+        Some(AgentResponse {
+            message: final_answer,
+            memories_recalled: 0,
+            urges_delivered: vec![],
+            tool_calls_made,
+            offline_mode: false,
+        })
+    }
+
     /// The 9-step message pipeline.
     pub fn handle_message(&mut self, user_text: &str) -> AgentResponse {
         // Step 0: SecurityGuard — check user input for injection
@@ -839,6 +1217,36 @@ impl CompanionService {
                 tool_calls_made: vec![],
                 offline_mode: false,
             };
+        }
+
+        // Step 0.5: Query Planner — ask LLM if this needs a recipe
+        // Only for medium+ tier models with tools enabled and non-trivial queries
+        if self.config.tools.enabled
+            && !self.llm.is_degraded()
+            && self.capability_profile.tier >= yantrik_ml::ModelTier::Medium
+            && user_text.split_whitespace().count() > 5
+        {
+            // Get a small set of tool names for the planner prompt
+            let planner_tools: Vec<&str> = select_tools_adaptive(
+                user_text, &self.db, &self.capability_profile,
+            ).into_iter().take(12).collect();
+
+            let decision = query_planner::plan_or_direct(
+                &*self.llm, user_text, &planner_tools,
+            );
+
+            if let PlanDecision::Recipe { ref goal, ref steps } = decision {
+                tracing::info!(
+                    goal = goal.as_str(),
+                    steps = steps.len(),
+                    "QueryPlanner: routing to recipe execution"
+                );
+                if let Some(response) = self.execute_recipe_sync(user_text, steps, goal) {
+                    return response;
+                }
+                // If recipe execution failed, fall through to normal pipeline
+                tracing::warn!("QueryPlanner: recipe failed, falling back to normal pipeline");
+            }
         }
 
         // Step 1: Check session timeout
@@ -921,6 +1329,20 @@ impl CompanionService {
             } else {
                 Evolution::get_shared_references(self.db.conn(), 3)
             };
+            // CK-5 cognitive awareness injection
+            let ck5_text = if self.config.ck5.enabled {
+                let snippet = crate::ck5_integration::build_context_snippet(&self.db);
+                if snippet.is_empty() {
+                    tracing::debug!("CK-5 context snippet: empty");
+                    None
+                } else {
+                    let formatted = snippet.format_for_prompt(300);
+                    tracing::debug!(ck5_prompt = %formatted, "CK-5 context injected into system prompt");
+                    Some(formatted)
+                }
+            } else {
+                None
+            };
             let signals = ContextSignals {
                 self_memories: &self_memories,
                 narrative: &narrative_text,
@@ -930,6 +1352,7 @@ impl CompanionService {
                 system_state: &self.system_context,
                 recall_confidence,
                 recall_hint: recall_hint.as_deref(),
+                ck5_awareness: ck5_text,
             };
             context::build_messages(
                 user_text, &self.config, &state, &memories, &urges,
@@ -963,6 +1386,151 @@ impl CompanionService {
             max_tools = active_profile.max_tools_per_prompt,
             "Tool selection gate"
         );
+
+        // ── Batched MCQ tool selection for Tiny/Small models ──────────────
+        // Instead of sending 20+ tools to the LLM, use embedding-ranked batches
+        // of 5 tools with MCQ classification. Much more reliable for small models.
+        let mcq_result: Option<(String, serde_json::Value, String)> = // (tool_name, args, tool_result)
+            if !degraded && needs_tools && active_profile.uses_batched_mcq_selection() {
+                let gen_config_mcq = GenerationConfig {
+                    max_tokens: self.config.llm.max_tokens.min(active_profile.max_generation_tokens),
+                    temperature: self.config.llm.temperature,
+                    max_context: Some(self.config.llm.max_context_tokens),
+                    ..Default::default()
+                };
+
+                let ranked = ToolCache::select_ranked_with_scores(
+                    self.db.conn(), &self.db, user_text, 15,
+                );
+
+                tracing::info!(
+                    ranked_count = ranked.len(),
+                    top_score = ranked.first().map(|r| r.0).unwrap_or(0.0),
+                    tier = %active_profile.tier,
+                    "MCQ batched tool selection — ranking tools"
+                );
+
+                // Tier 1: Auto-select if embeddings are highly confident
+                let selected_tool = if let Some(auto_name) = embedding_auto_select(&ranked) {
+                    Some(auto_name.to_string())
+                } else {
+                    // Tier 2: MCQ batch selection
+                    mcq_batch_select(&*self.llm, user_text, &ranked, &gen_config_mcq, 5, 3)
+                };
+
+                if let Some(tool_name) = selected_tool {
+                    // Get the full tool definition for argument extraction
+                    let tool_defs = self.registry.definitions_for(&[tool_name.as_str()], max_perm);
+                    let tool_def = tool_defs.first().cloned().unwrap_or(serde_json::json!({}));
+
+                    // Extract arguments (separate LLM call for tools with params)
+                    let args = extract_tool_arguments(
+                        &*self.llm, user_text, &tool_name, &tool_def, &gen_config_mcq,
+                    );
+
+                    // Execute the tool
+                    let ctx = ToolContext {
+                        db: &self.db,
+                        max_permission: max_perm,
+                        registry_metadata: None,
+                        task_manager: Some(&self.task_manager),
+                        incognito: self.incognito,
+                        agent_spawner: None,
+                    };
+                    let result = self.registry.execute(&ctx, &tool_name, &args);
+                    tracing::info!(
+                        tool = tool_name.as_str(),
+                        result_len = result.len(),
+                        "MCQ tool executed successfully"
+                    );
+                    Some((tool_name, args, result))
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
+        // If MCQ selected and executed a tool, generate final response with tool result
+        if let Some((ref tool_name, ref _args, ref tool_result)) = mcq_result {
+            let mut tool_calls_made = vec![tool_name.clone()];
+
+            // Build context messages + tool result for final LLM response
+            let mut final_messages = context_messages.clone();
+            final_messages.push(ChatMessage::assistant(&format!(
+                "I'll use the {} tool to help with that.", tool_name
+            )));
+            final_messages.push(ChatMessage::user(&format!(
+                "Tool {} returned:\n{}\n\nBased on this result, respond to the user's request: \"{}\"",
+                tool_name, tool_result, user_text
+            )));
+
+            let gen_config = GenerationConfig {
+                max_tokens: self.config.llm.max_tokens.min(active_profile.max_generation_tokens),
+                temperature: self.config.llm.temperature,
+                max_context: Some(self.config.llm.max_context_tokens),
+                ..Default::default()
+            };
+
+            let mut response_text = match self.llm.chat(&final_messages, &gen_config, None) {
+                Ok(r) => {
+                    let text = extract_text_content(&r.text);
+                    if text.is_empty() { r.text } else { text }
+                }
+                Err(_) => format!("Here's what I found: {}", &tool_result[..tool_result.len().min(500)]),
+            };
+
+            // Clean up response
+            response_text = extract_text_content(&response_text);
+            response_text = strip_think_tags(&response_text);
+            response_text = self.guard.check_response(&response_text, &self.db);
+
+            if response_text.is_empty() {
+                response_text = "I'm here. How can I help?".to_string();
+            }
+
+            // Update conversation history
+            self.conversation_history.push(ChatMessage::user(user_text));
+            self.conversation_history.push(ChatMessage::assistant(&response_text));
+            self.compress_history_if_needed();
+            self.last_interaction_ts = now_ts();
+            self.session_turn_count += 1;
+
+            // Learning + bond (skip in incognito)
+            if !self.incognito {
+                let clean_response = sanitize::clean_response_for_learning(
+                    &response_text, &tool_calls_made,
+                );
+                learning::extract_and_learn(
+                    &self.db, &*self.llm, user_text, &clean_response,
+                    &self.config.memory_evolution,
+                );
+                memory_evolution::update_conversation_context(self.db.conn(), user_text, &memories);
+                if self.config.bond.enabled {
+                    let (new_level, level_changed) = BondTracker::score_interaction(
+                        self.db.conn(), user_text, &response_text, memories.len(),
+                    );
+                    self.bond_level = new_level;
+                    self.bond_level_changed = level_changed;
+                }
+                // Record tool trace for learning
+                let trace_chain = vec![serde_json::json!({"tool": tool_name, "status": "success"})];
+                ToolTraces::record(
+                    self.db.conn(), &self.db, user_text,
+                    &trace_chain, "success",
+                );
+            }
+
+            return AgentResponse {
+                message: response_text,
+                memories_recalled: memories.len(),
+                urges_delivered: urge_ids,
+                tool_calls_made,
+                offline_mode: false,
+            };
+        }
+
+        // ── Standard tool selection path (Medium/Large models) ────────────
         let mut selected_tool_names: Vec<&str> = if degraded {
             FALLBACK_TOOLS.to_vec()
         } else if needs_tools {
@@ -990,7 +1558,7 @@ impl CompanionService {
         // For non-API backends: text-inject selected tools into system message
         if !self.use_native_tools && self.config.tools.enabled {
             let selected_defs = self.registry.definitions_for(&selected_tool_names, max_perm);
-            let tools_text = format_tools(&selected_defs);
+            let tools_text = self.template().format_tools(&selected_defs);
             if !tools_text.is_empty() {
                 if let Some(first) = context_messages.first() {
                     let combined = format!("{}\n\n{}", tools_text, first.content);
@@ -1054,6 +1622,7 @@ impl CompanionService {
                 max_tokens: self.config.llm.max_tokens.min(active_profile.max_generation_tokens),
                 temperature: self.config.llm.temperature,
                 top_p: Some(0.9),
+                max_context: Some(self.config.llm.max_context_tokens),
                 ..Default::default()
             }
         };
@@ -1242,6 +1811,7 @@ impl CompanionService {
                 msg_trace,
                 &self.policy_engine,
                 &self.trust_state,
+                self.model_family,
             );
 
             if !text_part.is_empty() {
@@ -1250,7 +1820,7 @@ impl CompanionService {
         }
 
         // If we exhausted rounds without a clean response, request summary
-        if response_text.is_empty() && !tool_calls_made.is_empty() {
+        if (response_text.is_empty() || response_text.contains("[Using")) && !tool_calls_made.is_empty() {
             tracing::info!(
                 tools = %tool_calls_made.join(", "),
                 "Non-streaming tool loop exhausted — requesting summary"
@@ -1429,6 +1999,29 @@ impl CompanionService {
             }
         }
 
+        // Step 10: CK-5 interaction recording — feed into schemas, narrative, replay
+        if self.config.ck5.enabled && !self.incognito {
+            let interaction = crate::ck5_integration::InteractionSummary {
+                summary: if response_text.len() > 200 {
+                    response_text[..200].to_string()
+                } else {
+                    response_text.clone()
+                },
+                tools_used: tool_calls_made.clone(),
+                domains: classify_interaction_domains(user_text),
+                sentiment: if self.bond_level_changed { 0.8 } else { 0.3 },
+                outcome_positive: !is_offline,
+                involved_nodes: Vec::new(),
+            };
+
+            crate::ck5_integration::run_ck5_cycle(
+                &self.db,
+                0.0, // not idle — active interaction
+                &self.config.ck5,
+                Some(&interaction),
+            );
+        }
+
         AgentResponse {
             message: response_text,
             memories_recalled: memories.len(),
@@ -1532,6 +2125,20 @@ impl CompanionService {
             } else {
                 Evolution::get_shared_references(self.db.conn(), 3)
             };
+            // CK-5 cognitive awareness injection
+            let ck5_text = if self.config.ck5.enabled {
+                let snippet = crate::ck5_integration::build_context_snippet(&self.db);
+                if snippet.is_empty() {
+                    tracing::debug!("CK-5 context snippet: empty");
+                    None
+                } else {
+                    let formatted = snippet.format_for_prompt(300);
+                    tracing::debug!(ck5_prompt = %formatted, "CK-5 context injected into system prompt");
+                    Some(formatted)
+                }
+            } else {
+                None
+            };
             let signals = ContextSignals {
                 self_memories: &self_memories,
                 narrative: &narrative_text,
@@ -1541,6 +2148,7 @@ impl CompanionService {
                 system_state: &self.system_context,
                 recall_confidence,
                 recall_hint: recall_hint.as_deref(),
+                ck5_awareness: ck5_text,
             };
             context::build_messages(
                 user_text, &self.config, &state, &memories, &urges,
@@ -1570,6 +2178,125 @@ impl CompanionService {
             tier = %active_profile.tier,
             "Tool selection gate (streaming)"
         );
+
+        // ── Batched MCQ tool selection for Tiny/Small models (streaming) ──
+        if !degraded && needs_tools && active_profile.uses_batched_mcq_selection() {
+            let gen_config_mcq = GenerationConfig {
+                max_tokens: self.config.llm.max_tokens.min(active_profile.max_generation_tokens),
+                temperature: self.config.llm.temperature,
+                max_context: Some(self.config.llm.max_context_tokens),
+                ..Default::default()
+            };
+
+            let ranked = ToolCache::select_ranked_with_scores(
+                self.db.conn(), &self.db, user_text, 15,
+            );
+
+            tracing::info!(
+                ranked_count = ranked.len(),
+                top_score = ranked.first().map(|r| r.0).unwrap_or(0.0),
+                tier = %active_profile.tier,
+                "MCQ batched tool selection (streaming) — ranking tools"
+            );
+
+            let selected_tool = if let Some(auto_name) = embedding_auto_select(&ranked) {
+                Some(auto_name.to_string())
+            } else {
+                mcq_batch_select(&*self.llm, user_text, &ranked, &gen_config_mcq, 5, 3)
+            };
+
+            if let Some(tool_name) = selected_tool {
+                let tool_defs = self.registry.definitions_for(&[tool_name.as_str()], max_perm);
+                let tool_def = tool_defs.first().cloned().unwrap_or(serde_json::json!({}));
+                let args = extract_tool_arguments(
+                    &*self.llm, user_text, &tool_name, &tool_def, &gen_config_mcq,
+                );
+
+                let ctx = ToolContext {
+                    db: &self.db,
+                    max_permission: max_perm,
+                    registry_metadata: None,
+                    task_manager: Some(&self.task_manager),
+                    incognito: self.incognito,
+                    agent_spawner: None,
+                };
+
+                let tool_result = self.registry.execute(&ctx, &tool_name, &args);
+                tracing::info!(tool = tool_name.as_str(), "MCQ tool executed (streaming)");
+
+                // Generate final response with streaming
+                let mut final_messages = context_messages.clone();
+                final_messages.push(ChatMessage::assistant(&format!(
+                    "I'll use the {} tool to help with that.", tool_name
+                )));
+                final_messages.push(ChatMessage::user(&format!(
+                    "Tool {} returned:\n{}\n\nBased on this result, respond to the user's request: \"{}\"",
+                    tool_name, tool_result, user_text
+                )));
+
+                let mut response_text = String::new();
+                match self.llm.chat_streaming(&final_messages, &gen_config_mcq, None, &mut |token| {
+                    on_token(token);
+                }) {
+                    Ok(r) => {
+                        response_text = extract_text_content(&r.text);
+                        if response_text.is_empty() { response_text = r.text; }
+                    }
+                    Err(_) => {
+                        let fallback = format!("Here's what I found: {}", &tool_result[..tool_result.len().min(500)]);
+                        on_token(&fallback);
+                        response_text = fallback;
+                    }
+                }
+
+                response_text = strip_think_tags(&response_text);
+                response_text = self.guard.check_response(&response_text, &self.db);
+                if response_text.is_empty() {
+                    response_text = "I'm here. How can I help?".to_string();
+                }
+
+                self.conversation_history.push(ChatMessage::user(user_text));
+                self.conversation_history.push(ChatMessage::assistant(&response_text));
+                self.compress_history_if_needed();
+                self.last_interaction_ts = now_ts();
+                self.session_turn_count += 1;
+
+                if !self.incognito {
+                    let tool_calls_made = vec![tool_name.clone()];
+                    let clean_response = sanitize::clean_response_for_learning(
+                        &response_text, &tool_calls_made,
+                    );
+                    learning::extract_and_learn(
+                        &self.db, &*self.llm, user_text, &clean_response,
+                        &self.config.memory_evolution,
+                    );
+                    memory_evolution::update_conversation_context(self.db.conn(), user_text, &memories);
+                    if self.config.bond.enabled {
+                        let (new_level, level_changed) = BondTracker::score_interaction(
+                            self.db.conn(), user_text, &response_text, memories.len(),
+                        );
+                        self.bond_level = new_level;
+                        self.bond_level_changed = level_changed;
+                    }
+                    let trace_chain = vec![serde_json::json!({"tool": &tool_name, "status": "success"})];
+                    ToolTraces::record(
+                        self.db.conn(), &self.db, user_text,
+                        &trace_chain, "success",
+                    );
+                }
+
+                return AgentResponse {
+                    message: response_text,
+                    memories_recalled: memories.len(),
+                    urges_delivered: urge_ids,
+                    tool_calls_made: vec![tool_name],
+                    offline_mode: false,
+                };
+            }
+            // MCQ didn't select a tool — fall through to standard path
+        }
+
+        // ── Standard tool selection path (Medium/Large models) ────────────
         let selected_tool_names: Vec<&str> = if degraded {
             FALLBACK_TOOLS.to_vec()
         } else if needs_tools {
@@ -1594,7 +2321,7 @@ impl CompanionService {
 
         if !self.use_native_tools && self.config.tools.enabled {
             let selected_defs = self.registry.definitions_for(&selected_tool_names, max_perm);
-            let tools_text = format_tools(&selected_defs);
+            let tools_text = self.template().format_tools(&selected_defs);
             if !tools_text.is_empty() {
                 if let Some(first) = context_messages.first() {
                     let combined = format!("{}\n\n{}", tools_text, first.content);
@@ -1651,6 +2378,7 @@ impl CompanionService {
                 max_tokens: self.config.llm.max_tokens.min(active_profile.max_generation_tokens),
                 temperature: self.config.llm.temperature,
                 top_p: Some(0.9),
+                max_context: Some(self.config.llm.max_context_tokens),
                 ..Default::default()
             }
         };
@@ -1803,6 +2531,7 @@ impl CompanionService {
                         msg_trace,
                         &self.policy_engine,
                         &self.trust_state,
+                        self.model_family,
                     );
 
                     // Remaining rounds: discovery rounds are budget-limited,
@@ -1904,6 +2633,7 @@ impl CompanionService {
                                     msg_trace,
                                     &self.policy_engine,
                                     &self.trust_state,
+                                    self.model_family,
                                 );
 
                                 if !round_text.is_empty() {
@@ -2114,6 +2844,29 @@ impl CompanionService {
             }
         }
 
+        // Step 10: CK-5 interaction recording — feed into schemas, narrative, replay
+        if self.config.ck5.enabled && !self.incognito {
+            let interaction = crate::ck5_integration::InteractionSummary {
+                summary: if response_text.len() > 200 {
+                    response_text[..200].to_string()
+                } else {
+                    response_text.clone()
+                },
+                tools_used: tool_calls_made.clone(),
+                domains: classify_interaction_domains(user_text),
+                sentiment: if self.bond_level_changed { 0.8 } else { 0.3 },
+                outcome_positive: !is_offline,
+                involved_nodes: Vec::new(),
+            };
+
+            crate::ck5_integration::run_ck5_cycle(
+                &self.db,
+                0.0,
+                &self.config.ck5,
+                Some(&interaction),
+            );
+        }
+
         AgentResponse {
             message: response_text,
             memories_recalled: memories.len(),
@@ -2191,6 +2944,7 @@ impl CompanionService {
             overdue_commitment_count: crate::world_model::WorldModel::overdue_commitments(self.db.conn()).len(),
             pending_attention_count: crate::world_model::attention_summary(self.db.conn())
                 .iter().map(|(_, c)| c).sum(),
+            model_tier: self.capability_profile.tier,
         }
     }
 
@@ -2663,6 +3417,7 @@ fn execute_tool_round(
     api_tool_calls: &[yantrik_ml::ApiToolCall],
     native_tools: &mut Vec<serde_json::Value>,
     incognito: bool,
+    model_family: ModelFamily,
 ) {
     let ctx = ToolContext {
         db,
@@ -2703,7 +3458,8 @@ fn execute_tool_round(
                     let call_id = api_tool_calls.get(idx)
                         .map(|tc| tc.id.as_str())
                         .unwrap_or("call_discover");
-                    messages.push(ChatMessage::tool(call_id, name, &override_result));
+                    let tmpl = template_for_family(model_family);
+                    messages.push(tmpl.format_tool_result(call_id, name, &override_result));
                 } else {
                     messages.push(ChatMessage::assistant(&format!(
                         "<tool_call>\n{{\"name\": \"discover_tools\", \"arguments\": {}}}\n</tool_call>",
@@ -2726,7 +3482,8 @@ fn execute_tool_round(
                         native_tools.extend(new_defs);
                     } else {
                         // For non-API: text-inject into system message
-                        let new_text = format_tools(&new_defs);
+                        let tmpl = template_for_family(model_family);
+                        let new_text = tmpl.format_tools(&new_defs);
                         if let Some(sys_msg) = messages.first_mut() {
                             sys_msg.content.push_str(&new_text);
                         }
@@ -2742,11 +3499,12 @@ fn execute_tool_round(
         let safe_result = sanitize::sanitize_tool_result_with_limit(&result, max_len);
 
         if use_native_tools {
-            // Native format: role="tool" with tool_call_id
+            // Family-aware tool result format (e.g. Nemotron uses role:user + <tool_response>)
             let call_id = api_tool_calls.get(idx)
                 .map(|tc| tc.id.as_str())
                 .unwrap_or_else(|| "call_0");
-            messages.push(ChatMessage::tool(call_id, name, &safe_result));
+            let tmpl = template_for_family(model_family);
+            messages.push(tmpl.format_tool_result(call_id, name, &safe_result));
         } else {
             // Legacy format: user message with data tag
             messages.push(ChatMessage::user(format!(
@@ -2785,6 +3543,7 @@ fn execute_tool_round_tracked(
     parent_trace: Option<yantrik_os::TraceId>,
     policy_engine: &crate::policy_engine::PolicyEngine,
     trust_state: &crate::trust_model::TrustState,
+    model_family: ModelFamily,
 ) {
     let ctx = ToolContext {
         db,
@@ -2806,7 +3565,8 @@ fn execute_tool_round_tracked(
                 let call_id = api_tool_calls.get(idx)
                     .map(|tc| tc.id.as_str())
                     .unwrap_or("call_stop");
-                messages.push(ChatMessage::tool(call_id, name, &stop_msg));
+                let tmpl = template_for_family(model_family);
+                messages.push(tmpl.format_tool_result(call_id, name, &stop_msg));
             } else {
                 messages.push(ChatMessage::user(&format!("[system] {}", stop_msg)));
             }
@@ -2849,7 +3609,8 @@ fn execute_tool_round_tracked(
             agent_loop.record_step(name, args, &result, false);
             if use_native_tools {
                 let call_id = api_tool_calls.get(idx).map(|tc| tc.id.as_str()).unwrap_or("call_0");
-                messages.push(ChatMessage::tool(call_id, name, &result));
+                let tmpl = template_for_family(model_family);
+                messages.push(tmpl.format_tool_result(call_id, name, &result));
             } else {
                 messages.push(ChatMessage::user(format!(
                     "<data:tool_result name=\"{}\">{}", name, result
@@ -2904,7 +3665,8 @@ fn execute_tool_round_tracked(
                             let call_id = api_tool_calls.get(idx)
                                 .map(|tc| tc.id.as_str())
                                 .unwrap_or("call_security");
-                            messages.push(ChatMessage::tool(call_id, name, &result));
+                            let tmpl = template_for_family(model_family);
+                            messages.push(tmpl.format_tool_result(call_id, name, &result));
                         } else {
                             messages.push(ChatMessage::user(&format!("[tool result: {}] {}", name, result)));
                         }
@@ -2987,7 +3749,8 @@ fn execute_tool_round_tracked(
                     let call_id = api_tool_calls.get(idx)
                         .map(|tc| tc.id.as_str())
                         .unwrap_or("call_discover");
-                    messages.push(ChatMessage::tool(call_id, name, &override_result));
+                    let tmpl = template_for_family(model_family);
+                    messages.push(tmpl.format_tool_result(call_id, name, &override_result));
                 } else {
                     messages.push(ChatMessage::assistant(&format!(
                         "<tool_call>\n{{\"name\": \"discover_tools\", \"arguments\": {}}}\n</tool_call>",
@@ -3008,7 +3771,8 @@ fn execute_tool_round_tracked(
                     if use_native_tools {
                         native_tools.extend(new_defs);
                     } else {
-                        let new_text = format_tools(&new_defs);
+                        let tmpl = template_for_family(model_family);
+                        let new_text = tmpl.format_tools(&new_defs);
                         if let Some(sys_msg) = messages.first_mut() {
                             sys_msg.content.push_str(&new_text);
                         }
@@ -3035,7 +3799,8 @@ fn execute_tool_round_tracked(
             let call_id = api_tool_calls.get(idx)
                 .map(|tc| tc.id.as_str())
                 .unwrap_or_else(|| "call_0");
-            messages.push(ChatMessage::tool(call_id, name, &safe_result));
+            let tmpl = template_for_family(model_family);
+            messages.push(tmpl.format_tool_result(call_id, name, &safe_result));
         } else {
             messages.push(ChatMessage::user(format!(
                 "<data:tool_result name=\"{}\">{}",
@@ -3441,6 +4206,40 @@ fn load_user_location(conn: &rusqlite::Connection) -> String {
 
 /// Strip Qwen3.5 `<think>...</think>` reasoning blocks from LLM output.
 /// These are internal reasoning tokens that shouldn't be shown to the user.
+/// Classify interaction domains from user text for CK-5 episode recording.
+fn classify_interaction_domains(text: &str) -> Vec<String> {
+    let lower = text.to_lowercase();
+    let mut domains = Vec::new();
+    if lower.contains("email") || lower.contains("inbox") {
+        domains.push("communication".to_string());
+    }
+    if lower.contains("code") || lower.contains("debug") || lower.contains("build") {
+        domains.push("development".to_string());
+    }
+    if lower.contains("schedule") || lower.contains("calendar") || lower.contains("meeting") {
+        domains.push("planning".to_string());
+    }
+    if lower.contains("remember") || lower.contains("recall") || lower.contains("memory") {
+        domains.push("memory".to_string());
+    }
+    if lower.contains("search") || lower.contains("find") || lower.contains("browse") {
+        domains.push("research".to_string());
+    }
+    if domains.is_empty() {
+        domains.push("general".to_string());
+    }
+    domains
+}
+
+/// Resolve {{var}} references in a template string using a string-valued variable map.
+fn resolve_template_vars(template: &str, vars: &std::collections::HashMap<String, String>) -> String {
+    let mut result = template.to_string();
+    for (key, value) in vars {
+        result = result.replace(&format!("{{{{{}}}}}", key), value);
+    }
+    result
+}
+
 fn strip_think_tags(text: &str) -> String {
     let mut result = String::new();
     let mut remaining = text;

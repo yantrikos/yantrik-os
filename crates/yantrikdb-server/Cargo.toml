@@ -5,15 +5,15 @@ edition = "2021"
 description = "HTTP server for Yantrik companion (replaces Python FastAPI service)"
 
 [dependencies]
-yantrik-companion = { path = "../yantrik-companion" }
-yantrik-ml = { git = "https://github.com/yantrikos/yantrik-ml.git" }
-yantrikdb-core = { git = "https://github.com/yantrikos/yantrikdb.git" }
-axum = "0.8"
-tokio = { version = "1", features = ["rt", "macros", "signal"] }
+yantrik-companion = { workspace = true }
+yantrik-ml = { workspace = true }
+yantrikdb-core = { workspace = true }
+axum = { workspace = true }
+tokio = { workspace = true }
 tower-http = { version = "0.6", features = ["cors"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-serde_yaml = "0.9"
-tracing = "0.1"
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+tracing = { workspace = true }
 futures = "0.3"
 tokio-stream = "0.1"

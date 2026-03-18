@@ -1,4 +1,5 @@
-//! Email tools — check, list, read, send, reply, search emails.
+//! Email tools — full email management: check, list, read, send, reply, reply-all,
+//! forward, search, mark read/unread, flag/unflag, delete, move, archive.
 //!
 //! IMAP/SMTP operations are blocking and run on the calling thread.
 //! The agent loop already runs tool executions on a worker, so this is fine.
@@ -19,7 +20,17 @@ pub fn register(reg: &mut ToolRegistry, accounts: Vec<EmailAccountConfig>) {
     reg.register(Box::new(EmailReadTool { accounts: accounts.clone() }));
     reg.register(Box::new(EmailSendTool { accounts: accounts.clone() }));
     reg.register(Box::new(EmailReplyTool { accounts: accounts.clone() }));
+    reg.register(Box::new(EmailReplyAllTool { accounts: accounts.clone() }));
+    reg.register(Box::new(EmailForwardTool { accounts: accounts.clone() }));
     reg.register(Box::new(EmailSearchTool { accounts: accounts.clone() }));
+    reg.register(Box::new(EmailMarkReadTool { accounts: accounts.clone() }));
+    reg.register(Box::new(EmailMarkUnreadTool { accounts: accounts.clone() }));
+    reg.register(Box::new(EmailFlagTool { accounts: accounts.clone() }));
+    reg.register(Box::new(EmailUnflagTool { accounts: accounts.clone() }));
+    reg.register(Box::new(EmailDeleteTool { accounts: accounts.clone() }));
+    reg.register(Box::new(EmailMoveTool { accounts: accounts.clone() }));
+    reg.register(Box::new(EmailArchiveTool { accounts: accounts.clone() }));
+    reg.register(Box::new(EmailListFoldersTool { accounts: accounts.clone() }));
 }
 
 // ── Helpers ──
@@ -584,5 +595,760 @@ impl Tool for EmailSearchTool {
             output.push('\n');
         }
         output
+    }
+}
+
+// ── Helper: connect IMAP for a cached email ──
+
+/// Look up a cached email by ID, find its account, refresh OAuth, and connect IMAP.
+/// Returns (cached_email, refreshed_account, imap_session).
+fn connect_for_email(
+    ctx: &ToolContext,
+    accounts: &[EmailAccountConfig],
+    email_id: i64,
+) -> Result<(db::CachedEmail, EmailAccountConfig, imap::Session<native_tls::TlsStream<std::net::TcpStream>>), String> {
+    db::init_tables(ctx.db.conn());
+    let cached = db::get_email(ctx.db.conn(), email_id)
+        .ok_or_else(|| format!("Email ID {} not found. Use email_check to sync.", email_id))?;
+
+    let mut account = accounts.iter()
+        .find(|a| db::ensure_account(ctx.db.conn(), &a.name, &a.email, &a.provider) == cached.account_id)
+        .cloned()
+        .ok_or_else(|| format!("Account for email ID {} not found in config.", email_id))?;
+
+    let config_path = std::env::var("YANTRIK_CONFIG").ok()
+        .or_else(|| {
+            let path = "/opt/yantrik/config.yaml";
+            if std::path::Path::new(path).exists() { Some(path.to_string()) } else { None }
+        });
+    email::ensure_fresh_token(&mut account, config_path.as_deref())
+        .map_err(|e| format!("Token refresh failed: {}", e))?;
+
+    let session = imap_client::connect(&account)
+        .map_err(|e| format!("IMAP connection failed: {}", e))?;
+
+    Ok((cached, account, session))
+}
+
+// ── email_mark_read ──
+
+struct EmailMarkReadTool {
+    accounts: Arc<Vec<EmailAccountConfig>>,
+}
+
+impl Tool for EmailMarkReadTool {
+    fn name(&self) -> &'static str { "email_mark_read" }
+    fn permission(&self) -> PermissionLevel { PermissionLevel::Standard }
+    fn category(&self) -> &'static str { "email" }
+
+    fn definition(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "function",
+            "function": {
+                "name": "email_mark_read",
+                "description": "Mark emails as read. Can mark a single email by ID, or mark ALL unread emails in a folder as read.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "id": {
+                            "type": "integer",
+                            "description": "Email ID to mark as read. Omit to mark ALL unread in the folder."
+                        },
+                        "all": {
+                            "type": "boolean",
+                            "description": "Set to true to mark ALL unread emails in the folder as read."
+                        },
+                        "account": {
+                            "type": "string",
+                            "description": "Account name or email. Required when using 'all'."
+                        },
+                        "folder": {
+                            "type": "string",
+                            "description": "Folder to mark all as read in. Default: INBOX."
+                        }
+                    }
+                }
+            }
+        })
+    }
+
+    fn execute(&self, ctx: &ToolContext, args: &serde_json::Value) -> String {
+        let mark_all = args.get("all").and_then(|v| v.as_bool()).unwrap_or(false);
+
+        if mark_all {
+            // Mark ALL unread in folder
+            let account_name = args.get("account").and_then(|v| v.as_str());
+            let folder = args.get("folder").and_then(|v| v.as_str()).unwrap_or("INBOX");
+
+            let (_, account) = match get_fresh_account(&self.accounts, account_name) {
+                Ok(a) => a,
+                Err(e) => return e,
+            };
+
+            db::init_tables(ctx.db.conn());
+            let account_id = db::ensure_account(ctx.db.conn(), &account.name, &account.email, &account.provider);
+            let uids = db::get_unread_uids(ctx.db.conn(), account_id, folder);
+
+            if uids.is_empty() {
+                return format!("No unread emails in {} for {}.", folder, account.name);
+            }
+
+            // Mark on IMAP server
+            let mut session = match imap_client::connect(&account) {
+                Ok(s) => s,
+                Err(e) => return format!("IMAP connection failed: {}", e),
+            };
+            match imap_client::mark_read_bulk(&mut session, folder, &uids) {
+                Ok(count) => {
+                    let _ = session.logout();
+                    // Update local cache
+                    db::mark_all_read(ctx.db.conn(), account_id, folder);
+                    format!("Marked {} emails as read in {} for {}.", count, folder, account.name)
+                }
+                Err(e) => {
+                    let _ = session.logout();
+                    format!("Failed to mark as read: {}", e)
+                }
+            }
+        } else {
+            // Mark single email
+            let email_id = match args.get("id").and_then(|v| v.as_i64()) {
+                Some(id) => id,
+                None => return "Error: provide 'id' for a single email, or 'all: true' for bulk.".to_string(),
+            };
+
+            let (cached, _account, mut session) = match connect_for_email(ctx, &self.accounts, email_id) {
+                Ok(r) => r,
+                Err(e) => return e,
+            };
+
+            match imap_client::mark_read(&mut session, &cached.folder, cached.uid) {
+                Ok(()) => {
+                    let _ = session.logout();
+                    db::mark_read(ctx.db.conn(), email_id);
+                    format!("Marked email [{}] \"{}\" as read.", email_id, cached.subject)
+                }
+                Err(e) => {
+                    let _ = session.logout();
+                    format!("Failed: {}", e)
+                }
+            }
+        }
+    }
+}
+
+// ── email_mark_unread ──
+
+struct EmailMarkUnreadTool {
+    accounts: Arc<Vec<EmailAccountConfig>>,
+}
+
+impl Tool for EmailMarkUnreadTool {
+    fn name(&self) -> &'static str { "email_mark_unread" }
+    fn permission(&self) -> PermissionLevel { PermissionLevel::Standard }
+    fn category(&self) -> &'static str { "email" }
+
+    fn definition(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "function",
+            "function": {
+                "name": "email_mark_unread",
+                "description": "Mark an email as unread by its ID.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "id": {
+                            "type": "integer",
+                            "description": "Email ID to mark as unread."
+                        }
+                    },
+                    "required": ["id"]
+                }
+            }
+        })
+    }
+
+    fn execute(&self, ctx: &ToolContext, args: &serde_json::Value) -> String {
+        let email_id = match args.get("id").and_then(|v| v.as_i64()) {
+            Some(id) => id,
+            None => return "Error: 'id' is required.".to_string(),
+        };
+
+        let (cached, _account, mut session) = match connect_for_email(ctx, &self.accounts, email_id) {
+            Ok(r) => r,
+            Err(e) => return e,
+        };
+
+        match imap_client::mark_unread(&mut session, &cached.folder, cached.uid) {
+            Ok(()) => {
+                let _ = session.logout();
+                db::mark_unread(ctx.db.conn(), email_id);
+                format!("Marked email [{}] \"{}\" as unread.", email_id, cached.subject)
+            }
+            Err(e) => {
+                let _ = session.logout();
+                format!("Failed: {}", e)
+            }
+        }
+    }
+}
+
+// ── email_flag ──
+
+struct EmailFlagTool {
+    accounts: Arc<Vec<EmailAccountConfig>>,
+}
+
+impl Tool for EmailFlagTool {
+    fn name(&self) -> &'static str { "email_flag" }
+    fn permission(&self) -> PermissionLevel { PermissionLevel::Standard }
+    fn category(&self) -> &'static str { "email" }
+
+    fn definition(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "function",
+            "function": {
+                "name": "email_flag",
+                "description": "Star/flag an email by its ID. Flagged emails appear with a star in the inbox.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "id": {
+                            "type": "integer",
+                            "description": "Email ID to flag/star."
+                        }
+                    },
+                    "required": ["id"]
+                }
+            }
+        })
+    }
+
+    fn execute(&self, ctx: &ToolContext, args: &serde_json::Value) -> String {
+        let email_id = match args.get("id").and_then(|v| v.as_i64()) {
+            Some(id) => id,
+            None => return "Error: 'id' is required.".to_string(),
+        };
+
+        let (cached, _account, mut session) = match connect_for_email(ctx, &self.accounts, email_id) {
+            Ok(r) => r,
+            Err(e) => return e,
+        };
+
+        match imap_client::mark_flagged(&mut session, &cached.folder, cached.uid) {
+            Ok(()) => {
+                let _ = session.logout();
+                db::set_flagged(ctx.db.conn(), email_id, true);
+                format!("Flagged email [{}] \"{}\".", email_id, cached.subject)
+            }
+            Err(e) => {
+                let _ = session.logout();
+                format!("Failed: {}", e)
+            }
+        }
+    }
+}
+
+// ── email_unflag ──
+
+struct EmailUnflagTool {
+    accounts: Arc<Vec<EmailAccountConfig>>,
+}
+
+impl Tool for EmailUnflagTool {
+    fn name(&self) -> &'static str { "email_unflag" }
+    fn permission(&self) -> PermissionLevel { PermissionLevel::Standard }
+    fn category(&self) -> &'static str { "email" }
+
+    fn definition(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "function",
+            "function": {
+                "name": "email_unflag",
+                "description": "Remove star/flag from an email by its ID.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "id": {
+                            "type": "integer",
+                            "description": "Email ID to unflag."
+                        }
+                    },
+                    "required": ["id"]
+                }
+            }
+        })
+    }
+
+    fn execute(&self, ctx: &ToolContext, args: &serde_json::Value) -> String {
+        let email_id = match args.get("id").and_then(|v| v.as_i64()) {
+            Some(id) => id,
+            None => return "Error: 'id' is required.".to_string(),
+        };
+
+        let (cached, _account, mut session) = match connect_for_email(ctx, &self.accounts, email_id) {
+            Ok(r) => r,
+            Err(e) => return e,
+        };
+
+        match imap_client::unflag(&mut session, &cached.folder, cached.uid) {
+            Ok(()) => {
+                let _ = session.logout();
+                db::set_flagged(ctx.db.conn(), email_id, false);
+                format!("Unflagged email [{}] \"{}\".", email_id, cached.subject)
+            }
+            Err(e) => {
+                let _ = session.logout();
+                format!("Failed: {}", e)
+            }
+        }
+    }
+}
+
+// ── email_delete ──
+
+struct EmailDeleteTool {
+    accounts: Arc<Vec<EmailAccountConfig>>,
+}
+
+impl Tool for EmailDeleteTool {
+    fn name(&self) -> &'static str { "email_delete" }
+    fn permission(&self) -> PermissionLevel { PermissionLevel::Sensitive }
+    fn category(&self) -> &'static str { "email" }
+
+    fn definition(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "function",
+            "function": {
+                "name": "email_delete",
+                "description": "Delete an email by its ID. This permanently removes the email from the server (marks as deleted and expunges).",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "id": {
+                            "type": "integer",
+                            "description": "Email ID to delete."
+                        }
+                    },
+                    "required": ["id"]
+                }
+            }
+        })
+    }
+
+    fn execute(&self, ctx: &ToolContext, args: &serde_json::Value) -> String {
+        let email_id = match args.get("id").and_then(|v| v.as_i64()) {
+            Some(id) => id,
+            None => return "Error: 'id' is required.".to_string(),
+        };
+
+        let (cached, _account, mut session) = match connect_for_email(ctx, &self.accounts, email_id) {
+            Ok(r) => r,
+            Err(e) => return e,
+        };
+
+        match imap_client::delete_message(&mut session, &cached.folder, cached.uid) {
+            Ok(()) => {
+                let _ = session.logout();
+                db::delete_email(ctx.db.conn(), email_id);
+                format!("Deleted email [{}] \"{}\" from {}.", email_id, cached.subject, cached.folder)
+            }
+            Err(e) => {
+                let _ = session.logout();
+                format!("Failed: {}", e)
+            }
+        }
+    }
+}
+
+// ── email_reply_all ──
+
+struct EmailReplyAllTool {
+    accounts: Arc<Vec<EmailAccountConfig>>,
+}
+
+impl Tool for EmailReplyAllTool {
+    fn name(&self) -> &'static str { "email_reply_all" }
+    fn permission(&self) -> PermissionLevel { PermissionLevel::Standard }
+    fn category(&self) -> &'static str { "email" }
+
+    fn definition(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "function",
+            "function": {
+                "name": "email_reply_all",
+                "description": "Reply to all recipients of an email by its cache ID. Sends to the original sender AND all To/CC recipients.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "id": {
+                            "type": "integer",
+                            "description": "Email ID to reply to (from email_list output)."
+                        },
+                        "body": {
+                            "type": "string",
+                            "description": "Reply body text (plain text)."
+                        }
+                    },
+                    "required": ["id", "body"]
+                }
+            }
+        })
+    }
+
+    fn execute(&self, ctx: &ToolContext, args: &serde_json::Value) -> String {
+        let email_id = match args.get("id").and_then(|v| v.as_i64()) {
+            Some(id) => id,
+            None => return "Error: 'id' is required.".to_string(),
+        };
+        let body = match args.get("body").and_then(|v| v.as_str()) {
+            Some(b) if !b.is_empty() => b,
+            _ => return "Error: 'body' is required.".to_string(),
+        };
+
+        db::init_tables(ctx.db.conn());
+        let cached = match db::get_email(ctx.db.conn(), email_id) {
+            Some(e) => e,
+            None => return format!("Email ID {} not found.", email_id),
+        };
+
+        let mut account = match self.accounts.iter().find(|a| {
+            db::ensure_account(ctx.db.conn(), &a.name, &a.email, &a.provider) == cached.account_id
+        }) {
+            Some(a) => a.clone(),
+            None => return "Account not found for this email.".to_string(),
+        };
+
+        let config_path = std::env::var("YANTRIK_CONFIG").ok()
+            .or_else(|| {
+                let path = "/opt/yantrik/config.yaml";
+                if std::path::Path::new(path).exists() { Some(path.to_string()) } else { None }
+            });
+        if let Err(e) = email::ensure_fresh_token(&mut account, config_path.as_deref()) {
+            return format!("Token refresh failed: {}", e);
+        }
+
+        let subject = if cached.subject.to_lowercase().starts_with("re:") {
+            cached.subject.clone()
+        } else {
+            format!("Re: {}", cached.subject)
+        };
+        let reply_to = if cached.message_id.is_empty() { None } else { Some(cached.message_id.as_str()) };
+
+        // Collect all recipients: original sender + all To addresses (excluding ourselves)
+        let mut recipients: Vec<String> = vec![cached.from_addr.clone()];
+        if !cached.to_addr.is_empty() {
+            for addr in cached.to_addr.split(',').map(|s| s.trim().to_string()) {
+                if !addr.is_empty() && addr.to_lowercase() != account.email.to_lowercase() && !recipients.contains(&addr) {
+                    recipients.push(addr);
+                }
+            }
+        }
+
+        let mut sent_to = Vec::new();
+        let mut errors = Vec::new();
+        for recipient in &recipients {
+            match smtp_client::send_email(&account, recipient, &subject, body, reply_to) {
+                Ok(()) => sent_to.push(recipient.as_str()),
+                Err(e) => errors.push(format!("{}: {}", recipient, e)),
+            }
+        }
+
+        if errors.is_empty() {
+            format!("Reply-all sent to {} — subject: \"{}\"", sent_to.join(", "), subject)
+        } else {
+            format!("Sent to: {}. Errors: {}", sent_to.join(", "), errors.join("; "))
+        }
+    }
+}
+
+// ── email_forward ──
+
+struct EmailForwardTool {
+    accounts: Arc<Vec<EmailAccountConfig>>,
+}
+
+impl Tool for EmailForwardTool {
+    fn name(&self) -> &'static str { "email_forward" }
+    fn permission(&self) -> PermissionLevel { PermissionLevel::Standard }
+    fn category(&self) -> &'static str { "email" }
+
+    fn definition(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "function",
+            "function": {
+                "name": "email_forward",
+                "description": "Forward an email to another recipient. Includes the original email body with a 'Fwd:' subject prefix.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "id": {
+                            "type": "integer",
+                            "description": "Email ID to forward (from email_list output)."
+                        },
+                        "to": {
+                            "type": "string",
+                            "description": "Recipient email address to forward to."
+                        },
+                        "comment": {
+                            "type": "string",
+                            "description": "Optional message to prepend before the forwarded content."
+                        }
+                    },
+                    "required": ["id", "to"]
+                }
+            }
+        })
+    }
+
+    fn execute(&self, ctx: &ToolContext, args: &serde_json::Value) -> String {
+        let email_id = match args.get("id").and_then(|v| v.as_i64()) {
+            Some(id) => id,
+            None => return "Error: 'id' is required.".to_string(),
+        };
+        let to = match args.get("to").and_then(|v| v.as_str()) {
+            Some(t) if !t.is_empty() => t,
+            _ => return "Error: 'to' (recipient) is required.".to_string(),
+        };
+        let comment = args.get("comment").and_then(|v| v.as_str()).unwrap_or("");
+
+        db::init_tables(ctx.db.conn());
+        let cached = match db::get_email(ctx.db.conn(), email_id) {
+            Some(e) => e,
+            None => return format!("Email ID {} not found.", email_id),
+        };
+
+        let mut account = match self.accounts.iter().find(|a| {
+            db::ensure_account(ctx.db.conn(), &a.name, &a.email, &a.provider) == cached.account_id
+        }) {
+            Some(a) => a.clone(),
+            None => return "Account not found for this email.".to_string(),
+        };
+
+        let config_path = std::env::var("YANTRIK_CONFIG").ok()
+            .or_else(|| {
+                let path = "/opt/yantrik/config.yaml";
+                if std::path::Path::new(path).exists() { Some(path.to_string()) } else { None }
+            });
+        if let Err(e) = email::ensure_fresh_token(&mut account, config_path.as_deref()) {
+            return format!("Token refresh failed: {}", e);
+        }
+
+        let subject = if cached.subject.to_lowercase().starts_with("fwd:") {
+            cached.subject.clone()
+        } else {
+            format!("Fwd: {}", cached.subject)
+        };
+
+        // Build forwarded body
+        let original_body = if cached.body_full.is_empty() {
+            cached.body_preview.clone()
+        } else {
+            cached.body_full.clone()
+        };
+
+        let from_display = if cached.from_name.is_empty() {
+            cached.from_addr.clone()
+        } else {
+            format!("{} <{}>", cached.from_name, cached.from_addr)
+        };
+
+        let body = if comment.is_empty() {
+            format!(
+                "\n---------- Forwarded message ----------\nFrom: {}\nDate: {}\nSubject: {}\n\n{}",
+                from_display, format_timestamp(cached.date_ts), cached.subject, original_body
+            )
+        } else {
+            format!(
+                "{}\n\n---------- Forwarded message ----------\nFrom: {}\nDate: {}\nSubject: {}\n\n{}",
+                comment, from_display, format_timestamp(cached.date_ts), cached.subject, original_body
+            )
+        };
+
+        match smtp_client::send_email(&account, to, &subject, &body, None) {
+            Ok(()) => format!("Forwarded email [{}] \"{}\" to {}.", email_id, cached.subject, to),
+            Err(e) => format!("Forward failed: {}", e),
+        }
+    }
+}
+
+// ── email_move ──
+
+struct EmailMoveTool {
+    accounts: Arc<Vec<EmailAccountConfig>>,
+}
+
+impl Tool for EmailMoveTool {
+    fn name(&self) -> &'static str { "email_move" }
+    fn permission(&self) -> PermissionLevel { PermissionLevel::Standard }
+    fn category(&self) -> &'static str { "email" }
+
+    fn definition(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "function",
+            "function": {
+                "name": "email_move",
+                "description": "Move an email to a different folder. Use email_list_folders to see available folders.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "id": {
+                            "type": "integer",
+                            "description": "Email ID to move."
+                        },
+                        "folder": {
+                            "type": "string",
+                            "description": "Destination folder name (e.g., 'Trash', '[Gmail]/Spam', 'Archive')."
+                        }
+                    },
+                    "required": ["id", "folder"]
+                }
+            }
+        })
+    }
+
+    fn execute(&self, ctx: &ToolContext, args: &serde_json::Value) -> String {
+        let email_id = match args.get("id").and_then(|v| v.as_i64()) {
+            Some(id) => id,
+            None => return "Error: 'id' is required.".to_string(),
+        };
+        let dest_folder = match args.get("folder").and_then(|v| v.as_str()) {
+            Some(f) if !f.is_empty() => f,
+            _ => return "Error: 'folder' (destination) is required.".to_string(),
+        };
+
+        let (cached, _account, mut session) = match connect_for_email(ctx, &self.accounts, email_id) {
+            Ok(r) => r,
+            Err(e) => return e,
+        };
+
+        match imap_client::move_message(&mut session, &cached.folder, cached.uid, dest_folder) {
+            Ok(()) => {
+                let _ = session.logout();
+                db::delete_email(ctx.db.conn(), email_id);
+                format!("Moved email [{}] \"{}\" from {} to {}.", email_id, cached.subject, cached.folder, dest_folder)
+            }
+            Err(e) => {
+                let _ = session.logout();
+                format!("Move failed: {}", e)
+            }
+        }
+    }
+}
+
+// ── email_archive ──
+
+struct EmailArchiveTool {
+    accounts: Arc<Vec<EmailAccountConfig>>,
+}
+
+impl Tool for EmailArchiveTool {
+    fn name(&self) -> &'static str { "email_archive" }
+    fn permission(&self) -> PermissionLevel { PermissionLevel::Standard }
+    fn category(&self) -> &'static str { "email" }
+
+    fn definition(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "function",
+            "function": {
+                "name": "email_archive",
+                "description": "Archive an email — moves it out of the inbox to the archive folder. For Gmail this is '[Gmail]/All Mail'.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "id": {
+                            "type": "integer",
+                            "description": "Email ID to archive."
+                        }
+                    },
+                    "required": ["id"]
+                }
+            }
+        })
+    }
+
+    fn execute(&self, ctx: &ToolContext, args: &serde_json::Value) -> String {
+        let email_id = match args.get("id").and_then(|v| v.as_i64()) {
+            Some(id) => id,
+            None => return "Error: 'id' is required.".to_string(),
+        };
+
+        let (cached, account, mut session) = match connect_for_email(ctx, &self.accounts, email_id) {
+            Ok(r) => r,
+            Err(e) => return e,
+        };
+
+        // Determine archive folder based on provider
+        let archive_folder = match account.provider.to_lowercase().as_str() {
+            "gmail" => "[Gmail]/All Mail",
+            "outlook" => "Archive",
+            _ => "Archive",
+        };
+
+        match imap_client::move_message(&mut session, &cached.folder, cached.uid, archive_folder) {
+            Ok(()) => {
+                let _ = session.logout();
+                db::delete_email(ctx.db.conn(), email_id);
+                format!("Archived email [{}] \"{}\" → {}.", email_id, cached.subject, archive_folder)
+            }
+            Err(e) => {
+                let _ = session.logout();
+                format!("Archive failed: {}", e)
+            }
+        }
+    }
+}
+
+// ── email_list_folders ──
+
+struct EmailListFoldersTool {
+    accounts: Arc<Vec<EmailAccountConfig>>,
+}
+
+impl Tool for EmailListFoldersTool {
+    fn name(&self) -> &'static str { "email_list_folders" }
+    fn permission(&self) -> PermissionLevel { PermissionLevel::Safe }
+    fn category(&self) -> &'static str { "email" }
+
+    fn definition(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "function",
+            "function": {
+                "name": "email_list_folders",
+                "description": "List all available email folders/labels for an account. Useful to see folder names before moving emails.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "account": {
+                            "type": "string",
+                            "description": "Account name or email. Omit for default."
+                        }
+                    }
+                }
+            }
+        })
+    }
+
+    fn execute(&self, _ctx: &ToolContext, args: &serde_json::Value) -> String {
+        let account_name = args.get("account").and_then(|v| v.as_str());
+
+        let (_, account) = match get_fresh_account(&self.accounts, account_name) {
+            Ok(a) => a,
+            Err(e) => return e,
+        };
+
+        let mut session = match imap_client::connect(&account) {
+            Ok(s) => s,
+            Err(e) => return format!("IMAP connection failed: {}", e),
+        };
+
+        let folders = imap_client::list_folders(&mut session);
+        let _ = session.logout();
+
+        let mut result = format!("Folders for {} ({}):\n\n", account.name, account.email);
+        for folder in &folders {
+            result.push_str(&format!("  - {}\n", folder));
+        }
+        result
     }
 }

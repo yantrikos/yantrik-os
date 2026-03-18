@@ -48,12 +48,14 @@ pub mod synthesis_gate;
 pub mod security;
 pub mod telegram;
 pub mod task_manager;
+pub mod query_planner;
 pub mod recipe;
 pub mod task_queue;
 pub mod trust_model;
 pub mod tool_cache;
 pub mod tool_metrics;
 pub mod tool_traces;
+pub mod types;
 pub mod email;
 pub mod calendar;
 pub mod life_assistant;
@@ -61,7 +63,6 @@ pub mod cortex;
 pub mod connectors;
 pub mod skills;
 pub mod tools;
-pub mod types;
 pub mod urge_selector;
 pub mod urges;
 pub mod user_model;
@@ -79,11 +80,16 @@ pub mod world_graph;
 pub mod graph_bridge;
 pub mod nudge_templates;
 pub mod active_context;
+pub mod ck5_integration;
 pub mod hallucination_firewall;
 pub mod stewardship;
 pub mod structured_output;
 
+// Top-level convenience re-exports (matching previous API)
 pub use companion::CompanionService;
 pub use config::CompanionConfig;
-pub use types::{AgentResponse, CompanionState, InstinctCategory, ProactiveMessage, TimeSensitivity, Urge, UrgeSpec};
+pub use types::{
+    AgentResponse, CompanionState, InstinctCategory, ProactiveMessage,
+    TimeSensitivity, Urge, UrgeSpec,
+};
 pub use voice::{VoiceProfile, VoiceTurnResult};

@@ -53,9 +53,14 @@ api-llm = ["dep:ureq", "dep:keyring", "dep:aes-gcm", "dep:dirs-next", "dep:hostn
 # Claude Code CLI backend (no extra deps — uses std::process::Command)
 claude-cli = []
 
-# llama.cpp backend
+# llama.cpp backend (CPU-only base)
 llamacpp = ["dep:llama-cpp-2"]
-vulkan = ["llama-cpp-2/vulkan"]
+
+# llama.cpp GPU acceleration variants
+llamacpp-cuda = ["llamacpp", "llama-cpp-2/cuda"]          # NVIDIA (GeForce, Quadro, Tesla)
+llamacpp-rocm = ["llamacpp", "llama-cpp-2/rocm"]          # AMD (Radeon, Instinct)
+llamacpp-vulkan = ["llamacpp", "llama-cpp-2/vulkan"]       # Universal GPU (Intel Arc, AMD, NVIDIA)
+llamacpp-metal = ["llamacpp", "llama-cpp-2/metal"]         # Apple Silicon (M1/M2/M3/M4)
 
 [dev-dependencies]
 tempfile = "3"

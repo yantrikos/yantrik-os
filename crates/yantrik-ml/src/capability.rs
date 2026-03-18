@@ -46,7 +46,8 @@ impl ModelTier {
             }
         } else {
             // Cloud models or unrecognizable → treat as Large
-            if model.contains("claude") || model.contains("gpt-") || model.contains("gemini") {
+            if model.contains("claude") || model.contains("gpt-") || model.contains("gemini")
+                || model.contains("MiniMax") || model.contains("minimax") {
                 ModelTier::Large
             } else {
                 // Safe default for unknown local models
@@ -107,6 +108,90 @@ impl std::fmt::Display for ModelTier {
     }
 }
 
+// ── Model Family ─────────────────────────────────────────────────────
+
+/// Model family determines the chat template and tool calling format.
+///
+/// Different model families use different formats for tool definitions,
+/// tool calls, and tool results. This enum drives the `ChatTemplate` trait
+/// selection so the right format is applied per model.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum ModelFamily {
+    /// Qwen 2.5/3.5 and Yantrik fine-tuned models.
+    /// Tool calls: `<tool_call>{"name":..., "arguments":...}</tool_call>`
+    /// Tool results: `role: tool`
+    Qwen,
+    /// NVIDIA Nemotron-3-Nano and variants.
+    /// Tool calls: `<tool_call><function=name><parameter=p>v</parameter></function></tool_call>`
+    /// Tool results: `role: user` with `<tool_response>` wrapper
+    Nemotron,
+    /// Llama 3.x and CodeLlama.
+    /// Uses OpenAI-compatible function calling format.
+    Llama,
+    /// Google Gemma 2/3.
+    /// Text-based tool calling.
+    Gemma,
+    /// Microsoft Phi-3/4.
+    /// OpenAI-compatible function calling.
+    Phi,
+    /// OpenAI cloud models (GPT-4, o1, o3).
+    /// Native API tool calling — no template needed.
+    OpenAI,
+    /// Anthropic Claude models.
+    /// Native API tool_use/tool_result format.
+    Anthropic,
+    /// Unknown model — falls back to Qwen ChatML as the most common open format.
+    Generic,
+}
+
+impl ModelFamily {
+    /// Detect model family from a model name string.
+    pub fn from_model_name(model: &str) -> Self {
+        let lower = model.to_lowercase();
+
+        if lower.contains("qwen") || lower.starts_with("yantrik") {
+            ModelFamily::Qwen
+        } else if lower.contains("nemotron") {
+            ModelFamily::Nemotron
+        } else if lower.contains("llama") || lower.contains("codellama") {
+            ModelFamily::Llama
+        } else if lower.contains("gemma") {
+            ModelFamily::Gemma
+        } else if lower.contains("phi") {
+            ModelFamily::Phi
+        } else if lower.contains("gpt-") || lower.contains("o1") || lower.contains("o3") {
+            ModelFamily::OpenAI
+        } else if lower.contains("claude") {
+            ModelFamily::Anthropic
+        } else {
+            ModelFamily::Generic
+        }
+    }
+
+    /// Whether this family supports native tool calling through the API provider.
+    /// When true, tools are sent via the API's `tools` parameter.
+    /// When false, tools must be text-injected into the system prompt.
+    pub fn supports_native_tools(&self) -> bool {
+        matches!(self, ModelFamily::Qwen | ModelFamily::Nemotron | ModelFamily::Llama
+            | ModelFamily::Phi | ModelFamily::OpenAI | ModelFamily::Anthropic)
+    }
+}
+
+impl std::fmt::Display for ModelFamily {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ModelFamily::Qwen => write!(f, "qwen"),
+            ModelFamily::Nemotron => write!(f, "nemotron"),
+            ModelFamily::Llama => write!(f, "llama"),
+            ModelFamily::Gemma => write!(f, "gemma"),
+            ModelFamily::Phi => write!(f, "phi"),
+            ModelFamily::OpenAI => write!(f, "openai"),
+            ModelFamily::Anthropic => write!(f, "anthropic"),
+            ModelFamily::Generic => write!(f, "generic"),
+        }
+    }
+}
+
 // ── Tool Call Mode ────────────────────────────────────────────────────
 
 /// How the model should express tool calls.
@@ -146,6 +231,8 @@ pub enum SlotMode {
 pub struct ModelCapabilityProfile {
     /// Detected model tier.
     pub tier: ModelTier,
+    /// Detected model family (determines chat template format).
+    pub family: ModelFamily,
     /// Detected or estimated parameter count (billions).
     pub estimated_params_b: f64,
     /// Original model name used for detection.
@@ -219,6 +306,15 @@ impl ModelCapabilityProfile {
     /// assert_eq!(p.tier.to_string(), "large");
     /// ```
     pub fn from_model_name(model: &str) -> Self {
+        // Yantrik fine-tuned models get a specialized profile — we control the
+        // training so we know exactly what capabilities to enable (native tool
+        // calling via Qwen3.5 Jinja format, higher tool limits, etc.).
+        let lower = model.to_lowercase();
+        if lower.starts_with("yantrik-") || lower.starts_with("yantrik:") {
+            let params = ModelTier::extract_param_count(model).unwrap_or(9.0);
+            return Self::yantrik_trained(model, params);
+        }
+
         let tier = ModelTier::from_model_name(model);
         let params = ModelTier::extract_param_count(model).unwrap_or(match tier {
             ModelTier::Tiny => 0.8,
@@ -227,22 +323,31 @@ impl ModelCapabilityProfile {
             ModelTier::Large => 27.0,
         });
 
-        match tier {
+        let mut profile = match tier {
             ModelTier::Tiny => Self::tiny(model, params),
             ModelTier::Small => Self::small(model, params),
             ModelTier::Medium => Self::medium(model, params),
             ModelTier::Large => Self::large(model, params),
+        };
+
+        // Models with native tool calling support via their API provider.
+        // Override StructuredJSON → NativeFunctionCall so Ollama handles the tool template.
+        if profile.family.supports_native_tools() {
+            profile.tool_call_mode = ToolCallMode::NativeFunctionCall;
         }
+
+        profile
     }
 
     /// Create a profile for degraded/fallback mode (even more constrained than Tiny).
     pub fn degraded() -> Self {
         Self {
             tier: ModelTier::Tiny,
+            family: ModelFamily::Generic,
             estimated_params_b: 0.5,
             model_name: "degraded".into(),
 
-            max_tools_per_prompt: 3,
+            max_tools_per_prompt: 10,
             tool_call_mode: ToolCallMode::MCQ,
             slot_mode: SlotMode::KeyValue,
             use_family_routing: false, // too few tools to bother
@@ -270,10 +375,11 @@ impl ModelCapabilityProfile {
     fn tiny(model: &str, params: f64) -> Self {
         Self {
             tier: ModelTier::Tiny,
+            family: ModelFamily::from_model_name(model),
             estimated_params_b: params,
             model_name: model.into(),
 
-            max_tools_per_prompt: 3,
+            max_tools_per_prompt: 10,
             tool_call_mode: ToolCallMode::MCQ,
             slot_mode: SlotMode::KeyValue,
             use_family_routing: false, // MCQ already narrows choices
@@ -301,10 +407,11 @@ impl ModelCapabilityProfile {
     fn small(model: &str, params: f64) -> Self {
         Self {
             tier: ModelTier::Small,
+            family: ModelFamily::from_model_name(model),
             estimated_params_b: params,
             model_name: model.into(),
 
-            max_tools_per_prompt: 5,
+            max_tools_per_prompt: 20,
             tool_call_mode: ToolCallMode::StructuredJSON,
             slot_mode: SlotMode::JSON,
             use_family_routing: true,
@@ -332,10 +439,11 @@ impl ModelCapabilityProfile {
     fn medium(model: &str, params: f64) -> Self {
         Self {
             tier: ModelTier::Medium,
+            family: ModelFamily::from_model_name(model),
             estimated_params_b: params,
             model_name: model.into(),
 
-            max_tools_per_prompt: 8,
+            max_tools_per_prompt: 25,
             tool_call_mode: ToolCallMode::StructuredJSON,
             slot_mode: SlotMode::JSON,
             use_family_routing: true,
@@ -360,13 +468,85 @@ impl ModelCapabilityProfile {
         }
     }
 
-    fn large(model: &str, params: f64) -> Self {
+    /// Profile for Yantrik fine-tuned models (e.g. `yantrik-9b-v2`, `yantrik-4b`).
+    ///
+    /// These models are trained with Qwen3.5's native tool calling format (Jinja
+    /// template with `tools` parameter), so they get `NativeFunctionCall` mode
+    /// regardless of parameter count. Other capabilities scale with size but are
+    /// boosted relative to generic models of the same size since the training
+    /// targets our exact tool set and conversation patterns.
+    fn yantrik_trained(model: &str, params: f64) -> Self {
+        let base_tier = ModelTier::from_model_name(model);
         Self {
-            tier: ModelTier::Large,
+            tier: base_tier,
+            family: ModelFamily::Qwen, // Yantrik models are fine-tuned from Qwen
             estimated_params_b: params,
             model_name: model.into(),
 
-            max_tools_per_prompt: 15,
+            // Native tool calling — trained on Qwen3.5 Jinja tool format
+            max_tools_per_prompt: match base_tier {
+                ModelTier::Tiny => 10,
+                ModelTier::Small => 20,
+                ModelTier::Medium => 25,
+                ModelTier::Large => 30,
+            },
+            tool_call_mode: ToolCallMode::NativeFunctionCall,
+            slot_mode: SlotMode::JSON,
+            use_family_routing: params < 14.0, // still helpful for smaller models
+
+            max_agent_steps: match base_tier {
+                ModelTier::Tiny => 5,
+                ModelTier::Small => 8,
+                ModelTier::Medium => 12,
+                ModelTier::Large => 15,
+            },
+            supports_repair_loop: true,
+            max_repair_attempts: if params >= 4.0 { 2 } else { 1 },
+            multi_step_capable: params >= 4.0,
+
+            max_effective_context: match base_tier {
+                ModelTier::Tiny => 4096,
+                ModelTier::Small => 8192,
+                ModelTier::Medium => 32768,
+                ModelTier::Large => 65536,
+            },
+            ambient_context_budget: match base_tier {
+                ModelTier::Tiny => 512,
+                ModelTier::Small => 2048,
+                ModelTier::Medium => 8192,
+                ModelTier::Large => 16384,
+            },
+            max_history_turns: match base_tier {
+                ModelTier::Tiny => 3,
+                ModelTier::Small => 5,
+                ModelTier::Medium => 10,
+                ModelTier::Large => 20,
+            },
+
+            max_generation_tokens: match base_tier {
+                ModelTier::Tiny => 512,
+                ModelTier::Small => 1024,
+                ModelTier::Medium => 2048,
+                ModelTier::Large => 4096,
+            },
+            tool_temperature: 0.2,
+            chat_temperature: 0.6,
+
+            confidence_threshold: 0.7,
+            llm_nudge_polish: params >= 4.0,
+            can_summarize_freely: params >= 4.0,
+            hallucination_firewall: params < 14.0,
+        }
+    }
+
+    fn large(model: &str, params: f64) -> Self {
+        Self {
+            tier: ModelTier::Large,
+            family: ModelFamily::from_model_name(model),
+            estimated_params_b: params,
+            model_name: model.into(),
+
+            max_tools_per_prompt: 30,
             tool_call_mode: ToolCallMode::NativeFunctionCall,
             slot_mode: SlotMode::JSON,
             use_family_routing: true, // still beneficial even for large models
@@ -401,6 +581,14 @@ impl ModelCapabilityProfile {
         self.tool_call_mode == ToolCallMode::MCQ
     }
 
+    /// Whether this profile should use batched MCQ tool selection.
+    ///
+    /// For Tiny and Small models, sending many tools at once overwhelms the model.
+    /// Instead, use embedding-ranked batches of 5 tools with MCQ classification.
+    pub fn uses_batched_mcq_selection(&self) -> bool {
+        self.tier <= ModelTier::Small
+    }
+
     /// Get a GenerationConfig tuned for tool-calling tasks.
     pub fn tool_gen_config(&self) -> crate::types::GenerationConfig {
         crate::types::GenerationConfig {
@@ -424,8 +612,9 @@ impl ModelCapabilityProfile {
     /// Summary string for logging.
     pub fn summary(&self) -> String {
         format!(
-            "{}(~{:.1}B) tools={} mode={:?} ctx={}K steps={} family_routing={}",
+            "{}(~{:.1}B) family={} tools={} mode={:?} ctx={}K steps={} family_routing={}",
             self.tier,
+            self.family,
             self.estimated_params_b,
             self.max_tools_per_prompt,
             self.tool_call_mode,
@@ -486,6 +675,7 @@ impl ToolFamily {
             ToolFamily::Schedule => &[
                 "calendar", "event", "meeting", "schedule", "appointment",
                 "today", "tomorrow", "free time", "busy", "agenda",
+                "recipe", "automation", "cron",
             ],
             ToolFamily::Remember => &[
                 "remember", "recall", "memory", "memories", "forget",
@@ -502,6 +692,7 @@ impl ToolFamily {
             ToolFamily::System => &[
                 "system", "process", "disk", "cpu", "reminder", "timer",
                 "alarm", "uptime", "run command", "execute", "screenshot",
+                "vault", "password", "credential", "secret", "pin",
             ],
             ToolFamily::Delegate => &[
                 "parallel", "simultaneously", "multiple tasks", "spawn",
@@ -510,6 +701,7 @@ impl ToolFamily {
             ToolFamily::World => &[
                 "weather", "temperature", "forecast", "rain", "news",
                 "events nearby", "what's happening", "connect", "sync",
+                "recipe", "automation", "workflow", "automate",
             ],
         }
     }
@@ -548,6 +740,8 @@ impl ToolFamily {
                 "run_command", "system_info", "disk_usage",
                 "list_processes", "diagnose_process",
                 "calculate", "screenshot",
+                "vault_store", "vault_get", "vault_list", "vault_delete",
+                "vault_generate_password", "vault_set_pin",
             ],
             ToolFamily::Delegate => &[
                 "spawn_agents", "claude_think", "claude_code",
@@ -647,14 +841,14 @@ mod tests {
     fn profile_from_model_name() {
         let tiny = ModelCapabilityProfile::from_model_name("qwen3.5:0.6b");
         assert_eq!(tiny.tier, ModelTier::Tiny);
-        assert_eq!(tiny.max_tools_per_prompt, 3);
+        assert_eq!(tiny.max_tools_per_prompt, 10);
         assert!(tiny.uses_mcq());
         assert!(!tiny.multi_step_capable);
         assert_eq!(tiny.max_agent_steps, 3);
 
         let medium = ModelCapabilityProfile::from_model_name("qwen3.5:9b");
         assert_eq!(medium.tier, ModelTier::Medium);
-        assert_eq!(medium.max_tools_per_prompt, 8);
+        assert_eq!(medium.max_tools_per_prompt, 25);
         assert_eq!(medium.tool_call_mode, ToolCallMode::StructuredJSON);
         assert!(medium.multi_step_capable);
         assert!(medium.use_family_routing);
@@ -662,7 +856,7 @@ mod tests {
 
         let large = ModelCapabilityProfile::from_model_name("qwen3.5:27b-nothink");
         assert_eq!(large.tier, ModelTier::Large);
-        assert_eq!(large.max_tools_per_prompt, 15);
+        assert_eq!(large.max_tools_per_prompt, 30);
         assert!(large.uses_native_tools());
         assert_eq!(large.max_agent_steps, 15);
     }
@@ -671,7 +865,7 @@ mod tests {
     fn degraded_profile() {
         let d = ModelCapabilityProfile::degraded();
         assert_eq!(d.tier, ModelTier::Tiny);
-        assert_eq!(d.max_tools_per_prompt, 3);
+        assert_eq!(d.max_tools_per_prompt, 10);
         assert_eq!(d.max_agent_steps, 3);
         assert_eq!(d.max_effective_context, 2048);
         assert!(!d.supports_repair_loop);
@@ -724,11 +918,38 @@ mod tests {
 
     #[test]
     fn profile_summary() {
+        // Generic 9B → StructuredJSON
         let p = ModelCapabilityProfile::from_model_name("qwen3.5:9b");
         let s = p.summary();
         assert!(s.contains("medium"));
         assert!(s.contains("9.0B"));
         assert!(s.contains("StructuredJSON"));
+
+        // Yantrik 9B → NativeFunctionCall
+        let y = ModelCapabilityProfile::from_model_name("yantrik-9b-v3");
+        let s = y.summary();
+        assert!(s.contains("medium"));
+        assert!(s.contains("NativeFunctionCall"));
+    }
+
+    #[test]
+    fn yantrik_trained_profile() {
+        let y9b = ModelCapabilityProfile::from_model_name("yantrik-9b-v3");
+        assert_eq!(y9b.tier, ModelTier::Medium);
+        assert_eq!(y9b.estimated_params_b, 9.0);
+        assert!(y9b.uses_native_tools()); // key: native tool calling enabled
+        assert_eq!(y9b.max_tools_per_prompt, 25);
+        assert!(y9b.multi_step_capable);
+        assert!(y9b.use_family_routing);
+
+        let y4b = ModelCapabilityProfile::from_model_name("yantrik-4b");
+        assert_eq!(y4b.tier, ModelTier::Small);
+        assert!(y4b.uses_native_tools());
+        assert_eq!(y4b.max_tools_per_prompt, 20);
+
+        // Ollama tag format
+        let ytag = ModelCapabilityProfile::from_model_name("yantrik:9b-v2");
+        assert!(ytag.uses_native_tools());
     }
 
     #[test]

@@ -31,11 +31,16 @@ impl Tool for RememberTool {
             "type": "function",
             "function": {
                 "name": "remember",
-                "description": "Store something important about the user for later.",
+                "description": "Store important facts about the user. Use 'facts' array to save multiple facts at once, or 'text' for a single fact.",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "text": {"type": "string", "description": "What to remember"},
+                        "text": {"type": "string", "description": "What to remember (single fact)"},
+                        "facts": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Multiple facts to remember at once (e.g. ['likes Thai food', 'lives in Dallas', 'works at Acme'])"
+                        },
                         "importance": {"type": "number", "description": "0.0-1.0"},
                         "memory_type": {
                             "type": "string",
@@ -45,8 +50,7 @@ impl Tool for RememberTool {
                             "type": "string",
                             "description": "Topic: work, health, family, finance, hobby, general"
                         }
-                    },
-                    "required": ["text"]
+                    }
                 }
             }
         })
@@ -57,26 +61,63 @@ impl Tool for RememberTool {
             return "Incognito mode is active \u{2014} memory not saved.".to_string();
         }
 
-        let text = args.get("text").and_then(|v| v.as_str()).unwrap_or_default();
-        if text.is_empty() {
-            return "Error: text is required".to_string();
-        }
-
         let importance = args.get("importance").and_then(|v| v.as_f64()).unwrap_or(0.5);
         let memory_type = args.get("memory_type").and_then(|v| v.as_str()).unwrap_or("episodic");
         let domain = args.get("domain").and_then(|v| v.as_str()).unwrap_or("general");
 
-        // V25: Write-time dedup — check if we already have this memory
-        if crate::learning::is_duplicate(ctx.db, text) {
-            return format!("Already remembered something similar to: {text}");
+        // Collect facts from both "text" (single) and "facts" (array)
+        let mut all_facts: Vec<String> = Vec::new();
+        if let Some(text) = args.get("text").and_then(|v| v.as_str()) {
+            if !text.is_empty() {
+                all_facts.push(text.to_string());
+            }
+        }
+        if let Some(facts_arr) = args.get("facts").and_then(|v| v.as_array()) {
+            for item in facts_arr {
+                if let Some(s) = item.as_str() {
+                    if !s.is_empty() {
+                        all_facts.push(s.to_string());
+                    }
+                }
+            }
         }
 
-        match ctx.db.record_text(
-            text, memory_type, importance, 0.0, 604800.0,
-            &serde_json::json!({}), "default", 0.9, domain, "companion", None,
-        ) {
-            Ok(rid) => format!("Remembered: {text} (id: {rid})"),
-            Err(e) => format!("Failed to remember: {e}"),
+        if all_facts.is_empty() {
+            return "Error: 'text' or 'facts' is required".to_string();
+        }
+
+        let mut saved = 0u32;
+        let mut skipped = 0u32;
+        let mut results = Vec::new();
+
+        for fact in &all_facts {
+            if crate::learning::is_duplicate(ctx.db, fact) {
+                skipped += 1;
+                continue;
+            }
+            match ctx.db.record_text(
+                fact, memory_type, importance, 0.0, 604800.0,
+                &serde_json::json!({}), "default", 0.9, domain, "companion", None,
+            ) {
+                Ok(_) => saved += 1,
+                Err(e) => results.push(format!("Failed: {e}")),
+            }
+        }
+
+        if all_facts.len() == 1 {
+            if saved == 1 {
+                format!("Remembered: {}", all_facts[0])
+            } else if skipped == 1 {
+                format!("Already remembered something similar to: {}", all_facts[0])
+            } else {
+                results.join("; ")
+            }
+        } else {
+            let mut parts = vec![format!("Remembered {saved}/{} facts", all_facts.len())];
+            if skipped > 0 {
+                parts.push(format!("({skipped} duplicates skipped)"));
+            }
+            parts.join(" ")
         }
     }
 }
@@ -193,9 +234,11 @@ impl Tool for SetReminderTool {
                     "type": "object",
                     "properties": {
                         "text": {"type": "string"},
-                        "remind_at": {"type": "string", "description": "ISO format YYYY-MM-DDTHH:MM"}
+                        "remind_at": {"type": "string", "description": "ISO format YYYY-MM-DDTHH:MM"},
+                        "in": {"type": "string", "description": "Relative offset like '30m', '2h', '1d'. Alternative to remind_at."},
+                        "time_offset": {"type": "string", "description": "Alias for 'in'."}
                     },
-                    "required": ["text", "remind_at"]
+                    "required": ["text"]
                 }
             }
         })
@@ -204,16 +247,35 @@ impl Tool for SetReminderTool {
     fn execute(&self, ctx: &ToolContext, args: &serde_json::Value) -> String {
         let text = args.get("text").and_then(|v| v.as_str()).unwrap_or_default();
         let remind_at_str = args.get("remind_at").and_then(|v| v.as_str()).unwrap_or_default();
+        let offset_str = args.get("in")
+            .or_else(|| args.get("time_offset"))
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
 
-        if text.is_empty() || remind_at_str.is_empty() {
-            return "Error: text and remind_at are required".to_string();
+        if text.is_empty() {
+            return "Error: text is required".to_string();
         }
 
-        let remind_ts = match chrono::NaiveDateTime::parse_from_str(remind_at_str, "%Y-%m-%dT%H:%M") {
-            Ok(dt) => dt.and_utc().timestamp() as f64,
-            Err(_) => {
-                return format!("Error: invalid remind_at format '{remind_at_str}', use YYYY-MM-DDTHH:MM");
+        let remind_ts = if !remind_at_str.is_empty() {
+            match chrono::NaiveDateTime::parse_from_str(remind_at_str, "%Y-%m-%dT%H:%M") {
+                Ok(dt) => dt.and_utc().timestamp() as f64,
+                Err(_) => {
+                    return format!("Error: invalid remind_at format '{remind_at_str}', use YYYY-MM-DDTHH:MM");
+                }
             }
+        } else if !offset_str.is_empty() {
+            match crate::tools::scheduler::parse_duration_offset(offset_str) {
+                Some(secs) if secs >= 10 => {
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap()
+                        .as_secs_f64();
+                    now + secs as f64
+                }
+                _ => return format!("Error: invalid offset '{}'. Use format like '30m', '2h', '1d'", offset_str),
+            }
+        } else {
+            return "Error: remind_at or 'in' (e.g. '30m') is required".to_string();
         };
 
         // Use native scheduler instead of memory-based reminders.

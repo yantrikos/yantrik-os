@@ -506,29 +506,41 @@ impl Tool for ResolveConflictsTool {
             "list" => {
                 let mut out = String::from("=== Open Conflicts ===\n\n");
                 if let Ok(mut stmt) = conn.prepare(
-                    "SELECT rowid, conflict_type, severity, description FROM conflicts \
-                     WHERE status = 'open' ORDER BY rowid LIMIT 30"
+                    "SELECT conflict_id, conflict_type, priority, detection_reason, \
+                     memory_a, memory_b FROM conflicts \
+                     WHERE status = 'open' ORDER BY detected_at DESC LIMIT 30"
                 ) {
                     match stmt.query_map([], |row| {
                         Ok((
-                            row.get::<_, i64>(0)?,
+                            row.get::<_, String>(0)?,
                             row.get::<_, String>(1)?,
                             row.get::<_, String>(2)?,
                             row.get::<_, String>(3)?,
+                            row.get::<_, String>(4)?,
+                            row.get::<_, String>(5)?,
                         ))
                     }) {
                         Ok(rows) => {
                             let mut count = 0;
                             for row in rows.flatten() {
-                                let (id, ctype, severity, desc) = row;
-                                let short_desc = if desc.len() > 80 {
-                                    format!("{}...", &desc[..77])
+                                let (id, ctype, priority, reason, mem_a, mem_b) = row;
+                                let short_reason = if reason.len() > 80 {
+                                    format!("{}...", &reason[..77])
                                 } else {
-                                    desc
+                                    reason
                                 };
+                                // Fetch memory texts for context
+                                let text_a: String = conn.query_row(
+                                    "SELECT COALESCE(substr(text,1,60), '?') FROM memories WHERE id = ?1",
+                                    [&mem_a], |r| r.get(0),
+                                ).unwrap_or_else(|_| "[deleted]".into());
+                                let text_b: String = conn.query_row(
+                                    "SELECT COALESCE(substr(text,1,60), '?') FROM memories WHERE id = ?1",
+                                    [&mem_b], |r| r.get(0),
+                                ).unwrap_or_else(|_| "[deleted]".into());
                                 out.push_str(&format!(
-                                    "[{}] type={} severity={}\n  {}\n\n",
-                                    id, ctype, severity, short_desc,
+                                    "[{}] type={} priority={}\n  {}\n  A: \"{}\"\n  B: \"{}\"\n\n",
+                                    &id[..8], ctype, priority, short_reason, text_a, text_b,
                                 ));
                                 count += 1;
                             }
@@ -555,21 +567,11 @@ impl Tool for ResolveConflictsTool {
                 if conflict_id.is_empty() {
                     return "Error: conflict_id is required for resolve_one".to_string();
                 }
-                // Try matching by rowid or by conflict id prefix
+                // Try matching by conflict_id prefix
                 let result = conn.execute(
-                    "UPDATE conflicts SET status = 'resolved' WHERE id LIKE ?1 || '%' AND status = 'open'",
+                    "UPDATE conflicts SET status = 'resolved' WHERE conflict_id LIKE ?1 || '%' AND status = 'open'",
                     [conflict_id],
-                ).or_else(|_| {
-                    // Try by rowid
-                    if let Ok(rowid) = conflict_id.parse::<i64>() {
-                        conn.execute(
-                            "UPDATE conflicts SET status = 'resolved' WHERE rowid = ?1 AND status = 'open'",
-                            [rowid],
-                        )
-                    } else {
-                        Ok(0)
-                    }
-                });
+                );
 
                 match result {
                     Ok(n) if n > 0 => format!("Resolved conflict '{}'.", conflict_id),

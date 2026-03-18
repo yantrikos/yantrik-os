@@ -73,12 +73,43 @@ impl UrgeQueue {
                     .ok();
                     tracing::debug!(urge_id, old_urgency, new_urgency, "Boosted pending urge");
                 } else {
-                    // Already delivered — do NOT recycle back to pending.
-                    // This prevents the same message being re-sent repeatedly.
-                    tracing::debug!(
-                        urge_id,
-                        "Skipping push — already delivered with same cooldown_key"
-                    );
+                    // Already delivered — recycle to pending only if enough time passed
+                    // (2 hours cooldown prevents re-sending repeatedly)
+                    let delivered_at: f64 = conn
+                        .query_row(
+                            "SELECT COALESCE(delivered_at, 0.0) FROM urges WHERE urge_id = ?1",
+                            params![urge_id],
+                            |row| row.get(0),
+                        )
+                        .unwrap_or(0.0);
+                    let hours_since = (now - delivered_at) / 3600.0;
+                    if hours_since >= 2.0 {
+                        conn.execute(
+                            "UPDATE urges SET status = 'pending', urgency = ?1, reason = ?2,
+                             suggested_message = ?3, created_at = ?4, delivered_at = NULL,
+                             boost_count = 0
+                             WHERE urge_id = ?5",
+                            params![
+                                spec.urgency,
+                                spec.reason,
+                                spec.suggested_message,
+                                now,
+                                urge_id
+                            ],
+                        )
+                        .ok();
+                        tracing::info!(
+                            urge_id,
+                            hours_since = format!("{hours_since:.1}"),
+                            "Recycled delivered urge back to pending"
+                        );
+                    } else {
+                        tracing::debug!(
+                            urge_id,
+                            hours_since = format!("{hours_since:.1}"),
+                            "Skipping push — delivered too recently"
+                        );
+                    }
                 }
                 return None;
             }

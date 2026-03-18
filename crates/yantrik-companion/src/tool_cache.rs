@@ -306,6 +306,137 @@ impl ToolCache {
         selected
     }
 
+    /// Select tools by pure cosine similarity — no ALWAYS_INCLUDE, no keyword boosting.
+    ///
+    /// Returns up to `limit` tool definitions ranked by embedding similarity to the query.
+    /// The caller is responsible for adding core/always-on tools.
+    /// Floor threshold: 0.15 cosine similarity.
+    pub fn select_by_similarity(
+        conn: &Connection,
+        db: &YantrikDB,
+        query: &str,
+        limit: usize,
+    ) -> Vec<Value> {
+        let query_embedding = match db.embed(query) {
+            Ok(e) => e,
+            Err(_) => return Vec::new(),
+        };
+
+        let mut stmt = match conn
+            .prepare("SELECT name, definition, embedding FROM tool_cache")
+        {
+            Ok(s) => s,
+            Err(_) => return Vec::new(),
+        };
+
+        let mut scored: Vec<(f32, String, String)> = Vec::new();
+        let rows = stmt.query_map([], |row| {
+            let name: String = row.get(0)?;
+            let def: String = row.get(1)?;
+            let emb_blob: Vec<u8> = row.get(2)?;
+            Ok((name, def, emb_blob))
+        });
+
+        if let Ok(rows) = rows {
+            for row in rows.flatten() {
+                let (name, def, emb_blob) = row;
+                let embedding = blob_to_embedding(&emb_blob);
+                if embedding.is_empty() {
+                    continue;
+                }
+                let sim = cosine_similarity(&query_embedding, &embedding);
+                scored.push((sim, name, def));
+            }
+        }
+
+        scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+
+        let mut results: Vec<Value> = Vec::new();
+        for (sim, _name, def) in &scored {
+            if results.len() >= limit {
+                break;
+            }
+            if *sim < 0.15 {
+                break;
+            }
+            if let Ok(v) = serde_json::from_str::<Value>(def) {
+                results.push(v);
+            }
+        }
+
+        tracing::debug!(
+            returned = results.len(),
+            top_sim = scored.first().map(|s| s.0).unwrap_or(0.0),
+            "Pure similarity tool selection"
+        );
+
+        results
+    }
+
+    /// Select tools ranked by cosine similarity, returning scores and compact descriptions.
+    ///
+    /// Returns `(similarity, tool_name, compact_card)` tuples sorted by similarity descending.
+    /// The compact_card is a short text suitable for MCQ prompts (~40 tokens per tool).
+    /// Floor threshold: 0.15 cosine similarity.
+    pub fn select_ranked_with_scores(
+        conn: &Connection,
+        db: &YantrikDB,
+        query: &str,
+        limit: usize,
+    ) -> Vec<(f32, String, String)> {
+        let query_embedding = match db.embed(query) {
+            Ok(e) => e,
+            Err(_) => return Vec::new(),
+        };
+
+        let mut stmt = match conn
+            .prepare("SELECT name, definition, embedding FROM tool_cache")
+        {
+            Ok(s) => s,
+            Err(_) => return Vec::new(),
+        };
+
+        let mut scored: Vec<(f32, String, String)> = Vec::new();
+        let rows = stmt.query_map([], |row| {
+            let name: String = row.get(0)?;
+            let def: String = row.get(1)?;
+            let emb_blob: Vec<u8> = row.get(2)?;
+            Ok((name, def, emb_blob))
+        });
+
+        if let Ok(rows) = rows {
+            for row in rows.flatten() {
+                let (name, def, emb_blob) = row;
+                let embedding = blob_to_embedding(&emb_blob);
+                if embedding.is_empty() {
+                    continue;
+                }
+                let sim = cosine_similarity(&query_embedding, &embedding);
+                if sim < 0.15 {
+                    continue;
+                }
+                // Build compact card from definition
+                let card = if let Ok(v) = serde_json::from_str::<Value>(&def) {
+                    build_compact_card(&v)
+                } else {
+                    name.clone()
+                };
+                scored.push((sim, name, card));
+            }
+        }
+
+        scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+        scored.truncate(limit);
+
+        tracing::debug!(
+            returned = scored.len(),
+            top_sim = scored.first().map(|s| s.0).unwrap_or(0.0),
+            "Ranked tool selection with scores"
+        );
+
+        scored
+    }
+
     /// Fallback: return all cached definitions.
     fn all_definitions(conn: &Connection) -> Vec<Value> {
         let mut stmt = match conn.prepare("SELECT definition FROM tool_cache") {
@@ -370,6 +501,37 @@ fn blob_to_embedding(blob: &[u8]) -> Vec<f32> {
     blob.chunks_exact(4)
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect()
+}
+
+/// Build a compact tool card for MCQ prompts (~40 tokens).
+///
+/// Format: `tool_name — Short description. Use for: keyword1, keyword2, keyword3.`
+fn build_compact_card(def: &Value) -> String {
+    let name = def["function"]["name"].as_str().unwrap_or("unknown");
+    let desc = def["function"]["description"].as_str().unwrap_or("");
+
+    // Truncate description to first sentence or 80 chars
+    let short_desc = if let Some(pos) = desc.find(". ") {
+        &desc[..pos]
+    } else if desc.len() > 80 {
+        &desc[..80]
+    } else {
+        desc
+    };
+
+    // Extract parameter names as keywords
+    let params = &def["function"]["parameters"]["properties"];
+    let keywords: Vec<&str> = if let Some(obj) = params.as_object() {
+        obj.keys().map(|k| k.as_str()).take(4).collect()
+    } else {
+        Vec::new()
+    };
+
+    if keywords.is_empty() {
+        format!("{} — {}", name, short_desc)
+    } else {
+        format!("{} — {}. Keywords: {}", name, short_desc, keywords.join(", "))
+    }
 }
 
 fn now_ts() -> f64 {

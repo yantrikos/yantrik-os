@@ -59,6 +59,8 @@ pub enum ErrorAction {
     Skip,
     Retry { max: u8 },
     JumpTo { step: usize },
+    /// Ask the LLM to diagnose the failure and replan remaining steps.
+    Replan,
 }
 
 impl Default for ErrorAction {
@@ -297,6 +299,43 @@ impl RecipeStore {
         id
     }
 
+    /// Register or update a built-in recipe with a fixed ID. Idempotent — safe to call on every boot.
+    /// Updates step definitions if the recipe already exists (handles version upgrades).
+    pub fn ensure_builtin(
+        conn: &Connection,
+        id: &str,
+        name: &str,
+        description: &str,
+        steps: &[RecipeStep],
+    ) {
+        if Self::get(conn, id).is_some() {
+            // Update steps in place (definition may change across versions)
+            conn.execute("DELETE FROM recipe_steps WHERE recipe_id = ?1", params![id]).ok();
+            for (i, step) in steps.iter().enumerate() {
+                let step_json = serde_json::to_string(step).unwrap_or_default();
+                conn.execute(
+                    "INSERT INTO recipe_steps (recipe_id, step_index, step_json) VALUES (?1, ?2, ?3)",
+                    params![id, i as i64, step_json],
+                ).ok();
+            }
+            return;
+        }
+        let now = now_ts();
+        conn.execute(
+            "INSERT INTO recipes (id, name, description, status, created_at, updated_at)
+             VALUES (?1, ?2, ?3, 'pending', ?4, ?4)",
+            params![id, name, description, now],
+        ).ok();
+        for (i, step) in steps.iter().enumerate() {
+            let step_json = serde_json::to_string(step).unwrap_or_default();
+            conn.execute(
+                "INSERT INTO recipe_steps (recipe_id, step_index, step_json) VALUES (?1, ?2, ?3)",
+                params![id, i as i64, step_json],
+            ).ok();
+        }
+        tracing::info!(recipe_id = %id, name = %name, steps = steps.len(), "Built-in recipe registered");
+    }
+
     /// Get a recipe by ID.
     pub fn get(conn: &Connection, recipe_id: &str) -> Option<Recipe> {
         conn.query_row(
@@ -446,6 +485,48 @@ impl RecipeStore {
         .ok();
     }
 
+    /// Replace remaining steps from `from_step` onwards with new steps (for replanning).
+    /// Keeps completed steps intact, replaces pending/failed ones.
+    pub fn replace_remaining_steps(conn: &Connection, recipe_id: &str, from_step: usize, new_steps: &[RecipeStep]) {
+        // Delete old steps from from_step onwards
+        conn.execute(
+            "DELETE FROM recipe_steps WHERE recipe_id = ?1 AND step_index >= ?2",
+            params![recipe_id, from_step as i64],
+        )
+        .ok();
+        // Insert new steps
+        for (i, step) in new_steps.iter().enumerate() {
+            let step_json = serde_json::to_string(step).unwrap_or_default();
+            conn.execute(
+                "INSERT INTO recipe_steps (recipe_id, step_index, step_json) VALUES (?1, ?2, ?3)",
+                params![recipe_id, (from_step + i) as i64, step_json],
+            )
+            .ok();
+        }
+        tracing::info!(
+            recipe_id = %recipe_id,
+            from_step,
+            new_count = new_steps.len(),
+            "Replaced remaining recipe steps (replan)"
+        );
+    }
+
+    /// Record a recipe failure for learning. Stores the failure context so future
+    /// recipe creation can avoid the same mistakes.
+    pub fn record_failure_learning(conn: &Connection, recipe_id: &str, step_index: usize,
+                                    tool_name: &str, error: &str, resolution: &str) {
+        // Use recipe_vars to store learning data (avoid new table)
+        let learning = serde_json::json!({
+            "step": step_index,
+            "tool": tool_name,
+            "error": error,
+            "resolution": resolution,
+            "timestamp": now_ts(),
+        });
+        let key = format!("_learning_{}", step_index);
+        Self::set_var(conn, recipe_id, &key, &learning);
+    }
+
     /// List recipes with optional status filter.
     pub fn list(conn: &Connection, status_filter: Option<&str>, limit: usize) -> Vec<Recipe> {
         let (sql, p): (String, Vec<Box<dyn rusqlite::types::ToSql>>) = match status_filter {
@@ -536,7 +617,7 @@ impl RecipeStore {
         .unwrap_or(0) as usize
     }
 
-    /// Get recipes that need processing (pending, running, or waiting).
+    /// Get recipes that need processing (pending or running).
     pub fn get_resumable(conn: &Connection) -> Vec<String> {
         let mut stmt = conn
             .prepare("SELECT id FROM recipes WHERE status IN ('pending', 'running')")
@@ -546,6 +627,104 @@ impl RecipeStore {
             .expect("query resumable")
             .filter_map(|r| r.ok())
             .collect()
+    }
+
+    /// Get waiting recipes whose WaitFor timeout has expired.
+    /// Returns recipe IDs that should be resumed.
+    pub fn get_expired_waiting(conn: &Connection) -> Vec<String> {
+        let now = now_ts();
+        // Find waiting recipes
+        let mut stmt = conn
+            .prepare("SELECT id, current_step, updated_at FROM recipes WHERE status = 'waiting'")
+            .expect("prepare expired waiting");
+
+        let rows: Vec<(String, usize, f64)> = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)? as usize,
+                    row.get::<_, f64>(2)?,
+                ))
+            })
+            .expect("query expired waiting")
+            .filter_map(|r| r.ok())
+            .collect();
+
+        let mut expired = Vec::new();
+        for (id, current_step, updated_at) in rows {
+            // The WaitFor step is the one BEFORE current_step (it was completed and current_step advanced)
+            let wait_step_idx = current_step.saturating_sub(1);
+            let steps = Self::get_steps(conn, &id);
+            if let Some(stored) = steps.get(wait_step_idx) {
+                match &stored.step {
+                    RecipeStep::WaitFor { condition, timeout_secs } => {
+                        let should_resume = match condition {
+                            WaitCondition::Duration { seconds } => {
+                                (now - updated_at) >= *seconds as f64
+                            }
+                            WaitCondition::Time { hour, minute } => {
+                                let (h, m) = chrono_now();
+                                h > *hour || (h == *hour && m >= *minute)
+                            }
+                        };
+                        // Also check global timeout if set
+                        let timed_out = timeout_secs
+                            .map(|t| (now - updated_at) >= t as f64)
+                            .unwrap_or(false);
+                        if should_resume || timed_out {
+                            expired.push(id);
+                        }
+                    }
+                    _ => {
+                        // Stuck in waiting but not on a WaitFor step — resume it
+                        expired.push(id);
+                    }
+                }
+            }
+        }
+        expired
+    }
+
+    /// Collect failure learnings across all recipes for context injection.
+    /// Returns a human-readable summary of past recipe failures and how they were resolved.
+    pub fn get_failure_learnings(conn: &Connection, limit: usize) -> Vec<String> {
+        // Query learning vars from all recipes (keys starting with _learning_)
+        let mut stmt = conn
+            .prepare(
+                "SELECT rv.recipe_id, r.name, rv.value
+                 FROM recipe_vars rv
+                 JOIN recipes r ON r.id = rv.recipe_id
+                 WHERE rv.key LIKE '_learning_%'
+                 ORDER BY ROWID DESC
+                 LIMIT ?1"
+            )
+            .unwrap_or_else(|_| conn.prepare("SELECT '', '', '' FROM recipe_vars LIMIT 0").unwrap());
+
+        stmt.query_map(params![limit as i64], |row| {
+            let recipe_name: String = row.get(1)?;
+            let value_str: String = row.get(2)?;
+            Ok((recipe_name, value_str))
+        })
+        .ok()
+        .into_iter()
+        .flatten()
+        .filter_map(|r| r.ok())
+        .map(|(name, val)| {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&val) {
+                format!(
+                    "Recipe '{}': tool '{}' failed with '{}'. Resolution: {}",
+                    name,
+                    v.get("tool").and_then(|t| t.as_str()).unwrap_or("?"),
+                    v.get("error").and_then(|t| t.as_str()).unwrap_or("?"),
+                    v.get("resolution").and_then(|t| t.as_str()).map(|s|
+                        if s.len() > 200 { format!("{}...", &s[..200]) } else { s.to_string() }
+                    ).unwrap_or_default(),
+                )
+            } else {
+                format!("Recipe '{}': {}", name, val)
+            }
+        })
+        .collect()
     }
 
     /// Format summary for system context injection.

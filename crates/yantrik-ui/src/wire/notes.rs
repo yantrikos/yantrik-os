@@ -364,6 +364,41 @@ pub fn wire(ui: &App, ctx: &AppContext) {
         }
         if let Some(ui) = ui_weak.upgrade() {
             let content = ui.get_notes_current_content().to_string();
+            let title = extract_title(&content);
+            let tags = ui.get_notes_current_tags().to_string();
+
+            // Try service first
+            if update_via_service(&path_str, &title, &content).is_ok() {
+                // Also update tags via service
+                let tag_list: Vec<String> = tags
+                    .split(',')
+                    .map(|t| t.trim().to_string())
+                    .filter(|t| !t.is_empty())
+                    .collect();
+                let _ = set_tags_via_service(&path_str, tag_list);
+
+                tracing::info!(id = %path_str, "Note saved via service");
+                ui.set_notes_is_modified(false);
+                ui.set_notes_current_title(title.clone().into());
+
+                // Index in YantrikDB for semantic recall
+                let short = if content.len() > 500 {
+                    format!("{}...", &content[..500])
+                } else {
+                    content.clone()
+                };
+                bridge_save.record_system_event(
+                    format!("Note '{}': {}", title, short),
+                    "user/notes".to_string(),
+                    0.8,
+                );
+
+                let folder = *af.borrow();
+                refresh_list(&ui, &nd, folder);
+                return;
+            }
+
+            // Fallback: direct filesystem
             let path = PathBuf::from(&path_str);
 
             // ── Create version snapshot before overwriting ──
@@ -373,10 +408,7 @@ pub fn wire(ui: &App, ctx: &AppContext) {
                 }
             }
 
-            let title = extract_title(&content);
-
             // Save tags to meta
-            let tags = ui.get_notes_current_tags().to_string();
             let mut meta = read_meta(&path);
             meta.tags = tags;
             write_meta(&path, &meta);
@@ -446,13 +478,21 @@ pub fn wire(ui: &App, ctx: &AppContext) {
         if path_str.is_empty() {
             return;
         }
-        if let Err(e) = std::fs::remove_file(&path_str) {
-            tracing::error!(path = %path_str, error = %e, "Failed to delete note");
-            return;
+
+        // Try service first
+        let deleted_via_service = delete_via_service(&path_str).is_ok();
+
+        if !deleted_via_service {
+            // Fallback: direct filesystem
+            if let Err(e) = std::fs::remove_file(&path_str) {
+                tracing::error!(path = %path_str, error = %e, "Failed to delete note");
+                return;
+            }
+            // Also delete meta sidecar
+            let _ = std::fs::remove_file(meta_path(std::path::Path::new(&path_str)));
         }
-        // Also delete meta sidecar
-        let _ = std::fs::remove_file(meta_path(std::path::Path::new(&path_str)));
-        tracing::info!(path = %path_str, "Note deleted");
+
+        tracing::info!(path = %path_str, via_service = deleted_via_service, "Note deleted");
 
         *cf.borrow_mut() = String::new();
 
@@ -486,7 +526,25 @@ pub fn wire(ui: &App, ctx: &AppContext) {
                 return;
             }
             let entry = &entries[idx];
-            let path = nd.join(&entry.filename.to_string());
+            let note_id = entry.filename.to_string();
+
+            // Try service first
+            if let Ok(note) = get_via_service(&note_id) {
+                *cf.borrow_mut() = note.id.clone();
+                ui.set_notes_current_content(note.body.into());
+                ui.set_notes_current_title(note.title.into());
+                ui.set_notes_is_modified(false);
+                ui.set_notes_selected_index(index);
+                ui.set_notes_current_tags(note.tags.join(",").into());
+                ui.set_notes_meta_created(note.created_at.into());
+                ui.set_notes_meta_modified(note.modified_at.into());
+                // Clear export status
+                ui.set_notes_export_status("".into());
+                return;
+            }
+
+            // Fallback: direct filesystem
+            let path = nd.join(&note_id);
             match std::fs::read_to_string(&path) {
                 Ok(content) => {
                     *cf.borrow_mut() = path.display().to_string();
@@ -518,36 +576,46 @@ pub fn wire(ui: &App, ctx: &AppContext) {
         let query = query.to_string();
         if let Some(ui) = ui_weak.upgrade() {
             let folder = *af.borrow();
-            let all = scan_notes(&nd);
-            let filtered_by_folder = filter_by_folder(all, &nd, folder);
 
             if query.is_empty() {
-                let count = filtered_by_folder.len() as i32;
-                ui.set_notes_list(ModelRc::new(VecModel::from(filtered_by_folder)));
-                ui.set_notes_note_count(count);
-            } else {
-                let lower = query.to_lowercase();
-                let filtered: Vec<_> = filtered_by_folder
-                    .into_iter()
-                    .filter(|e| {
-                        let title_match = e.title.to_string().to_lowercase().contains(&lower);
-                        let preview_match = e.preview.to_string().to_lowercase().contains(&lower);
-                        // Also search full file content
-                        let content_match = if !title_match && !preview_match {
-                            let path = nd.join(&e.filename.to_string());
-                            std::fs::read_to_string(&path)
-                                .map(|c| c.to_lowercase().contains(&lower))
-                                .unwrap_or(false)
-                        } else {
-                            false
-                        };
-                        title_match || preview_match || content_match
-                    })
-                    .collect();
-                let count = filtered.len() as i32;
-                ui.set_notes_list(ModelRc::new(VecModel::from(filtered)));
-                ui.set_notes_note_count(count);
+                // No search query — just show the folder listing
+                refresh_list(&ui, &nd, folder);
+                return;
             }
+
+            // Try service first for non-empty queries
+            if let Ok(results) = search_via_service(&query) {
+                let count = results.len() as i32;
+                ui.set_notes_list(ModelRc::new(VecModel::from(results)));
+                ui.set_notes_note_count(count);
+                return;
+            }
+
+            // Fallback: direct filesystem search
+            let all = scan_notes_fs(&nd);
+            let filtered_by_folder = filter_by_folder(all, &nd, folder);
+
+            let lower = query.to_lowercase();
+            let filtered: Vec<_> = filtered_by_folder
+                .into_iter()
+                .filter(|e| {
+                    let title_match = e.title.to_string().to_lowercase().contains(&lower);
+                    let preview_match = e.preview.to_string().to_lowercase().contains(&lower);
+                    // Also search full file content
+                    let content_match = if !title_match && !preview_match {
+                        let path = nd.join(&e.filename.to_string());
+                        std::fs::read_to_string(&path)
+                            .map(|c| c.to_lowercase().contains(&lower))
+                            .unwrap_or(false)
+                    } else {
+                        false
+                    };
+                    title_match || preview_match || content_match
+                })
+                .collect();
+            let count = filtered.len() as i32;
+            ui.set_notes_list(ModelRc::new(VecModel::from(filtered)));
+            ui.set_notes_note_count(count);
         }
     });
 
@@ -590,10 +658,17 @@ pub fn wire(ui: &App, ctx: &AppContext) {
             if idx >= all.len() { return; }
 
             let entry = &all[idx];
-            let path = nd.join(&entry.filename.to_string());
-            let mut meta = read_meta(&path);
-            meta.pinned = !meta.pinned;
-            write_meta(&path, &meta);
+            let note_id = entry.filename.to_string();
+            let new_pinned = !entry.is_pinned;
+
+            // Try service first
+            if set_pinned_via_service(&note_id, new_pinned).is_err() {
+                // Fallback: direct filesystem
+                let path = nd.join(&note_id);
+                let mut meta = read_meta(&path);
+                meta.pinned = new_pinned;
+                write_meta(&path, &meta);
+            }
 
             let folder = *af.borrow();
             refresh_list(&ui, &nd, folder);
@@ -606,10 +681,22 @@ pub fn wire(ui: &App, ctx: &AppContext) {
     ui.on_notes_update_tags(move |tags| {
         let path_str = cf.borrow().clone();
         if path_str.is_empty() { return; }
-        let path = PathBuf::from(&path_str);
-        let mut meta = read_meta(&path);
-        meta.tags = tags.to_string();
-        write_meta(&path, &meta);
+        let tags_str = tags.to_string();
+
+        // Try service first
+        let tag_list: Vec<String> = tags_str
+            .split(',')
+            .map(|t| t.trim().to_string())
+            .filter(|t| !t.is_empty())
+            .collect();
+        if set_tags_via_service(&path_str, tag_list).is_err() {
+            // Fallback: direct filesystem
+            let path = PathBuf::from(&path_str);
+            let mut meta = read_meta(&path);
+            meta.tags = tags_str;
+            write_meta(&path, &meta);
+        }
+
         if let Some(ui) = ui_weak.upgrade() {
             ui.set_notes_is_modified(true);
         }

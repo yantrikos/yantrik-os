@@ -1,4 +1,4 @@
-pub const SCHEMA_VERSION: i32 = 11;
+pub const SCHEMA_VERSION: i32 = 12;
 
 pub const SCHEMA_SQL: &str = "
 -- Memory records: the source of truth
@@ -280,6 +280,62 @@ INSERT OR IGNORE INTO personality_traits (trait_name, score, confidence, sample_
            ('depth', 0.5, 0.0, 0, 0.0),
            ('energy', 0.5, 0.0, 0, 0.0),
            ('attentiveness', 0.5, 0.0, 0, 0.0);
+
+-- Cognitive State Graph: Nodes (V12)
+CREATE TABLE IF NOT EXISTS cognitive_nodes (
+    node_id INTEGER PRIMARY KEY,            -- compact NodeId (4-bit kind + 28-bit seq)
+    kind TEXT NOT NULL,                      -- node kind string (entity, belief, goal, etc.)
+    label TEXT NOT NULL,                     -- human-readable label
+    -- Universal cognitive attributes
+    confidence REAL NOT NULL DEFAULT 0.5,
+    activation REAL NOT NULL DEFAULT 0.0,
+    salience REAL NOT NULL DEFAULT 0.5,
+    persistence REAL NOT NULL DEFAULT 0.5,
+    valence REAL NOT NULL DEFAULT 0.0,
+    urgency REAL NOT NULL DEFAULT 0.0,
+    novelty REAL NOT NULL DEFAULT 1.0,
+    volatility REAL NOT NULL DEFAULT 0.1,
+    provenance TEXT NOT NULL DEFAULT 'observed',
+    evidence_count INTEGER NOT NULL DEFAULT 1,
+    last_updated_ms INTEGER NOT NULL,
+    -- Kind-specific payload (JSON)
+    payload TEXT NOT NULL DEFAULT '{}',
+    -- Metadata (JSON)
+    metadata TEXT NOT NULL DEFAULT '{}',
+    -- Lifecycle
+    created_at REAL NOT NULL,
+    tombstoned INTEGER NOT NULL DEFAULT 0,
+    -- Replication
+    hlc BLOB,
+    origin_actor TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_cognitive_nodes_kind ON cognitive_nodes(kind);
+CREATE INDEX IF NOT EXISTS idx_cognitive_nodes_activation ON cognitive_nodes(activation);
+CREATE INDEX IF NOT EXISTS idx_cognitive_nodes_urgency ON cognitive_nodes(urgency);
+
+-- Cognitive State Graph: Edges (V12)
+CREATE TABLE IF NOT EXISTS cognitive_edges (
+    src_id INTEGER NOT NULL,                 -- source NodeId
+    dst_id INTEGER NOT NULL,                 -- destination NodeId
+    kind TEXT NOT NULL,                      -- edge kind string (supports, contradicts, etc.)
+    weight REAL NOT NULL DEFAULT 0.5,        -- edge weight [-1.0, 1.0]
+    confidence REAL NOT NULL DEFAULT 0.5,
+    observation_count INTEGER NOT NULL DEFAULT 1,
+    created_at_ms INTEGER NOT NULL,
+    last_confirmed_ms INTEGER NOT NULL,
+    tombstoned INTEGER NOT NULL DEFAULT 0,
+    hlc BLOB,
+    origin_actor TEXT,
+    PRIMARY KEY (src_id, dst_id, kind)
+);
+CREATE INDEX IF NOT EXISTS idx_cognitive_edges_dst ON cognitive_edges(dst_id);
+CREATE INDEX IF NOT EXISTS idx_cognitive_edges_kind ON cognitive_edges(kind);
+
+-- High-water marks for NodeId allocator (V12)
+CREATE TABLE IF NOT EXISTS cognitive_node_hwm (
+    kind TEXT PRIMARY KEY,                   -- node kind string
+    high_water_mark INTEGER NOT NULL DEFAULT 0
+);
 ";
 
 /// SQL to migrate from schema V1 to V2.
@@ -527,4 +583,58 @@ INSERT OR IGNORE INTO personality_traits (trait_name, score, confidence, sample_
            ('depth', 0.5, 0.0, 0, 0.0),
            ('energy', 0.5, 0.0, 0, 0.0),
            ('attentiveness', 0.5, 0.0, 0, 0.0);
+";
+
+/// SQL to migrate from schema V11 to V12.
+pub const MIGRATE_V11_TO_V12: &str = "
+-- Cognitive State Graph: Nodes
+CREATE TABLE IF NOT EXISTS cognitive_nodes (
+    node_id INTEGER PRIMARY KEY,
+    kind TEXT NOT NULL,
+    label TEXT NOT NULL,
+    confidence REAL NOT NULL DEFAULT 0.5,
+    activation REAL NOT NULL DEFAULT 0.0,
+    salience REAL NOT NULL DEFAULT 0.5,
+    persistence REAL NOT NULL DEFAULT 0.5,
+    valence REAL NOT NULL DEFAULT 0.0,
+    urgency REAL NOT NULL DEFAULT 0.0,
+    novelty REAL NOT NULL DEFAULT 1.0,
+    volatility REAL NOT NULL DEFAULT 0.1,
+    provenance TEXT NOT NULL DEFAULT 'observed',
+    evidence_count INTEGER NOT NULL DEFAULT 1,
+    last_updated_ms INTEGER NOT NULL,
+    payload TEXT NOT NULL DEFAULT '{}',
+    metadata TEXT NOT NULL DEFAULT '{}',
+    created_at REAL NOT NULL,
+    tombstoned INTEGER NOT NULL DEFAULT 0,
+    hlc BLOB,
+    origin_actor TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_cognitive_nodes_kind ON cognitive_nodes(kind);
+CREATE INDEX IF NOT EXISTS idx_cognitive_nodes_activation ON cognitive_nodes(activation);
+CREATE INDEX IF NOT EXISTS idx_cognitive_nodes_urgency ON cognitive_nodes(urgency);
+
+-- Cognitive State Graph: Edges
+CREATE TABLE IF NOT EXISTS cognitive_edges (
+    src_id INTEGER NOT NULL,
+    dst_id INTEGER NOT NULL,
+    kind TEXT NOT NULL,
+    weight REAL NOT NULL DEFAULT 0.5,
+    confidence REAL NOT NULL DEFAULT 0.5,
+    observation_count INTEGER NOT NULL DEFAULT 1,
+    created_at_ms INTEGER NOT NULL,
+    last_confirmed_ms INTEGER NOT NULL,
+    tombstoned INTEGER NOT NULL DEFAULT 0,
+    hlc BLOB,
+    origin_actor TEXT,
+    PRIMARY KEY (src_id, dst_id, kind)
+);
+CREATE INDEX IF NOT EXISTS idx_cognitive_edges_dst ON cognitive_edges(dst_id);
+CREATE INDEX IF NOT EXISTS idx_cognitive_edges_kind ON cognitive_edges(kind);
+
+-- High-water marks for NodeId allocator
+CREATE TABLE IF NOT EXISTS cognitive_node_hwm (
+    kind TEXT PRIMARY KEY,
+    high_water_mark INTEGER NOT NULL DEFAULT 0
+);
 ";

@@ -119,29 +119,8 @@ impl Tool for McpProxyTool {
     }
 }
 
-/// Configuration for an MCP server to connect to.
-#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
-pub struct McpServerEntry {
-    /// Unique server identifier (used in tool name prefix).
-    pub id: String,
-    /// Command to start the server.
-    pub command: String,
-    /// Arguments for the command.
-    #[serde(default)]
-    pub args: Vec<String>,
-    /// Environment variables.
-    #[serde(default)]
-    pub env: std::collections::HashMap<String, String>,
-    /// Working directory.
-    #[serde(default)]
-    pub cwd: Option<String>,
-    /// Trust level override (default: "untrusted").
-    /// Options: "untrusted", "approved", "trusted"
-    #[serde(default = "default_trust")]
-    pub trust: String,
-}
-
-fn default_trust() -> String { "untrusted".to_string() }
+// Re-export McpServerEntry from core config
+pub use yantrik_companion_core::config::McpServerEntry;
 
 /// Connect to configured MCP servers and register their tools.
 ///

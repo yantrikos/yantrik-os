@@ -1,14 +1,48 @@
+mod belief;
 mod cache;
+mod intent;
+mod action;
+mod evaluator;
+mod policy;
+mod suggest;
+mod agenda;
+mod temporal;
+mod hawkes;
+mod receptivity;
+mod tick;
+mod surfacing;
+mod observer;
+mod flywheel;
+mod world_model;
+mod experimenter;
+mod skills;
+mod extractor;
+mod calibration;
+mod introspection;
+mod causal;
+mod planner;
 mod cognition;
+mod coherence;
+mod metacognition;
+mod personality_bias;
+mod query_dsl;
 mod conflict;
+mod analogy_engine;
+mod schema_induction_engine;
+mod narrative_engine;
+mod counterfactual_engine;
+mod belief_network_engine;
+mod replay_engine;
+mod perspective_engine;
 mod feedback;
+pub mod graph_state;
 mod graph_ops;
 mod indices;
 mod learning;
 mod lifecycle;
 mod recall;
 mod record;
-pub mod stats;
+mod stats;
 mod storage;
 pub mod tenant;
 #[cfg(test)]
@@ -30,7 +64,8 @@ use crate::hnsw::HnswIndex;
 use crate::schema::{
     MIGRATE_V1_TO_V2, MIGRATE_V2_TO_V3, MIGRATE_V3_TO_V4, MIGRATE_V4_TO_V5,
     MIGRATE_V5_TO_V6, MIGRATE_V6_TO_V7, MIGRATE_V7_TO_V8, MIGRATE_V8_TO_V9,
-    MIGRATE_V9_TO_V10, MIGRATE_V10_TO_V11, SCHEMA_SQL, SCHEMA_VERSION,
+    MIGRATE_V9_TO_V10, MIGRATE_V10_TO_V11, MIGRATE_V11_TO_V12,
+    SCHEMA_SQL, SCHEMA_VERSION,
 };
 use crate::types::*;
 
@@ -113,6 +148,7 @@ impl YantrikDB {
             (8, MIGRATE_V8_TO_V9),
             (9, MIGRATE_V9_TO_V10),
             (10, MIGRATE_V10_TO_V11),
+            (11, MIGRATE_V11_TO_V12),
         ];
         if let Some(v) = existing_version {
             for &(from_v, sql) in migrations {

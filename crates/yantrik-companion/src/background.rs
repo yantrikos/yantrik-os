@@ -150,7 +150,7 @@ pub fn run_think_cycle(service: &mut CompanionService) {
     let instinct_urges = service.evaluate_instincts(&state);
 
     for spec in &instinct_urges {
-        if spec.urgency >= proactive_threshold {
+        if spec.guaranteed || spec.urgency >= proactive_threshold {
             high_urgency_urges.push(spec.clone());
         }
         service.urge_queue.push(service.db.conn(), spec);
@@ -215,7 +215,105 @@ pub fn run_think_cycle(service: &mut CompanionService) {
         }
     }
 
-    // 10. Record workflow observation (Phase 2: Predictive Workflow)
+    // 9b. Memory lifecycle — contradiction auto-prompting + nightly consolidation
+    {
+        use crate::memory_lifecycle::MemoryLifecycle;
+
+        // Check for unresolved contradictions and surface to user
+        let contradictions = MemoryLifecycle::unresolved_contradictions(service.db.conn());
+        if !contradictions.is_empty() {
+            // Build a message showing the first unresolved contradiction
+            let c = &contradictions[0];
+            // Fetch the actual memory texts
+            let text_a = service.db.conn()
+                .query_row("SELECT text FROM memories WHERE id = ?1", rusqlite::params![c.memory_a], |r| r.get::<_, String>(0))
+                .unwrap_or_else(|_| "[unknown]".to_string());
+            let text_b = service.db.conn()
+                .query_row("SELECT text FROM memories WHERE id = ?1", rusqlite::params![c.memory_b], |r| r.get::<_, String>(0))
+                .unwrap_or_else(|_| "[unknown]".to_string());
+
+            let msg = format!(
+                "I noticed conflicting information in my memory:\n\
+                 1. \"{}\"\n\
+                 2. \"{}\"\n\n\
+                 Which one is correct? I'll archive the outdated one.",
+                text_a, text_b,
+            );
+
+            // Set as proactive message (surfaces to user via whisper card)
+            let now_ts = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs_f64();
+            service.set_proactive_message(crate::types::ProactiveMessage {
+                text: msg,
+                urge_ids: Vec::new(),
+                generated_at: now_ts,
+            });
+            tracing::info!(
+                count = contradictions.len(),
+                "Memory contradictions detected — prompting user"
+            );
+        }
+
+        // Nightly consolidation: promote high-confidence observations, stale old ones
+        // Run once per 24h (check via simple timestamp comparison)
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs_f64();
+        let last_consolidation: f64 = service.db.conn()
+            .query_row(
+                "SELECT COALESCE(MAX(updated_at), 0) FROM memory_lifecycle WHERE state = 'confirmed'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or(0.0);
+        if now - last_consolidation > 86400.0 {
+            let report = MemoryLifecycle::consolidate(service.db.conn());
+            if report.promoted > 0 || report.staled > 0 || report.archived > 0 {
+                tracing::info!(
+                    promoted = report.promoted,
+                    staled = report.staled,
+                    archived = report.archived,
+                    "Memory lifecycle nightly consolidation"
+                );
+            }
+        }
+    }
+
+    // 10. CK-5 Generative Understanding — cognitive primitives
+    {
+        use crate::ck5_integration;
+        let idle = service.idle_seconds();
+        let ck5_report = ck5_integration::run_ck5_cycle(
+            &service.db,
+            idle,
+            &service.config.ck5,
+            None, // interaction_summary filled on chat(), not background tick
+        );
+
+        if let Some(summary) = ck5_report.summary_text() {
+            tracing::info!(summary = %summary, "CK-5 background findings");
+        }
+
+        // Convert CK-5 findings into proactive urges
+        let ck5_urges = ck5_integration::generate_ck5_urges(&ck5_report);
+        let mut ck5_high = Vec::new();
+        for spec in &ck5_urges {
+            if spec.urgency >= proactive_threshold {
+                ck5_high.push(spec.clone());
+            }
+            service.urge_queue.push(service.db.conn(), spec);
+        }
+
+        // Generate proactive message from CK-5 if instincts didn't already
+        if !ck5_high.is_empty() && high_urgency_urges.is_empty() {
+            generate_proactive_message(service, &ck5_high);
+        }
+    }
+
+    // 11. Record workflow observation (Phase 2: Predictive Workflow)
     if !service.incognito && service.idle_seconds() < 300.0 {
         record_workflow_observation(service);
     }

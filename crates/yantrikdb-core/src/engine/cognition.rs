@@ -127,30 +127,6 @@ impl YantrikDB {
             false
         };
 
-        // Phase 8: Retention cleanup — prune oplog, trigger_log, tombstoned memories
-        if config.run_retention {
-            match self.run_retention(
-                Some(config.oplog_keep_days),
-                Some(config.trigger_keep_days),
-                Some(config.tombstone_keep_days),
-                false, // don't VACUUM every think cycle — too expensive
-            ) {
-                Ok(ret) => {
-                    if ret.oplog_deleted + ret.trigger_log_deleted + ret.tombstoned_memories_purged > 0 {
-                        tracing::info!(
-                            oplog = ret.oplog_deleted,
-                            triggers = ret.trigger_log_deleted,
-                            tombstones = ret.tombstoned_memories_purged,
-                            "retention cleanup pruned entries"
-                        );
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, "retention cleanup failed");
-                }
-            }
-        }
-
         // Record last_think_at
         self.conn.execute(
             "INSERT OR REPLACE INTO meta (key, value) VALUES ('last_think_at', ?1)",

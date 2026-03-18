@@ -35,15 +35,32 @@ impl Tool for CreateScheduleTool {
                         "schedule_type": {
                             "type": "string",
                             "enum": ["once", "interval", "cron"],
-                            "description": "once: fires once at 'at' time. interval: every N seconds. cron: 5-field cron (minute hour day month weekday)."
+                            "description": "once: fires once at 'at' or 'in' time. interval: every N seconds. cron: 5-field cron (minute hour day month weekday)."
+                        },
+                        "repeat": {
+                            "type": "string",
+                            "enum": ["once", "interval", "cron"],
+                            "description": "Alias for schedule_type."
                         },
                         "at": {
                             "type": "string",
                             "description": "For 'once': ISO datetime YYYY-MM-DDTHH:MM (UTC). Ignored for interval/cron."
                         },
+                        "in": {
+                            "type": "string",
+                            "description": "For 'once': relative offset like '30m', '2h', '1d', '1h30m'. Alternative to 'at'."
+                        },
+                        "time_offset": {
+                            "type": "string",
+                            "description": "Alias for 'in'. Relative offset like '30m', '2h', '1d'."
+                        },
                         "interval_seconds": {
                             "type": "integer",
                             "description": "For 'interval': seconds between fires (e.g. 3600 = hourly)."
+                        },
+                        "interval": {
+                            "type": "string",
+                            "description": "For 'interval': human-friendly duration like '1h', '30m', '2d'. Alternative to interval_seconds."
                         },
                         "cron": {
                             "type": "string",
@@ -74,7 +91,11 @@ impl Tool for CreateScheduleTool {
 
     fn execute(&self, ctx: &ToolContext, args: &serde_json::Value) -> String {
         let label = args.get("label").and_then(|v| v.as_str()).unwrap_or_default();
-        let schedule_type = args.get("schedule_type").and_then(|v| v.as_str()).unwrap_or("once");
+        // Accept "repeat" as alias for "schedule_type"
+        let schedule_type = args.get("schedule_type")
+            .or_else(|| args.get("repeat"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("once");
 
         if label.is_empty() {
             return "Error: label is required".to_string();
@@ -93,26 +114,49 @@ impl Tool for CreateScheduleTool {
         let (next_invoke, interval_secs, cron_expr) = match schedule_type {
             "once" => {
                 let at_str = args.get("at").and_then(|v| v.as_str()).unwrap_or_default();
-                if at_str.is_empty() {
-                    return "Error: 'at' is required for schedule_type 'once' (YYYY-MM-DDTHH:MM)".to_string();
-                }
-                match chrono::NaiveDateTime::parse_from_str(at_str, "%Y-%m-%dT%H:%M") {
-                    Ok(dt) => {
-                        let ts = dt.and_utc().timestamp() as f64;
-                        if ts <= now {
-                            return format!("Error: 'at' time {} is in the past", at_str);
+                // Accept "in" or "time_offset" as relative duration alternatives
+                let offset_str = args.get("in")
+                    .or_else(|| args.get("time_offset"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default();
+
+                if !at_str.is_empty() {
+                    // Absolute time
+                    match chrono::NaiveDateTime::parse_from_str(at_str, "%Y-%m-%dT%H:%M") {
+                        Ok(dt) => {
+                            let ts = dt.and_utc().timestamp() as f64;
+                            if ts <= now {
+                                return format!("Error: 'at' time {} is in the past", at_str);
+                            }
+                            (ts, None, None)
                         }
-                        (ts, None, None)
+                        Err(_) => {
+                            return format!("Error: invalid 'at' format '{}', use YYYY-MM-DDTHH:MM", at_str);
+                        }
                     }
-                    Err(_) => {
-                        return format!("Error: invalid 'at' format '{}', use YYYY-MM-DDTHH:MM", at_str);
+                } else if !offset_str.is_empty() {
+                    // Relative offset like "30m", "2h", "1d", "1h30m"
+                    match parse_duration_offset(offset_str) {
+                        Some(secs) if secs >= 10 => (now + secs as f64, None, None),
+                        Some(_) => return "Error: offset must be at least 10 seconds".to_string(),
+                        None => return format!("Error: invalid offset '{}'. Use format like '30m', '2h', '1d', '1h30m'", offset_str),
                     }
+                } else {
+                    return "Error: 'at' or 'in' (e.g. '30m') is required for schedule_type 'once'".to_string();
                 }
             }
             "interval" => {
-                let secs = args.get("interval_seconds").and_then(|v| v.as_i64()).unwrap_or(3600);
+                // Accept "interval" as human-friendly duration alternative to interval_seconds
+                let secs = if let Some(interval_str) = args.get("interval").and_then(|v| v.as_str()) {
+                    match parse_duration_offset(interval_str) {
+                        Some(s) => s,
+                        None => return format!("Error: invalid interval '{}'. Use format like '1h', '30m', '2d'", interval_str),
+                    }
+                } else {
+                    args.get("interval_seconds").and_then(|v| v.as_i64()).unwrap_or(3600)
+                };
                 if secs < 60 {
-                    return "Error: interval_seconds must be at least 60".to_string();
+                    return "Error: interval must be at least 60 seconds".to_string();
                 }
                 (now + secs as f64, Some(secs), None)
             }
@@ -332,6 +376,51 @@ fn now_ts() -> f64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_secs_f64()
+}
+
+/// Parse a human-friendly duration offset like "30m", "2h", "1d", "1h30m", "90s".
+/// Returns total seconds, or None if the format is invalid.
+pub fn parse_duration_offset(s: &str) -> Option<i64> {
+    let s = s.trim().to_lowercase();
+    if s.is_empty() { return None; }
+
+    let mut total: i64 = 0;
+    let mut current_num = String::new();
+    let mut has_unit = false;
+
+    for ch in s.chars() {
+        if ch.is_ascii_digit() {
+            current_num.push(ch);
+        } else {
+            if current_num.is_empty() { return None; }
+            let n: i64 = current_num.parse().ok()?;
+            current_num.clear();
+            has_unit = true;
+            match ch {
+                's' => total += n,
+                'm' => total += n * 60,
+                'h' => total += n * 3600,
+                'd' => total += n * 86400,
+                'w' => total += n * 604800,
+                _ => return None,
+            }
+        }
+    }
+
+    // Handle bare number (no unit) — treat as minutes (most common intent)
+    if !current_num.is_empty() {
+        let n: i64 = current_num.parse().ok()?;
+        if has_unit {
+            // Trailing digits after a unit — invalid (e.g. "1h30")
+            // Actually, treat trailing digits as minutes: "1h30" = 1h30m
+            total += n * 60;
+        } else {
+            // Just a number like "30" — treat as minutes
+            total += n * 60;
+        }
+    }
+
+    if total > 0 { Some(total) } else { None }
 }
 
 /// Format a unix timestamp as ISO-like string (UTC).

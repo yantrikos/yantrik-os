@@ -12,6 +12,7 @@ use yantrik_ml::{ChatMessage, GenerationConfig, LLMBackend};
 
 use crate::bond::BondTracker;
 use crate::config::MemoryEvolutionConfig;
+use crate::memory_lifecycle::{MemoryLifecycle, MemoryScope, MemorySource};
 use crate::sanitize;
 
 /// Similarity threshold for write-time dedup. If the best existing match
@@ -189,6 +190,22 @@ pub fn extract_and_learn(
                 crate::memory_evolution::assign_memory_tier(
                     db.conn(), &rid, importance, memory_type, domain, evolution_config,
                 );
+
+                // Register lifecycle metadata
+                let scope = match domain {
+                    "work" => MemoryScope::Work,
+                    "travel" => MemoryScope::Travel,
+                    _ => MemoryScope::Global,
+                };
+                MemoryLifecycle::register(
+                    db.conn(), &rid, MemorySource::ConversationInference, scope, importance as f64,
+                );
+
+                // Contradiction detection for factual domains
+                if matches!(domain, "identity" | "location" | "preference" | "family") {
+                    detect_contradictions(db, &rid, &memory_text, domain);
+                }
+
                 stored_count += 1;
 
                 // Record per-memory entity relationships
@@ -308,6 +325,89 @@ fn split_compound_memory(text: &str, parsed: &serde_json::Value) -> Vec<serde_js
         })
         .take(MAX_MEMORIES_PER_EXCHANGE)
         .collect()
+}
+
+/// Detect contradictions between a newly stored memory and existing memories.
+///
+/// For factual domains (identity, location, preference), we look for memories
+/// that are semantically similar (same topic) but textually different (different answer).
+/// E.g., "User lives in Bentonville" vs "User lives in Chicago" — same topic (location),
+/// different facts → contradiction.
+///
+/// Uses embedding similarity to find related memories, then checks if they're
+/// contradictory (high similarity = same topic, but not a duplicate = different fact).
+fn detect_contradictions(db: &YantrikDB, new_id: &str, new_text: &str, domain: &str) {
+    // Find memories in the same domain that are semantically related
+    let results = match db.recall_text(new_text, 5) {
+        Ok(r) => r,
+        Err(_) => return,
+    };
+
+    // Contradiction zone: similar enough to be about the same topic (> 0.6)
+    // but not so similar as to be a duplicate (< 0.85)
+    const CONTRADICTION_MIN: f64 = 0.60;
+    const CONTRADICTION_MAX: f64 = 0.85;
+
+    for result in &results {
+        let sim = result.scores.similarity;
+        let existing_id = &result.rid;
+
+        // Skip self
+        if existing_id == new_id {
+            continue;
+        }
+
+        // Only flag contradictions for memories in the same domain
+        let existing_domain: Option<String> = db.conn()
+            .query_row(
+                "SELECT domain FROM memories WHERE id = ?1",
+                rusqlite::params![existing_id],
+                |row| row.get(0),
+            )
+            .ok();
+
+        if existing_domain.as_deref() != Some(domain) {
+            continue;
+        }
+
+        // In the contradiction zone: same topic, different content
+        if sim >= CONTRADICTION_MIN && sim < CONTRADICTION_MAX {
+            let existing_text = &result.text;
+            tracing::info!(
+                new_id,
+                existing_id = %existing_id,
+                similarity = sim,
+                new_text,
+                existing_text = %existing_text,
+                domain,
+                "Contradiction detected — flagging both memories"
+            );
+
+            MemoryLifecycle::flag_contradiction(
+                db.conn(),
+                new_id,
+                existing_id,
+                &format!(
+                    "Domain '{}': new='{}' vs existing='{}'",
+                    domain,
+                    truncate(new_text, 80),
+                    truncate(existing_text, 80),
+                ),
+            );
+
+            // Only flag the first contradiction per new memory to avoid noise
+            break;
+        }
+    }
+}
+
+/// Truncate text to max length with ellipsis.
+fn truncate(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        s.to_string()
+    } else {
+        format!("{}...", &s[..max])
+    }
 }
 
 /// Check if a memory is a near-duplicate of an existing record.

@@ -5,22 +5,24 @@ edition = "2021"
 description = "Yantrik companion agent — instincts, urges, context, learning, all in-process"
 
 [dependencies]
-yantrikdb-core = { git = "https://github.com/yantrikos/yantrikdb.git" }
-yantrik-ml = { git = "https://github.com/yantrikos/yantrik-ml.git", features = ["api-llm", "claude-cli"] }
-rusqlite = { version = "0.32", features = ["bundled"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-serde_yaml = "0.9"
-chrono = { version = "0.4", features = ["serde"] }
-uuid7 = "1"
-tracing = "0.1"
-tungstenite = "0.24"
-url = "2"
-imap = "2.4"
-native-tls = "0.2"
-lettre = { version = "0.11", default-features = false, features = ["rustls-tls", "builder", "smtp-transport"] }
-html2text = "0.12"
-mailparse = "0.15"
-ureq = { version = "2", features = ["json"] }
-regex = "1"
-yantrik-os = { path = "../yantrik-os" }
+yantrik-companion-core = { workspace = true }
+yantrik-companion-instincts = { workspace = true }
+yantrikdb-core = { workspace = true }
+yantrik-ml = { workspace = true, features = ["api-llm", "claude-cli"] }
+yantrik-os = { workspace = true }
+rusqlite = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+chrono = { workspace = true }
+uuid7 = { workspace = true }
+tracing = { workspace = true }
+tungstenite = { workspace = true }
+url = { workspace = true }
+imap = { workspace = true }
+native-tls = { workspace = true }
+lettre = { workspace = true }
+html2text = { workspace = true }
+mailparse = { workspace = true }
+ureq = { workspace = true }
+regex = { workspace = true }

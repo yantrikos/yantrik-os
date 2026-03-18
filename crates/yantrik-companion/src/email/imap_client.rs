@@ -228,6 +228,62 @@ pub fn mark_flagged(
     Ok(())
 }
 
+/// Mark a message as unread (remove \Seen flag).
+pub fn mark_unread(
+    session: &mut Session<native_tls::TlsStream<TcpStream>>,
+    folder: &str,
+    uid: u32,
+) -> Result<(), String> {
+    session.select(folder).map_err(|e| format!("SELECT failed: {}", e))?;
+    session.uid_store(uid.to_string(), "-FLAGS (\\Seen)")
+        .map_err(|e| format!("STORE failed: {}", e))?;
+    Ok(())
+}
+
+/// Remove flagged status from a message.
+pub fn unflag(
+    session: &mut Session<native_tls::TlsStream<TcpStream>>,
+    folder: &str,
+    uid: u32,
+) -> Result<(), String> {
+    session.select(folder).map_err(|e| format!("SELECT failed: {}", e))?;
+    session.uid_store(uid.to_string(), "-FLAGS (\\Flagged)")
+        .map_err(|e| format!("STORE failed: {}", e))?;
+    Ok(())
+}
+
+/// Move a message to another folder (COPY + DELETE from source).
+pub fn move_message(
+    session: &mut Session<native_tls::TlsStream<TcpStream>>,
+    folder: &str,
+    uid: u32,
+    dest_folder: &str,
+) -> Result<(), String> {
+    session.select(folder).map_err(|e| format!("SELECT failed: {}", e))?;
+    session.uid_copy(uid.to_string(), dest_folder)
+        .map_err(|e| format!("COPY failed: {}", e))?;
+    session.uid_store(uid.to_string(), "+FLAGS (\\Deleted)")
+        .map_err(|e| format!("STORE failed: {}", e))?;
+    session.expunge().map_err(|e| format!("EXPUNGE failed: {}", e))?;
+    Ok(())
+}
+
+/// Mark multiple messages as read by UIDs.
+pub fn mark_read_bulk(
+    session: &mut Session<native_tls::TlsStream<TcpStream>>,
+    folder: &str,
+    uids: &[u32],
+) -> Result<usize, String> {
+    if uids.is_empty() {
+        return Ok(0);
+    }
+    session.select(folder).map_err(|e| format!("SELECT failed: {}", e))?;
+    let uid_set: String = uids.iter().map(|u| u.to_string()).collect::<Vec<_>>().join(",");
+    session.uid_store(&uid_set, "+FLAGS (\\Seen)")
+        .map_err(|e| format!("STORE failed: {}", e))?;
+    Ok(uids.len())
+}
+
 /// Delete a message (move to Trash).
 pub fn delete_message(
     session: &mut Session<native_tls::TlsStream<TcpStream>>,

@@ -32,7 +32,9 @@ fn wire_brief_card(ui: &App, ctx: &AppContext) {
     let ui_weak = ui.as_weak();
 
     let timer = Timer::default();
-    timer.start(TimerMode::SingleShot, Duration::from_secs(8), move || {
+    // Fire BEFORE the streaming brief (5s) so the card data is fetched
+    // before the LLM call blocks the companion command loop.
+    timer.start(TimerMode::SingleShot, Duration::from_secs(3), move || {
         // Only show if companion is online
         if !bridge.is_online() {
             tracing::info!("Morning brief card skipped — companion offline");
@@ -51,8 +53,8 @@ fn wire_brief_card(ui: &App, ctx: &AppContext) {
         poll_timer.start(TimerMode::Repeated, Duration::from_millis(200), move || {
             *poll_count.borrow_mut() += 1;
 
-            // Give up after 5 seconds (25 polls)
-            if *poll_count.borrow() > 25 {
+            // Give up after 30 seconds (150 polls × 200ms)
+            if *poll_count.borrow() > 150 {
                 tracing::warn!("Morning brief reply timed out");
                 if let Some(t) = slot.borrow_mut().take() {
                     t.stop();

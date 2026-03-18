@@ -440,6 +440,8 @@ fn worker_loop(
     // Sync initial bond level
     cached_bond.store(companion.bond_level().as_u8(), Ordering::Relaxed);
 
+
+
     // Resume any running/waiting recipes from before shutdown
     for rid in yantrik_companion::recipe::RecipeStore::get_resumable(companion.db.conn()) {
         tracing::info!(recipe_id = %rid, "Resuming recipe from previous session");
@@ -639,8 +641,13 @@ fn worker_loop(
                 if yantrik_companion::task_queue::TaskQueue::active_count(companion.db.conn()) > 0 {
                     let _ = cmd_tx.send(CompanionCommand::ProcessNextTask);
                 }
-                // If recipes are pending (maybe user just called run_recipe), signal them
+                // If recipes are pending/running, signal them
                 for rid in yantrik_companion::recipe::RecipeStore::get_resumable(companion.db.conn()) {
+                    let _ = cmd_tx.send(CompanionCommand::ProcessRecipeStep { recipe_id: rid });
+                }
+                // Resume waiting recipes whose WaitFor condition or timeout expired
+                for rid in yantrik_companion::recipe::RecipeStore::get_expired_waiting(companion.db.conn()) {
+                    tracing::info!(recipe_id = %rid, "Resuming expired WaitFor recipe");
                     let _ = cmd_tx.send(CompanionCommand::ProcessRecipeStep { recipe_id: rid });
                 }
             }
@@ -833,6 +840,21 @@ fn worker_loop(
                 if !tq_summary.is_empty() {
                     full_ctx.push('\n');
                     full_ctx.push_str(&tq_summary);
+                }
+                // Recipe summary — active recipes + failure learnings
+                let recipe_summary = yantrik_companion::recipe::RecipeStore::format_summary(companion.db.conn());
+                if !recipe_summary.is_empty() {
+                    full_ctx.push('\n');
+                    full_ctx.push_str(&recipe_summary);
+                }
+                let recipe_learnings = yantrik_companion::recipe::RecipeStore::get_failure_learnings(companion.db.conn(), 5);
+                if !recipe_learnings.is_empty() {
+                    full_ctx.push_str("\nRecipe learnings (past failures to avoid):\n");
+                    for l in &recipe_learnings {
+                        full_ctx.push_str("  - ");
+                        full_ctx.push_str(l);
+                        full_ctx.push('\n');
+                    }
                 }
                 companion.set_system_context(full_ctx);
             }
@@ -1576,6 +1598,28 @@ fn worker_loop(
                 if over_budget {
                     tracing::debug!("Task processing skipped — over daily budget");
                 } else if let Some(task) = yantrik_companion::task_queue::TaskQueue::next_task(companion.db.conn()) {
+                    // Guard: auto-fail tasks stuck after too many steps
+                    const MAX_TASK_STEPS: i32 = 10;
+                    if task.steps_completed >= MAX_TASK_STEPS {
+                        tracing::warn!(
+                            task_id = %task.task_id,
+                            title = %task.title,
+                            steps = task.steps_completed,
+                            "Task exceeded max steps ({}) — auto-failing",
+                            MAX_TASK_STEPS
+                        );
+                        yantrik_companion::task_queue::TaskQueue::fail(
+                            companion.db.conn(),
+                            &task.task_id,
+                            &format!("Auto-failed after {} steps without completion", MAX_TASK_STEPS),
+                        );
+                        // Check for more tasks
+                        if yantrik_companion::task_queue::TaskQueue::active_count(companion.db.conn()) > 0 {
+                            let _ = cmd_tx.send(CompanionCommand::ProcessNextTask);
+                        }
+                        continue;
+                    }
+
                     tracing::info!(
                         task_id = %task.task_id,
                         title = %task.title,
@@ -1609,11 +1653,12 @@ fn worker_loop(
                         )
                     };
 
-                    // Mark as in_progress
+                    // Increment step counter and mark as in_progress
+                    let new_steps = task.steps_completed + 1;
                     yantrik_companion::task_queue::TaskQueue::update_progress(
                         companion.db.conn(), &task.task_id,
                         &if task.progress.is_empty() { "Starting...".to_string() } else { task.progress.clone() },
-                        task.steps_completed,
+                        new_steps,
                     );
 
                     let resp = companion.handle_message(&task_prompt);
@@ -1677,9 +1722,27 @@ fn worker_loop(
                 if recipe.current_step >= step_count {
                     RecipeStore::update_status(companion.db.conn(), &recipe_id, &RecipeStatus::Done, recipe.current_step);
                     tracing::info!(recipe_id = %recipe_id, name = %recipe.name, "Recipe completed");
-                    // Notify user
+                    // Collect final results from last completed step
+                    let final_vars = RecipeStore::get_vars(companion.db.conn(), &recipe_id);
+                    let last_step_result = steps.last()
+                        .and_then(|s| match &s.step {
+                            RecipeStep::Think { store_as, .. } | RecipeStep::Tool { store_as, .. } => {
+                                final_vars.get(store_as)
+                                    .and_then(|v| v.as_str())
+                                    .map(|s| if s.len() > 500 { format!("{}...", &s[..500]) } else { s.to_string() })
+                            }
+                            RecipeStep::Notify { message } => Some(resolve_vars(message, &final_vars)),
+                            _ => None,
+                        })
+                        .unwrap_or_default();
+                    // Notify user with result summary
+                    let completion_text = if final_vars.is_empty() || last_step_result.is_empty() {
+                        format!("Recipe completed: {}", recipe.name)
+                    } else {
+                        format!("Recipe completed: {}\n\nResult: {}", recipe.name, last_step_result)
+                    };
                     let msg = yantrik_companion::types::ProactiveMessage {
-                        text: format!("Recipe completed: {}", recipe.name),
+                        text: completion_text,
                         urge_ids: vec![format!("recipe:{}", recipe_id)],
                         generated_at: std::time::SystemTime::now()
                             .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs_f64(),
@@ -1723,11 +1786,21 @@ fn worker_loop(
                                 ErrorAction::Fail => {
                                     RecipeStore::fail_step(companion.db.conn(), &recipe_id, step_idx, &result);
                                     RecipeStore::set_error(companion.db.conn(), &recipe_id, &result);
-                                    continue; // Don't self-signal
+                                    // Notify user of failure
+                                    let msg = yantrik_companion::types::ProactiveMessage {
+                                        text: format!("Recipe '{}' failed at step {}: {}", recipe.name, step_idx + 1, result),
+                                        urge_ids: vec![format!("recipe:{}", recipe_id)],
+                                        generated_at: std::time::SystemTime::now()
+                                            .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs_f64(),
+                                    };
+                                    companion.set_proactive_message(msg);
+                                    continue;
                                 }
                                 ErrorAction::Skip => {
                                     RecipeStore::skip_step(companion.db.conn(), &recipe_id, step_idx);
                                     RecipeStore::update_status(companion.db.conn(), &recipe_id, &RecipeStatus::Running, step_idx + 1);
+                                    // Self-signal to continue after skip
+                                    let _ = cmd_tx.send(CompanionCommand::ProcessRecipeStep { recipe_id: recipe_id.clone() });
                                 }
                                 ErrorAction::Retry { max } => {
                                     // Simple retry — re-send same step
@@ -1737,17 +1810,136 @@ fn worker_loop(
                                     if retries < *max {
                                         RecipeStore::set_var(companion.db.conn(), &recipe_id, &retry_key,
                                             &serde_json::Value::Number((retries + 1).into()));
-                                        // Don't advance step — retry
+                                        // Don't advance step — retry via self-signal
+                                        let _ = cmd_tx.send(CompanionCommand::ProcessRecipeStep { recipe_id: recipe_id.clone() });
                                     } else {
                                         RecipeStore::fail_step(companion.db.conn(), &recipe_id, step_idx, &result);
                                         RecipeStore::set_error(companion.db.conn(), &recipe_id,
                                             &format!("Failed after {} retries: {}", max, result));
+                                        // Notify user of retry exhaustion
+                                        let msg = yantrik_companion::types::ProactiveMessage {
+                                            text: format!("Recipe '{}' failed at step {} after {} retries: {}", recipe.name, step_idx + 1, max, result),
+                                            urge_ids: vec![format!("recipe:{}", recipe_id)],
+                                            generated_at: std::time::SystemTime::now()
+                                                .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs_f64(),
+                                        };
+                                        companion.set_proactive_message(msg);
                                         continue;
                                     }
                                 }
                                 ErrorAction::JumpTo { step } => {
                                     RecipeStore::fail_step(companion.db.conn(), &recipe_id, step_idx, &result);
                                     RecipeStore::update_status(companion.db.conn(), &recipe_id, &RecipeStatus::Running, *step);
+                                    // Self-signal to continue at jump target
+                                    let _ = cmd_tx.send(CompanionCommand::ProcessRecipeStep { recipe_id: recipe_id.clone() });
+                                }
+                                ErrorAction::Replan => {
+                                    // Auto-heal: ask LLM to diagnose failure and generate replacement steps
+                                    RecipeStore::fail_step(companion.db.conn(), &recipe_id, step_idx, &result);
+                                    tracing::info!(
+                                        recipe_id = %recipe_id, step = step_idx,
+                                        "Replanning recipe after failure"
+                                    );
+
+                                    // Build context: completed steps + failed step + remaining steps
+                                    let completed: Vec<String> = steps.iter().take(step_idx)
+                                        .enumerate()
+                                        .filter_map(|(i, s)| {
+                                            let r = s.result.as_deref().unwrap_or("(no result)");
+                                            Some(format!("Step {}: {:?} → {}", i + 1,
+                                                std::mem::discriminant(&s.step), r))
+                                        })
+                                        .collect();
+                                    let remaining: Vec<String> = steps.iter().skip(step_idx + 1)
+                                        .enumerate()
+                                        .map(|(i, s)| {
+                                            let step_json = serde_json::to_string(&s.step).unwrap_or_default();
+                                            format!("Step {}: {}", step_idx + 2 + i, step_json)
+                                        })
+                                        .collect();
+
+                                    let replan_prompt = format!(
+                                        "Recipe '{}' failed at step {} (tool: {}).\n\
+                                         Error: {}\n\n\
+                                         Completed steps:\n{}\n\n\
+                                         Failed step: tool={}, args={}\n\n\
+                                         Remaining planned steps:\n{}\n\n\
+                                         Recipe goal: {}\n\n\
+                                         Analyze the failure and provide replacement steps as a JSON array. \
+                                         Each step must be one of:\n\
+                                         - {{\"type\":\"Tool\",\"tool_name\":\"...\",\"args\":{{...}},\"store_as\":\"...\",\"on_error\":{{\"action\":\"Replan\"}}}}\n\
+                                         - {{\"type\":\"Think\",\"prompt\":\"...\",\"store_as\":\"...\"}}\n\
+                                         - {{\"type\":\"Notify\",\"message\":\"...\"}}\n\n\
+                                         Reply with ONLY the JSON array of replacement steps. \
+                                         Fix the root cause, don't just retry the same thing.",
+                                        recipe.name, step_idx + 1, tool_name,
+                                        result,
+                                        completed.join("\n"),
+                                        tool_name,
+                                        serde_json::to_string(args).unwrap_or_default(),
+                                        if remaining.is_empty() { "(none)".to_string() } else { remaining.join("\n") },
+                                        recipe.description,
+                                    );
+
+                                    let resp = companion.handle_message(&replan_prompt);
+                                    let replan_text = resp.message.trim().to_string();
+
+                                    // Try to parse replacement steps from LLM response
+                                    let new_steps: Option<Vec<RecipeStep>> = {
+                                        // Extract JSON array from response (may have markdown fences)
+                                        let json_str = replan_text
+                                            .trim_start_matches("```json")
+                                            .trim_start_matches("```")
+                                            .trim_end_matches("```")
+                                            .trim();
+                                        serde_json::from_str(json_str).ok()
+                                    };
+
+                                    if let Some(replacement_steps) = new_steps {
+                                        // Record learning
+                                        RecipeStore::record_failure_learning(
+                                            companion.db.conn(), &recipe_id, step_idx,
+                                            tool_name, &result, &replan_text,
+                                        );
+                                        // Replace remaining steps
+                                        RecipeStore::replace_remaining_steps(
+                                            companion.db.conn(), &recipe_id,
+                                            step_idx + 1, &replacement_steps,
+                                        );
+                                        RecipeStore::update_status(
+                                            companion.db.conn(), &recipe_id,
+                                            &RecipeStatus::Running, step_idx + 1,
+                                        );
+                                        // Notify user of replan
+                                        let msg = yantrik_companion::types::ProactiveMessage {
+                                            text: format!(
+                                                "Recipe '{}' step {} failed ({}). Replanned with {} new steps.",
+                                                recipe.name, step_idx + 1, result, replacement_steps.len()
+                                            ),
+                                            urge_ids: vec![format!("recipe:{}", recipe_id)],
+                                            generated_at: std::time::SystemTime::now()
+                                                .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs_f64(),
+                                        };
+                                        companion.set_proactive_message(msg);
+                                        // Self-signal to continue with new plan
+                                        let _ = cmd_tx.send(CompanionCommand::ProcessRecipeStep { recipe_id: recipe_id.clone() });
+                                    } else {
+                                        // Replan failed — fall back to hard fail
+                                        tracing::warn!(
+                                            recipe_id = %recipe_id,
+                                            "Replan failed — LLM response was not valid JSON steps"
+                                        );
+                                        RecipeStore::set_error(companion.db.conn(), &recipe_id,
+                                            &format!("Step {} failed and replan could not generate valid steps: {}", step_idx + 1, result));
+                                        let msg = yantrik_companion::types::ProactiveMessage {
+                                            text: format!("Recipe '{}' failed at step {} and could not self-heal: {}", recipe.name, step_idx + 1, result),
+                                            urge_ids: vec![format!("recipe:{}", recipe_id)],
+                                            generated_at: std::time::SystemTime::now()
+                                                .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs_f64(),
+                                        };
+                                        companion.set_proactive_message(msg);
+                                        continue;
+                                    }
                                 }
                             }
                         } else {
@@ -1756,10 +1948,10 @@ fn worker_loop(
                             RecipeStore::set_var(companion.db.conn(), &recipe_id, store_as, &result_json);
                             RecipeStore::complete_step(companion.db.conn(), &recipe_id, step_idx, &result);
                             RecipeStore::update_status(companion.db.conn(), &recipe_id, &RecipeStatus::Running, step_idx + 1);
-                        }
 
-                        // Self-signal to continue
-                        let _ = cmd_tx.send(CompanionCommand::ProcessRecipeStep { recipe_id: recipe_id.clone() });
+                            // Self-signal to continue
+                            let _ = cmd_tx.send(CompanionCommand::ProcessRecipeStep { recipe_id: recipe_id.clone() });
+                        }
                     }
 
                     RecipeStep::Think { prompt, store_as } => {
@@ -1768,10 +1960,21 @@ fn worker_loop(
                         let resp = companion.handle_message(&resolved_prompt);
                         let response_text = resp.message.trim().to_string();
 
-                        let result_json = serde_json::Value::String(response_text.clone());
-                        RecipeStore::set_var(companion.db.conn(), &recipe_id, store_as, &result_json);
-                        RecipeStore::complete_step(companion.db.conn(), &recipe_id, step_idx, &response_text);
-                        RecipeStore::update_status(companion.db.conn(), &recipe_id, &RecipeStatus::Running, step_idx + 1);
+                        if response_text.is_empty() {
+                            tracing::warn!(
+                                recipe_id = %recipe_id, step = step_idx,
+                                "Recipe Think step returned empty response — LLM may have failed"
+                            );
+                            // Store empty but mark step as failed, continue to next step
+                            RecipeStore::set_var(companion.db.conn(), &recipe_id, store_as, &serde_json::Value::String(String::new()));
+                            RecipeStore::fail_step(companion.db.conn(), &recipe_id, step_idx, "empty LLM response");
+                            RecipeStore::update_status(companion.db.conn(), &recipe_id, &RecipeStatus::Running, step_idx + 1);
+                        } else {
+                            let result_json = serde_json::Value::String(response_text.clone());
+                            RecipeStore::set_var(companion.db.conn(), &recipe_id, store_as, &result_json);
+                            RecipeStore::complete_step(companion.db.conn(), &recipe_id, step_idx, &response_text);
+                            RecipeStore::update_status(companion.db.conn(), &recipe_id, &RecipeStatus::Running, step_idx + 1);
+                        }
 
                         // Self-signal to continue
                         let _ = cmd_tx.send(CompanionCommand::ProcessRecipeStep { recipe_id: recipe_id.clone() });
@@ -2038,9 +2241,12 @@ fn build_companion(config: CompanionConfig) -> CompanionService {
             .expect("gguf_path required for llamacpp backend");
         let gpu_layers = config.llm.fallback.as_ref()
             .map(|f| f.n_gpu_layers).unwrap_or(99);
-        let ctx_size = config.llm.fallback.as_ref()
-            .map(|f| f.context_size).unwrap_or(4096);
-        tracing::info!(gguf, gpu_layers, ctx_size, "Using llama.cpp backend");
+        let ctx_size = config.llm.max_context_tokens as u32;
+        tracing::info!(
+            gguf, gpu_layers, ctx_size,
+            raw_max_ctx = config.llm.max_context_tokens,
+            "Using llama.cpp backend"
+        );
         #[cfg(feature = "llamacpp")]
         { std::sync::Arc::new(LlamaCppLLM::from_gguf(
             std::path::Path::new(gguf), gpu_layers, ctx_size,

@@ -5,13 +5,13 @@ edition = "2021"
 description = "Yantrik OS system integration — D-Bus, inotify, sysinfo. Zero AI deps."
 
 [dependencies]
-crossbeam-channel = "0.5"
-tracing = "0.1"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+crossbeam-channel = { workspace = true }
+tracing = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
 
 # System monitoring (process list, CPU, memory, disk)
-sysinfo = "0.33"
+sysinfo = { workspace = true }
 
 # D-Bus (pure Rust, musl-compatible). Uses async-io internally for blocking wrappers.
 zbus = "5"
@@ -20,4 +20,4 @@ zbus = "5"
 notify = "7"
 
 # Event log persistence (append-only, WAL mode) — version must match yantrik-companion
-rusqlite = { version = "0.32", features = ["bundled"] }
+rusqlite = { workspace = true }

@@ -21,6 +21,8 @@ use llama_cpp_2::model::{AddBos, LlamaChatMessage, LlamaModel};
 use llama_cpp_2::sampling::LlamaSampler;
 
 use crate::chat_template;
+use crate::chat_templates;
+use crate::capability::ModelFamily;
 use crate::traits::LLMBackend;
 use crate::types::{ChatMessage, GenerationConfig, LLMResponse};
 
@@ -30,6 +32,10 @@ use crate::types::{ChatMessage, GenerationConfig, LLMResponse};
 /// fresh inference contexts per generation call.
 pub struct LlamaCppLLM {
     inner: Mutex<LlamaCppInner>,
+    /// Model family for family-aware template selection.
+    family: ModelFamily,
+    /// Model name/path for identification.
+    model_name: String,
 }
 
 struct LlamaCppInner {
@@ -77,18 +83,61 @@ impl LlamaCppLLM {
             "LlamaCppLLM loaded"
         );
 
+        let model_name = gguf_path.file_stem()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let family = ModelFamily::from_model_name(&model_name);
+
         Ok(Self {
             inner: Mutex::new(LlamaCppInner {
                 backend,
                 model,
                 context_size,
             }),
+            family,
+            model_name,
         })
     }
 
     /// Format messages using the model's built-in chat template (from GGUF metadata),
-    /// falling back to ChatML if unavailable.
-    fn format_prompt(model: &LlamaModel, messages: &[ChatMessage]) -> Result<String> {
+    /// falling back to family-specific template if unavailable.
+    ///
+    /// When tools are provided, they are injected into the system message using
+    /// the family-specific template (e.g. XML for Nemotron, JSON for Qwen).
+    fn format_prompt(
+        model: &LlamaModel,
+        messages: &[ChatMessage],
+        family: ModelFamily,
+        tools: Option<&[serde_json::Value]>,
+    ) -> Result<String> {
+        // If tools are provided, inject them into the system message via the family template
+        let messages = if let Some(tools) = tools.filter(|t| !t.is_empty()) {
+            let template = chat_templates::template_for_family(family);
+            let tool_block = template.format_tools(tools);
+            if tool_block.is_empty() {
+                messages.to_vec()
+            } else {
+                let mut patched = messages.to_vec();
+                if !patched.is_empty() && patched[0].role == "system" {
+                    patched[0] = ChatMessage::system(
+                        format!("{}{}", patched[0].content, tool_block),
+                    );
+                } else {
+                    patched.insert(0, ChatMessage::system(tool_block));
+                }
+                patched
+            }
+        } else {
+            messages.to_vec()
+        };
+
+        // Prefer family-specific template (handles tool results, thinking control)
+        let template = chat_templates::template_for_family(family);
+        if let Some(prompt) = template.format_chat(&messages) {
+            return Ok(prompt);
+        }
+
+        // Fall back to GGUF-embedded template
         match model.chat_template(None) {
             Ok(tmpl) => {
                 let llama_messages: Vec<LlamaChatMessage> = messages
@@ -105,7 +154,7 @@ impl LlamaCppLLM {
             }
             Err(_) => {
                 tracing::debug!("No chat template in GGUF, falling back to ChatML");
-                Ok(chat_template::format_chat(messages))
+                Ok(chat_template::format_chat(&messages))
             }
         }
     }
@@ -163,7 +212,7 @@ impl LlamaCppLLM {
     }
 
     /// Non-streaming generation.
-    fn generate(inner: &mut LlamaCppInner, prompt: &str, config: &GenerationConfig) -> Result<LLMResponse> {
+    fn generate(inner: &mut LlamaCppInner, prompt: &str, config: &GenerationConfig, family: ModelFamily) -> Result<LLMResponse> {
         let ctx_params = LlamaContextParams::default()
             .with_n_ctx(NonZeroU32::new(inner.context_size))
             .with_n_batch(512);
@@ -256,7 +305,7 @@ impl LlamaCppLLM {
         }
 
         let generated_text = super::strip_think_tags(&generated_text);
-        let tool_calls = chat_template::parse_tool_calls(&generated_text);
+        let tool_calls = chat_templates::template_for_family(family).parse_tool_calls(&generated_text);
 
         Ok(LLMResponse {
             text: generated_text,
@@ -274,6 +323,7 @@ impl LlamaCppLLM {
         prompt: &str,
         config: &GenerationConfig,
         on_token: &mut dyn FnMut(&str),
+        family: ModelFamily,
     ) -> Result<LLMResponse> {
         let ctx_params = LlamaContextParams::default()
             .with_n_ctx(NonZeroU32::new(inner.context_size))
@@ -381,7 +431,7 @@ impl LlamaCppLLM {
         }
 
         let generated_text = super::strip_think_tags(&generated_text);
-        let tool_calls = chat_template::parse_tool_calls(&generated_text);
+        let tool_calls = chat_templates::template_for_family(family).parse_tool_calls(&generated_text);
 
         Ok(LLMResponse {
             text: generated_text,
@@ -399,23 +449,23 @@ impl LLMBackend for LlamaCppLLM {
         &self,
         messages: &[ChatMessage],
         config: &GenerationConfig,
-        _tools: Option<&[serde_json::Value]>,
+        tools: Option<&[serde_json::Value]>,
     ) -> Result<LLMResponse> {
         let mut inner = self.inner.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
-        let prompt = Self::format_prompt(&inner.model, messages)?;
-        Self::generate(&mut inner, &prompt, config)
+        let prompt = Self::format_prompt(&inner.model, messages, self.family, tools)?;
+        Self::generate(&mut inner, &prompt, config, self.family)
     }
 
     fn chat_streaming(
         &self,
         messages: &[ChatMessage],
         config: &GenerationConfig,
-        _tools: Option<&[serde_json::Value]>,
+        tools: Option<&[serde_json::Value]>,
         on_token: &mut dyn FnMut(&str),
     ) -> Result<LLMResponse> {
         let mut inner = self.inner.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
-        let prompt = Self::format_prompt(&inner.model, messages)?;
-        Self::generate_streaming(&mut inner, &prompt, config, on_token)
+        let prompt = Self::format_prompt(&inner.model, messages, self.family, tools)?;
+        Self::generate_streaming(&mut inner, &prompt, config, on_token, self.family)
     }
 
     fn count_tokens(&self, text: &str) -> Result<usize> {
@@ -429,5 +479,9 @@ impl LLMBackend for LlamaCppLLM {
 
     fn backend_name(&self) -> &str {
         "llama.cpp"
+    }
+
+    fn model_id(&self) -> &str {
+        &self.model_name
     }
 }

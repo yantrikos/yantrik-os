@@ -18,6 +18,7 @@ pub mod capability;
 
 // Chat template formatting (always compiled — used by candle + llamacpp backends)
 mod chat_template;
+pub mod chat_templates;
 
 // Candle-specific modules (gated behind candle-llm / candle-stt features)
 #[cfg(feature = "candle-llm")]
@@ -53,13 +54,14 @@ pub use model_loader::{GGUFFiles, ModelFiles};
 
 pub use types::{ApiToolCall, ApiToolCallFunction, ChatMessage, GenerationConfig, LLMResponse, ToolCall, TranscribeResult, VoiceParams, ProviderConfigEntry};
 pub use traits::{LLMBackend, STTBackend, Embedder};
-pub use capability::{ModelCapabilityProfile, ModelTier, ToolCallMode, SlotMode, ToolFamily};
+pub use capability::{ModelCapabilityProfile, ModelFamily, ModelTier, ToolCallMode, SlotMode, ToolFamily};
 
 // ── Chat template exports ────────────────────────────────────────────
 
 pub use chat_template::{extract_text_content, format_chat, format_tools, parse_tool_calls};
 #[cfg(feature = "candle-llm")]
 pub use chat_template::Qwen2Tokens;
+pub use chat_templates::{ChatTemplate, template_for_family};
 
 // ── LLM backend exports ─────────────────────────────────────────────
 

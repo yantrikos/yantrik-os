@@ -117,14 +117,29 @@ info "Platform: $HYPERVISOR"
 # GPU detection
 GPU_INFO="none"
 HAS_NVIDIA=false
+HAS_AMD=false
+HAS_INTEL_GPU=false
+GPU_VARIANT=""
 if command -v lspci >/dev/null 2>&1; then
     GPU_LINE=$(lspci 2>/dev/null | grep -i 'vga\|3d\|display' | head -1 || true)
     if [ -n "$GPU_LINE" ]; then
         GPU_INFO=$(echo "$GPU_LINE" | sed 's/.*: //')
-        echo "$GPU_LINE" | grep -qi nvidia && HAS_NVIDIA=true
+        if echo "$GPU_LINE" | grep -qi nvidia; then
+            HAS_NVIDIA=true
+            GPU_VARIANT="cuda"
+        elif echo "$GPU_LINE" | grep -qi 'amd\|radeon'; then
+            HAS_AMD=true
+            GPU_VARIANT="rocm"
+        elif echo "$GPU_LINE" | grep -qi 'intel.*arc\|intel.*a[0-9]\{3\}'; then
+            HAS_INTEL_GPU=true
+            GPU_VARIANT="vulkan"
+        fi
     fi
 fi
 info "GPU: $GPU_INFO"
+if [ -n "$GPU_VARIANT" ]; then
+    info "GPU acceleration: $GPU_VARIANT"
+fi
 
 # Disk
 DISK_TOTAL=$(df -h / 2>/dev/null | awk 'NR==2{print $2}' || echo "?")
@@ -328,7 +343,28 @@ RELEASES_URL="http://releases.yantrikos.com/beta"
 GITHUB_URL="$GITHUB_RELEASES/download/v${YANTRIK_VERSION}"
 BINARY_INSTALLED=false
 
-for bin in yantrik-ui yantrik; do
+# If GPU detected, prefer the matching GPU-accelerated binary
+UI_BINARY="yantrik-ui"
+if [ -n "$GPU_VARIANT" ]; then
+    GPU_BIN="yantrik-ui-$GPU_VARIANT"
+    info "$GPU_INFO detected — trying $GPU_VARIANT-accelerated binary..."
+    if [ -f "/tmp/$GPU_BIN" ]; then
+        cp "/tmp/$GPU_BIN" "$BIN_DIR/yantrik-ui"
+        chmod +x "$BIN_DIR/yantrik-ui"
+        ok "$GPU_BIN (from /tmp, $GPU_VARIANT GPU-accelerated)"
+        BINARY_INSTALLED=true
+        UI_BINARY="done"
+    elif curl -fsSL --connect-timeout 10 "$RELEASES_URL/$GPU_BIN" -o "$BIN_DIR/yantrik-ui" 2>/dev/null; then
+        chmod +x "$BIN_DIR/yantrik-ui"
+        ok "$GPU_BIN (from releases.yantrikos.com, $GPU_VARIANT GPU-accelerated)"
+        BINARY_INSTALLED=true
+        UI_BINARY="done"
+    else
+        info "GPU variant not available — falling back to CPU binary"
+    fi
+fi
+
+for bin in $( [ "$UI_BINARY" = "done" ] && echo "yantrik" || echo "yantrik-ui yantrik" ); do
     if [ -f "/tmp/$bin" ]; then
         cp "/tmp/$bin" "$BIN_DIR/$bin"
         chmod +x "$BIN_DIR/$bin"
