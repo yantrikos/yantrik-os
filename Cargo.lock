@@ -9806,6 +9806,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "yantrik-service-sdk"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "yantrik-ipc-contracts",
+ "yantrik-ipc-transport",
+]
+
+[[package]]
 name = "yantrik-shell-core"
 version = "0.1.0"
 dependencies = [

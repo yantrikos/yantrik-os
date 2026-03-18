@@ -14,6 +14,164 @@ use slint::{ComponentHandle, ModelRc, VecModel};
 use crate::app_context::AppContext;
 use crate::App;
 
+// ── Service-first wrappers ──
+// Each function tries the notes-service via SyncRpcClient first,
+// falling back to direct filesystem access if the service is unavailable.
+
+/// Try listing notes via the notes-service, converting to NoteEntry.
+fn list_via_service(folder: Option<&str>) -> Result<Vec<NoteEntry>, String> {
+    use yantrik_ipc_transport::SyncRpcClient;
+
+    let client = SyncRpcClient::for_service("notes");
+    let params = match folder {
+        Some(f) => serde_json::json!({ "folder": f }),
+        None => serde_json::json!({}),
+    };
+    let result = client
+        .call("notes.list", params)
+        .map_err(|e| e.message)?;
+    let summaries: Vec<yantrik_ipc_contracts::notes::NoteSummary> =
+        serde_json::from_value(result).map_err(|e| e.to_string())?;
+
+    Ok(summaries
+        .into_iter()
+        .map(|s| {
+            let tag_preview = s.tags.first().cloned().unwrap_or_default();
+            NoteEntry {
+                title: s.title.into(),
+                filename: s.id.into(),
+                modified: s.modified_at.into(),
+                preview: s.snippet.into(),
+                is_pinned: s.pinned,
+                tags: tag_preview.into(),
+                created: s.created_at.into(),
+                word_count: s.word_count as i32,
+            }
+        })
+        .collect())
+}
+
+/// Try getting a single note via the notes-service.
+fn get_via_service(note_id: &str) -> Result<yantrik_ipc_contracts::notes::NoteContent, String> {
+    use yantrik_ipc_transport::SyncRpcClient;
+
+    let client = SyncRpcClient::for_service("notes");
+    let result = client
+        .call("notes.get", serde_json::json!({ "note_id": note_id }))
+        .map_err(|e| e.message)?;
+    serde_json::from_value(result).map_err(|e| e.to_string())
+}
+
+/// Try creating a note via the notes-service. Returns (id, body).
+fn create_via_service(
+    title: &str,
+    body: &str,
+    tags: Vec<String>,
+) -> Result<yantrik_ipc_contracts::notes::NoteContent, String> {
+    use yantrik_ipc_transport::SyncRpcClient;
+
+    let client = SyncRpcClient::for_service("notes");
+    let result = client
+        .call(
+            "notes.create",
+            serde_json::json!({ "title": title, "body": body, "tags": tags }),
+        )
+        .map_err(|e| e.message)?;
+    serde_json::from_value(result).map_err(|e| e.to_string())
+}
+
+/// Try updating a note via the notes-service.
+fn update_via_service(note_id: &str, title: &str, body: &str) -> Result<(), String> {
+    use yantrik_ipc_transport::SyncRpcClient;
+
+    let client = SyncRpcClient::for_service("notes");
+    client
+        .call(
+            "notes.update",
+            serde_json::json!({ "note_id": note_id, "title": title, "body": body }),
+        )
+        .map_err(|e| e.message)?;
+    Ok(())
+}
+
+/// Try deleting a note via the notes-service.
+fn delete_via_service(note_id: &str) -> Result<(), String> {
+    use yantrik_ipc_transport::SyncRpcClient;
+
+    let client = SyncRpcClient::for_service("notes");
+    client
+        .call("notes.delete", serde_json::json!({ "note_id": note_id }))
+        .map_err(|e| e.message)?;
+    Ok(())
+}
+
+/// Try setting pinned status via the notes-service.
+fn set_pinned_via_service(note_id: &str, pinned: bool) -> Result<(), String> {
+    use yantrik_ipc_transport::SyncRpcClient;
+
+    let client = SyncRpcClient::for_service("notes");
+    client
+        .call(
+            "notes.set_pinned",
+            serde_json::json!({ "note_id": note_id, "pinned": pinned }),
+        )
+        .map_err(|e| e.message)?;
+    Ok(())
+}
+
+/// Try setting tags via the notes-service.
+fn set_tags_via_service(note_id: &str, tags: Vec<String>) -> Result<(), String> {
+    use yantrik_ipc_transport::SyncRpcClient;
+
+    let client = SyncRpcClient::for_service("notes");
+    client
+        .call(
+            "notes.set_tags",
+            serde_json::json!({ "note_id": note_id, "tags": tags }),
+        )
+        .map_err(|e| e.message)?;
+    Ok(())
+}
+
+/// Try searching notes via the notes-service.
+fn search_via_service(query: &str) -> Result<Vec<NoteEntry>, String> {
+    use yantrik_ipc_transport::SyncRpcClient;
+
+    let client = SyncRpcClient::for_service("notes");
+    let result = client
+        .call("notes.search", serde_json::json!({ "query": query }))
+        .map_err(|e| e.message)?;
+    let summaries: Vec<yantrik_ipc_contracts::notes::NoteSummary> =
+        serde_json::from_value(result).map_err(|e| e.to_string())?;
+
+    Ok(summaries
+        .into_iter()
+        .map(|s| {
+            let tag_preview = s.tags.first().cloned().unwrap_or_default();
+            NoteEntry {
+                title: s.title.into(),
+                filename: s.id.into(),
+                modified: s.modified_at.into(),
+                preview: s.snippet.into(),
+                is_pinned: s.pinned,
+                tags: tag_preview.into(),
+                created: s.created_at.into(),
+                word_count: s.word_count as i32,
+            }
+        })
+        .collect())
+}
+
+/// Folder index to service folder name.
+fn folder_name(idx: i32) -> Option<&'static str> {
+    match idx {
+        0 => None,            // All
+        1 => Some("favorites"),
+        2 => Some("recent"),
+        _ => None,
+    }
+}
+
 /// Metadata sidecar for a note (stored as `<note>.meta` alongside the `.md` file).
 /// Format: `pinned:<bool>\ntags:<comma-separated>\n`
 #[derive(Default, Clone)]
@@ -73,6 +231,25 @@ pub fn wire(ui: &App, ctx: &AppContext) {
     let ui_weak = ui.as_weak();
     ui.on_notes_new(move || {
         let dir = nd.clone();
+        let content = "# New Note\n\n";
+
+        // Try service first
+        if let Ok(note) = create_via_service("New Note", content, vec![]) {
+            *cf.borrow_mut() = note.id.clone();
+            if let Some(ui) = ui_weak.upgrade() {
+                ui.set_notes_current_content(note.body.into());
+                ui.set_notes_current_title(note.title.into());
+                ui.set_notes_is_modified(false);
+                ui.set_notes_current_tags("".into());
+                let folder = *af.borrow();
+                refresh_list(&ui, &dir, folder);
+                ui.set_notes_selected_index(0);
+            }
+            tracing::info!(id = %note.id, "New note created via service");
+            return;
+        }
+
+        // Fallback: direct filesystem
         let _ = std::fs::create_dir_all(&dir);
 
         let ts = std::time::SystemTime::now()
@@ -82,7 +259,6 @@ pub fn wire(ui: &App, ctx: &AppContext) {
         let filename = format!("{}-untitled.md", ts);
         let path = dir.join(&filename);
 
-        let content = "# New Note\n\n";
         if let Err(e) = std::fs::write(&path, content) {
             tracing::error!(error = %e, "Failed to create note");
             return;
@@ -115,8 +291,28 @@ pub fn wire(ui: &App, ctx: &AppContext) {
     let ui_weak = ui.as_weak();
     ui.on_notes_new_from_template(move |template| {
         let dir = nd.clone();
-        let _ = std::fs::create_dir_all(&dir);
         let template = template.to_string();
+        let content = template_content(&template);
+        let title = extract_title(content);
+
+        // Try service first
+        if let Ok(note) = create_via_service(&title, content, vec![template.clone()]) {
+            *cf.borrow_mut() = note.id.clone();
+            if let Some(ui) = ui_weak.upgrade() {
+                ui.set_notes_current_content(note.body.into());
+                ui.set_notes_current_title(note.title.into());
+                ui.set_notes_is_modified(false);
+                ui.set_notes_current_tags(note.tags.join(",").into());
+                let folder = *af.borrow();
+                refresh_list(&ui, &dir, folder);
+                ui.set_notes_selected_index(0);
+            }
+            tracing::info!(id = %note.id, template = %template, "New note from template via service");
+            return;
+        }
+
+        // Fallback: direct filesystem
+        let _ = std::fs::create_dir_all(&dir);
 
         let ts = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -126,7 +322,6 @@ pub fn wire(ui: &App, ctx: &AppContext) {
         let filename = format!("{}-{}.md", ts, slug);
         let path = dir.join(&filename);
 
-        let content = template_content(&template);
         if let Err(e) = std::fs::write(&path, content) {
             tracing::error!(error = %e, "Failed to create note from template");
             return;
@@ -143,7 +338,7 @@ pub fn wire(ui: &App, ctx: &AppContext) {
 
         if let Some(ui) = ui_weak.upgrade() {
             ui.set_notes_current_content(content.into());
-            ui.set_notes_current_title(extract_title(content).into());
+            ui.set_notes_current_title(title.into());
             ui.set_notes_is_modified(false);
             ui.set_notes_current_tags(meta.tags.into());
             update_metadata(&ui, &path, content);
@@ -713,13 +908,38 @@ fn notes_directory() -> PathBuf {
 }
 
 /// Refresh the note list and folder counts for the UI.
+/// Tries the notes-service first for folder-filtered listing, falls back to filesystem.
 fn refresh_list(ui: &App, dir: &PathBuf, active_folder: i32) {
-    let all = scan_notes(dir);
+    // Try service-based listing with folder filter
+    if let Ok(all_entries) = list_via_service(None) {
+        let all_count = all_entries.len() as i32;
+        let fav_count = all_entries.iter().filter(|e| e.is_pinned).count() as i32;
+
+        // For recent count, try service with "recent" folder
+        let recent_count = list_via_service(Some("recent"))
+            .map(|r| r.len() as i32)
+            .unwrap_or(0);
+
+        ui.set_notes_folder_all_count(all_count);
+        ui.set_notes_folder_fav_count(fav_count);
+        ui.set_notes_folder_recent_count(recent_count);
+
+        let filtered = match folder_name(active_folder) {
+            Some(f) => list_via_service(Some(f)).unwrap_or(all_entries),
+            None => all_entries,
+        };
+        let count = filtered.len() as i32;
+        ui.set_notes_list(ModelRc::new(VecModel::from(filtered)));
+        ui.set_notes_note_count(count);
+        return;
+    }
+
+    // Fallback: direct filesystem
+    let all = scan_notes_fs(dir);
 
     // Compute folder counts
     let all_count = all.len() as i32;
     let fav_count = all.iter().filter(|e| e.is_pinned).count() as i32;
-    // Recent = modified in last 7 days (use the filename timestamp prefix)
     let recent_count = count_recent(&all, dir);
 
     ui.set_notes_folder_all_count(all_count);
@@ -802,7 +1022,19 @@ fn update_metadata(ui: &App, path: &std::path::Path, content: &str) {
 }
 
 /// Scan notes directory and return entries sorted by modification time (newest first).
+/// Tries the notes-service first, falls back to direct filesystem access.
 fn scan_notes(dir: &PathBuf) -> Vec<NoteEntry> {
+    // Try service first
+    if let Ok(entries) = list_via_service(None) {
+        return entries;
+    }
+
+    // Fallback: direct filesystem
+    scan_notes_fs(dir)
+}
+
+/// Direct filesystem scan of notes directory.
+fn scan_notes_fs(dir: &PathBuf) -> Vec<NoteEntry> {
     let mut entries = Vec::new();
 
     let read_dir = match std::fs::read_dir(dir) {

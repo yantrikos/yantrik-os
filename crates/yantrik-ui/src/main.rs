@@ -111,22 +111,34 @@ fn main() {
 }
 
 /// Start background services via the ServiceManager.
-/// Services are discovered from the binary directory alongside the main executable.
+/// Discovers services from manifests in the services directory, falling back
+/// to hardcoded registrations for built-in services.
 fn start_services() -> yantrik_shell_core::service_manager::ServiceManager {
     use yantrik_shell_core::service_manager::ServiceManager;
 
     // Services binary dir: same directory as the main yantrik-ui binary
-    let services_dir = std::env::current_exe()
+    let bin_dir = std::env::current_exe()
         .ok()
         .and_then(|p| p.parent().map(|d| d.to_path_buf()))
         .unwrap_or_else(|| PathBuf::from("."));
 
-    let mgr = ServiceManager::new(services_dir);
+    let mgr = ServiceManager::new(bin_dir.clone());
 
-    // Register built-in services
+    // Try manifest-based discovery first (installed services have yantrik.toml)
+    let services_dir = bin_dir.join("services");
+    if services_dir.is_dir() {
+        mgr.scan_and_register(&services_dir);
+        tracing::info!(path = %services_dir.display(), "Scanned service manifests");
+    }
+
+    // Register built-in services as fallback (for dev builds without manifest dirs)
     mgr.register("weather", "weather-service", true);
     mgr.register("system-monitor", "system-monitor-service", true);
     mgr.register("notes", "notes-service", false);
+    mgr.register("notifications", "notifications-service", true);
+    mgr.register("calendar", "calendar-service", false);
+    mgr.register("network", "network-service", true);
+    mgr.register("email", "email-service", false);
 
     // Start autostart services (best-effort — binary may not exist in dev)
     mgr.start_autostart();
