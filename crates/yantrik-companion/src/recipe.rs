@@ -58,6 +58,90 @@ pub enum RecipeStep {
         #[serde(default)]
         choices: Option<Vec<String>>,
     },
+    /// LLM synthesis with per-claim citations. Requires source variables from Tool steps.
+    /// Outputs structured CitedOutput JSON stored in `store_as`.
+    ThinkCited {
+        prompt: String,
+        store_as: String,
+        /// Variable names that serve as sources (from prior Tool steps).
+        source_vars: Vec<String>,
+    },
+    /// Deterministic validation of cited output. Strips uncited claims,
+    /// computes evidence strength, produces a cleaned result. No LLM needed.
+    Validate {
+        /// Variable containing CitedOutput JSON (from ThinkCited).
+        input_var: String,
+        store_as: String,
+    },
+    /// Format validated data for user presentation.
+    /// Supports multiple output formats.
+    Render {
+        /// Variable containing validated output.
+        input_var: String,
+        store_as: String,
+        /// Output format.
+        #[serde(default)]
+        format: RenderFormat,
+    },
+}
+
+/// Output format for Render steps.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub enum RenderFormat {
+    /// Bullet-point summary (default).
+    #[default]
+    Summary,
+    /// Markdown table.
+    Table,
+    /// Side-by-side comparison grid.
+    Comparison,
+    /// Numbered card layout.
+    Cards,
+}
+
+// ── Citation Types ──
+
+/// A single claim with source citations.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CitedClaim {
+    /// The claim text.
+    pub text: String,
+    /// Source variable names that back this claim.
+    #[serde(default)]
+    pub sources: Vec<String>,
+    /// Confidence: "high", "medium", "low", "uncited".
+    #[serde(default = "default_confidence")]
+    pub confidence: String,
+}
+
+fn default_confidence() -> String { "uncited".to_string() }
+
+/// Structured output from ThinkCited steps.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CitedOutput {
+    /// Section title.
+    pub title: String,
+    /// Claims with source citations.
+    pub claims: Vec<CitedClaim>,
+    /// Overall evidence strength.
+    #[serde(default)]
+    pub evidence_status: EvidenceStatus,
+}
+
+/// How well-supported the evidence is.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub enum EvidenceStatus {
+    /// 3+ independent sources confirm.
+    Strong,
+    /// 2 sources or 1 high-quality source.
+    Moderate,
+    /// 1 source only.
+    Thin,
+    /// Sources disagree.
+    Conflicting,
+    /// Not enough data.
+    #[default]
+    Insufficient,
 }
 
 /// What to do when a Tool step fails.

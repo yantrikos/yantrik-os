@@ -20,6 +20,6 @@ pub use connectors::{Connector, SeedEntity};
 pub use instincts::Instinct;
 pub use permission::{PermissionLevel, parse_permission};
 pub use types::{
-    AgentResponse, CompanionState, InstinctCategory, ProactiveMessage,
+    AgentResponse, AutonomyTier, CompanionState, InstinctCategory, ProactiveMessage,
     TimeSensitivity, Urge, UrgeSpec,
 };

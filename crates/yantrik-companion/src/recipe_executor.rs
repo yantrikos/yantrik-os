@@ -6,7 +6,7 @@
 
 use crate::companion::CompanionService;
 use crate::recipe::{
-    Condition, ErrorAction, RecipeStatus, RecipeStep, RecipeStore, StepResult,
+    ErrorAction, RecipeStatus, RecipeStep, RecipeStore, StepResult,
     WaitCondition, resolve_vars, resolve_vars_in_json,
 };
 use yantrik_ml::{ChatMessage, GenerationConfig};
@@ -284,7 +284,354 @@ fn execute_step(
             deliver_notification(service, "", &resolved_question);
             StepResult::Waiting
         }
+
+        RecipeStep::ThinkCited {
+            prompt,
+            store_as,
+            source_vars,
+        } => execute_think_cited(service, recipe_id, prompt, store_as, source_vars, vars),
+
+        RecipeStep::Validate {
+            input_var,
+            store_as,
+        } => execute_validate(service, recipe_id, input_var, store_as, vars),
+
+        RecipeStep::Render {
+            input_var,
+            store_as,
+            format,
+        } => execute_render(service, recipe_id, input_var, store_as, format, vars),
     }
+}
+
+// ── ThinkCited: LLM synthesis with per-claim citations ──
+
+fn execute_think_cited(
+    service: &mut CompanionService,
+    recipe_id: &str,
+    prompt: &str,
+    store_as: &str,
+    source_vars: &[String],
+    vars: &HashMap<String, serde_json::Value>,
+) -> StepResult {
+    use crate::recipe::{CitedClaim, CitedOutput, EvidenceStatus};
+
+    let resolved_prompt = resolve_vars(prompt, vars);
+
+    // Build source context: list each source variable and its content
+    let mut source_context = String::new();
+    for (i, src_name) in source_vars.iter().enumerate() {
+        let content = vars
+            .get(src_name)
+            .and_then(|v| v.as_str())
+            .unwrap_or("(no data)");
+        source_context.push_str(&format!(
+            "\n[SOURCE:{}] (from step '{}'): {}\n",
+            i + 1,
+            src_name,
+            content
+        ));
+    }
+
+    let citation_instruction = format!(
+        "You have the following sources:\n{}\n\n\
+         {}\n\n\
+         IMPORTANT: Output JSON with this exact structure:\n\
+         {{\n\
+           \"title\": \"<section title>\",\n\
+           \"claims\": [\n\
+             {{\"text\": \"<claim>\", \"sources\": [\"<source_var_name>\", ...]}},\n\
+             ...\n\
+           ]\n\
+         }}\n\
+         Each claim MUST reference which source(s) support it by variable name.\n\
+         If a fact has no source, do NOT include it.\n\
+         Output ONLY the JSON, no other text.",
+        source_context, resolved_prompt
+    );
+
+    let messages = vec![
+        ChatMessage::system(&format!(
+            "You are {}. You produce citation-backed analysis. \
+             Every claim must reference its source. Never invent facts.",
+            service.config.personality.name
+        )),
+        ChatMessage::user(&citation_instruction),
+    ];
+
+    let gen_config = GenerationConfig {
+        max_tokens: service.config.llm.max_tokens,
+        temperature: 0.2, // Low temp for structured output
+        ..Default::default()
+    };
+
+    match service.llm.chat(&messages, &gen_config, None) {
+        Ok(r) => {
+            let text = strip_think_tags(&r.text);
+            let json_text = extract_json_object(&text);
+
+            // Try to parse as CitedOutput
+            let cited_output = match serde_json::from_str::<CitedOutput>(&json_text) {
+                Ok(mut output) => {
+                    // Compute confidence for each claim based on source count
+                    for claim in &mut output.claims {
+                        claim.confidence = match claim.sources.len() {
+                            0 => "uncited".to_string(),
+                            1 => "low".to_string(),
+                            2 => "medium".to_string(),
+                            _ => "high".to_string(),
+                        };
+                    }
+                    // Compute overall evidence status
+                    output.evidence_status = compute_evidence_status(&output.claims, source_vars);
+                    output
+                }
+                Err(_) => {
+                    // Fallback: wrap raw text as a single uncited claim
+                    CitedOutput {
+                        title: "Analysis".to_string(),
+                        claims: vec![CitedClaim {
+                            text: truncate(&text),
+                            sources: vec![],
+                            confidence: "uncited".to_string(),
+                        }],
+                        evidence_status: EvidenceStatus::Insufficient,
+                    }
+                }
+            };
+
+            let val = serde_json::to_value(&cited_output).unwrap_or_default();
+            RecipeStore::set_var(service.db.conn(), recipe_id, store_as, &val);
+            StepResult::Continue
+        }
+        Err(e) => StepResult::Failed(format!("LLM error in ThinkCited: {}", e)),
+    }
+}
+
+fn compute_evidence_status(
+    claims: &[crate::recipe::CitedClaim],
+    source_vars: &[String],
+) -> crate::recipe::EvidenceStatus {
+    use crate::recipe::EvidenceStatus;
+
+    if claims.is_empty() {
+        return EvidenceStatus::Insufficient;
+    }
+
+    let cited_count = claims.iter().filter(|c| !c.sources.is_empty()).count();
+    let total = claims.len();
+
+    if cited_count == 0 {
+        return EvidenceStatus::Insufficient;
+    }
+
+    // Check for conflicting sources (same source cited for contradictory claims)
+    // Simple heuristic: if > 50% of unique sources are used, good coverage
+    let unique_sources: std::collections::HashSet<&str> = claims
+        .iter()
+        .flat_map(|c| c.sources.iter().map(|s| s.as_str()))
+        .collect();
+
+    let source_coverage = if source_vars.is_empty() {
+        0.0
+    } else {
+        unique_sources.len() as f64 / source_vars.len() as f64
+    };
+
+    let cite_ratio = cited_count as f64 / total as f64;
+
+    if cite_ratio >= 0.8 && source_coverage >= 0.6 {
+        EvidenceStatus::Strong
+    } else if cite_ratio >= 0.5 {
+        EvidenceStatus::Moderate
+    } else {
+        EvidenceStatus::Thin
+    }
+}
+
+// ── Validate: deterministic claim verification ──
+
+fn execute_validate(
+    service: &mut CompanionService,
+    recipe_id: &str,
+    input_var: &str,
+    store_as: &str,
+    vars: &HashMap<String, serde_json::Value>,
+) -> StepResult {
+    use crate::recipe::{CitedOutput, EvidenceStatus};
+
+    let input = match vars.get(input_var) {
+        Some(v) => v.clone(),
+        None => return StepResult::Failed(format!("Validate: variable '{}' not found", input_var)),
+    };
+
+    let mut output: CitedOutput = match serde_json::from_value(input.clone()) {
+        Ok(o) => o,
+        Err(_) => {
+            // If input is a plain string, wrap it
+            let text = input.as_str().unwrap_or("").to_string();
+            crate::recipe::CitedOutput {
+                title: "Validation".to_string(),
+                claims: vec![crate::recipe::CitedClaim {
+                    text,
+                    sources: vec![],
+                    confidence: "uncited".to_string(),
+                }],
+                evidence_status: EvidenceStatus::Insufficient,
+            }
+        }
+    };
+
+    // Strip uncited claims
+    let before_count = output.claims.len();
+    output.claims.retain(|c| !c.sources.is_empty());
+    let stripped = before_count - output.claims.len();
+
+    // Recompute evidence status after stripping
+    let cited_count = output.claims.len();
+    output.evidence_status = if cited_count == 0 {
+        EvidenceStatus::Insufficient
+    } else if cited_count >= 3 {
+        EvidenceStatus::Strong
+    } else if cited_count >= 2 {
+        EvidenceStatus::Moderate
+    } else {
+        EvidenceStatus::Thin
+    };
+
+    // Store validation report alongside
+    let report = serde_json::json!({
+        "total_claims": before_count,
+        "cited_claims": cited_count,
+        "stripped_uncited": stripped,
+        "evidence_status": format!("{:?}", output.evidence_status),
+    });
+    let report_key = format!("{}_report", store_as);
+    RecipeStore::set_var(service.db.conn(), recipe_id, &report_key, &report);
+
+    // Store cleaned output
+    let val = serde_json::to_value(&output).unwrap_or_default();
+    RecipeStore::set_var(service.db.conn(), recipe_id, store_as, &val);
+
+    tracing::debug!(
+        recipe_id,
+        before = before_count,
+        after = cited_count,
+        stripped,
+        "Validate step: claims filtered"
+    );
+
+    StepResult::Continue
+}
+
+// ── Render: format validated data for presentation ──
+
+fn execute_render(
+    service: &mut CompanionService,
+    recipe_id: &str,
+    input_var: &str,
+    store_as: &str,
+    format: &crate::recipe::RenderFormat,
+    vars: &HashMap<String, serde_json::Value>,
+) -> StepResult {
+    use crate::recipe::{CitedOutput, EvidenceStatus, RenderFormat};
+
+    let input = match vars.get(input_var) {
+        Some(v) => v.clone(),
+        None => return StepResult::Failed(format!("Render: variable '{}' not found", input_var)),
+    };
+
+    // Try to parse as CitedOutput; fall back to plain text
+    let rendered = match serde_json::from_value::<CitedOutput>(input.clone()) {
+        Ok(output) => render_cited_output(&output, format),
+        Err(_) => {
+            // Plain string — just pass through
+            input.as_str().unwrap_or("(no data)").to_string()
+        }
+    };
+
+    let val = serde_json::Value::String(rendered);
+    RecipeStore::set_var(service.db.conn(), recipe_id, store_as, &val);
+    StepResult::Continue
+}
+
+fn render_cited_output(
+    output: &crate::recipe::CitedOutput,
+    format: &crate::recipe::RenderFormat,
+) -> String {
+    use crate::recipe::{EvidenceStatus, RenderFormat};
+
+    if output.claims.is_empty() {
+        return format!(
+            "**{}**\n\nNo verified information available.",
+            output.title
+        );
+    }
+
+    let evidence_label = match &output.evidence_status {
+        EvidenceStatus::Strong => "Well-supported",
+        EvidenceStatus::Moderate => "Moderately supported",
+        EvidenceStatus::Thin => "Limited evidence",
+        EvidenceStatus::Conflicting => "Conflicting sources",
+        EvidenceStatus::Insufficient => "Insufficient evidence",
+    };
+
+    let mut result = format!("**{}** _({}__)_\n\n", output.title, evidence_label);
+
+    match format {
+        RenderFormat::Summary => {
+            for claim in &output.claims {
+                let marker = match claim.confidence.as_str() {
+                    "high" => "",
+                    "medium" => "",
+                    "low" => " _(limited source)_",
+                    _ => " _(unverified)_",
+                };
+                result.push_str(&format!("- {}{}\n", claim.text, marker));
+            }
+        }
+        RenderFormat::Table => {
+            result.push_str("| Finding | Confidence | Sources |\n");
+            result.push_str("|---|---|---|\n");
+            for claim in &output.claims {
+                result.push_str(&format!(
+                    "| {} | {} | {} |\n",
+                    claim.text,
+                    claim.confidence,
+                    claim.sources.join(", ")
+                ));
+            }
+        }
+        RenderFormat::Comparison => {
+            // Group claims by their first source for side-by-side
+            for (i, claim) in output.claims.iter().enumerate() {
+                result.push_str(&format!(
+                    "**{}. {}**\n  Sources: {}\n  Confidence: {}\n\n",
+                    i + 1,
+                    claim.text,
+                    if claim.sources.is_empty() {
+                        "none".to_string()
+                    } else {
+                        claim.sources.join(", ")
+                    },
+                    claim.confidence
+                ));
+            }
+        }
+        RenderFormat::Cards => {
+            for (i, claim) in output.claims.iter().enumerate() {
+                result.push_str(&format!(
+                    "┌─ {} ─────────────────────\n│ {}\n│ Sources: {} | Confidence: {}\n└─────────────────────────────\n\n",
+                    i + 1,
+                    claim.text,
+                    claim.sources.join(", "),
+                    claim.confidence
+                ));
+            }
+        }
+    }
+
+    result
 }
 
 /// Deliver a recipe notification as a proactive message.
@@ -487,13 +834,21 @@ fn strip_think_tags(text: &str) -> String {
 }
 
 fn extract_json_array(text: &str) -> String {
-    // Find first [ and last ] to extract JSON array
     if let Some(start) = text.find('[') {
         if let Some(end) = text.rfind(']') {
             return text[start..=end].to_string();
         }
     }
     "[]".to_string()
+}
+
+fn extract_json_object(text: &str) -> String {
+    if let Some(start) = text.find('{') {
+        if let Some(end) = text.rfind('}') {
+            return text[start..=end].to_string();
+        }
+    }
+    "{}".to_string()
 }
 
 fn chrono_now() -> (u8, u8) {

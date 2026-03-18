@@ -3,7 +3,7 @@
 //! Used by `UrgeSpec::new()` to assign sensible defaults without requiring
 //! each instinct to manually specify category and sensitivity.
 
-use crate::types::{InstinctCategory, TimeSensitivity};
+use crate::types::{AutonomyTier, InstinctCategory, TimeSensitivity};
 
 /// Centralized default category for an instinct name.
 pub fn default_category(instinct_name: &str) -> InstinctCategory {
@@ -49,5 +49,24 @@ pub fn default_time_sensitivity(instinct_name: &str) -> TimeSensitivity {
         | "InterestIntelligence" | "Routine" => TimeSensitivity::Soon,
         // Tier 3: Ambient
         _ => TimeSensitivity::Ambient,
+    }
+}
+
+/// Centralized default autonomy tier for an instinct name.
+///
+/// Most instincts produce suggestions (NotifySuggestion). Background maintenance
+/// instincts run silently. Actions that affect the outside world require permission.
+pub fn default_autonomy(instinct_name: &str) -> AutonomyTier {
+    match instinct_name {
+        // Silent: internal maintenance, no user impact
+        "MemoryWeaver" | "PatternBreaker" | "Cortex" | "CK5" | "ConflictAlerting" => {
+            AutonomyTier::SilentBackground
+        }
+        // Interrupt: security, critical system issues
+        "SecurityAlert" | "SystemCritical" => AutonomyTier::InterruptNow,
+        // Ask permission: actions that affect external systems
+        "Automation" | "scheduler" => AutonomyTier::AskPermission,
+        // Default: show as suggestion
+        _ => AutonomyTier::NotifySuggestion,
     }
 }

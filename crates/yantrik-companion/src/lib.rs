@@ -49,6 +49,7 @@ pub mod security;
 pub mod telegram;
 pub mod task_manager;
 pub mod query_planner;
+pub mod interjection;
 pub mod recipe;
 pub mod recipe_executor;
 pub mod recipe_templates;

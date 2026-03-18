@@ -43,6 +43,29 @@ pub enum InstinctCategory {
     Meta,
 }
 
+/// How much user interaction an urge requires before acting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum AutonomyTier {
+    /// Act silently in the background. User sees nothing unless they check.
+    /// Example: memory consolidation, cache cleanup.
+    SilentBackground,
+    /// Show a notification/suggestion. User can ignore it.
+    /// Example: "You might want to check your email" whisper card.
+    NotifySuggestion,
+    /// Ask permission before acting. Block until approved.
+    /// Example: "Should I send this email?" with approve/deny buttons.
+    AskPermission,
+    /// Interrupt immediately — break focus mode for urgent items.
+    /// Example: security alert, critical system failure.
+    InterruptNow,
+}
+
+impl Default for AutonomyTier {
+    fn default() -> Self {
+        Self::NotifySuggestion
+    }
+}
+
 /// An urge specification produced by an instinct.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UrgeSpec {
@@ -61,6 +84,9 @@ pub struct UrgeSpec {
     pub category: InstinctCategory,
     /// If true, bypasses urgency threshold — always delivers (e.g. morning brief).
     pub guaranteed: bool,
+    /// How much user interaction is needed before this urge acts.
+    #[serde(default)]
+    pub autonomy: AutonomyTier,
 }
 
 impl UrgeSpec {
@@ -76,6 +102,7 @@ impl UrgeSpec {
             time_sensitivity: crate::urge_defaults::default_time_sensitivity(instinct_name),
             category: crate::urge_defaults::default_category(instinct_name),
             guaranteed: false,
+            autonomy: crate::urge_defaults::default_autonomy(instinct_name),
         }
     }
 
@@ -106,6 +133,11 @@ impl UrgeSpec {
 
     pub fn with_category(mut self, cat: InstinctCategory) -> Self {
         self.category = cat;
+        self
+    }
+
+    pub fn with_autonomy(mut self, tier: AutonomyTier) -> Self {
+        self.autonomy = tier;
         self
     }
 }
