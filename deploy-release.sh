@@ -115,27 +115,76 @@ if [ "$CHANNEL" = "nightly" ] && [ "$SKIP_BUILD" = false ]; then
                 $WSL_TARGET/release/.fingerprint/yantrik-ui-* \
                 $WSL_TARGET/release/.fingerprint/yantrik-[0-9a-f]*"
 
+    # Build 1: Default (CPU-only, works everywhere)
+    step "Building CPU variant..."
     wsl.exe -d Ubuntu -- bash -lc \
         "cd /mnt/c/Users/sync/codes/yantrik-os && \
          RUSTFLAGS=\"-A warnings\" CARGO_TARGET_DIR=$WSL_TARGET \
-         cargo build --release -p yantrik-ui -p yantrik 2>&1" \
-        || fail "Build failed"
+         cargo build --release -p yantrik-ui -p yantrik \
+            -p weather-service -p system-monitor-service -p notes-service \
+            -p notifications-service -p calendar-service -p network-service \
+            -p email-service 2>&1" \
+        || fail "CPU build failed"
 
-    # Verify binaries exist
     wsl.exe -d Ubuntu -- bash -lc \
         "test -f $WSL_TARGET/release/yantrik-ui && \
          test -f $WSL_TARGET/release/yantrik" \
-        || fail "Binaries not found after build"
+        || fail "CPU binaries not found"
+    ok "CPU build succeeded"
 
-    ok "Build succeeded"
-
-    # Copy to staging
-    step "Staging binaries..."
+    # Copy CPU binaries + services to staging
     mkdir -p "$STAGING"
     wsl.exe -d Ubuntu -- bash -lc \
         "cp $WSL_TARGET/release/yantrik-ui /mnt/c/tmp/yantrik-release/yantrik-ui && \
          cp $WSL_TARGET/release/yantrik    /mnt/c/tmp/yantrik-release/yantrik"
-    ok "Binaries staged at $STAGING"
+
+    # Copy service binaries to staging
+    SERVICES="weather-service system-monitor-service notes-service notifications-service calendar-service network-service email-service"
+    for svc in $SERVICES; do
+        wsl.exe -d Ubuntu -- bash -lc \
+            "test -f $WSL_TARGET/release/$svc && \
+             cp $WSL_TARGET/release/$svc /mnt/c/tmp/yantrik-release/$svc" \
+            && ok "Staged $svc" \
+            || warn "Service $svc not found (non-fatal)"
+    done
+
+    # GPU-accelerated variants
+    # Format: name:feature_flag:extra_env
+    # CUDA = NVIDIA (GeForce, Quadro, Tesla)
+    # ROCm = AMD (Radeon RX, Instinct)
+    # Vulkan = Universal (Intel Arc, AMD, NVIDIA — portable but slightly slower)
+    # Prerequisites: CUDA needs /usr/local/cuda symlinks (see docs/getting-started.md)
+    #   sudo mkdir -p /usr/local/cuda
+    #   sudo ln -sf /usr/lib/x86_64-linux-gnu /usr/local/cuda/lib64
+    #   sudo ln -sf /usr/include /usr/local/cuda/include
+    GPU_VARIANTS=(
+        "cuda:llamacpp-cuda"
+        "rocm:llamacpp-rocm"
+        "vulkan:llamacpp-vulkan"
+    )
+    for variant_spec in "${GPU_VARIANTS[@]}"; do
+        IFS=':' read -r variant_name feature_flag <<< "$variant_spec"
+        step "Building $variant_name variant..."
+
+        wsl.exe -d Ubuntu -- bash -lc \
+            "rm -rf $WSL_TARGET/release/.fingerprint/yantrik-ui-* \
+                    $WSL_TARGET/release/.fingerprint/yantrik-ml-* \
+                    $WSL_TARGET/release/.fingerprint/llama-cpp-sys-2-* \
+                    $WSL_TARGET/release/build/llama-cpp-sys-2-*"
+
+        if wsl.exe -d Ubuntu -- bash -lc \
+            "cd /mnt/c/Users/sync/codes/yantrik-os && \
+             RUSTFLAGS=\"-A warnings\" CARGO_TARGET_DIR=$WSL_TARGET \
+             cargo build --release -p yantrik-ui --features $feature_flag 2>&1"; then
+            wsl.exe -d Ubuntu -- bash -lc \
+                "cp $WSL_TARGET/release/yantrik-ui /mnt/c/tmp/yantrik-release/yantrik-ui-$variant_name"
+            ok "$variant_name build succeeded"
+        else
+            warn "$variant_name build failed — $variant_name variant will not be published"
+        fi
+    done
+
+    ok "All binaries staged at $STAGING"
 
 elif [ "$CHANNEL" = "nightly" ] && [ "$SKIP_BUILD" = true ]; then
     step "Skipping build (--skip-build)"
@@ -145,29 +194,53 @@ elif [ "$CHANNEL" = "nightly" ] && [ "$SKIP_BUILD" = true ]; then
     wsl.exe -d Ubuntu -- bash -lc \
         "cp $WSL_TARGET/release/yantrik-ui /mnt/c/tmp/yantrik-release/yantrik-ui && \
          cp $WSL_TARGET/release/yantrik    /mnt/c/tmp/yantrik-release/yantrik"
+    # Copy CUDA variant if it exists
+    wsl.exe -d Ubuntu -- bash -lc \
+        "test -f $WSL_TARGET/release/yantrik-ui && \
+         cp $WSL_TARGET/release/yantrik-ui /mnt/c/tmp/yantrik-release/yantrik-ui-cuda 2>/dev/null || true"
+    # Copy service binaries
+    SERVICES="weather-service system-monitor-service notes-service notifications-service calendar-service network-service email-service"
+    for svc in $SERVICES; do
+        wsl.exe -d Ubuntu -- bash -lc \
+            "test -f $WSL_TARGET/release/$svc && \
+             cp $WSL_TARGET/release/$svc /mnt/c/tmp/yantrik-release/$svc" 2>/dev/null || true
+    done
     ok "Using existing binaries"
 fi
 
 # ═══════════════════════════════════════════════════════════════
 # STEP 2: Promote (beta/stable — copy from previous channel)
 # ═══════════════════════════════════════════════════════════════
+GPU_VARIANT_NAMES="cuda rocm vulkan"
+SERVICE_NAMES="weather-service system-monitor-service notes-service notifications-service calendar-service network-service email-service"
+
 if [ "$CHANNEL" = "beta" ]; then
     step "Promoting nightly → beta..."
-    ssh $SSH_OPTS root@$RELEASES_IP \
-        "cp /var/www/releases/nightly/yantrik-ui /var/www/releases/beta/yantrik-ui && \
-         cp /var/www/releases/nightly/yantrik    /var/www/releases/beta/yantrik && \
-         cp /var/www/releases/nightly/sha256sums.txt /var/www/releases/beta/sha256sums.txt 2>/dev/null || true" \
-        || fail "Promotion failed"
+    PROMOTE_CMD="cp /var/www/releases/nightly/yantrik-ui /var/www/releases/beta/yantrik-ui && \
+         cp /var/www/releases/nightly/yantrik /var/www/releases/beta/yantrik && \
+         cp /var/www/releases/nightly/sha256sums.txt /var/www/releases/beta/sha256sums.txt 2>/dev/null || true"
+    for gv in $GPU_VARIANT_NAMES; do
+        PROMOTE_CMD="$PROMOTE_CMD; cp /var/www/releases/nightly/yantrik-ui-$gv /var/www/releases/beta/yantrik-ui-$gv 2>/dev/null || true"
+    done
+    for svc in $SERVICE_NAMES; do
+        PROMOTE_CMD="$PROMOTE_CMD; cp /var/www/releases/nightly/$svc /var/www/releases/beta/$svc 2>/dev/null || true"
+    done
+    ssh $SSH_OPTS root@$RELEASES_IP "$PROMOTE_CMD" || fail "Promotion failed"
     ok "Nightly promoted to beta"
 fi
 
 if [ "$CHANNEL" = "stable" ]; then
     step "Promoting beta → stable..."
-    ssh $SSH_OPTS root@$RELEASES_IP \
-        "cp /var/www/releases/beta/yantrik-ui /var/www/releases/stable/yantrik-ui && \
-         cp /var/www/releases/beta/yantrik    /var/www/releases/stable/yantrik && \
-         cp /var/www/releases/beta/sha256sums.txt /var/www/releases/stable/sha256sums.txt 2>/dev/null || true" \
-        || fail "Promotion failed"
+    PROMOTE_CMD="cp /var/www/releases/beta/yantrik-ui /var/www/releases/stable/yantrik-ui && \
+         cp /var/www/releases/beta/yantrik /var/www/releases/stable/yantrik && \
+         cp /var/www/releases/beta/sha256sums.txt /var/www/releases/stable/sha256sums.txt 2>/dev/null || true"
+    for gv in $GPU_VARIANT_NAMES; do
+        PROMOTE_CMD="$PROMOTE_CMD; cp /var/www/releases/beta/yantrik-ui-$gv /var/www/releases/stable/yantrik-ui-$gv 2>/dev/null || true"
+    done
+    for svc in $SERVICE_NAMES; do
+        PROMOTE_CMD="$PROMOTE_CMD; cp /var/www/releases/beta/$svc /var/www/releases/stable/$svc 2>/dev/null || true"
+    done
+    ssh $SSH_OPTS root@$RELEASES_IP "$PROMOTE_CMD" || fail "Promotion failed"
     ok "Beta promoted to stable"
 fi
 
@@ -177,18 +250,39 @@ fi
 if [ "$CHANNEL" = "nightly" ]; then
     step "Uploading to releases server..."
 
-    # Generate checksums
-    (cd "$STAGING" && sha256sum yantrik-ui yantrik > sha256sums.txt)
+    # Generate checksums for all binaries in staging
+    (cd "$STAGING" && sha256sum yantrik-ui yantrik yantrik-ui-* *-service 2>/dev/null > sha256sums.txt)
     ok "SHA256 checksums generated"
 
-    # Upload
+    # Upload all binaries
+    UPLOAD_FILES=("$STAGING/yantrik-ui" "$STAGING/yantrik" "$STAGING/sha256sums.txt")
+    for gv in $GPU_VARIANT_NAMES; do
+        if [ -f "$STAGING/yantrik-ui-$gv" ]; then
+            UPLOAD_FILES+=("$STAGING/yantrik-ui-$gv")
+        fi
+    done
+    # Include service binaries
+    SERVICES="weather-service system-monitor-service notes-service notifications-service calendar-service network-service email-service"
+    for svc in $SERVICES; do
+        if [ -f "$STAGING/$svc" ]; then
+            UPLOAD_FILES+=("$STAGING/$svc")
+        fi
+    done
     scp $SSH_OPTS \
-        "$STAGING/yantrik-ui" \
-        "$STAGING/yantrik" \
-        "$STAGING/sha256sums.txt" \
+        "${UPLOAD_FILES[@]}" \
         "root@$RELEASES_IP:/var/www/releases/nightly/" \
         || fail "Upload failed"
     ok "Binaries uploaded to nightly/"
+    for gv in $GPU_VARIANT_NAMES; do
+        if [ -f "$STAGING/yantrik-ui-$gv" ]; then
+            ok "  includes $gv variant (yantrik-ui-$gv)"
+        fi
+    done
+    for svc in $SERVICES; do
+        if [ -f "$STAGING/$svc" ]; then
+            ok "  includes service: $svc"
+        fi
+    done
 fi
 
 # ═══════════════════════════════════════════════════════════════

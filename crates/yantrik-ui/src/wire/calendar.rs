@@ -14,6 +14,7 @@ use crate::{App, CalendarAttendee, CalendarDay, CalendarEvent, CalendarTemplate,
 use yantrik_companion::calendar;
 use yantrik_companion::config::{CompanionConfig, EmailAccountConfig};
 use yantrik_companion::email;
+use yantrik_ipc_contracts::calendar as cal_contract;
 
 /// Calendar state — tracks current month/year and events.
 struct CalState {
@@ -518,8 +519,92 @@ fn load_calendar_account(config_path: &Option<std::path::PathBuf>) -> Option<(Em
     account.map(|a| (a, path.to_string_lossy().to_string(), db_path))
 }
 
+/// Try fetching calendar events for a month via the calendar-service JSON-RPC.
+/// Returns `Ok(events)` converted to `calendar::CalEvent` format, or `Err` if the service
+/// is unreachable or returns an error.
+fn fetch_events_via_service(year: i32, month: u32) -> Result<Vec<calendar::CalEvent>, String> {
+    use yantrik_ipc_transport::SyncRpcClient;
+
+    let client = SyncRpcClient::for_service("calendar");
+    let month_len = days_in_month(year, month);
+    let start_date = format!("{:04}-{:02}-01", year, month);
+    let end_date = format!("{:04}-{:02}-{:02}", year, month, month_len);
+
+    let result = client
+        .call(
+            "calendar.events",
+            serde_json::json!({ "start_date": start_date, "end_date": end_date }),
+        )
+        .map_err(|e| e.message)?;
+
+    let svc_events: Vec<cal_contract::CalendarEvent> =
+        serde_json::from_value(result).map_err(|e| e.to_string())?;
+
+    // Convert contract events → companion CalEvent for load_google_events compatibility.
+    let events = svc_events
+        .into_iter()
+        .map(|e| calendar::CalEvent {
+            id: e.id,
+            summary: e.title,
+            description: if e.description.is_empty() { None } else { Some(e.description) },
+            location: e.location,
+            start: e.start,
+            end: e.end,
+            is_all_day: e.is_all_day,
+            status: "confirmed".to_string(),
+            html_link: None,
+        })
+        .collect();
+
+    Ok(events)
+}
+
+/// Try creating a calendar event via the calendar-service JSON-RPC.
+/// Returns `Ok(service_event_id)` on success, `Err` if unreachable.
+fn create_event_via_service(
+    title: &str,
+    start: &str,
+    end: &str,
+    description: &str,
+) -> Result<String, String> {
+    use yantrik_ipc_transport::SyncRpcClient;
+
+    let client = SyncRpcClient::for_service("calendar");
+    let mut params = serde_json::json!({
+        "title": title,
+        "start": start,
+        "end": end,
+    });
+    if !description.is_empty() {
+        params["description"] = serde_json::Value::String(description.to_string());
+    }
+
+    let result = client
+        .call("calendar.create_event", params)
+        .map_err(|e| e.message)?;
+
+    let created: cal_contract::CalendarEvent =
+        serde_json::from_value(result).map_err(|e| e.to_string())?;
+    Ok(created.id)
+}
+
+/// Try deleting a calendar event via the calendar-service JSON-RPC.
+fn delete_event_via_service(event_id: &str) -> Result<(), String> {
+    use yantrik_ipc_transport::SyncRpcClient;
+
+    let client = SyncRpcClient::for_service("calendar");
+    client
+        .call(
+            "calendar.delete_event",
+            serde_json::json!({ "id": event_id }),
+        )
+        .map_err(|e| e.message)?;
+    Ok(())
+}
+
 /// Fetch Google Calendar events for a month in a background thread.
-/// Also caches events to the local SQLite `calendar_events` table.
+/// Tries the calendar-service via JSON-RPC first, falling back to direct
+/// Google Calendar API + local cache.
 fn fetch_month_events(
     account: EmailAccountConfig,
     config_path: String,
@@ -530,23 +615,33 @@ fn fetch_month_events(
     db_path: Option<String>,
 ) {
     std::thread::spawn(move || {
-        let mut account = account;
-        let token = match calendar::get_access_token(&mut account, Some(&config_path)) {
-            Ok(t) => t,
-            Err(e) => {
-                tracing::warn!("Calendar OAuth2 token failed: {}", e);
+        // ── Try calendar-service first ──
+        match fetch_events_via_service(year, month) {
+            Ok(events) => {
+                tracing::info!(
+                    "Fetched {} calendar events via service for {:04}-{:02}",
+                    events.len(), year, month,
+                );
+                apply_fetched_events(events, &state, &ui_weak);
                 return;
             }
-        };
+            Err(e) => {
+                tracing::debug!("Calendar service unavailable, falling back to direct: {}", e);
+            }
+        }
 
+        // ── Fallback: direct Google Calendar API ──
+        let mut account = account;
         let month_len = days_in_month(year, month);
         let time_min = format!("{:04}-{:02}-01T00:00:00Z", year, month);
         let time_max = format!("{:04}-{:02}-{:02}T23:59:59Z", year, month, month_len);
 
-        match calendar::list_events(&token, None, Some(&time_min), Some(&time_max), 100, None) {
+        // Try online first, fall back to cached events on any failure
+        let events = match calendar::get_access_token(&mut account, Some(&config_path))
+            .and_then(|token| calendar::list_events(&token, None, Some(&time_min), Some(&time_max), 100, None))
+        {
             Ok(events) => {
                 tracing::info!("Fetched {} calendar events for {:04}-{:02}", events.len(), year, month);
-                // Cache to local SQLite
                 if let Some(ref path) = db_path {
                     if let Ok(conn) = rusqlite::Connection::open(path) {
                         calendar::ensure_table(&conn);
@@ -554,39 +649,83 @@ fn fetch_month_events(
                         tracing::info!("Cached {} calendar events to local DB", events.len());
                     }
                 }
-                if let Ok(mut s) = state.lock() {
-                    s.load_google_events(events);
-                    // Capture data needed for UI update
-                    let month_title: slint::SharedString = s.month_title().into();
-                    let days = s.build_days();
-                    let selected_day = s.selected_day;
-                    let events_for_day = s.events_for_day(selected_day);
-
-                    // Also capture view-mode data
-                    let week_labels: Vec<slint::SharedString> = s.week_info().0.into_iter().map(|l| l.into()).collect();
-                    let week_evts = s.week_time_events();
-                    let day_evts = s.day_time_events();
-                    let day_title: slint::SharedString = s.day_view_title().into();
-                    let cur_hour = current_hour();
-
-                    let _ = slint::invoke_from_event_loop(move || {
-                        if let Some(ui) = ui_weak.upgrade() {
-                            ui.set_cal_month_title(month_title);
-                            ui.set_cal_days(ModelRc::new(VecModel::from(days)));
-                            ui.set_cal_selected_day(selected_day as i32);
-                            ui.set_cal_events_today(ModelRc::new(VecModel::from(events_for_day)));
-                            ui.set_cal_is_loading(false);
-                            ui.set_cal_current_hour(cur_hour);
-                            ui.set_cal_week_day_labels(ModelRc::new(VecModel::from(week_labels)));
-                            ui.set_cal_week_events(ModelRc::new(VecModel::from(week_evts)));
-                            ui.set_cal_day_events(ModelRc::new(VecModel::from(day_evts)));
-                            ui.set_cal_day_view_title(day_title);
-                        }
-                    });
-                }
+                events
             }
             Err(e) => {
-                tracing::warn!("Failed to fetch calendar events: {}", e);
+                tracing::warn!("Failed to fetch calendar events: {} — falling back to local cache", e);
+                if let Some(ref path) = db_path {
+                    if let Ok(conn) = rusqlite::Connection::open(path) {
+                        let cached = calendar::get_cached_events(&conn, &time_min, &time_max);
+                        if !cached.is_empty() {
+                            tracing::info!("Loaded {} cached calendar events", cached.len());
+                        }
+                        cached
+                    } else { vec![] }
+                } else { vec![] }
+            }
+        };
+
+        apply_fetched_events(events, &state, &ui_weak);
+    });
+}
+
+/// Apply fetched events to the calendar state and update the UI.
+/// Shared by both the service path and the direct Google Calendar path.
+fn apply_fetched_events(
+    events: Vec<calendar::CalEvent>,
+    state: &Arc<Mutex<CalState>>,
+    ui_weak: &slint::Weak<App>,
+) {
+    if let Ok(mut s) = state.lock() {
+        s.load_google_events(events);
+        let month_title: slint::SharedString = s.month_title().into();
+        let days = s.build_days();
+        let selected_day = s.selected_day;
+        let events_for_day = s.events_for_day(selected_day);
+        let week_labels: Vec<slint::SharedString> = s.week_info().0.into_iter().map(|l| l.into()).collect();
+        let week_evts = s.week_time_events();
+        let day_evts = s.day_time_events();
+        let day_title: slint::SharedString = s.day_view_title().into();
+        let cur_hour = current_hour();
+
+        let ui_weak = ui_weak.clone();
+        let _ = slint::invoke_from_event_loop(move || {
+            if let Some(ui) = ui_weak.upgrade() {
+                ui.set_cal_month_title(month_title);
+                ui.set_cal_days(ModelRc::new(VecModel::from(days)));
+                ui.set_cal_selected_day(selected_day as i32);
+                ui.set_cal_events_today(ModelRc::new(VecModel::from(events_for_day)));
+                ui.set_cal_is_loading(false);
+                ui.set_cal_current_hour(cur_hour);
+                ui.set_cal_week_day_labels(ModelRc::new(VecModel::from(week_labels)));
+                ui.set_cal_week_events(ModelRc::new(VecModel::from(week_evts)));
+                ui.set_cal_day_events(ModelRc::new(VecModel::from(day_evts)));
+                ui.set_cal_day_view_title(day_title);
+            }
+        });
+    }
+}
+
+/// Service-only fetch — used when no Google Calendar account is configured.
+/// Tries the calendar-service; if unavailable, clears loading state.
+fn fetch_month_events_service_only(
+    year: i32,
+    month: u32,
+    state: Arc<Mutex<CalState>>,
+    ui_weak: slint::Weak<App>,
+) {
+    std::thread::spawn(move || {
+        match fetch_events_via_service(year, month) {
+            Ok(events) => {
+                tracing::info!(
+                    "Fetched {} calendar events via service for {:04}-{:02}",
+                    events.len(), year, month,
+                );
+                apply_fetched_events(events, &state, &ui_weak);
+            }
+            Err(e) => {
+                tracing::debug!("Calendar service unavailable (no Google fallback): {}", e);
+                // Clear loading state
                 let _ = slint::invoke_from_event_loop(move || {
                     if let Some(ui) = ui_weak.upgrade() {
                         ui.set_cal_is_loading(false);
@@ -608,17 +747,20 @@ pub fn wire(ui: &App, ctx: &AppContext) {
 
     // Try to load Google Calendar config
     let cal_info = load_calendar_account(&ctx.config_path);
-    let has_google = cal_info.is_some();
     // Split into (account, config_path) tuple + separate db_path for caching
     let db_path: Option<String> = cal_info.as_ref().map(|(_, _, dp)| dp.clone());
     let cal_account: Option<(EmailAccountConfig, String)> = cal_info.map(|(a, cp, _)| (a, cp));
 
-    // If Google Calendar is configured, fetch events for current month
-    if let Some((account, config_path)) = cal_account.clone() {
+    // Fetch events for current month — try service first, then Google Calendar
+    {
         ui.set_cal_is_loading(true);
         let year = state.lock().map(|s| s.year).unwrap_or(2026);
         let month = state.lock().map(|s| s.month).unwrap_or(3);
-        fetch_month_events(account, config_path, year, month, state.clone(), ui.as_weak(), db_path.clone());
+        if let Some((account, config_path)) = cal_account.clone() {
+            fetch_month_events(account, config_path, year, month, state.clone(), ui.as_weak(), db_path.clone());
+        } else {
+            fetch_month_events_service_only(year, month, state.clone(), ui.as_weak());
+        }
     }
 
     // ── Prev month ──
@@ -638,12 +780,16 @@ pub fn wire(ui: &App, ctx: &AppContext) {
                 s.selected_day = 1;
                 if let Some(ui) = ui_weak.upgrade() {
                     update_ui(&ui, &s);
+                    ui.set_cal_is_loading(true);
 
                     if let Some((ref account, ref config_path)) = cal_account {
-                        ui.set_cal_is_loading(true);
                         fetch_month_events(
                             account.clone(), config_path.clone(),
                             s.year, s.month, st.clone(), ui.as_weak(), db_path.clone(),
+                        );
+                    } else {
+                        fetch_month_events_service_only(
+                            s.year, s.month, st.clone(), ui.as_weak(),
                         );
                     }
                 }
@@ -668,12 +814,16 @@ pub fn wire(ui: &App, ctx: &AppContext) {
                 s.selected_day = 1;
                 if let Some(ui) = ui_weak.upgrade() {
                     update_ui(&ui, &s);
+                    ui.set_cal_is_loading(true);
 
                     if let Some((ref account, ref config_path)) = cal_account {
-                        ui.set_cal_is_loading(true);
                         fetch_month_events(
                             account.clone(), config_path.clone(),
                             s.year, s.month, st.clone(), ui.as_weak(), db_path.clone(),
+                        );
+                    } else {
+                        fetch_month_events_service_only(
+                            s.year, s.month, st.clone(), ui.as_weak(),
                         );
                     }
                 }
@@ -712,11 +862,15 @@ pub fn wire(ui: &App, ctx: &AppContext) {
                     update_ui(&ui, &s);
 
                     if month_changed {
+                        ui.set_cal_is_loading(true);
                         if let Some((ref account, ref config_path)) = cal_account {
-                            ui.set_cal_is_loading(true);
                             fetch_month_events(
                                 account.clone(), config_path.clone(),
                                 s.year, s.month, st.clone(), ui.as_weak(), db_path.clone(),
+                            );
+                        } else {
+                            fetch_month_events_service_only(
+                                s.year, s.month, st.clone(), ui.as_weak(),
                             );
                         }
                     }
@@ -811,28 +965,16 @@ pub fn wire(ui: &App, ctx: &AppContext) {
                 None
             };
 
-            // Create on Google Calendar in background
-            if let (Some(local_id), Some((ref account, ref config_path))) = (local_id, &cal_account) {
-                let account = account.clone();
-                let config_path = config_path.clone();
+            // Create event remotely in background — try service first, then Google Calendar
+            if let Some(local_id) = local_id {
+                let cal_account = cal_account.clone();
                 let st2 = st.clone();
 
                 std::thread::spawn(move || {
-                    let mut account = account;
-                    let token = match calendar::get_access_token(&mut account, Some(&config_path)) {
-                        Ok(t) => t,
-                        Err(e) => {
-                            tracing::warn!("Calendar create failed (token): {}", e);
-                            return;
-                        }
-                    };
-
                     let is_all_day = time_str.is_empty();
                     let (start, end) = if is_all_day {
-                        // All-day event: use date format
                         (date_str.clone(), date_str.clone())
                     } else {
-                        // Parse "HH:MM - HH:MM" format
                         let parts: Vec<&str> = time_str.split(" - ").collect();
                         let start_time = parts.first().unwrap_or(&"09:00");
                         let end_time = parts.get(1).unwrap_or(&"10:00");
@@ -842,20 +984,47 @@ pub fn wire(ui: &App, ctx: &AppContext) {
                         )
                     };
 
-                    let desc = if notes_str.is_empty() { None } else { Some(notes_str.as_str()) };
-
-                    match calendar::create_event(&token, None, &title_str, &start, &end, desc, None, is_all_day) {
-                        Ok(event) => {
-                            tracing::info!("Created Google Calendar event: {} ({})", event.summary, event.id);
-                            // Update the local event with the Google ID
+                    // ── Try calendar-service first ──
+                    match create_event_via_service(&title_str, &start, &end, &notes_str) {
+                        Ok(svc_id) => {
+                            tracing::info!("Created event via calendar-service: {}", svc_id);
                             if let Ok(mut s) = st2.lock() {
                                 if let Some(rec) = s.events.iter_mut().find(|e| e.id == local_id) {
-                                    rec.google_id = Some(event.id);
+                                    rec.google_id = Some(svc_id);
                                 }
                             }
+                            return;
                         }
                         Err(e) => {
-                            tracing::warn!("Failed to create Google Calendar event: {}", e);
+                            tracing::debug!("Calendar service create unavailable, falling back: {}", e);
+                        }
+                    }
+
+                    // ── Fallback: Google Calendar API ──
+                    if let Some((ref account, ref config_path)) = cal_account {
+                        let mut account = account.clone();
+                        let token = match calendar::get_access_token(&mut account, Some(config_path)) {
+                            Ok(t) => t,
+                            Err(e) => {
+                                tracing::warn!("Calendar create failed (token): {}", e);
+                                return;
+                            }
+                        };
+
+                        let desc = if notes_str.is_empty() { None } else { Some(notes_str.as_str()) };
+
+                        match calendar::create_event(&token, None, &title_str, &start, &end, desc, None, is_all_day) {
+                            Ok(event) => {
+                                tracing::info!("Created Google Calendar event: {} ({})", event.summary, event.id);
+                                if let Ok(mut s) = st2.lock() {
+                                    if let Some(rec) = s.events.iter_mut().find(|e| e.id == local_id) {
+                                        rec.google_id = Some(event.id);
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                tracing::warn!("Failed to create Google Calendar event: {}", e);
+                            }
                         }
                     }
                 });
@@ -882,23 +1051,37 @@ pub fn wire(ui: &App, ctx: &AppContext) {
                 None
             };
 
-            // Delete from Google Calendar in background
-            if let (Some(gid), Some((ref account, ref config_path))) = (google_id, &cal_account) {
-                let account = account.clone();
-                let config_path = config_path.clone();
+            // Delete event remotely — try service first, then Google Calendar
+            if let Some(gid) = google_id {
+                let cal_account = cal_account.clone();
+                let gid_clone = gid.clone();
                 std::thread::spawn(move || {
-                    let mut account = account;
-                    let token = match calendar::get_access_token(&mut account, Some(&config_path)) {
-                        Ok(t) => t,
-                        Err(e) => {
-                            tracing::warn!("Calendar delete failed (token): {}", e);
+                    // ── Try calendar-service first ──
+                    match delete_event_via_service(&gid_clone) {
+                        Ok(()) => {
+                            tracing::info!("Deleted event via calendar-service: {}", gid_clone);
                             return;
                         }
-                    };
-                    if let Err(e) = calendar::delete_event(&token, None, &gid) {
-                        tracing::warn!("Failed to delete Google Calendar event {}: {}", gid, e);
-                    } else {
-                        tracing::info!("Deleted Google Calendar event: {}", gid);
+                        Err(e) => {
+                            tracing::debug!("Calendar service delete unavailable, falling back: {}", e);
+                        }
+                    }
+
+                    // ── Fallback: Google Calendar API ──
+                    if let Some((ref account, ref config_path)) = cal_account {
+                        let mut account = account.clone();
+                        let token = match calendar::get_access_token(&mut account, Some(config_path)) {
+                            Ok(t) => t,
+                            Err(e) => {
+                                tracing::warn!("Calendar delete failed (token): {}", e);
+                                return;
+                            }
+                        };
+                        if let Err(e) = calendar::delete_event(&token, None, &gid_clone) {
+                            tracing::warn!("Failed to delete Google Calendar event {}: {}", gid_clone, e);
+                        } else {
+                            tracing::info!("Deleted Google Calendar event: {}", gid_clone);
+                        }
                     }
                 });
             }
@@ -1022,19 +1205,26 @@ pub fn wire(ui: &App, ctx: &AppContext) {
     }
 
     // ── Periodic sync timer (every 10 minutes) ──
-    if let Some((account, config_path)) = cal_account {
+    {
         let sync_timer = Timer::default();
         let st = state.clone();
         let ui_weak = ui.as_weak();
         let db_path = db_path.clone();
+        let cal_account = cal_account.clone();
         sync_timer.start(TimerMode::Repeated, std::time::Duration::from_secs(600), move || {
             if let Ok(s) = st.try_lock() {
                 let year = s.year;
                 let month = s.month;
-                fetch_month_events(
-                    account.clone(), config_path.clone(),
-                    year, month, st.clone(), ui_weak.clone(), db_path.clone(),
-                );
+                if let Some((ref account, ref config_path)) = cal_account {
+                    fetch_month_events(
+                        account.clone(), config_path.clone(),
+                        year, month, st.clone(), ui_weak.clone(), db_path.clone(),
+                    );
+                } else {
+                    fetch_month_events_service_only(
+                        year, month, st.clone(), ui_weak.clone(),
+                    );
+                }
             }
         });
         // Keep timer alive — leak it since it's a long-lived app

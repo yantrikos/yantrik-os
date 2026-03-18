@@ -216,6 +216,163 @@ fn read_account_from_config(ctx: &AppContext) -> Option<AccountInfo> {
     Some(info)
 }
 
+// ── Service-first wrappers ──
+// Each function tries the email-service via SyncRpcClient first,
+// falling back to direct IMAP/SMTP access if the service is unavailable.
+
+/// Try listing messages via the email-service.
+fn list_messages_via_service(folder: &str, page: u32) -> Option<Vec<yantrik_ipc_contracts::email::EmailSummary>> {
+    use yantrik_ipc_transport::SyncRpcClient;
+
+    let client = SyncRpcClient::for_service("email");
+    let result = client.call("email.list_messages", serde_json::json!({
+        "account_id": "default",
+        "folder": folder,
+        "page": page,
+        "per_page": 50
+    })).ok()?;
+    serde_json::from_value(result).ok()
+}
+
+/// Try getting a single message via the email-service.
+fn get_message_via_service(message_id: &str) -> Option<yantrik_ipc_contracts::email::EmailDetail> {
+    use yantrik_ipc_transport::SyncRpcClient;
+
+    let client = SyncRpcClient::for_service("email");
+    let result = client.call("email.get_message", serde_json::json!({
+        "account_id": "default",
+        "message_id": message_id
+    })).ok()?;
+    serde_json::from_value(result).ok()
+}
+
+/// Try sending a message via the email-service.
+fn send_message_via_service(
+    to: &[&str],
+    cc: &[&str],
+    bcc: &[&str],
+    subject: &str,
+    body: &str,
+    reply_to_id: Option<&str>,
+) -> Option<()> {
+    use yantrik_ipc_transport::SyncRpcClient;
+
+    let client = SyncRpcClient::for_service("email");
+    client.call("email.send_message", serde_json::json!({
+        "account_id": "default",
+        "compose": {
+            "to": to,
+            "cc": cc,
+            "bcc": bcc,
+            "subject": subject,
+            "body": body,
+            "reply_to_id": reply_to_id,
+            "signature": null
+        }
+    })).ok()?;
+    Some(())
+}
+
+/// Try searching messages via the email-service.
+fn search_via_service(query: &str) -> Option<Vec<yantrik_ipc_contracts::email::EmailSummary>> {
+    use yantrik_ipc_transport::SyncRpcClient;
+
+    let client = SyncRpcClient::for_service("email");
+    let result = client.call("email.search", serde_json::json!({
+        "account_id": "default",
+        "query": query
+    })).ok()?;
+    serde_json::from_value(result).ok()
+}
+
+/// Try marking a message as read/unread via the email-service.
+fn mark_read_via_service(message_id: &str, read: bool) -> Option<()> {
+    use yantrik_ipc_transport::SyncRpcClient;
+
+    let client = SyncRpcClient::for_service("email");
+    client.call("email.mark_read", serde_json::json!({
+        "account_id": "default",
+        "message_id": message_id,
+        "read": read
+    })).ok()?;
+    Some(())
+}
+
+/// Try marking a message as starred/unstarred via the email-service.
+fn mark_starred_via_service(message_id: &str, starred: bool) -> Option<()> {
+    use yantrik_ipc_transport::SyncRpcClient;
+
+    let client = SyncRpcClient::for_service("email");
+    client.call("email.mark_starred", serde_json::json!({
+        "account_id": "default",
+        "message_id": message_id,
+        "starred": starred
+    })).ok()?;
+    Some(())
+}
+
+/// Try deleting a message via the email-service.
+fn delete_message_via_service(message_id: &str) -> Option<()> {
+    use yantrik_ipc_transport::SyncRpcClient;
+
+    let client = SyncRpcClient::for_service("email");
+    client.call("email.delete_message", serde_json::json!({
+        "account_id": "default",
+        "message_id": message_id
+    })).ok()?;
+    Some(())
+}
+
+/// Try listing folders via the email-service.
+fn list_folders_via_service() -> Option<Vec<yantrik_ipc_contracts::email::EmailFolder>> {
+    use yantrik_ipc_transport::SyncRpcClient;
+
+    let client = SyncRpcClient::for_service("email");
+    let result = client.call("email.list_folders", serde_json::json!({
+        "account_id": "default"
+    })).ok()?;
+    serde_json::from_value(result).ok()
+}
+
+/// Try moving a message to a different folder via the email-service.
+fn move_message_via_service(message_id: &str, target_folder: &str) -> Option<()> {
+    use yantrik_ipc_transport::SyncRpcClient;
+
+    let client = SyncRpcClient::for_service("email");
+    client.call("email.move_message", serde_json::json!({
+        "account_id": "default",
+        "message_id": message_id,
+        "target_folder": target_folder
+    })).ok()?;
+    Some(())
+}
+
+/// Convert email-service summaries to FetchedEmail entries for the cache.
+fn summaries_to_fetched(summaries: Vec<yantrik_ipc_contracts::email::EmailSummary>) -> Vec<FetchedEmail> {
+    summaries.into_iter().enumerate().map(|(idx, s)| {
+        // Extract from_name and from_addr from the "from" field
+        let (from_name, from_addr) = if let Some(lt) = s.from.find('<') {
+            let name = s.from[..lt].trim().trim_matches('"').to_string();
+            let addr = s.from[lt+1..].trim_end_matches('>').to_string();
+            (name, addr)
+        } else {
+            (String::new(), s.from.clone())
+        };
+        let to_addr = s.to.first().cloned().unwrap_or_default();
+        FetchedEmail {
+            id: (idx + 1) as i32,
+            from_name,
+            from_addr,
+            to_addr,
+            subject: s.subject,
+            date_text: s.date,
+            preview: s.snippet,
+            body: String::new(), // body loaded on demand via get_message
+            is_read: s.is_read,
+        }
+    }).collect()
+}
+
 /// Fetched email header for UI.
 #[derive(Clone)]
 struct FetchedEmail {
@@ -1516,11 +1673,16 @@ email:
                         ui.set_email_folder_unread(unread - 1);
                     }
 
-                    // Mark as read on IMAP server in background
+                    // Mark as read on server in background (service-first, IMAP fallback)
                     let info = acct.borrow().clone();
                     let folder_name = folder.borrow().clone();
                     let email_id = id;
                     std::thread::spawn(move || {
+                        // Try email-service first
+                        if mark_read_via_service(&email_id.to_string(), true).is_some() {
+                            return;
+                        }
+                        // Fallback: direct IMAP
                         if let Err(e) = imap_mark_read(&info, &folder_name, email_id) {
                             tracing::warn!(error = %e, email_id, "Failed to mark email as read on server");
                         }
@@ -1569,6 +1731,16 @@ email:
 
             let (tx, rx) = std::sync::mpsc::channel::<Result<String, String>>();
             std::thread::spawn(move || {
+                // Try email-service first
+                let to_list: Vec<&str> = to_str.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()).collect();
+                let cc_list: Vec<&str> = cc_str.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()).collect();
+                let bcc_list: Vec<&str> = bcc_str.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()).collect();
+                if send_message_via_service(&to_list, &cc_list, &bcc_list, &subject_str, &body_str, None).is_some() {
+                    let _ = tx.send(Ok("Email sent!".to_string()));
+                    return;
+                }
+
+                // Fallback: direct SMTP send
                 let oauth_token = if info.is_oauth() {
                     match info.get_valid_token() {
                         Ok((tok, _)) => Some(tok),
@@ -1669,10 +1841,36 @@ email:
     }
 
     // ── Archive ──
-    { ui.on_email_archive(move |id| { tracing::info!(email_id = id, "Archive requested"); }); }
+    {
+        ui.on_email_archive(move |id| {
+            tracing::info!(email_id = id, "Archive requested");
+            std::thread::spawn(move || {
+                // Try email-service first (move to archive folder)
+                if move_message_via_service(&id.to_string(), "[Gmail]/All Mail").is_some() {
+                    tracing::info!(email_id = id, "Archived via email-service");
+                    return;
+                }
+                // Fallback: no direct IMAP move implemented yet
+                tracing::debug!(email_id = id, "Email-service unavailable, archive not synced");
+            });
+        });
+    }
 
-    // ── Delete / Mark read / Mark flagged ──
-    { ui.on_email_delete(move |id| { tracing::info!(email_id = id, "Delete requested"); }); }
+    // ── Delete ──
+    {
+        ui.on_email_delete(move |id| {
+            tracing::info!(email_id = id, "Delete requested");
+            std::thread::spawn(move || {
+                // Try email-service first
+                if delete_message_via_service(&id.to_string()).is_some() {
+                    tracing::info!(email_id = id, "Deleted via email-service");
+                    return;
+                }
+                // Fallback: no direct IMAP delete implemented yet
+                tracing::debug!(email_id = id, "Email-service unavailable, delete not synced");
+            });
+        });
+    }
 
     // Toggle read/unread
     {
@@ -1720,10 +1918,15 @@ email:
                 ui.set_email_folder_unread(unread + 1);
             }
 
-            // Sync to IMAP in background
+            // Sync to server in background (service-first, IMAP fallback)
             let info = acct.borrow().clone();
             let folder_name = folder.borrow().clone();
             std::thread::spawn(move || {
+                // Try email-service first
+                if mark_read_via_service(&id.to_string(), new_is_read).is_some() {
+                    return;
+                }
+                // Fallback: direct IMAP
                 if new_is_read {
                     if let Err(e) = imap_mark_read(&info, &folder_name, id) {
                         tracing::warn!(error = %e, email_id = id, "Failed to mark read on server");
@@ -1739,7 +1942,17 @@ email:
         });
     }
 
-    { ui.on_email_mark_flagged(move |id| { tracing::debug!(email_id = id, "Mark flagged"); }); }
+    {
+        ui.on_email_mark_flagged(move |id| {
+            tracing::debug!(email_id = id, "Mark flagged");
+            std::thread::spawn(move || {
+                // Try email-service (toggle starred)
+                if mark_starred_via_service(&id.to_string(), true).is_some() {
+                    tracing::info!(email_id = id, "Starred via email-service");
+                }
+            });
+        });
+    }
 
     // ── Toggle thread message collapse/expand ──
     { ui.on_email_toggle_thread_message(move |id| { tracing::debug!(msg_id = id, "Toggle thread message"); }); }
@@ -1946,7 +2159,7 @@ email:
         });
     }
 
-    // ── Search (client-side filter) ──
+    // ── Search (service-first, client-side fallback) ──
     {
         let cache = email_cache.clone();
         let model = email_model.clone();
@@ -1987,7 +2200,44 @@ email:
                     ui.set_email_folder_unread(cached.iter().filter(|e| !e.is_read).count() as i32);
                 }
             } else {
-                // Filter by sender, subject, body
+                // Try email-service search first
+                if let Some(svc_results) = search_via_service(&q) {
+                    let fetched = summaries_to_fetched(svc_results);
+                    let count = fetched.len() as i32;
+                    while model.row_count() > 0 { model.remove(0); }
+                    for e in &fetched {
+                        let initial = if !e.from_name.is_empty() {
+                            e.from_name.chars().next().unwrap_or('?').to_uppercase().to_string()
+                        } else {
+                            e.from_addr.chars().next().unwrap_or('?').to_uppercase().to_string()
+                        };
+                        let color_seed: u32 = e.from_addr.bytes().map(|b| b as u32).sum();
+                        let avatar_color = match color_seed % 6 {
+                            0 => slint::Color::from_rgb_u8(90, 200, 212),
+                            1 => slint::Color::from_rgb_u8(212, 165, 116),
+                            2 => slint::Color::from_rgb_u8(180, 132, 224),
+                            3 => slint::Color::from_rgb_u8(108, 212, 128),
+                            4 => slint::Color::from_rgb_u8(232, 120, 152),
+                            _ => slint::Color::from_rgb_u8(74, 184, 240),
+                        };
+                        model.push(EmailListItem {
+                            id: e.id, from_name: e.from_name.clone().into(), from_addr: e.from_addr.clone().into(),
+                            subject: e.subject.clone().into(), preview: e.preview.clone().into(),
+                            date_text: e.date_text.clone().into(), is_read: e.is_read, is_flagged: false,
+                            is_selected: false, has_attachment: false, thread_count: 0, thread_id: "".into(),
+                            avatar_initial: initial.into(), avatar_color,
+                        });
+                    }
+                    if let Some(ui) = ui_weak.upgrade() {
+                        ui.set_email_search_active(true);
+                        ui.set_email_search_count(count);
+                        ui.set_email_folder_total(count);
+                    }
+                    tracing::debug!(query = %q, count, "Email search via service");
+                    return;
+                }
+
+                // Fallback: client-side filter by sender, subject, body
                 let matches: Vec<&FetchedEmail> = cached.iter().filter(|e| {
                     e.from_name.to_lowercase().contains(&q)
                     || e.from_addr.to_lowercase().contains(&q)
@@ -2272,6 +2522,16 @@ fn fetch_and_populate(
     let (tx, rx) = std::sync::mpsc::channel::<Result<Vec<FetchedEmail>, String>>();
 
     std::thread::spawn(move || {
+        // Try email-service first
+        if let Some(summaries) = list_messages_via_service(&folder_str, 0) {
+            let mut fetched = summaries_to_fetched(summaries);
+            // Newest first (service may return chronological order)
+            fetched.reverse();
+            let _ = tx.send(Ok(fetched));
+            return;
+        }
+
+        // Fallback: direct IMAP fetch
         // If OAuth, get a valid token (refresh if needed)
         let oauth_token = if info.is_oauth() {
             match info.get_valid_token() {

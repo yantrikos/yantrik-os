@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use slint::{ComponentHandle, Model, ModelRc, SharedString, Timer, TimerMode, VecModel};
+use yantrik_ipc_transport::SyncRpcClient;
 
 use crate::app_context::AppContext;
 use crate::{App, CpuCoreData, DiskData, MonitorProcessData, NetworkInterfaceData};
@@ -88,20 +89,24 @@ pub fn wire(ui: &App, ctx: &AppContext) {
         *sq.borrow_mut() = query.to_string();
     });
 
-    // ── Kill process callback ──
+    // ── Kill process callback (service-first, fallback to local kill) ──
     ui.on_mon_kill_process(move |pid: i32| {
         tracing::info!("System Monitor: sending SIGTERM to PID {}", pid);
-        let _ = std::process::Command::new("kill")
-            .arg(pid.to_string())
-            .output();
+        if !kill_via_service(pid, false) {
+            let _ = std::process::Command::new("kill")
+                .arg(pid.to_string())
+                .output();
+        }
     });
 
     // ── Force kill process callback ──
     ui.on_mon_force_kill_process(move |pid: i32| {
         tracing::info!("System Monitor: sending SIGKILL to PID {}", pid);
-        let _ = std::process::Command::new("kill")
-            .args(["-9", &pid.to_string()])
-            .output();
+        if !kill_via_service(pid, true) {
+            let _ = std::process::Command::new("kill")
+                .args(["-9", &pid.to_string()])
+                .output();
+        }
     });
 
     // 1-second poll timer
@@ -122,121 +127,179 @@ pub fn wire(ui: &App, ctx: &AppContext) {
             return;
         }
 
-        // ── CPU ──
-        let (overall_cpu, cores) = read_cpu_usage(&prev_cpu);
-        ui.set_mon_cpu_usage(overall_cpu);
-        let core_data: Vec<CpuCoreData> = cores
-            .iter()
-            .enumerate()
-            .map(|(i, &usage)| CpuCoreData {
-                core_id: i as i32,
-                usage,
-            })
-            .collect();
-        ui.set_mon_cpu_cores(ModelRc::new(VecModel::from(core_data)));
-
-        // CPU model + frequency
-        let (model, freq) = read_cpu_info();
-        ui.set_mon_cpu_model(model.into());
-        ui.set_mon_cpu_frequency(freq.into());
-
-        // Load averages
-        let (l1, l5, l15) = read_load_avg();
-        ui.set_mon_load_avg_1(l1.into());
-        ui.set_mon_load_avg_5(l5.into());
-        ui.set_mon_load_avg_15(l15.into());
-
-        // ── Memory ──
-        let mem = read_meminfo();
-        let total = mem.get("MemTotal").copied().unwrap_or(0);
-        let _free = mem.get("MemFree").copied().unwrap_or(0);
-        let available = mem.get("MemAvailable").copied().unwrap_or(0);
-        let buffers = mem.get("Buffers").copied().unwrap_or(0);
-        let cached = mem.get("Cached").copied().unwrap_or(0);
-        let swap_total = mem.get("SwapTotal").copied().unwrap_or(0);
-        let swap_free = mem.get("SwapFree").copied().unwrap_or(0);
-        let used = total.saturating_sub(available);
-        let swap_used = swap_total.saturating_sub(swap_free);
-
-        let mem_pct = if total > 0 {
-            (used as f64 / total as f64 * 100.0) as f32
-        } else {
-            0.0
-        };
-        let swap_pct = if swap_total > 0 {
-            (swap_used as f64 / swap_total as f64 * 100.0) as f32
-        } else {
-            0.0
-        };
-
-        ui.set_mon_memory_usage(mem_pct);
-        ui.set_mon_memory_used_text(format_bytes(used).into());
-        ui.set_mon_memory_total_text(format_bytes(total).into());
-        ui.set_mon_memory_cached_text(format_bytes(cached).into());
-        ui.set_mon_memory_buffers_text(format_bytes(buffers).into());
-        ui.set_mon_memory_available_text(format_bytes(available).into());
-        ui.set_mon_swap_usage(swap_pct);
-        ui.set_mon_swap_used_text(format_bytes(swap_used).into());
-        ui.set_mon_swap_total_text(format_bytes(swap_total).into());
-
-        // ── Disk ──
-        let disks = read_mounts();
-        let disk_data: Vec<DiskData> = disks
-            .into_iter()
-            .map(|(mount, fs, used_b, total_b)| {
-                let pct = if total_b > 0 {
-                    (used_b as f64 / total_b as f64 * 100.0) as f32
-                } else {
-                    0.0
-                };
-                DiskData {
-                    mount_point: mount.into(),
-                    filesystem: fs.into(),
-                    used_bytes: format_bytes(used_b).into(),
-                    total_bytes: format_bytes(total_b).into(),
-                    usage_percent: pct,
-                }
-            })
-            .collect();
-        ui.set_mon_disks(ModelRc::new(VecModel::from(disk_data)));
-
-        // ── Network ──
-        let net_ifaces = read_net_dev(&prev_net);
-        let net_data: Vec<NetworkInterfaceData> = net_ifaces
-            .into_iter()
-            .map(|n| NetworkInterfaceData {
-                name: n.name.into(),
-                ip_address: n.ip.into(),
-                rx_bytes: format_bytes(n.rx_total).into(),
-                tx_bytes: format_bytes(n.tx_total).into(),
-                rx_speed: format_speed(n.rx_speed).into(),
-                tx_speed: format_speed(n.tx_speed).into(),
-            })
-            .collect();
-        ui.set_mon_network_interfaces(ModelRc::new(VecModel::from(net_data)));
-
-        // ── Processes ──
+        // ── Try service-first for snapshot data ──
         let sort_col = ui.get_mon_sort_column();
-        let total_mem = total; // from meminfo above
-        let procs = read_processes(total_mem, sort_col);
         let filter = search_query.borrow().clone();
         let filter_lower = filter.to_lowercase();
-        let proc_data: Vec<MonitorProcessData> = procs
-            .into_iter()
-            .filter(|p| filter_lower.is_empty() || p.name.to_lowercase().contains(&filter_lower))
-            .take(15)
-            .map(|p| MonitorProcessData {
-                pid: p.pid as i32,
-                name: p.name.into(),
-                cpu_percent: p.cpu_pct,
-                mem_percent: p.mem_pct,
-                status: p.status.into(),
-            })
-            .collect();
-        ui.set_mon_processes(ModelRc::new(VecModel::from(proc_data)));
 
-        // ── Uptime ──
-        ui.set_mon_uptime_text(read_uptime().into());
+        if let Some(snap) = snapshot_via_service() {
+            // ── CPU (from service) ──
+            let overall_cpu = snap.cpu.overall_percent as f32;
+            ui.set_mon_cpu_usage(overall_cpu);
+            let core_data: Vec<CpuCoreData> = snap.cpu.cores.iter().map(|c| CpuCoreData {
+                core_id: c.id as i32,
+                usage: c.usage_percent as f32,
+            }).collect();
+            ui.set_mon_cpu_cores(ModelRc::new(VecModel::from(core_data)));
+            ui.set_mon_load_avg_1(format!("{:.2}", snap.cpu.load_avg_1).into());
+            ui.set_mon_load_avg_5(format!("{:.2}", snap.cpu.load_avg_5).into());
+            ui.set_mon_load_avg_15(format!("{:.2}", snap.cpu.load_avg_15).into());
+
+            // CPU model/freq (still local — rarely changes, service doesn't provide it)
+            let (model, freq) = read_cpu_info();
+            ui.set_mon_cpu_model(model.into());
+            ui.set_mon_cpu_frequency(freq.into());
+
+            // ── Memory (from service) ──
+            let total = snap.memory.total_bytes;
+            let used = snap.memory.used_bytes;
+            let mem_pct = snap.memory.usage_percent as f32;
+            let swap_total = snap.memory.swap_total_bytes;
+            let swap_used = snap.memory.swap_used_bytes;
+            let swap_pct = if swap_total > 0 { (swap_used as f64 / swap_total as f64 * 100.0) as f32 } else { 0.0 };
+            let available = total.saturating_sub(used);
+
+            ui.set_mon_memory_usage(mem_pct);
+            ui.set_mon_memory_used_text(format_bytes(used).into());
+            ui.set_mon_memory_total_text(format_bytes(total).into());
+            ui.set_mon_memory_cached_text(SharedString::default());
+            ui.set_mon_memory_buffers_text(SharedString::default());
+            ui.set_mon_memory_available_text(format_bytes(available).into());
+            ui.set_mon_swap_usage(swap_pct);
+            ui.set_mon_swap_used_text(format_bytes(swap_used).into());
+            ui.set_mon_swap_total_text(format_bytes(swap_total).into());
+
+            // ── Disk (from service) ──
+            let disk_data: Vec<DiskData> = snap.disks.iter().map(|d| DiskData {
+                mount_point: d.mount_point.clone().into(),
+                filesystem: d.filesystem.clone().into(),
+                used_bytes: format_bytes(d.used_bytes).into(),
+                total_bytes: format_bytes(d.total_bytes).into(),
+                usage_percent: d.usage_percent as f32,
+            }).collect();
+            ui.set_mon_disks(ModelRc::new(VecModel::from(disk_data)));
+
+            // ── Network (from service) ──
+            let net_data: Vec<NetworkInterfaceData> = snap.networks.iter().map(|n| NetworkInterfaceData {
+                name: n.name.clone().into(),
+                ip_address: SharedString::default(),
+                rx_bytes: format_bytes(n.rx_bytes).into(),
+                tx_bytes: format_bytes(n.tx_bytes).into(),
+                rx_speed: format_speed(n.rx_rate_bps).into(),
+                tx_speed: format_speed(n.tx_rate_bps).into(),
+            }).collect();
+            ui.set_mon_network_interfaces(ModelRc::new(VecModel::from(net_data)));
+
+            // ── Processes (from service) ──
+            let proc_data: Vec<MonitorProcessData> = if let Some(svc_procs) = processes_via_service(sort_col, 50) {
+                svc_procs.into_iter()
+                    .filter(|p| filter_lower.is_empty() || p.name.to_lowercase().contains(&filter_lower))
+                    .take(15)
+                    .map(|p| MonitorProcessData {
+                        pid: p.pid as i32,
+                        name: p.name.into(),
+                        cpu_percent: p.cpu_percent as f32,
+                        mem_percent: p.mem_percent as f32,
+                        status: p.state.into(),
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            ui.set_mon_processes(ModelRc::new(VecModel::from(proc_data)));
+
+            // ── Uptime (from service) ──
+            let secs = snap.uptime_secs;
+            let days = secs / 86400;
+            let hours = (secs % 86400) / 3600;
+            let mins = (secs % 3600) / 60;
+            let uptime_str = if days > 0 {
+                format!("{}d {}h {}m", days, hours, mins)
+            } else if hours > 0 {
+                format!("{}h {}m", hours, mins)
+            } else {
+                format!("{}m", mins)
+            };
+            ui.set_mon_uptime_text(uptime_str.into());
+        } else {
+            // ── Fallback: direct /proc reading ──
+
+            // CPU
+            let (overall_cpu, cores) = read_cpu_usage(&prev_cpu);
+            ui.set_mon_cpu_usage(overall_cpu);
+            let core_data: Vec<CpuCoreData> = cores
+                .iter()
+                .enumerate()
+                .map(|(i, &usage)| CpuCoreData { core_id: i as i32, usage })
+                .collect();
+            ui.set_mon_cpu_cores(ModelRc::new(VecModel::from(core_data)));
+            let (model, freq) = read_cpu_info();
+            ui.set_mon_cpu_model(model.into());
+            ui.set_mon_cpu_frequency(freq.into());
+            let (l1, l5, l15) = read_load_avg();
+            ui.set_mon_load_avg_1(l1.into());
+            ui.set_mon_load_avg_5(l5.into());
+            ui.set_mon_load_avg_15(l15.into());
+
+            // Memory
+            let mem = read_meminfo();
+            let total = mem.get("MemTotal").copied().unwrap_or(0);
+            let available = mem.get("MemAvailable").copied().unwrap_or(0);
+            let buffers = mem.get("Buffers").copied().unwrap_or(0);
+            let cached = mem.get("Cached").copied().unwrap_or(0);
+            let swap_total = mem.get("SwapTotal").copied().unwrap_or(0);
+            let swap_free = mem.get("SwapFree").copied().unwrap_or(0);
+            let used = total.saturating_sub(available);
+            let swap_used = swap_total.saturating_sub(swap_free);
+            let mem_pct = if total > 0 { (used as f64 / total as f64 * 100.0) as f32 } else { 0.0 };
+            let swap_pct = if swap_total > 0 { (swap_used as f64 / swap_total as f64 * 100.0) as f32 } else { 0.0 };
+
+            ui.set_mon_memory_usage(mem_pct);
+            ui.set_mon_memory_used_text(format_bytes(used).into());
+            ui.set_mon_memory_total_text(format_bytes(total).into());
+            ui.set_mon_memory_cached_text(format_bytes(cached).into());
+            ui.set_mon_memory_buffers_text(format_bytes(buffers).into());
+            ui.set_mon_memory_available_text(format_bytes(available).into());
+            ui.set_mon_swap_usage(swap_pct);
+            ui.set_mon_swap_used_text(format_bytes(swap_used).into());
+            ui.set_mon_swap_total_text(format_bytes(swap_total).into());
+
+            // Disk
+            let disks = read_mounts();
+            let disk_data: Vec<DiskData> = disks.into_iter().map(|(mount, fs, used_b, total_b)| {
+                let pct = if total_b > 0 { (used_b as f64 / total_b as f64 * 100.0) as f32 } else { 0.0 };
+                DiskData {
+                    mount_point: mount.into(), filesystem: fs.into(),
+                    used_bytes: format_bytes(used_b).into(), total_bytes: format_bytes(total_b).into(),
+                    usage_percent: pct,
+                }
+            }).collect();
+            ui.set_mon_disks(ModelRc::new(VecModel::from(disk_data)));
+
+            // Network
+            let net_ifaces = read_net_dev(&prev_net);
+            let net_data: Vec<NetworkInterfaceData> = net_ifaces.into_iter().map(|n| NetworkInterfaceData {
+                name: n.name.into(), ip_address: n.ip.into(),
+                rx_bytes: format_bytes(n.rx_total).into(), tx_bytes: format_bytes(n.tx_total).into(),
+                rx_speed: format_speed(n.rx_speed).into(), tx_speed: format_speed(n.tx_speed).into(),
+            }).collect();
+            ui.set_mon_network_interfaces(ModelRc::new(VecModel::from(net_data)));
+
+            // Processes
+            let procs = read_processes(total, sort_col);
+            let proc_data: Vec<MonitorProcessData> = procs.into_iter()
+                .filter(|p| filter_lower.is_empty() || p.name.to_lowercase().contains(&filter_lower))
+                .take(15)
+                .map(|p| MonitorProcessData {
+                    pid: p.pid as i32, name: p.name.into(),
+                    cpu_percent: p.cpu_pct, mem_percent: p.mem_pct, status: p.status.into(),
+                })
+                .collect();
+            ui.set_mon_processes(ModelRc::new(VecModel::from(proc_data)));
+
+            // Uptime
+            ui.set_mon_uptime_text(read_uptime().into());
+        }
 
         // ── AI Workloads ──
         // Model name and tier from settings (already set at startup)
@@ -315,7 +378,36 @@ pub fn wire(ui: &App, ctx: &AppContext) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-// /proc readers
+// Service-first helpers — try system-monitor-service, fall back to /proc
+// ═══════════════════════════════════════════════════════════════════════
+
+/// Try to get a full system snapshot from the system-monitor service.
+fn snapshot_via_service() -> Option<yantrik_ipc_contracts::system_monitor::SystemSnapshot> {
+    let client = SyncRpcClient::for_service("system-monitor");
+    let result = client.call("sysmon.snapshot", serde_json::json!({})).ok()?;
+    serde_json::from_value(result).ok()
+}
+
+/// Try to get process list from the system-monitor service.
+fn processes_via_service(sort_col: i32, limit: u32) -> Option<Vec<yantrik_ipc_contracts::system_monitor::ProcessInfo>> {
+    let client = SyncRpcClient::for_service("system-monitor");
+    let sort_by = if sort_col == 1 { "memory" } else { "cpu" };
+    let result = client.call("sysmon.processes", serde_json::json!({
+        "sort_by": sort_by,
+        "limit": limit
+    })).ok()?;
+    serde_json::from_value(result).ok()
+}
+
+/// Kill a process via the system-monitor service. Returns true if successful.
+fn kill_via_service(pid: i32, force: bool) -> bool {
+    let client = SyncRpcClient::for_service("system-monitor");
+    let method = if force { "sysmon.kill_process" } else { "sysmon.kill_process" };
+    client.call(method, serde_json::json!({ "pid": pid })).is_ok()
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// /proc readers (fallback when service is unavailable)
 // ═══════════════════════════════════════════════════════════════════════
 
 /// Read /proc/stat and compute per-core + overall CPU usage as percentages.
