@@ -399,9 +399,9 @@ impl ApiLLM {
     ///   templates for native tool calling.
     /// - NOT used for cloud APIs (OpenAI, Anthropic) which handle tools natively.
     /// Maximum tools Ollama's nemotron template can handle natively.
-    /// Fixed in Ollama 0.17+: tested with 30 tools successfully.
-    /// Previously limited to 12 due to Go XML renderer bug.
-    const MAX_OLLAMA_NEMOTRON_NATIVE_TOOLS: usize = 40;
+    /// Ollama's Go XML renderer still fails with >25 tools (XML syntax errors).
+    /// When exceeded, falls back to text-injection in the system prompt.
+    const MAX_OLLAMA_NEMOTRON_NATIVE_TOOLS: usize = 25;
 
     fn use_text_injection_tools(&self) -> bool {
         // Cloud APIs handle tools natively
