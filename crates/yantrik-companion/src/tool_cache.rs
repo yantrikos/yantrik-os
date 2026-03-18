@@ -514,7 +514,7 @@ fn build_compact_card(def: &Value) -> String {
     let short_desc = if let Some(pos) = desc.find(". ") {
         &desc[..pos]
     } else if desc.len() > 80 {
-        &desc[..80]
+        &desc[..desc.floor_char_boundary(80)]
     } else {
         desc
     };

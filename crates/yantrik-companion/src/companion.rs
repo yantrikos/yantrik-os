@@ -1109,7 +1109,7 @@ impl CompanionService {
 
                     // Truncate large results to save token budget
                     let truncated = if result.len() > 2000 {
-                        format!("{}...(truncated)", &result[..2000])
+                        format!("{}...(truncated)", &result[..result.floor_char_boundary(2000)])
                     } else {
                         result
                     };
@@ -2003,7 +2003,7 @@ impl CompanionService {
         if self.config.ck5.enabled && !self.incognito {
             let interaction = crate::ck5_integration::InteractionSummary {
                 summary: if response_text.len() > 200 {
-                    response_text[..200].to_string()
+                    response_text[..response_text.floor_char_boundary(200)].to_string()
                 } else {
                     response_text.clone()
                 },
@@ -2848,7 +2848,7 @@ impl CompanionService {
         if self.config.ck5.enabled && !self.incognito {
             let interaction = crate::ck5_integration::InteractionSummary {
                 summary: if response_text.len() > 200 {
-                    response_text[..200].to_string()
+                    response_text[..response_text.floor_char_boundary(200)].to_string()
                 } else {
                     response_text.clone()
                 },

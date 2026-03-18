@@ -21,11 +21,11 @@ DATA_DIR = os.path.join(SCRIPT_DIR, "output")
 
 LORA_R = 16
 LORA_ALPHA = 16
-MAX_SEQ_LENGTH = 1024
+MAX_SEQ_LENGTH = 2048
 SEED = 3407
 
-BATCH_SIZE = 8             # Per-device batch
-GRAD_ACCUM_STEPS = 2       # Effective batch = 8 * 2 * 2 GPUs = 32
+BATCH_SIZE = 4             # Per-device batch (reduced for 2048 context)
+GRAD_ACCUM_STEPS = 4       # Effective batch = 4 * 4 * 2 GPUs = 32
 LEARNING_RATE = 2e-4
 NUM_EPOCHS = 3
 WARMUP_STEPS = 50

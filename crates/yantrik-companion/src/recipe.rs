@@ -717,7 +717,7 @@ impl RecipeStore {
                     v.get("tool").and_then(|t| t.as_str()).unwrap_or("?"),
                     v.get("error").and_then(|t| t.as_str()).unwrap_or("?"),
                     v.get("resolution").and_then(|t| t.as_str()).map(|s|
-                        if s.len() > 200 { format!("{}...", &s[..200]) } else { s.to_string() }
+                        if s.len() > 200 { format!("{}...", &s[..s.floor_char_boundary(200)]) } else { s.to_string() }
                     ).unwrap_or_default(),
                 )
             } else {

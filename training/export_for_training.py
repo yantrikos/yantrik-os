@@ -93,26 +93,41 @@ def map_role(role):
     return mapping.get(role, role)
 
 
-def format_tool_calls(tool_calls):
-    """Format tool_calls array into a string for the gpt turn."""
-    formatted = []
-    for tc in tool_calls:
-        if isinstance(tc, dict):
-            func = tc.get("function", {})
-            entry = {
-                "name": func.get("name", ""),
-                "arguments": func.get("arguments", "{}"),
-            }
-            if "id" in tc:
-                entry["id"] = tc["id"]
-            formatted.append(entry)
-    return json.dumps(formatted, ensure_ascii=False)
+def has_tool_calls(messages):
+    """Check if any message in the conversation has tool_calls."""
+    return any(
+        msg.get("tool_calls") and msg.get("role") == "assistant"
+        for msg in messages
+    )
 
 
-def convert_to_sharegpt(messages):
-    """Convert a list of role/content messages to ShareGPT from/value format.
+def normalize_tool_call(tc):
+    """Ensure a tool_call dict has proper OpenAI format."""
+    if not isinstance(tc, dict):
+        return tc
+    func = tc.get("function", {})
+    # Parse stringified arguments back to dict
+    args = func.get("arguments", "{}")
+    if isinstance(args, str):
+        try:
+            args = json.loads(args)
+        except json.JSONDecodeError:
+            pass
+    return {
+        "id": tc.get("id", "call_0"),
+        "type": "function",
+        "function": {
+            "name": func.get("name", ""),
+            "arguments": args,
+        },
+    }
 
-    Handles tool_calls on assistant messages and tool result messages.
+
+def convert_to_openai(messages):
+    """Keep messages in OpenAI format, normalizing tool_calls.
+
+    Used for tool-calling examples so apply_chat_template(tools=...)
+    can properly format them with Qwen3.5's native tool calling Jinja template.
     """
     result = []
     for msg in messages:
@@ -120,24 +135,38 @@ def convert_to_sharegpt(messages):
         content = msg.get("content")
         tool_calls = msg.get("tool_calls")
 
-        sharegpt_role = map_role(role)
-
         if role == "assistant" and tool_calls:
-            # Assistant decided to call tools — encode the tool calls as the value
-            value = format_tool_calls(tool_calls)
-            if content:
-                # Some messages have both content and tool_calls
-                value = content + "\n" + value
-            result.append({"from": sharegpt_role, "value": value})
+            normalized_tcs = [normalize_tool_call(tc) for tc in tool_calls]
+            result.append({
+                "role": "assistant",
+                "content": content or "",
+                "tool_calls": normalized_tcs,
+            })
         elif role == "tool":
-            # Tool result turn
-            tool_call_id = msg.get("tool_call_id", "")
-            value = content or ""
-            if tool_call_id:
-                value = f"[tool_call_id: {tool_call_id}]\n{value}"
-            result.append({"from": "tool", "value": value})
+            result.append({
+                "role": "tool",
+                "tool_call_id": msg.get("tool_call_id", "call_0"),
+                "name": msg.get("name", ""),
+                "content": content or "",
+            })
         else:
-            result.append({"from": sharegpt_role, "value": content or ""})
+            result.append({"role": role, "content": content or ""})
+
+    return result
+
+
+def convert_to_sharegpt(messages):
+    """Convert a list of role/content messages to ShareGPT from/value format.
+
+    Used for non-tool-calling examples (pure conversation).
+    Tool-calling examples use convert_to_openai() instead.
+    """
+    result = []
+    for msg in messages:
+        role = msg.get("role", "")
+        content = msg.get("content")
+        sharegpt_role = map_role(role)
+        result.append({"from": sharegpt_role, "value": content or ""})
 
     return result
 
@@ -275,12 +304,34 @@ def main():
             skipped += 1
             continue
 
-        sharegpt = convert_to_sharegpt(messages)
-        if not sharegpt:
-            skipped += 1
-            continue
-
-        sft_by_dataset[dataset_key].append({"conversations": sharegpt})
+        if has_tool_calls(messages):
+            # Tool-calling example: keep OpenAI format for native tool calling training
+            openai_msgs = convert_to_openai(messages)
+            if not openai_msgs:
+                skipped += 1
+                continue
+            # Extract tool names used to attach relevant schemas at training time
+            tool_names = set()
+            for m in openai_msgs:
+                for tc in m.get("tool_calls", []):
+                    name = tc.get("function", {}).get("name", "")
+                    if name:
+                        tool_names.add(name)
+            sft_by_dataset[dataset_key].append({
+                "messages": openai_msgs,
+                "tools_used": sorted(tool_names),
+                "format": "openai",
+            })
+        else:
+            # Non-tool example: ShareGPT format
+            sharegpt = convert_to_sharegpt(messages)
+            if not sharegpt:
+                skipped += 1
+                continue
+            sft_by_dataset[dataset_key].append({
+                "conversations": sharegpt,
+                "format": "sharegpt",
+            })
 
     # Split SFT into train/eval
     train_sft, eval_sft = stratified_split(sft_by_dataset, EVAL_FRACTION, SEED)

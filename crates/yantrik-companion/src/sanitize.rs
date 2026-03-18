@@ -177,7 +177,7 @@ pub fn check_and_warn(text: &str, source: &str) {
     if detect_injection(text) {
         tracing::warn!(
             source = source,
-            preview = &text[..text.len().min(100)],
+            preview = &text[..text.floor_char_boundary(text.len().min(100))],
             "Potential prompt injection detected"
         );
     }

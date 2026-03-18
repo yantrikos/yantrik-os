@@ -375,7 +375,7 @@ impl McpSecurityScanner {
                     "MCP server '{}' returned oversized response ({} bytes). Truncated.",
                     server_id, response.len()
                 ),
-                sanitized: response[..10_000].to_string(),
+                sanitized: response[..response.floor_char_boundary(10_000)].to_string(),
             };
         }
 

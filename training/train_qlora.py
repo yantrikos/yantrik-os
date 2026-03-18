@@ -32,7 +32,8 @@ LOGGING_STEPS = 10
 SAVE_STEPS = 500
 EVAL_STEPS = 500
 
-ROLE_MAP = {"system": "system", "human": "user", "gpt": "assistant", "tool": "user"}
+ROLE_MAP = {"system": "system", "human": "user", "gpt": "assistant", "tool": "tool"}
+TOOL_SCHEMAS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tool_schemas_native.json")
 
 
 def main():
@@ -105,24 +106,67 @@ def main():
     train_path = os.path.join(DATA_DIR, "train_sft.jsonl")
     eval_path = os.path.join(DATA_DIR, "eval_sft.jsonl")
 
-    train_dataset = Dataset.from_list(read_jsonl(train_path))
-    eval_dataset = Dataset.from_list(read_jsonl(eval_path))
-    print(f"Train: {len(train_dataset)}, Eval: {len(eval_dataset)}")
+    # Load tool schemas for native tool calling training
+    tool_schemas_by_name = {}
+    if os.path.exists(TOOL_SCHEMAS_PATH):
+        with open(TOOL_SCHEMAS_PATH, "r", encoding="utf-8") as f:
+            raw_schemas = json.load(f)
+        for schema in raw_schemas:
+            name = schema.get("name", "")
+            # Convert to OpenAI function format for apply_chat_template
+            tool_schemas_by_name[name] = {
+                "type": "function",
+                "function": {
+                    "name": name,
+                    "description": schema.get("description", ""),
+                    "parameters": schema.get("parameters", {"type": "object", "properties": {}}),
+                },
+            }
+        print(f"Loaded {len(tool_schemas_by_name)} tool schemas from {TOOL_SCHEMAS_PATH}")
+
+    train_raw = read_jsonl(train_path)
+    eval_raw = read_jsonl(eval_path)
 
     def format_example(example):
-        convos = example["conversations"]
-        messages = [
-            {"role": ROLE_MAP.get(t["from"], t["from"]), "content": t["value"]}
-            for t in convos
-        ]
-        text = tokenizer.apply_chat_template(
-            messages, tokenize=False, add_generation_prompt=False
-        )
+        fmt = example.get("format", "sharegpt")
+
+        if fmt == "openai":
+            # Tool-calling example: messages in OpenAI format with tool_calls
+            messages = example["messages"]
+            # Collect tool schemas used in this example
+            tools_used = example.get("tools_used", [])
+            tools = [tool_schemas_by_name[name] for name in tools_used
+                     if name in tool_schemas_by_name]
+            text = tokenizer.apply_chat_template(
+                messages, tools=tools if tools else None,
+                tokenize=False, add_generation_prompt=False
+            )
+        else:
+            # ShareGPT format: pure conversation (no tool calls)
+            convos = example["conversations"]
+            messages = [
+                {"role": ROLE_MAP.get(t["from"], t["from"]), "content": t["value"]}
+                for t in convos
+            ]
+            text = tokenizer.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=False
+            )
+
         return {"text": text}
 
+    # Determine columns to remove (varies by format)
+    all_columns = set()
+    for ex in train_raw[:10]:
+        all_columns.update(ex.keys())
+    remove_cols = list(all_columns - {"text"})
+
+    train_dataset = Dataset.from_list(train_raw)
+    eval_dataset = Dataset.from_list(eval_raw)
+    print(f"Train: {len(train_dataset)}, Eval: {len(eval_dataset)}")
+
     print("Applying chat template...")
-    train_dataset = train_dataset.map(format_example, remove_columns=["conversations"], num_proc=1)
-    eval_dataset = eval_dataset.map(format_example, remove_columns=["conversations"], num_proc=1)
+    train_dataset = train_dataset.map(format_example, remove_columns=remove_cols, num_proc=1)
+    eval_dataset = eval_dataset.map(format_example, remove_columns=remove_cols, num_proc=1)
 
     # ── Train ───────────────────────────────────────────────────────────
     effective_batch = args.batch_size * GRAD_ACCUM_STEPS

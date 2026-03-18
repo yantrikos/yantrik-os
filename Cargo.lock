@@ -10090,19 +10090,17 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "slint",
- "slint-build",
  "tracing",
  "tracing-subscriber",
  "ureq 2.12.1",
  "vt100",
  "yantrik-companion",
- "yantrik-design-tokens",
  "yantrik-ipc-contracts",
  "yantrik-ipc-transport",
  "yantrik-ml",
  "yantrik-os",
  "yantrik-shell-core",
- "yantrik-ui-kit",
+ "yantrik-ui-slint",
  "yantrikdb-core",
 ]
 
@@ -10111,6 +10109,16 @@ name = "yantrik-ui-kit"
 version = "0.1.0"
 dependencies = [
  "yantrik-design-tokens",
+]
+
+[[package]]
+name = "yantrik-ui-slint"
+version = "0.3.0"
+dependencies = [
+ "slint",
+ "slint-build",
+ "yantrik-design-tokens",
+ "yantrik-ui-kit",
 ]
 
 [[package]]
