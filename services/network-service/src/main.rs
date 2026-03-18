@@ -8,12 +8,9 @@
 //!   network.status      {}  -> NetworkStatus
 //!   network.dns         {}  -> DnsConfig
 
-use std::sync::Arc;
-
 use serde::{Deserialize, Serialize};
-use yantrik_ipc_contracts::email::ServiceError;
 use yantrik_ipc_contracts::network::*;
-use yantrik_ipc_transport::server::{RpcServer, ServiceHandler};
+use yantrik_service_sdk::prelude::*;
 
 // ── Response types (not in contracts yet) ──────────────────────────────
 
@@ -47,23 +44,9 @@ pub struct DnsConfig {
 }
 
 fn main() {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive("network_service=info".parse().unwrap()),
-        )
-        .init();
-
-    let rt = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
-    rt.block_on(async {
-        let handler = Arc::new(NetworkHandler);
-        let addr = RpcServer::default_address("network");
-        let server = RpcServer::new(&addr);
-        tracing::info!("Starting network service");
-        if let Err(e) = server.serve(handler).await {
-            tracing::error!(error = %e, "Network service failed");
-        }
-    });
+    ServiceBuilder::new("network")
+        .handler(NetworkHandler)
+        .run();
 }
 
 struct NetworkHandler;

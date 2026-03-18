@@ -10,10 +10,7 @@ path = "src/main.rs"
 
 [dependencies]
 yantrik-ipc-contracts = { workspace = true }
-yantrik-ipc-transport = { workspace = true }
+yantrik-service-sdk = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-tokio = { workspace = true }
-tracing = { workspace = true }
-tracing-subscriber = { workspace = true }
 ureq = { workspace = true }

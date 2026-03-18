@@ -34,6 +34,7 @@ pub mod prelude {
     pub use crate::{run_service, ServiceBuilder, ServiceError};
     pub use crate::{RpcServer, ServiceHandler};
     pub use serde_json;
+    pub use tracing;
 }
 
 // ── ServiceBuilder ──────────────────────────────────────────────────

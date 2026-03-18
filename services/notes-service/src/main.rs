@@ -14,33 +14,16 @@
 //!   notes.search     { query }                  → Vec<NoteSummary>
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
-use yantrik_ipc_contracts::email::ServiceError;
 use yantrik_ipc_contracts::notes::*;
-use yantrik_ipc_transport::server::{RpcServer, ServiceHandler};
+use yantrik_service_sdk::prelude::*;
 
 fn main() {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive("notes_service=info".parse().unwrap()),
-        )
-        .init();
+    std::fs::create_dir_all(notes_dir()).ok();
 
-    let rt = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
-    rt.block_on(async {
-        let notes_dir = notes_dir();
-        std::fs::create_dir_all(&notes_dir).ok();
-
-        let handler = Arc::new(NotesHandler { dir: notes_dir });
-        let addr = RpcServer::default_address("notes");
-        let server = RpcServer::new(&addr);
-        tracing::info!("Starting notes service");
-        if let Err(e) = server.serve(handler).await {
-            tracing::error!(error = %e, "Notes service failed");
-        }
-    });
+    ServiceBuilder::new("notes")
+        .handler(NotesHandler { dir: notes_dir() })
+        .run();
 }
 
 fn notes_dir() -> PathBuf {

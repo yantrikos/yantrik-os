@@ -8,30 +8,13 @@
 //!   weather.air_quality { lat, lon }             → AirQuality
 //!   weather.geocode   { query }                  → Location
 
-use std::sync::Arc;
-
-use yantrik_ipc_contracts::email::ServiceError;
 use yantrik_ipc_contracts::weather::*;
-use yantrik_ipc_transport::server::{RpcServer, ServiceHandler};
+use yantrik_service_sdk::prelude::*;
 
 fn main() {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive("weather_service=info".parse().unwrap()),
-        )
-        .init();
-
-    let rt = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
-    rt.block_on(async {
-        let handler = Arc::new(WeatherHandler);
-        let addr = RpcServer::default_address("weather");
-        let server = RpcServer::new(&addr);
-        tracing::info!("Starting weather service");
-        if let Err(e) = server.serve(handler).await {
-            tracing::error!(error = %e, "Weather service failed");
-        }
-    });
+    ServiceBuilder::new("weather")
+        .handler(WeatherHandler)
+        .run();
 }
 
 struct WeatherHandler;

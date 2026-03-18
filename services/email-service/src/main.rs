@@ -14,29 +14,13 @@
 //!   email.delete_message  { account_id, message_id }               → ()
 //!   email.search          { account_id, query }                    → Vec<EmailSummary>
 
-use std::sync::Arc;
-
 use yantrik_ipc_contracts::email::*;
-use yantrik_ipc_transport::server::{RpcServer, ServiceHandler};
+use yantrik_service_sdk::prelude::*;
 
 fn main() {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive("email_service=info".parse().unwrap()),
-        )
-        .init();
-
-    let rt = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
-    rt.block_on(async {
-        let handler = Arc::new(EmailHandler::new());
-        let addr = RpcServer::default_address("email");
-        let server = RpcServer::new(&addr);
-        tracing::info!("Starting email service");
-        if let Err(e) = server.serve(handler).await {
-            tracing::error!(error = %e, "Email service failed");
-        }
-    });
+    ServiceBuilder::new("email")
+        .handler(EmailHandler::new())
+        .run();
 }
 
 // ── Account configuration ────────────────────────────────────────────

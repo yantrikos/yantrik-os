@@ -9,34 +9,17 @@
 //!   calendar.delete_event { id }                                                 → ()
 
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use chrono::NaiveDateTime;
 use yantrik_ipc_contracts::calendar::CalendarEvent;
-use yantrik_ipc_contracts::email::ServiceError;
-use yantrik_ipc_transport::server::{RpcServer, ServiceHandler};
+use yantrik_service_sdk::prelude::*;
 
 fn main() {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive("calendar_service=info".parse().unwrap()),
-        )
-        .init();
+    std::fs::create_dir_all(calendar_dir()).ok();
 
-    let rt = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
-    rt.block_on(async {
-        let calendar_dir = calendar_dir();
-        std::fs::create_dir_all(&calendar_dir).ok();
-
-        let handler = Arc::new(CalendarHandler { dir: calendar_dir });
-        let addr = RpcServer::default_address("calendar");
-        let server = RpcServer::new(&addr);
-        tracing::info!("Starting calendar service");
-        if let Err(e) = server.serve(handler).await {
-            tracing::error!(error = %e, "Calendar service failed");
-        }
-    });
+    ServiceBuilder::new("calendar")
+        .handler(CalendarHandler { dir: calendar_dir() })
+        .run();
 }
 
 fn calendar_dir() -> PathBuf {

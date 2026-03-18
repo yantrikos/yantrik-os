@@ -8,30 +8,13 @@
 //!   sysmon.processes   { sort_by?, limit? }      → Vec<ProcessInfo>
 //!   sysmon.kill_process { pid }                  → ()
 
-use std::sync::Arc;
-
-use yantrik_ipc_contracts::email::ServiceError;
 use yantrik_ipc_contracts::system_monitor::*;
-use yantrik_ipc_transport::server::{RpcServer, ServiceHandler};
+use yantrik_service_sdk::prelude::*;
 
 fn main() {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive("system_monitor_service=info".parse().unwrap()),
-        )
-        .init();
-
-    let rt = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
-    rt.block_on(async {
-        let handler = Arc::new(SysMonHandler);
-        let addr = RpcServer::default_address("system-monitor");
-        let server = RpcServer::new(&addr);
-        tracing::info!("Starting system-monitor service");
-        if let Err(e) = server.serve(handler).await {
-            tracing::error!(error = %e, "System-monitor service failed");
-        }
-    });
+    ServiceBuilder::new("system-monitor")
+        .handler(SysMonHandler)
+        .run();
 }
 
 struct SysMonHandler;

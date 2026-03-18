@@ -7,31 +7,16 @@
 //!   notifications.dismiss_all {}                                          -> ()
 //!   notifications.action      { id, action_id }                           -> ()
 
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 
 use chrono::Utc;
-use yantrik_ipc_contracts::email::ServiceError;
 use yantrik_ipc_contracts::notifications::*;
-use yantrik_ipc_transport::server::{RpcServer, ServiceHandler};
+use yantrik_service_sdk::prelude::*;
 
 fn main() {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive("notifications_service=info".parse().unwrap()),
-        )
-        .init();
-
-    let rt = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
-    rt.block_on(async {
-        let handler = Arc::new(NotificationsHandler::new());
-        let addr = RpcServer::default_address("notifications");
-        let server = RpcServer::new(&addr);
-        tracing::info!("Starting notifications service");
-        if let Err(e) = server.serve(handler).await {
-            tracing::error!(error = %e, "Notifications service failed");
-        }
-    });
+    ServiceBuilder::new("notifications")
+        .handler(NotificationsHandler::new())
+        .run();
 }
 
 struct NotificationsHandler {
