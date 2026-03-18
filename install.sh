@@ -384,6 +384,46 @@ for bin in $( [ "$UI_BINARY" = "done" ] && echo "yantrik" || echo "yantrik-ui ya
     fi
 done
 
+# Download service binaries (non-fatal if unavailable)
+step "Installing service binaries..."
+SERVICES="weather-service system-monitor-service notes-service notifications-service calendar-service network-service email-service"
+for svc in $SERVICES; do
+    if [ -f "/tmp/$svc" ]; then
+        cp "/tmp/$svc" "$BIN_DIR/$svc"
+        chmod +x "$BIN_DIR/$svc"
+        ok "$svc"
+    elif curl -fsSL --connect-timeout 10 "$RELEASES_URL/$svc" -o "$BIN_DIR/$svc" 2>/dev/null; then
+        chmod +x "$BIN_DIR/$svc"
+        ok "$svc"
+    else
+        warn "$svc not available (non-fatal)"
+    fi
+done
+
+# Download standalone app binaries (non-fatal if unavailable)
+step "Installing app binaries..."
+APPS="yantrik-notes yantrik-email yantrik-calendar yantrik-weather yantrik-system-monitor yantrik-terminal yantrik-music-player yantrik-text-editor yantrik-image-viewer yantrik-spreadsheet yantrik-document-editor yantrik-presentation yantrik-network-manager yantrik-container-manager yantrik-download-manager yantrik-snippet-manager"
+for app in $APPS; do
+    if [ -f "/tmp/$app" ]; then
+        cp "/tmp/$app" "$BIN_DIR/$app"
+        chmod +x "$BIN_DIR/$app"
+        ok "$app"
+    elif curl -fsSL --connect-timeout 10 "$RELEASES_URL/$app" -o "$BIN_DIR/$app" 2>/dev/null; then
+        chmod +x "$BIN_DIR/$app"
+        ok "$app"
+    else
+        warn "$app not available (non-fatal)"
+    fi
+done
+
+# Install .desktop files for app discovery
+step "Installing desktop files..."
+DESKTOP_DIR="/usr/share/applications"
+mkdir -p "$DESKTOP_DIR"
+for df in /opt/yantrik/desktop-files/*.desktop 2>/dev/null; do
+    [ -f "$df" ] && cp "$df" "$DESKTOP_DIR/" && ok "$(basename $df)"
+done
+
 echo
 
 # ═══════════════════════════════════════════════════════════════

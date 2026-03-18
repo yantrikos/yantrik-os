@@ -1,0 +1,24 @@
+[package]
+name = "yantrik-weather"
+version = "0.1.0"
+edition = "2021"
+description = "Yantrik Weather — weather dashboard with forecasts and alerts"
+
+[[bin]]
+name = "yantrik-weather"
+path = "src/main.rs"
+
+[dependencies]
+yantrik-app-runtime = { path = "../../crates/yantrik-app-runtime" }
+yantrik-ipc-contracts = { workspace = true }
+yantrik-ipc-transport = { workspace = true }
+yantrik-design-tokens = { workspace = true }
+yantrik-ui-kit = { workspace = true }
+slint = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+ureq = { workspace = true }
+
+[build-dependencies]
+slint-build = "1.9"

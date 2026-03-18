@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Document Editor
+Comment=Rich document editor with AI assist
+Exec=yantrik-document-editor
+Icon=x-office-document
+Categories=Office;WordProcessor;
+Keywords=document;word;editor;

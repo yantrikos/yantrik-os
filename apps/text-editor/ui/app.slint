@@ -1,0 +1,96 @@
+// Yantrik Text Editor — standalone app window.
+// Wraps the shared TextEditorScreen component in its own Window.
+
+import { Theme } from "theme.slint";
+import { TextEditorScreen, EditorTabData } from "text_editor.slint";
+
+export { EditorTabData }
+
+export component TextEditorApp inherits Window {
+    title: "Yantrik Text Editor";
+    width: 1200px;
+    height: 800px;
+    background: Theme.bg-deep;
+
+    // ── File state ──
+    in property <string> file-name <=> editor.file-name;
+    in-out property <string> file-content <=> editor.file-content;
+    in property <bool> is-modified <=> editor.is-modified;
+    in property <bool> is-readonly <=> editor.is-readonly;
+
+    // ── Tab state ──
+    in property <[EditorTabData]> tabs <=> editor.tabs;
+    in property <int> tab-count <=> editor.tab-count;
+    in property <int> active-tab <=> editor.active-tab;
+    callback switch-tab <=> editor.switch-tab;
+    callback new-tab <=> editor.new-tab;
+    callback close-tab <=> editor.close-tab;
+
+    // ── Line/column info ──
+    in property <int> cursor-line <=> editor.cursor-line;
+    in property <int> cursor-col <=> editor.cursor-col;
+    in property <int> total-lines <=> editor.total-lines;
+    in property <string> encoding <=> editor.encoding;
+    in property <string> line-ending <=> editor.line-ending;
+    in property <string> file-type <=> editor.file-type;
+
+    // ── Line numbers ──
+    in property <string> line-numbers-text <=> editor.line-numbers-text;
+
+    // ── Go-to-line ──
+    in-out property <bool> show-goto-line <=> editor.show-goto-line;
+    in-out property <string> goto-line-input <=> editor.goto-line-input;
+    callback goto-line <=> editor.goto-line;
+
+    // ── Autosave ──
+    in property <bool> autosave-enabled <=> editor.autosave-enabled;
+    in property <string> last-saved-time <=> editor.last-saved-time;
+
+    // ── Save As dialog ──
+    in-out property <bool> show-save-dialog <=> editor.show-save-dialog;
+    in-out property <string> save-dir <=> editor.save-dir;
+    in-out property <string> save-filename <=> editor.save-filename;
+    in property <string> save-error <=> editor.save-error;
+
+    // ── AI assist ──
+    in-out property <bool> show-ai-panel <=> editor.show-ai-panel;
+    in-out property <string> ai-prompt <=> editor.ai-prompt;
+    in property <string> ai-response <=> editor.ai-response;
+    in property <bool> ai-is-working <=> editor.ai-is-working;
+
+    // ── Find & Replace ──
+    in-out property <bool> show-find-bar <=> editor.show-find-bar;
+    in-out property <string> find-query <=> editor.find-query;
+    in-out property <string> replace-text <=> editor.replace-text;
+    in property <int> find-match-count <=> editor.find-match-count;
+    in property <int> find-current-match <=> editor.find-current-match;
+    in-out property <bool> show-replace-row <=> editor.show-replace-row;
+
+    // ── Large file / encoding / minimap ──
+    in property <bool> editor-large-file-warning <=> editor.editor-large-file-warning;
+    in property <string> editor-file-size-text <=> editor.editor-file-size-text;
+    in-out property <bool> editor-show-encoding-picker <=> editor.editor-show-encoding-picker;
+    in-out property <bool> editor-show-line-ending-picker <=> editor.editor-show-line-ending-picker;
+    in-out property <bool> editor-minimap-visible <=> editor.editor-minimap-visible;
+
+    // ── Callbacks ──
+    callback save-file <=> editor.save-file;
+    callback save-file-as <=> editor.save-file-as;
+    callback content-changed <=> editor.content-changed;
+    callback ai-request <=> editor.ai-request;
+    callback ai-insert <=> editor.ai-insert;
+    callback ai-dismiss <=> editor.ai-dismiss;
+    callback find-next <=> editor.find-next;
+    callback find-prev <=> editor.find-prev;
+    callback replace-current <=> editor.replace-current;
+    callback replace-all <=> editor.replace-all;
+    callback find-query-changed <=> editor.find-query-changed;
+    callback editor-set-encoding <=> editor.editor-set-encoding;
+    callback editor-set-line-ending <=> editor.editor-set-line-ending;
+    callback editor-toggle-minimap <=> editor.editor-toggle-minimap;
+
+    editor := TextEditorScreen {
+        width: 100%;
+        height: 100%;
+    }
+}

@@ -123,7 +123,13 @@ if [ "$CHANNEL" = "nightly" ] && [ "$SKIP_BUILD" = false ]; then
          cargo build --release -p yantrik-ui -p yantrik \
             -p weather-service -p system-monitor-service -p notes-service \
             -p notifications-service -p calendar-service -p network-service \
-            -p email-service 2>&1" \
+            -p email-service \
+            -p yantrik-notes -p yantrik-email -p yantrik-calendar \
+            -p yantrik-weather -p yantrik-system-monitor -p yantrik-terminal \
+            -p yantrik-music-player -p yantrik-text-editor -p yantrik-image-viewer \
+            -p yantrik-spreadsheet -p yantrik-document-editor -p yantrik-presentation \
+            -p yantrik-network-manager -p yantrik-container-manager \
+            -p yantrik-download-manager -p yantrik-snippet-manager 2>&1" \
         || fail "CPU build failed"
 
     wsl.exe -d Ubuntu -- bash -lc \
@@ -146,6 +152,16 @@ if [ "$CHANNEL" = "nightly" ] && [ "$SKIP_BUILD" = false ]; then
              cp $WSL_TARGET/release/$svc /mnt/c/tmp/yantrik-release/$svc" \
             && ok "Staged $svc" \
             || warn "Service $svc not found (non-fatal)"
+    done
+
+    # Copy standalone app binaries to staging
+    APP_NAMES="yantrik-notes yantrik-email yantrik-calendar yantrik-weather yantrik-system-monitor yantrik-terminal yantrik-music-player yantrik-text-editor yantrik-image-viewer yantrik-spreadsheet yantrik-document-editor yantrik-presentation yantrik-network-manager yantrik-container-manager yantrik-download-manager yantrik-snippet-manager"
+    for app in $APP_NAMES; do
+        wsl.exe -d Ubuntu -- bash -lc \
+            "test -f $WSL_TARGET/release/$app && \
+             cp $WSL_TARGET/release/$app /mnt/c/tmp/yantrik-release/$app" \
+            && ok "Staged $app" \
+            || warn "App $app not found (non-fatal)"
     done
 
     # GPU-accelerated variants
@@ -205,6 +221,13 @@ elif [ "$CHANNEL" = "nightly" ] && [ "$SKIP_BUILD" = true ]; then
             "test -f $WSL_TARGET/release/$svc && \
              cp $WSL_TARGET/release/$svc /mnt/c/tmp/yantrik-release/$svc" 2>/dev/null || true
     done
+    # Copy app binaries
+    APP_NAMES="yantrik-notes yantrik-email yantrik-calendar yantrik-weather yantrik-system-monitor yantrik-terminal yantrik-music-player yantrik-text-editor yantrik-image-viewer yantrik-spreadsheet yantrik-document-editor yantrik-presentation yantrik-network-manager yantrik-container-manager yantrik-download-manager yantrik-snippet-manager"
+    for app in $APP_NAMES; do
+        wsl.exe -d Ubuntu -- bash -lc \
+            "test -f $WSL_TARGET/release/$app && \
+             cp $WSL_TARGET/release/$app /mnt/c/tmp/yantrik-release/$app" 2>/dev/null || true
+    done
     ok "Using existing binaries"
 fi
 
@@ -213,6 +236,7 @@ fi
 # ═══════════════════════════════════════════════════════════════
 GPU_VARIANT_NAMES="cuda rocm vulkan"
 SERVICE_NAMES="weather-service system-monitor-service notes-service notifications-service calendar-service network-service email-service"
+APP_NAMES="yantrik-notes yantrik-email yantrik-calendar yantrik-weather yantrik-system-monitor yantrik-terminal yantrik-music-player yantrik-text-editor yantrik-image-viewer yantrik-spreadsheet yantrik-document-editor yantrik-presentation yantrik-network-manager yantrik-container-manager yantrik-download-manager yantrik-snippet-manager"
 
 if [ "$CHANNEL" = "beta" ]; then
     step "Promoting nightly → beta..."
@@ -224,6 +248,9 @@ if [ "$CHANNEL" = "beta" ]; then
     done
     for svc in $SERVICE_NAMES; do
         PROMOTE_CMD="$PROMOTE_CMD; cp /var/www/releases/nightly/$svc /var/www/releases/beta/$svc 2>/dev/null || true"
+    done
+    for app in $APP_NAMES; do
+        PROMOTE_CMD="$PROMOTE_CMD; cp /var/www/releases/nightly/$app /var/www/releases/beta/$app 2>/dev/null || true"
     done
     ssh $SSH_OPTS root@$RELEASES_IP "$PROMOTE_CMD" || fail "Promotion failed"
     ok "Nightly promoted to beta"
@@ -240,6 +267,9 @@ if [ "$CHANNEL" = "stable" ]; then
     for svc in $SERVICE_NAMES; do
         PROMOTE_CMD="$PROMOTE_CMD; cp /var/www/releases/beta/$svc /var/www/releases/stable/$svc 2>/dev/null || true"
     done
+    for app in $APP_NAMES; do
+        PROMOTE_CMD="$PROMOTE_CMD; cp /var/www/releases/beta/$app /var/www/releases/stable/$app 2>/dev/null || true"
+    done
     ssh $SSH_OPTS root@$RELEASES_IP "$PROMOTE_CMD" || fail "Promotion failed"
     ok "Beta promoted to stable"
 fi
@@ -251,7 +281,7 @@ if [ "$CHANNEL" = "nightly" ]; then
     step "Uploading to releases server..."
 
     # Generate checksums for all binaries in staging
-    (cd "$STAGING" && sha256sum yantrik-ui yantrik yantrik-ui-* *-service 2>/dev/null > sha256sums.txt)
+    (cd "$STAGING" && sha256sum yantrik-ui yantrik yantrik-ui-* *-service yantrik-notes yantrik-email yantrik-calendar yantrik-weather yantrik-system-monitor yantrik-terminal yantrik-music-player yantrik-text-editor yantrik-image-viewer yantrik-spreadsheet yantrik-document-editor yantrik-presentation yantrik-network-manager yantrik-container-manager yantrik-download-manager yantrik-snippet-manager 2>/dev/null > sha256sums.txt)
     ok "SHA256 checksums generated"
 
     # Upload all binaries
@@ -266,6 +296,12 @@ if [ "$CHANNEL" = "nightly" ]; then
     for svc in $SERVICES; do
         if [ -f "$STAGING/$svc" ]; then
             UPLOAD_FILES+=("$STAGING/$svc")
+        fi
+    done
+    # Include standalone app binaries
+    for app in $APP_NAMES; do
+        if [ -f "$STAGING/$app" ]; then
+            UPLOAD_FILES+=("$STAGING/$app")
         fi
     done
     scp $SSH_OPTS \

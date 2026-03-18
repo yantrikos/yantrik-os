@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Calendar
+Comment=Calendar with Google Calendar sync
+Exec=yantrik-calendar
+Icon=x-office-calendar
+Categories=Office;Calendar;
+Keywords=calendar;events;schedule;

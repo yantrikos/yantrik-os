@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Email
+Comment=Full-featured email client with AI assist
+Exec=yantrik-email
+Icon=internet-mail
+Categories=Network;Email;
+Keywords=email;mail;imap;smtp;

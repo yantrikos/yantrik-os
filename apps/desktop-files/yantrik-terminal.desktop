@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Terminal
+Comment=Terminal emulator
+Exec=yantrik-terminal
+Icon=utilities-terminal
+Categories=System;TerminalEmulator;
+Keywords=terminal;shell;command;

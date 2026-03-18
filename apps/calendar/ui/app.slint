@@ -1,0 +1,80 @@
+// Yantrik Calendar — standalone app window.
+// Wraps the shared CalendarScreen component in its own Window.
+
+import { Theme } from "theme.slint";
+import { CalendarScreen, CalendarEvent, CalendarDay, CalendarTimeEvent,
+         CalendarAttendee, CalendarTemplate } from "calendar.slint";
+
+export { CalendarEvent, CalendarDay, CalendarTimeEvent, CalendarAttendee, CalendarTemplate }
+
+export component CalendarApp inherits Window {
+    title: "Yantrik Calendar";
+    width: 1100px;
+    height: 720px;
+    background: Theme.bg-deep;
+
+    // ── State ──
+    in property <string> month-title <=> cal.month-title;
+    in property <[CalendarDay]> days <=> cal.days;
+    in property <[CalendarEvent]> events-today <=> cal.events-today;
+    in property <int> selected-day <=> cal.selected-day;
+    in property <bool> is-loading <=> cal.is-loading;
+
+    // ── View mode ──
+    in-out property <int> view-mode <=> cal.view-mode;
+
+    // ── Week view ──
+    in property <[CalendarTimeEvent]> week-events <=> cal.week-events;
+    in property <[string]> week-day-labels <=> cal.week-day-labels;
+    in property <int> current-hour <=> cal.current-hour;
+
+    // ── Day view ──
+    in property <[CalendarTimeEvent]> day-events <=> cal.day-events;
+    in property <string> day-view-title <=> cal.day-view-title;
+
+    // ── Event form ──
+    in-out property <bool> show-event-form <=> cal.show-event-form;
+    in-out property <string> event-title <=> cal.event-title;
+    in-out property <string> event-date <=> cal.event-date;
+    in-out property <string> event-time <=> cal.event-time;
+    in-out property <string> event-notes <=> cal.event-notes;
+
+    // ── AI ──
+    in property <bool> ai-is-working <=> cal.ai-is-working;
+    in property <string> ai-response <=> cal.ai-response;
+    in-out property <bool> ai-panel-open <=> cal.ai-panel-open;
+
+    // ── V41: Enterprise features ──
+    in property <[CalendarAttendee]> cal-event-attendees <=> cal.cal-event-attendees;
+    in property <[CalendarTemplate]> cal-templates <=> cal.cal-templates;
+    in property <int> cal-reminder-minutes <=> cal.cal-reminder-minutes;
+    in property <string> cal-timezone-display <=> cal.cal-timezone-display;
+    in-out property <bool> cal-template-panel-open <=> cal.cal-template-panel-open;
+    in-out property <bool> cal-attendee-input-visible <=> cal.cal-attendee-input-visible;
+    in-out property <string> cal-attendee-email-input <=> cal.cal-attendee-email-input;
+
+    // ── Callbacks (forwarded via alias — no parens allowed) ──
+    callback switch-view <=> cal.switch-view;
+    callback prev-month <=> cal.prev-month;
+    callback next-month <=> cal.next-month;
+    callback day-clicked <=> cal.day-clicked;
+    callback add-event <=> cal.add-event;
+    callback save-event <=> cal.save-event;
+    callback delete-event <=> cal.delete-event;
+    callback cancel-event-form <=> cal.cancel-event-form;
+    callback today-pressed <=> cal.today-pressed;
+    callback ai-explain-pressed <=> cal.ai-explain-pressed;
+    callback ai-dismiss <=> cal.ai-dismiss;
+
+    // V41: Enterprise callbacks
+    callback cal-add-attendee <=> cal.cal-add-attendee;
+    callback cal-remove-attendee <=> cal.cal-remove-attendee;
+    callback cal-set-reminder <=> cal.cal-set-reminder;
+    callback cal-use-template <=> cal.cal-use-template;
+    callback cal-toggle-template-panel <=> cal.cal-toggle-template-panel;
+
+    cal := CalendarScreen {
+        width: 100%;
+        height: 100%;
+    }
+}

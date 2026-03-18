@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Weather
+Comment=Weather forecasts, air quality, and alerts
+Exec=yantrik-weather
+Icon=weather-clear
+Categories=Utility;
+Keywords=weather;forecast;temperature;

@@ -1,0 +1,125 @@
+// Yantrik Document Editor — standalone app window.
+// Wraps the shared DocumentEditorScreen component in its own Window.
+
+import { Theme } from "theme.slint";
+import { DocumentEditorScreen, DocHeadingEntry, DocCommentEntry, DocChangeEntry, DocVersionEntry } from "document_editor.slint";
+
+export { DocHeadingEntry, DocCommentEntry, DocChangeEntry, DocVersionEntry }
+
+export component DocumentEditorApp inherits Window {
+    title: "Yantrik Document Editor";
+    width: 1200px;
+    height: 800px;
+    background: Theme.bg-deep;
+
+    // ── Document state ──
+    in-out property <string> doc-title <=> editor.doc-title;
+    in-out property <string> doc-content <=> editor.doc-content;
+    in property <string> doc-file-path <=> editor.doc-file-path;
+    in property <int> doc-word-count <=> editor.doc-word-count;
+    in property <int> doc-char-count <=> editor.doc-char-count;
+    in property <int> doc-page-estimate <=> editor.doc-page-estimate;
+    in property <int> doc-reading-time <=> editor.doc-reading-time;
+    in property <int> doc-sentence-count <=> editor.doc-sentence-count;
+    in property <int> doc-paragraph-count <=> editor.doc-paragraph-count;
+    in property <[DocHeadingEntry]> doc-headings <=> editor.doc-headings;
+    in property <bool> doc-is-modified <=> editor.doc-is-modified;
+    in property <string> doc-save-status <=> editor.doc-save-status;
+    in-out property <bool> doc-show-find <=> editor.doc-show-find;
+    in-out property <string> doc-find-query <=> editor.doc-find-query;
+    in property <int> doc-find-count <=> editor.doc-find-count;
+    in-out property <string> doc-replace-text <=> editor.doc-replace-text;
+
+    // ── Comments ──
+    in property <[DocCommentEntry]> doc-comments <=> editor.doc-comments;
+    in-out property <bool> doc-show-comments <=> editor.doc-show-comments;
+    in-out property <string> doc-comment-input <=> editor.doc-comment-input;
+
+    // ── Track changes ──
+    in property <[DocChangeEntry]> doc-changes <=> editor.doc-changes;
+    in property <bool> doc-track-changes-on <=> editor.doc-track-changes-on;
+    in-out property <bool> doc-show-changes <=> editor.doc-show-changes;
+
+    // ── Version history ──
+    in property <[DocVersionEntry]> doc-versions <=> editor.doc-versions;
+    in-out property <bool> doc-show-versions <=> editor.doc-show-versions;
+
+    // ── Sidebar mode ──
+    in-out property <int> doc-sidebar-mode <=> editor.doc-sidebar-mode;
+
+    // ── Page layout ──
+    in-out property <bool> doc-page-layout-visible <=> editor.doc-page-layout-visible;
+    in-out property <string> doc-page-size <=> editor.doc-page-size;
+    in property <int> doc-margin-top <=> editor.doc-margin-top;
+    in property <int> doc-margin-bottom <=> editor.doc-margin-bottom;
+    in property <string> doc-export-status <=> editor.doc-export-status;
+
+    // ── AI Assist ──
+    in-out property <bool> show-ai-panel <=> editor.show-ai-panel;
+    in property <bool> doc-ai-working <=> editor.doc-ai-working;
+    in property <string> doc-ai-response <=> editor.doc-ai-response;
+    in-out property <string> doc-ai-prompt <=> editor.doc-ai-prompt;
+
+    // ── Callbacks ──
+    callback doc-save <=> editor.doc-save;
+    callback doc-open <=> editor.doc-open;
+    callback doc-new <=> editor.doc-new;
+    callback doc-export-pdf <=> editor.doc-export-pdf;
+    callback doc-format-bold <=> editor.doc-format-bold;
+    callback doc-format-italic <=> editor.doc-format-italic;
+    callback doc-format-underline <=> editor.doc-format-underline;
+    callback doc-format-heading <=> editor.doc-format-heading;
+    callback doc-format-bullet <=> editor.doc-format-bullet;
+    callback doc-format-checklist <=> editor.doc-format-checklist;
+    callback doc-format-quote <=> editor.doc-format-quote;
+    callback doc-format-code <=> editor.doc-format-code;
+    callback doc-format-divider <=> editor.doc-format-divider;
+    callback doc-undo <=> editor.doc-undo;
+    callback doc-redo <=> editor.doc-redo;
+    callback doc-find-next <=> editor.doc-find-next;
+    callback doc-find-prev <=> editor.doc-find-prev;
+    callback doc-replace-one <=> editor.doc-replace-one;
+    callback doc-replace-all <=> editor.doc-replace-all;
+    callback doc-heading-clicked <=> editor.doc-heading-clicked;
+    callback doc-import-md <=> editor.doc-import-md;
+    callback doc-export-md <=> editor.doc-export-md;
+    callback doc-content-changed <=> editor.doc-content-changed;
+    callback doc-add-comment <=> editor.doc-add-comment;
+    callback doc-delete-comment <=> editor.doc-delete-comment;
+    callback doc-resolve-comment <=> editor.doc-resolve-comment;
+    callback doc-toggle-track-changes <=> editor.doc-toggle-track-changes;
+    callback doc-accept-change <=> editor.doc-accept-change;
+    callback doc-reject-change <=> editor.doc-reject-change;
+    callback doc-accept-all-changes <=> editor.doc-accept-all-changes;
+    callback doc-reject-all-changes <=> editor.doc-reject-all-changes;
+    callback doc-save-version <=> editor.doc-save-version;
+    callback doc-list-versions <=> editor.doc-list-versions;
+    callback doc-restore-version <=> editor.doc-restore-version;
+    callback doc-insert-table <=> editor.doc-insert-table;
+    callback doc-add-table-row <=> editor.doc-add-table-row;
+    callback doc-add-table-col <=> editor.doc-add-table-col;
+    callback doc-format-strikethrough <=> editor.doc-format-strikethrough;
+    callback doc-format-highlight <=> editor.doc-format-highlight;
+    callback doc-format-link <=> editor.doc-format-link;
+    callback doc-format-inline-code <=> editor.doc-format-inline-code;
+    callback doc-insert-toc <=> editor.doc-insert-toc;
+    callback doc-insert-footnote <=> editor.doc-insert-footnote;
+    callback doc-export-html <=> editor.doc-export-html;
+    callback doc-use-template <=> editor.doc-use-template;
+    callback doc-insert-image <=> editor.doc-insert-image;
+    callback doc-set-page-layout <=> editor.doc-set-page-layout;
+    callback doc-print-preview <=> editor.doc-print-preview;
+    callback doc-ai-submit <=> editor.doc-ai-submit;
+    callback doc-ai-apply <=> editor.doc-ai-apply;
+    callback doc-ai-dismiss <=> editor.doc-ai-dismiss;
+    callback doc-ai-draft <=> editor.doc-ai-draft;
+    callback doc-ai-summarize <=> editor.doc-ai-summarize;
+    callback doc-ai-improve <=> editor.doc-ai-improve;
+    callback doc-ai-translate <=> editor.doc-ai-translate;
+    callback doc-ai-insights <=> editor.doc-ai-insights;
+
+    editor := DocumentEditorScreen {
+        width: 100%;
+        height: 100%;
+    }
+}

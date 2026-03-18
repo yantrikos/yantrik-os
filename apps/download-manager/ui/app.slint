@@ -1,0 +1,76 @@
+// Yantrik Download Manager — standalone app window.
+// Wraps the shared DownloadManagerScreen component in its own Window.
+
+import { Theme } from "theme.slint";
+import { DownloadManagerScreen, DownloadItem } from "download_manager.slint";
+
+export { DownloadItem }
+
+export component DownloadManagerApp inherits Window {
+    title: "Yantrik Download Manager";
+    width: 1000px;
+    height: 680px;
+    background: Theme.bg-deep;
+
+    // Download data
+    in property <[DownloadItem]> downloads <=> inner.downloads;
+    in property <int> active-count <=> inner.active-count;
+    in property <string> total-speed <=> inner.total-speed;
+    in property <int> completed-today <=> inner.completed-today;
+    in property <string> error-text <=> inner.error-text;
+
+    // Filter
+    in-out property <int> active-filter <=> inner.active-filter;
+
+    // Add URL dialog
+    in-out property <bool> add-url-open <=> inner.add-url-open;
+    in-out property <string> add-url-text <=> inner.add-url-text;
+    in-out property <string> add-checksum-text <=> inner.add-checksum-text;
+    in-out property <string> add-save-dir-text <=> inner.add-save-dir-text;
+
+    // Search
+    in-out property <string> dl-search-text <=> inner.dl-search-text;
+    in property <int> dl-search-match-count <=> inner.dl-search-match-count;
+
+    // Sort
+    in-out property <int> dl-sort-mode <=> inner.dl-sort-mode;
+
+    // Selection
+    in-out property <bool> dl-all-selected <=> inner.dl-all-selected;
+
+    // Detail expansion
+    in-out property <int> dl-expanded-id <=> inner.dl-expanded-id;
+
+    // Resume support
+    in property <bool> dl-resume-supported <=> inner.dl-resume-supported;
+    in property <string> dl-checksum-result <=> inner.dl-checksum-result;
+
+    // AI Assist
+    in property <bool> ai-is-working <=> inner.ai-is-working;
+    in property <string> ai-response <=> inner.ai-response;
+    in-out property <bool> ai-panel-open <=> inner.ai-panel-open;
+
+    // Callbacks
+    callback dl-add <=> inner.dl-add;
+    callback dl-pause <=> inner.dl-pause;
+    callback dl-resume <=> inner.dl-resume;
+    callback dl-cancel <=> inner.dl-cancel;
+    callback dl-retry <=> inner.dl-retry;
+    callback dl-open-folder <=> inner.dl-open-folder;
+    callback dl-clear-completed <=> inner.dl-clear-completed;
+    callback dl-filter <=> inner.dl-filter;
+    callback dl-verify-checksum <=> inner.dl-verify-checksum;
+    callback dl-toggle-select <=> inner.dl-toggle-select;
+    callback dl-select-all <=> inner.dl-select-all;
+    callback dl-pause-all <=> inner.dl-pause-all;
+    callback dl-resume-all <=> inner.dl-resume-all;
+    callback dl-search <=> inner.dl-search;
+    callback dl-sort <=> inner.dl-sort;
+    callback ai-explain-pressed <=> inner.ai-explain-pressed;
+    callback ai-dismiss <=> inner.ai-dismiss;
+
+    inner := DownloadManagerScreen {
+        width: 100%;
+        height: 100%;
+    }
+}

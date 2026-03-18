@@ -22,6 +22,23 @@ members = [
     "services/calendar-service",
     "services/network-service",
     "services/email-service",
+    "crates/yantrik-app-runtime",
+    "apps/notes",
+    "apps/container-manager",
+    "apps/download-manager",
+    "apps/snippet-manager",
+    "apps/system-monitor",
+    "apps/terminal",
+    "apps/music-player",
+    "apps/text-editor",
+    "apps/image-viewer",
+    "apps/spreadsheet",
+    "apps/document-editor",
+    "apps/presentation",
+    "apps/network-manager",
+    "apps/email",
+    "apps/calendar",
+    "apps/weather",
 ]
 
 # ── Shared dependencies ──────────────────────────────────────────────
@@ -86,6 +103,7 @@ yantrik-shell-core = { path = "crates/yantrik-shell-core" }
 yantrik-ui-kit = { path = "crates/yantrik-ui-kit" }
 yantrik-ipc-transport = { path = "crates/yantrik-ipc-transport" }
 yantrik-service-sdk = { path = "crates/yantrik-service-sdk" }
+yantrik-app-runtime = { path = "crates/yantrik-app-runtime" }
 yantrik-manifest = { path = "crates/yantrik-manifest" }
 yantrik-companion = { path = "crates/yantrik-companion" }
 yantrik-os = { path = "crates/yantrik-os" }

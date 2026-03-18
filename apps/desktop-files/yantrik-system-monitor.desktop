@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=System Monitor
+Comment=CPU, memory, disk, network monitoring
+Exec=yantrik-system-monitor
+Icon=utilities-system-monitor
+Categories=System;Monitor;
+Keywords=cpu;memory;disk;processes;

@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Presentation
+Comment=Slide presentation editor
+Exec=yantrik-presentation
+Icon=x-office-presentation
+Categories=Office;Presentation;
+Keywords=slides;presentation;powerpoint;

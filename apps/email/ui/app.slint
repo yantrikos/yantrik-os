@@ -1,0 +1,124 @@
+// Yantrik Email — standalone app window.
+// Wraps the shared EmailClient component in its own Window.
+
+import { Theme } from "theme.slint";
+import { EmailClient, EmailFolderData, EmailListItem, EmailDetailData,
+         EmailThreadMessage, EmailAttachmentData, EmailSignatureData } from "email.slint";
+
+export { EmailFolderData, EmailListItem, EmailDetailData, EmailThreadMessage,
+         EmailAttachmentData, EmailSignatureData }
+
+export component EmailApp inherits Window {
+    title: "Yantrik Email";
+    width: 1200px;
+    height: 800px;
+    background: Theme.bg-deep;
+
+    // ── Data ──
+    in property <[EmailFolderData]> folders <=> client.folders;
+    in property <[EmailListItem]> email-list <=> client.email-list;
+    in property <EmailDetailData> email-detail <=> client.email-detail;
+    in property <bool> is-loading <=> client.is-loading;
+    in property <bool> is-composing <=> client.is-composing;
+    in property <string> ai-summary-text <=> client.ai-summary-text;
+    in property <bool> ai-is-working <=> client.ai-is-working;
+    in property <int> selected-folder-index <=> client.selected-folder-index;
+    in property <string> account-name <=> client.account-name;
+
+    // ── Account setup ──
+    in property <bool> has-account <=> client.has-account;
+    in property <string> setup-status <=> client.setup-status;
+    in property <bool> setup-testing <=> client.setup-testing;
+
+    // ── Thread ──
+    in property <[EmailThreadMessage]> email-thread-messages <=> client.email-thread-messages;
+
+    // ── Search ──
+    in property <int> email-search-count <=> client.email-search-count;
+    in property <bool> email-search-active <=> client.email-search-active;
+    in-out property <string> email-search-query <=> client.email-search-query;
+
+    // ── Status bar ──
+    in property <string> email-sync-status <=> client.email-sync-status;
+    in property <int> email-folder-total <=> client.email-folder-total;
+    in property <int> email-folder-unread <=> client.email-folder-unread;
+
+    // ── Compose ──
+    in-out property <string> compose-to <=> client.compose-to;
+    in-out property <string> compose-cc <=> client.compose-cc;
+    in-out property <string> compose-bcc <=> client.compose-bcc;
+    in-out property <string> compose-subject <=> client.compose-subject;
+    in-out property <string> compose-body <=> client.compose-body;
+
+    // ── AI draft ──
+    in-out property <bool> show-ai-prompt <=> client.show-ai-prompt;
+    in-out property <string> ai-draft-prompt <=> client.ai-draft-prompt;
+
+    // ── Setup fields ──
+    in-out property <string> setup-email <=> client.setup-email;
+    in-out property <string> setup-password <=> client.setup-password;
+    in-out property <string> setup-display-name <=> client.setup-display-name;
+    in-out property <string> setup-provider <=> client.setup-provider;
+    in-out property <bool> setup-advanced-mode <=> client.setup-advanced-mode;
+    in-out property <string> setup-imap-server <=> client.setup-imap-server;
+    in-out property <string> setup-imap-port <=> client.setup-imap-port;
+    in-out property <string> setup-smtp-server <=> client.setup-smtp-server;
+    in-out property <string> setup-smtp-port <=> client.setup-smtp-port;
+
+    // ── CC/BCC toggle ──
+    in-out property <bool> show-cc-bcc <=> client.show-cc-bcc;
+
+    // ── Formatting state ──
+    in-out property <bool> compose-bold-active <=> client.compose-bold-active;
+    in-out property <bool> compose-italic-active <=> client.compose-italic-active;
+
+    // ── Enterprise features ──
+    in property <[EmailAttachmentData]> email-attachments <=> client.email-attachments;
+    in property <[EmailSignatureData]> email-signatures <=> client.email-signatures;
+    in property <int> email-active-signature <=> client.email-active-signature;
+    in property <int> email-triage-view <=> client.email-triage-view;
+    in property <int> email-priority-count <=> client.email-priority-count;
+    in property <string> email-draft-status <=> client.email-draft-status;
+    in property <string> email-ai-intent <=> client.email-ai-intent;
+
+    // ── Callbacks (forwarded via alias — no parens allowed) ──
+    callback folder-clicked <=> client.folder-clicked;
+    callback email-selected <=> client.email-selected;
+    callback compose-new <=> client.compose-new;
+    callback send-email <=> client.send-email;
+    callback reply-email <=> client.reply-email;
+    callback reply-all-email <=> client.reply-all-email;
+    callback forward-email <=> client.forward-email;
+    callback archive-email <=> client.archive-email;
+    callback delete-email <=> client.delete-email;
+    callback mark-read <=> client.mark-read;
+    callback mark-flagged <=> client.mark-flagged;
+    callback summarize-email <=> client.summarize-email;
+    callback enhance-text <=> client.enhance-text;
+    callback ai-draft <=> client.ai-draft;
+    callback ai-reply-suggest <=> client.ai-reply-suggest;
+    callback search-emails <=> client.search-emails;
+    callback sync-emails <=> client.sync-emails;
+    callback cancel-compose <=> client.cancel-compose;
+    callback back-pressed <=> client.back-pressed;
+    callback add-account <=> client.add-account;
+    callback toggle-thread-message <=> client.toggle-thread-message;
+
+    // V41: Enterprise callbacks
+    callback download-attachment <=> client.download-attachment;
+    callback preview-attachment <=> client.preview-attachment;
+    callback set-signature <=> client.set-signature;
+    callback triage-filter <=> client.triage-filter;
+    callback save-draft <=> client.save-draft;
+    callback ai-classify <=> client.ai-classify;
+
+    // Account setup callbacks
+    callback save-account <=> client.save-account;
+    callback test-connection <=> client.test-connection;
+    callback oauth-google <=> client.oauth-google;
+
+    client := EmailClient {
+        width: 100%;
+        height: 100%;
+    }
+}

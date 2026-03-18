@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Image Viewer
+Comment=Image viewer with zoom and rotate
+Exec=yantrik-image-viewer
+Icon=image-viewer
+Categories=Graphics;Viewer;
+Keywords=image;photo;picture;viewer;

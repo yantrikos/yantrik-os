@@ -1,0 +1,83 @@
+// Yantrik System Monitor — standalone app window.
+// Wraps the shared SystemMonitor component in its own Window.
+
+import { Theme } from "theme.slint";
+import { SystemMonitor, CpuCoreData, DiskData, NetworkInterfaceData, MonitorProcessData } from "system_monitor.slint";
+
+export { CpuCoreData, DiskData, NetworkInterfaceData, MonitorProcessData }
+
+export component SystemMonitorApp inherits Window {
+    title: "Yantrik System Monitor";
+    width: 1200px;
+    height: 800px;
+    background: Theme.bg-deep;
+
+    // CPU
+    in property <float> cpu-usage <=> inner.cpu-usage;
+    in property <string> cpu-model <=> inner.cpu-model;
+    in property <string> cpu-frequency <=> inner.cpu-frequency;
+    in property <string> load-avg-1 <=> inner.load-avg-1;
+    in property <string> load-avg-5 <=> inner.load-avg-5;
+    in property <string> load-avg-15 <=> inner.load-avg-15;
+    in property <[CpuCoreData]> cpu-cores <=> inner.cpu-cores;
+
+    // Memory
+    in property <float> memory-usage <=> inner.memory-usage;
+    in property <string> memory-used-text <=> inner.memory-used-text;
+    in property <string> memory-total-text <=> inner.memory-total-text;
+    in property <string> memory-cached-text <=> inner.memory-cached-text;
+    in property <string> memory-buffers-text <=> inner.memory-buffers-text;
+    in property <string> memory-available-text <=> inner.memory-available-text;
+    in property <float> swap-usage <=> inner.swap-usage;
+    in property <string> swap-used-text <=> inner.swap-used-text;
+    in property <string> swap-total-text <=> inner.swap-total-text;
+
+    // Disk
+    in property <[DiskData]> disks <=> inner.disks;
+
+    // Network
+    in property <[NetworkInterfaceData]> network-interfaces <=> inner.network-interfaces;
+
+    // Processes
+    in property <[MonitorProcessData]> processes <=> inner.processes;
+    in-out property <int> sort-column <=> inner.sort-column;
+    in-out property <string> process-search <=> inner.process-search;
+    in-out property <int> selected-process-pid <=> inner.selected-process-pid;
+
+    // Uptime
+    in property <string> uptime-text <=> inner.uptime-text;
+
+    // Health
+    in property <string> health-status <=> inner.health-status;
+    in property <float> health-score <=> inner.health-score;
+    in property <string> health-summary <=> inner.health-summary;
+
+    // AI Workloads
+    in property <string> ai-model-name <=> inner.ai-model-name;
+    in property <string> ai-model-tier <=> inner.ai-model-tier;
+    in property <float> ai-tokens-per-sec <=> inner.ai-tokens-per-sec;
+    in property <int> ai-tokens-today <=> inner.ai-tokens-today;
+    in property <int> ai-provider-latency-ms <=> inner.ai-provider-latency-ms;
+    in property <float> ai-error-rate <=> inner.ai-error-rate;
+    in property <bool> ai-request-active <=> inner.ai-request-active;
+    in property <float> ai-request-progress <=> inner.ai-request-progress;
+
+    // AI Assist
+    in property <bool> ai-is-working <=> inner.ai-is-working;
+    in property <string> ai-response <=> inner.ai-response;
+    in-out property <bool> ai-panel-open <=> inner.ai-panel-open;
+
+    // Callbacks
+    callback sort-by-column <=> inner.sort-by-column;
+    callback process-search-changed <=> inner.process-search-changed;
+    callback kill-process <=> inner.kill-process;
+    callback force-kill-process <=> inner.force-kill-process;
+    callback ai-explain-pressed <=> inner.ai-explain-pressed;
+    callback ai-dismiss <=> inner.ai-dismiss;
+    callback back-pressed <=> inner.back-pressed;
+
+    inner := SystemMonitor {
+        width: 100%;
+        height: 100%;
+    }
+}

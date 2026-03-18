@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Network Manager
+Comment=WiFi, Bluetooth, VPN network management
+Exec=yantrik-network-manager
+Icon=network-wired
+Categories=System;Network;
+Keywords=wifi;bluetooth;vpn;network;

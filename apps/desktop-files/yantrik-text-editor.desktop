@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Text Editor
+Comment=Text and code editor with syntax highlighting
+Exec=yantrik-text-editor
+Icon=accessories-text-editor
+Categories=Utility;TextEditor;
+Keywords=text;editor;code;

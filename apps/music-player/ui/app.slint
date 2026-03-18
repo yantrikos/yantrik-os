@@ -1,0 +1,134 @@
+// Yantrik Music Player — standalone app window.
+// Wraps the shared MusicPlayerScreen component in its own Window.
+
+import { Theme } from "theme.slint";
+import { MusicPlayerScreen, MusicTrackData, MusicPlaylistData, MusicAlbumData, MusicArtistData, MusicGenreData, MusicScanFolderData } from "music_player.slint";
+
+export { MusicTrackData, MusicPlaylistData, MusicAlbumData, MusicArtistData, MusicGenreData, MusicScanFolderData }
+
+export component MusicPlayerApp inherits Window {
+    title: "Yantrik Music Player";
+    width: 1200px;
+    height: 800px;
+    background: Theme.bg-deep;
+
+    // Library data
+    in property <[MusicTrackData]> library-tracks <=> inner.library-tracks;
+    in property <[MusicArtistData]> library-artists <=> inner.library-artists;
+    in property <[MusicAlbumData]> library-albums <=> inner.library-albums;
+    in property <[MusicGenreData]> library-genres <=> inner.library-genres;
+    in property <int> library-track-count <=> inner.library-track-count;
+
+    // Browse state
+    in-out property <int> browse-category <=> inner.browse-category;
+    in-out property <string> browse-filter <=> inner.browse-filter;
+    in property <string> browse-sub-header <=> inner.browse-sub-header;
+
+    // Now playing
+    in property <string> now-title <=> inner.now-title;
+    in property <string> now-artist <=> inner.now-artist;
+    in property <string> now-album <=> inner.now-album;
+    in property <string> now-genre <=> inner.now-genre;
+    in property <string> now-format-info <=> inner.now-format-info;
+    in property <string> now-bitrate <=> inner.now-bitrate;
+    in property <bool> is-playing <=> inner.is-playing;
+    in property <float> progress <=> inner.progress;
+    in property <string> time-current <=> inner.time-current;
+    in property <string> time-total <=> inner.time-total;
+    in property <float> volume <=> inner.volume;
+    in property <bool> volume-muted <=> inner.volume-muted;
+
+    // Queue
+    in property <[MusicTrackData]> queue-tracks <=> inner.queue-tracks;
+    in property <int> queue-current-index <=> inner.queue-current-index;
+
+    // Modes
+    in property <bool> shuffle-on <=> inner.shuffle-on;
+    in property <int> repeat-mode <=> inner.repeat-mode;
+    in property <float> playback-speed <=> inner.playback-speed;
+
+    // Playlists
+    in property <[MusicPlaylistData]> playlists <=> inner.playlists;
+    in property <int> active-playlist-index <=> inner.active-playlist-index;
+    in-out property <bool> playlist-panel-open <=> inner.playlist-panel-open;
+
+    // Scan folders
+    in property <[MusicScanFolderData]> scan-folders <=> inner.scan-folders;
+    in property <bool> is-scanning <=> inner.is-scanning;
+    in property <float> scan-progress <=> inner.scan-progress;
+    in property <string> scan-status <=> inner.scan-status;
+
+    // Folder watch
+    in property <bool> music-folder-watch-active <=> inner.music-folder-watch-active;
+    in property <string> music-folder-watch-status <=> inner.music-folder-watch-status;
+
+    // Equalizer
+    in property <int> music-equalizer-preset <=> inner.music-equalizer-preset;
+    in-out property <bool> music-show-equalizer <=> inner.music-show-equalizer;
+
+    // Internal UI state
+    in-out property <bool> show-add-playlist-dialog <=> inner.show-add-playlist-dialog;
+    in-out property <string> new-playlist-name <=> inner.new-playlist-name;
+    in-out property <bool> show-scan-folders-dialog <=> inner.show-scan-folders-dialog;
+    in-out property <bool> show-speed-popup <=> inner.show-speed-popup;
+    in-out property <int> rename-playlist-index <=> inner.rename-playlist-index;
+    in-out property <string> rename-playlist-text <=> inner.rename-playlist-text;
+
+    // AI Assist
+    in property <bool> ai-is-working <=> inner.ai-is-working;
+    in property <string> ai-response <=> inner.ai-response;
+    in-out property <bool> ai-panel-open <=> inner.ai-panel-open;
+
+    // Callbacks — playback
+    callback play-pause <=> inner.play-pause;
+    callback stop <=> inner.stop;
+    callback next-track <=> inner.next-track;
+    callback prev-track <=> inner.prev-track;
+    callback seek <=> inner.seek;
+    callback volume-changed <=> inner.volume-changed;
+    callback toggle-mute <=> inner.toggle-mute;
+    callback toggle-shuffle <=> inner.toggle-shuffle;
+    callback cycle-repeat <=> inner.cycle-repeat;
+    callback set-playback-speed <=> inner.set-playback-speed;
+    callback play-track-index <=> inner.play-track-index;
+    callback queue-play-index <=> inner.queue-play-index;
+
+    // Callbacks — library browse
+    callback browse-category-changed <=> inner.browse-category-changed;
+    callback browse-filter-changed <=> inner.browse-filter-changed;
+    callback browse-item-selected <=> inner.browse-item-selected;
+
+    // Callbacks — queue management
+    callback add-to-queue <=> inner.add-to-queue;
+    callback play-next <=> inner.play-next;
+    callback queue-remove <=> inner.queue-remove;
+    callback queue-move-up <=> inner.queue-move-up;
+    callback queue-move-down <=> inner.queue-move-down;
+    callback queue-clear <=> inner.queue-clear;
+
+    // Callbacks — playlists
+    callback playlist-create <=> inner.playlist-create;
+    callback playlist-rename <=> inner.playlist-rename;
+    callback playlist-delete <=> inner.playlist-delete;
+    callback playlist-select <=> inner.playlist-select;
+    callback playlist-add-track <=> inner.playlist-add-track;
+    callback playlist-remove-track <=> inner.playlist-remove-track;
+
+    // Callbacks — scan folders
+    callback scan-add-folder <=> inner.scan-add-folder;
+    callback scan-remove-folder <=> inner.scan-remove-folder;
+    callback scan-rescan <=> inner.scan-rescan;
+
+    // Callbacks — folder watch + equalizer
+    callback music-toggle-folder-watch <=> inner.music-toggle-folder-watch;
+    callback music-set-equalizer <=> inner.music-set-equalizer;
+
+    // AI Assist callbacks
+    callback ai-explain-pressed <=> inner.ai-explain-pressed;
+    callback ai-dismiss <=> inner.ai-dismiss;
+
+    inner := MusicPlayerScreen {
+        width: 100%;
+        height: 100%;
+    }
+}

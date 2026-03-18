@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Snippet Manager
+Comment=Code snippet manager with search
+Exec=yantrik-snippet-manager
+Icon=accessories-text-editor
+Categories=Development;Utility;
+Keywords=snippet;code;clipboard;

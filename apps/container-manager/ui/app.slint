@@ -1,0 +1,68 @@
+// Yantrik Container Manager — standalone app window.
+// Wraps the shared ContainerManagerScreen component in its own Window.
+
+import { Theme } from "theme.slint";
+import { ContainerManagerScreen, ContainerData, ImageData, VolumeData } from "container_manager.slint";
+
+export { ContainerData, ImageData, VolumeData }
+
+export component ContainerManagerApp inherits Window {
+    title: "Yantrik Container Manager";
+    width: 1100px;
+    height: 720px;
+    background: Theme.bg-deep;
+
+    // Tab state
+    in-out property <int> active-tab <=> inner.active-tab;
+
+    // Container data
+    in property <[ContainerData]> containers <=> inner.containers;
+    in property <int> running-count <=> inner.running-count;
+    in property <int> stopped-count <=> inner.stopped-count;
+    in property <int> total-count <=> inner.total-count;
+
+    // Image data
+    in property <[ImageData]> images <=> inner.images;
+
+    // Volume data
+    in property <[VolumeData]> volumes <=> inner.volumes;
+
+    // Logs overlay
+    in property <string> log-text <=> inner.log-text;
+    in property <string> log-container-name <=> inner.log-container-name;
+    in-out property <bool> show-logs <=> inner.show-logs;
+
+    // Runtime info
+    in property <string> runtime-name <=> inner.runtime-name;
+
+    // Input fields
+    in-out property <string> run-image-input <=> inner.run-image-input;
+    in-out property <string> pull-image-input <=> inner.pull-image-input;
+    in-out property <string> create-volume-input <=> inner.create-volume-input;
+
+    // AI Assist
+    in property <bool> ai-is-working <=> inner.ai-is-working;
+    in property <string> ai-response <=> inner.ai-response;
+    in-out property <bool> ai-panel-open <=> inner.ai-panel-open;
+
+    // Callbacks
+    callback ct-tab <=> inner.ct-tab;
+    callback ct-start <=> inner.ct-start;
+    callback ct-stop <=> inner.ct-stop;
+    callback ct-restart <=> inner.ct-restart;
+    callback ct-remove <=> inner.ct-remove;
+    callback ct-logs <=> inner.ct-logs;
+    callback ct-run <=> inner.ct-run;
+    callback ct-pull <=> inner.ct-pull;
+    callback ct-remove-image <=> inner.ct-remove-image;
+    callback ct-create-volume <=> inner.ct-create-volume;
+    callback ct-remove-volume <=> inner.ct-remove-volume;
+    callback ct-refresh <=> inner.ct-refresh;
+    callback ai-summarize-logs <=> inner.ai-summarize-logs;
+    callback ai-dismiss <=> inner.ai-dismiss;
+
+    inner := ContainerManagerScreen {
+        width: 100%;
+        height: 100%;
+    }
+}

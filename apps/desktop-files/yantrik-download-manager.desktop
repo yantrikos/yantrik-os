@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Download Manager
+Comment=File download manager with queue
+Exec=yantrik-download-manager
+Icon=emblem-downloads
+Categories=Network;FileTransfer;
+Keywords=download;transfer;

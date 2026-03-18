@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Spreadsheet
+Comment=Spreadsheet editor with formulas and charts
+Exec=yantrik-spreadsheet
+Icon=x-office-spreadsheet
+Categories=Office;Spreadsheet;
+Keywords=spreadsheet;excel;csv;

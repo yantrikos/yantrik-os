@@ -1,0 +1,62 @@
+// Yantrik Weather — standalone app window.
+// Wraps the shared WeatherDashboard component in its own Window.
+
+import { Theme } from "theme.slint";
+import { WeatherDashboard, WeatherCurrent, WeatherHourly, WeatherDaily,
+         WeatherSavedLocation, WeatherAlert } from "weather.slint";
+
+export { WeatherCurrent, WeatherHourly, WeatherDaily, WeatherSavedLocation, WeatherAlert }
+
+export component WeatherApp inherits Window {
+    title: "Yantrik Weather";
+    width: 1000px;
+    height: 720px;
+    background: Theme.bg-deep;
+
+    // ── Current conditions ──
+    in property <WeatherCurrent> current <=> dash.current;
+    in property <[WeatherHourly]> hourly <=> dash.hourly;
+    in property <[WeatherDaily]> daily <=> dash.daily;
+
+    // ── AI ──
+    in property <bool> ai-is-working <=> dash.ai-is-working;
+    in property <string> ai-response <=> dash.ai-response;
+    in-out property <bool> ai-panel-open <=> dash.ai-panel-open;
+
+    // ── Saved locations ──
+    in property <[WeatherSavedLocation]> weather-saved-locations <=> dash.weather-saved-locations;
+    in-out property <bool> weather-location-panel-open <=> dash.weather-location-panel-open;
+    in-out property <string> weather-add-location-text <=> dash.weather-add-location-text;
+
+    // ── Units ──
+    in-out property <bool> weather-use-fahrenheit <=> dash.weather-use-fahrenheit;
+
+    // ── Alerts ──
+    in property <[WeatherAlert]> weather-alerts <=> dash.weather-alerts;
+    in property <bool> weather-severe-alert-active <=> dash.weather-severe-alert-active;
+    in property <string> weather-severe-alert-text <=> dash.weather-severe-alert-text;
+    in property <string> weather-severe-alert-level <=> dash.weather-severe-alert-level;
+
+    // ── Last updated ──
+    in property <string> weather-last-updated <=> dash.weather-last-updated;
+
+    // ── AQI ──
+    in property <string> weather-aqi-value <=> dash.weather-aqi-value;
+    in property <string> weather-aqi-label <=> dash.weather-aqi-label;
+    in property <int> weather-aqi-level <=> dash.weather-aqi-level;
+
+    // ── Callbacks (forwarded via alias — no parens allowed) ──
+    callback back-pressed <=> dash.back-pressed;
+    callback refresh-pressed <=> dash.refresh-pressed;
+    callback ai-explain-pressed <=> dash.ai-explain-pressed;
+    callback ai-dismiss <=> dash.ai-dismiss;
+    callback weather-select-location <=> dash.weather-select-location;
+    callback weather-add-location <=> dash.weather-add-location;
+    callback weather-remove-location <=> dash.weather-remove-location;
+    callback weather-toggle-units <=> dash.weather-toggle-units;
+
+    dash := WeatherDashboard {
+        width: 100%;
+        height: 100%;
+    }
+}

@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Music Player
+Comment=Music player with library management
+Exec=yantrik-music-player
+Icon=applications-multimedia
+Categories=AudioVideo;Audio;Player;
+Keywords=music;audio;player;

@@ -1,0 +1,92 @@
+// Yantrik Snippet Manager — standalone app window.
+// Wraps the shared SnippetManagerScreen component in its own Window.
+
+import { Theme } from "theme.slint";
+import { SnippetManagerScreen, SnippetData, TagChip, CollectionData, LanguageOption } from "snippet_manager.slint";
+
+export { SnippetData, TagChip, CollectionData, LanguageOption }
+
+export component SnippetManagerApp inherits Window {
+    title: "Yantrik Snippet Manager";
+    width: 1100px;
+    height: 720px;
+    background: Theme.bg-deep;
+
+    // Snippet data
+    in property <[SnippetData]> snippets <=> inner.snippets;
+    in property <[TagChip]> tag-chips <=> inner.tag-chips;
+    in property <int> snippet-count <=> inner.snippet-count;
+    in property <[CollectionData]> collections <=> inner.collections;
+    in property <[LanguageOption]> language-options <=> inner.language-options;
+    in property <int> match-count <=> inner.match-count;
+
+    // Detail panel state
+    in property <int> detail-id <=> inner.detail-id;
+    in-out property <string> detail-title <=> inner.detail-title;
+    in-out property <string> detail-language <=> inner.detail-language;
+    in-out property <string> detail-code <=> inner.detail-code;
+    in-out property <string> detail-tags <=> inner.detail-tags;
+    in property <bool> detail-is-favorite <=> inner.detail-is-favorite;
+    in property <string> detail-created-date <=> inner.detail-created-date;
+    in property <string> detail-last-used-date <=> inner.detail-last-used-date;
+    in property <int> detail-use-count <=> inner.detail-use-count;
+
+    // Search
+    in-out property <string> search-query <=> inner.search-query;
+
+    // Copy feedback
+    in property <bool> copy-feedback-visible <=> inner.copy-feedback-visible;
+
+    // Language dropdown
+    in-out property <bool> lang-dropdown-open <=> inner.lang-dropdown-open;
+
+    // Rename mode
+    in-out property <bool> rename-mode <=> inner.rename-mode;
+    in-out property <string> rename-text <=> inner.rename-text;
+
+    // Version history
+    in property <[string]> snip-version-list <=> inner.snip-version-list;
+    in-out property <bool> snip-version-panel-open <=> inner.snip-version-panel-open;
+    in property <string> snip-version-content <=> inner.snip-version-content;
+
+    // AI Assist
+    in property <bool> ai-is-working <=> inner.ai-is-working;
+    in property <string> ai-response <=> inner.ai-response;
+    in-out property <bool> ai-panel-open <=> inner.ai-panel-open;
+
+    // Snippet callbacks
+    callback snip-search <=> inner.snip-search;
+    callback snip-select <=> inner.snip-select;
+    callback snip-new <=> inner.snip-new;
+    callback snip-save <=> inner.snip-save;
+    callback snip-delete <=> inner.snip-delete;
+    callback snip-copy <=> inner.snip-copy;
+    callback snip-tag-filter <=> inner.snip-tag-filter;
+    callback snip-toggle-favorite <=> inner.snip-toggle-favorite;
+
+    // Collection callbacks
+    callback collection-select <=> inner.collection-select;
+    callback collection-create <=> inner.collection-create;
+    callback collection-rename <=> inner.collection-rename;
+    callback collection-delete <=> inner.collection-delete;
+
+    // Import/export
+    callback snip-export-all <=> inner.snip-export-all;
+    callback snip-import <=> inner.snip-import;
+
+    // Language
+    callback snip-set-language <=> inner.snip-set-language;
+
+    // Version history
+    callback snip-view-version <=> inner.snip-view-version;
+    callback snip-restore-version <=> inner.snip-restore-version;
+
+    // AI
+    callback ai-explain-pressed <=> inner.ai-explain-pressed;
+    callback ai-dismiss <=> inner.ai-dismiss;
+
+    inner := SnippetManagerScreen {
+        width: 100%;
+        height: 100%;
+    }
+}

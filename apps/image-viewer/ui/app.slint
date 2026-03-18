@@ -1,0 +1,78 @@
+// Yantrik Image Viewer — standalone app window.
+// Wraps the shared ImageViewer component in its own Window.
+
+import { Theme } from "theme.slint";
+import { ImageViewer } from "image_viewer.slint";
+
+export component ImageViewerApp inherits Window {
+    title: "Yantrik Image Viewer";
+    width: 1100px;
+    height: 800px;
+    background: Theme.bg-deep;
+
+    // ── Image state ──
+    in property <image> current-image <=> viewer.current-image;
+    in property <string> file-name <=> viewer.file-name;
+    in property <string> counter-text <=> viewer.counter-text;
+    in-out property <bool> fit-contain <=> viewer.fit-contain;
+
+    // ── Navigation ──
+    callback nav-prev <=> viewer.nav-prev;
+    callback nav-next <=> viewer.nav-next;
+    callback toggle-fit <=> viewer.toggle-fit;
+
+    // ── AI Assist ──
+    in property <bool> ai-is-working <=> viewer.ai-is-working;
+    in property <string> ai-response <=> viewer.ai-response;
+    in-out property <bool> ai-panel-open <=> viewer.ai-panel-open;
+    callback ai-describe-pressed <=> viewer.ai-describe-pressed;
+    callback ai-dismiss <=> viewer.ai-dismiss;
+
+    // ── Rotation / Flip ──
+    in-out property <int> viewer-rotation <=> viewer.viewer-rotation;
+    in-out property <bool> viewer-flip-h <=> viewer.viewer-flip-h;
+    in-out property <bool> viewer-flip-v <=> viewer.viewer-flip-v;
+    callback viewer-rotate-left <=> viewer.viewer-rotate-left;
+    callback viewer-rotate-right <=> viewer.viewer-rotate-right;
+    callback viewer-flip-horizontal <=> viewer.viewer-flip-horizontal;
+    callback viewer-flip-vertical <=> viewer.viewer-flip-vertical;
+
+    // ── EXIF Info Panel ──
+    in-out property <bool> viewer-info-open <=> viewer.viewer-info-open;
+    in property <string> viewer-exif-dimensions <=> viewer.viewer-exif-dimensions;
+    in property <string> viewer-exif-file-size <=> viewer.viewer-exif-file-size;
+    in property <string> viewer-exif-format <=> viewer.viewer-exif-format;
+    in property <string> viewer-exif-camera <=> viewer.viewer-exif-camera;
+    in property <string> viewer-exif-focal-length <=> viewer.viewer-exif-focal-length;
+    in property <string> viewer-exif-iso <=> viewer.viewer-exif-iso;
+    in property <string> viewer-exif-exposure <=> viewer.viewer-exif-exposure;
+    in property <string> viewer-exif-date-taken <=> viewer.viewer-exif-date-taken;
+    in property <string> viewer-exif-gps <=> viewer.viewer-exif-gps;
+    callback viewer-toggle-info <=> viewer.viewer-toggle-info;
+
+    // ── Slideshow ──
+    in-out property <bool> viewer-slideshow-active <=> viewer.viewer-slideshow-active;
+    in-out property <bool> viewer-slideshow-paused <=> viewer.viewer-slideshow-paused;
+    in-out property <float> viewer-slideshow-progress <=> viewer.viewer-slideshow-progress;
+    callback viewer-slideshow-toggle <=> viewer.viewer-slideshow-toggle;
+    callback viewer-slideshow-stop <=> viewer.viewer-slideshow-stop;
+
+    // ── Crop mode ──
+    in-out property <bool> viewer-crop-mode <=> viewer.viewer-crop-mode;
+    callback viewer-start-crop <=> viewer.viewer-start-crop;
+    callback viewer-apply-crop <=> viewer.viewer-apply-crop;
+    callback viewer-cancel-crop <=> viewer.viewer-cancel-crop;
+
+    // ── Batch operations ──
+    in property <string> viewer-batch-status <=> viewer.viewer-batch-status;
+    in property <int> viewer-batch-total <=> viewer.viewer-batch-total;
+    in property <int> viewer-batch-done <=> viewer.viewer-batch-done;
+    in-out property <bool> viewer-batch-panel-open <=> viewer.viewer-batch-panel-open;
+    callback viewer-batch-rotate-all <=> viewer.viewer-batch-rotate-all;
+    callback viewer-batch-resize <=> viewer.viewer-batch-resize;
+
+    viewer := ImageViewer {
+        width: 100%;
+        height: 100%;
+    }
+}

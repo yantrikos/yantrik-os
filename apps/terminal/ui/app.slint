@@ -1,0 +1,92 @@
+// Yantrik Terminal — standalone app window.
+// Wraps the shared TerminalScreen component in its own Window.
+
+import { Theme } from "theme.slint";
+import { TerminalScreen, TerminalTabData, TerminalSegment } from "terminal.slint";
+
+export { TerminalTabData, TerminalSegment }
+
+export component TerminalApp inherits Window {
+    title: "Yantrik Terminal";
+    width: 900px;
+    height: 600px;
+    background: Theme.bg-deep;
+
+    // Terminal content
+    in property <string> terminal-output <=> inner.terminal-output;
+    in property <[TerminalSegment]> terminal-segments <=> inner.terminal-segments;
+    in property <int> cursor-row <=> inner.cursor-row;
+    in property <int> cursor-col <=> inner.cursor-col;
+    in property <bool> is-alive <=> inner.is-alive;
+
+    // AI suggestion state
+    in property <string> ai-suggestion <=> inner.ai-suggestion;
+    in property <bool> has-suggestion <=> inner.has-suggestion;
+
+    // AI command bar
+    in-out property <bool> show-ai-bar <=> inner.show-ai-bar;
+    in property <string> ai-generated-command <=> inner.ai-generated-command;
+    in property <bool> ai-generating <=> inner.ai-generating;
+
+    // Ghost autocomplete
+    in property <string> ghost-suggestion <=> inner.ghost-suggestion;
+    in property <int> ghost-row <=> inner.ghost-row;
+    in property <int> ghost-col <=> inner.ghost-col;
+
+    // Dangerous command warning
+    in property <bool> show-danger-warning <=> inner.show-danger-warning;
+    in property <string> danger-message <=> inner.danger-message;
+
+    // Tab state
+    in property <int> tab-count <=> inner.tab-count;
+    in property <int> active-tab <=> inner.active-tab;
+    in property <[TerminalTabData]> tabs <=> inner.tabs;
+
+    // Search state
+    in-out property <bool> show-search <=> inner.show-search;
+    in-out property <string> search-query <=> inner.search-query;
+    in property <int> search-match-count <=> inner.search-match-count;
+    in property <int> search-current-match <=> inner.search-current-match;
+
+    // Split pane state
+    in property <bool> terminal-split-active <=> inner.terminal-split-active;
+    in property <string> terminal-split-output <=> inner.terminal-split-output;
+    in property <int> terminal-split-cursor-row <=> inner.terminal-split-cursor-row;
+    in property <int> terminal-split-cursor-col <=> inner.terminal-split-cursor-col;
+
+    // Profile state
+    in property <string> terminal-profile-name <=> inner.terminal-profile-name;
+    in-out property <bool> terminal-show-profiles <=> inner.terminal-show-profiles;
+
+    // CWD + duration
+    in property <string> current-directory <=> inner.current-directory;
+    in property <string> last-command-duration <=> inner.last-command-duration;
+
+    // Callbacks
+    callback terminal-key-pressed <=> inner.terminal-key-pressed;
+    callback request-ai-help <=> inner.request-ai-help;
+    callback dismiss-suggestion <=> inner.dismiss-suggestion;
+    callback restart-terminal <=> inner.restart-terminal;
+    callback switch-tab <=> inner.switch-tab;
+    callback new-tab <=> inner.new-tab;
+    callback close-tab <=> inner.close-tab;
+    callback search-query-changed <=> inner.search-query-changed;
+    callback search-next <=> inner.search-next;
+    callback search-prev <=> inner.search-prev;
+    callback terminal-split-toggle <=> inner.terminal-split-toggle;
+    callback terminal-switch-pane <=> inner.terminal-switch-pane;
+    callback terminal-split-input <=> inner.terminal-split-input;
+    callback terminal-set-profile <=> inner.terminal-set-profile;
+    callback ai-bar-submit <=> inner.ai-bar-submit;
+    callback ai-run-command <=> inner.ai-run-command;
+    callback accept-ghost <=> inner.accept-ghost;
+    callback danger-proceed <=> inner.danger-proceed;
+    callback danger-cancel <=> inner.danger-cancel;
+    callback explain-line <=> inner.explain-line;
+    callback terminal-area-resized <=> inner.terminal-area-resized;
+
+    inner := TerminalScreen {
+        width: 100%;
+        height: 100%;
+    }
+}

@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Notes
+Comment=AI-native markdown notes with semantic search
+Exec=yantrik-notes
+Icon=accessories-text-editor
+Categories=Office;TextEditor;
+Keywords=notes;markdown;write;

@@ -1,0 +1,14 @@
+[package]
+name = "yantrik-app-runtime"
+version = "0.1.0"
+edition = "2021"
+description = "Yantrik OS app runtime — shared infrastructure for standalone app binaries"
+
+[dependencies]
+slint = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+yantrik-ipc-contracts = { workspace = true }
+yantrik-ipc-transport = { workspace = true }

@@ -1,0 +1,122 @@
+// Yantrik Network Manager — standalone app window.
+// Wraps the shared NetworkManager component in its own Window.
+
+import { Theme } from "theme.slint";
+import { NetworkManager, WifiNetwork, EthernetInterface, BluetoothDevice,
+         VpnConnection, FirewallRule, DiagTestResult, ConnectionEvent,
+         NetAIProviderStatus } from "network_manager.slint";
+
+export { WifiNetwork, EthernetInterface, BluetoothDevice, VpnConnection,
+         FirewallRule, DiagTestResult, ConnectionEvent, NetAIProviderStatus }
+
+export component NetworkManagerApp inherits Window {
+    title: "Yantrik Network Manager";
+    width: 1100px;
+    height: 750px;
+    background: Theme.bg-deep;
+
+    // ── Active tab ──
+    in-out property <int> active-tab <=> net.active-tab;
+
+    // ── WiFi state ──
+    in property <bool> wifi-enabled <=> net.wifi-enabled;
+    in property <string> wifi-current-ssid <=> net.wifi-current-ssid;
+    in property <int> wifi-signal-strength <=> net.wifi-signal-strength;
+    in property <string> wifi-ip-address <=> net.wifi-ip-address;
+    in property <string> wifi-speed <=> net.wifi-speed;
+    in property <[WifiNetwork]> wifi-networks <=> net.wifi-networks;
+    in property <[WifiNetwork]> wifi-saved-networks <=> net.wifi-saved-networks;
+    in property <bool> wifi-scanning <=> net.wifi-scanning;
+
+    // ── WiFi password dialog ──
+    in-out property <bool> wifi-password-visible <=> net.wifi-password-visible;
+    in-out property <string> wifi-password-ssid <=> net.wifi-password-ssid;
+    in-out property <string> wifi-password-input <=> net.wifi-password-input;
+    in property <string> wifi-connect-status <=> net.wifi-connect-status;
+
+    // ── Ethernet state ──
+    in property <[EthernetInterface]> ethernet-interfaces <=> net.ethernet-interfaces;
+
+    // ── Bluetooth state ──
+    in property <bool> bt-enabled <=> net.bt-enabled;
+    in property <[BluetoothDevice]> bt-paired-devices <=> net.bt-paired-devices;
+    in property <[BluetoothDevice]> bt-available-devices <=> net.bt-available-devices;
+    in property <bool> bt-scanning <=> net.bt-scanning;
+
+    // ── VPN state ──
+    in property <[VpnConnection]> vpn-connections <=> net.vpn-connections;
+
+    // ── Firewall state ──
+    in property <bool> firewall-enabled <=> net.firewall-enabled;
+    in property <string> firewall-backend-name <=> net.firewall-backend-name;
+    in property <int> firewall-rule-count <=> net.firewall-rule-count;
+    in property <[FirewallRule]> firewall-rules <=> net.firewall-rules;
+    in property <string> firewall-profile <=> net.firewall-profile;
+
+    // ── WiFi connection details ──
+    in property <string> wifi-gateway <=> net.wifi-gateway;
+    in property <string> wifi-dns <=> net.wifi-dns;
+    in property <string> wifi-subnet <=> net.wifi-subnet;
+    in-out property <bool> wifi-details-expanded <=> net.wifi-details-expanded;
+
+    // ── Diagnostics state ──
+    in property <[DiagTestResult]> diag-tests <=> net.diag-tests;
+    in property <[ConnectionEvent]> diag-connection-history <=> net.diag-connection-history;
+
+    // ── AI Provider Connectivity ──
+    in property <[NetAIProviderStatus]> ai-provider-connectivity <=> net.ai-provider-connectivity;
+    in property <bool> ai-connectivity-testing <=> net.ai-connectivity-testing;
+
+    // ── Status bar ──
+    in property <string> status-connection-type <=> net.status-connection-type;
+    in property <string> status-ip-address <=> net.status-ip-address;
+    in property <int> status-signal-strength <=> net.status-signal-strength;
+    in property <string> status-state <=> net.status-state;
+
+    // ── Diagnostics — Ping / Traceroute ──
+    in-out property <string> net-diag-ping-target <=> net.net-diag-ping-target;
+    in property <string> net-diag-ping-result <=> net.net-diag-ping-result;
+    in property <bool> net-diag-ping-running <=> net.net-diag-ping-running;
+    in property <string> net-diag-traceroute-result <=> net.net-diag-traceroute-result;
+    in property <bool> net-diag-traceroute-running <=> net.net-diag-traceroute-running;
+
+    // ── VPN config import ──
+    in-out property <string> net-vpn-import-path <=> net.net-vpn-import-path;
+    in property <string> net-vpn-import-status <=> net.net-vpn-import-status;
+
+    // ── AI Assist ──
+    in property <bool> ai-is-working <=> net.ai-is-working;
+    in property <string> ai-response <=> net.ai-response;
+    in-out property <bool> ai-panel-open <=> net.ai-panel-open;
+
+    // ── Callbacks ──
+    callback toggle-wifi <=> net.toggle-wifi;
+    callback wifi-scan <=> net.wifi-scan;
+    callback wifi-connect <=> net.wifi-connect;
+    callback wifi-disconnect <=> net.wifi-disconnect;
+    callback wifi-forget <=> net.wifi-forget;
+    callback toggle-bluetooth <=> net.toggle-bluetooth;
+    callback bt-scan <=> net.bt-scan;
+    callback bt-pair <=> net.bt-pair;
+    callback bt-connect <=> net.bt-connect;
+    callback bt-disconnect <=> net.bt-disconnect;
+    callback vpn-connect <=> net.vpn-connect;
+    callback vpn-disconnect <=> net.vpn-disconnect;
+    callback toggle-firewall <=> net.toggle-firewall;
+    callback firewall-allow-port <=> net.firewall-allow-port;
+    callback firewall-block-port <=> net.firewall-block-port;
+    callback firewall-apply-profile <=> net.firewall-apply-profile;
+    callback diag-run-test <=> net.diag-run-test;
+    callback diag-run-all-tests <=> net.diag-run-all-tests;
+    callback test-ai-connectivity <=> net.test-ai-connectivity;
+    callback net-diag-run-ping <=> net.net-diag-run-ping;
+    callback net-diag-run-traceroute <=> net.net-diag-run-traceroute;
+    callback net-vpn-import-config <=> net.net-vpn-import-config;
+    callback ai-explain-pressed <=> net.ai-explain-pressed;
+    callback ai-dismiss <=> net.ai-dismiss;
+
+    net := NetworkManager {
+        width: 100%;
+        height: 100%;
+    }
+}

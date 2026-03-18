@@ -1,0 +1,90 @@
+// Yantrik Notes — standalone app window.
+// Wraps the shared NotesEditor component in its own Window.
+
+import { Theme } from "theme.slint";
+import { NotesEditor, NoteEntry, NoteVersionEntry, NoteBacklink } from "notes_editor.slint";
+
+export { NoteEntry, NoteVersionEntry, NoteBacklink }
+
+export component NotesApp inherits Window {
+    title: "Yantrik Notes";
+    width: 1100px;
+    height: 720px;
+    background: Theme.bg-deep;
+
+    // ── Note list ──
+    in property <[NoteEntry]> notes-list <=> editor.notes-list;
+    in property <int> selected-index <=> editor.selected-index;
+
+    // ── Editor state ──
+    in-out property <string> current-content <=> editor.current-content;
+    in property <string> current-title <=> editor.current-title;
+    in property <bool> is-modified <=> editor.is-modified;
+    in property <int> note-count <=> editor.note-count;
+
+    // ── Search ──
+    in-out property <string> search-query <=> editor.search-query;
+    in property <bool> is-searching <=> editor.is-searching;
+
+    // ── Folders ──
+    in-out property <int> active-folder <=> editor.active-folder;
+    in property <int> folder-all-count <=> editor.folder-all-count;
+    in property <int> folder-fav-count <=> editor.folder-fav-count;
+    in property <int> folder-recent-count <=> editor.folder-recent-count;
+
+    // ── Tags ──
+    in-out property <string> current-tags <=> editor.current-tags;
+
+    // ── Metadata ──
+    in property <string> meta-created <=> editor.meta-created;
+    in property <string> meta-modified <=> editor.meta-modified;
+    in property <int> meta-word-count <=> editor.meta-word-count;
+
+    // ── AI ──
+    in property <bool> ai-is-working <=> editor.ai-is-working;
+    in property <string> ai-response <=> editor.ai-response;
+    in-out property <bool> ai-panel-open <=> editor.ai-panel-open;
+
+    // ── Version history ──
+    in property <[NoteVersionEntry]> version-history <=> editor.version-history;
+    in-out property <bool> version-panel-open <=> editor.version-panel-open;
+
+    // ── Backlinks ──
+    in property <[NoteBacklink]> backlinks <=> editor.backlinks;
+    in-out property <bool> backlinks-panel-open <=> editor.backlinks-panel-open;
+
+    // ── Meeting mode ──
+    in property <bool> meeting-mode <=> editor.meeting-mode;
+
+    // ── Export ──
+    in property <string> export-status <=> editor.export-status;
+
+    // ── Callbacks (forwarded via alias — no parens allowed) ──
+    callback new-note <=> editor.new-note;
+    callback save-note <=> editor.save-note;
+    callback delete-note <=> editor.delete-note;
+    callback close-note <=> editor.close-note;
+    callback select-note <=> editor.select-note;
+    callback search-notes <=> editor.search-notes;
+    callback content-changed <=> editor.content-changed;
+    callback select-folder <=> editor.select-folder;
+    callback update-tags <=> editor.update-tags;
+    callback toggle-pin <=> editor.toggle-pin;
+    callback new-from-template <=> editor.new-from-template;
+    callback insert-format <=> editor.insert-format;
+    callback ai-structure <=> editor.ai-structure;
+    callback ai-summarize <=> editor.ai-summarize;
+    callback ai-apply <=> editor.ai-apply;
+    callback ai-dismiss <=> editor.ai-dismiss;
+    callback view-version <=> editor.view-version;
+    callback restore-version <=> editor.restore-version;
+    callback find-backlinks <=> editor.find-backlinks;
+    callback toggle-meeting-mode <=> editor.toggle-meeting-mode;
+    callback export-md <=> editor.export-md;
+    callback import-md <=> editor.import-md;
+
+    editor := NotesEditor {
+        width: 100%;
+        height: 100%;
+    }
+}

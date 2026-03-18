@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Container Manager
+Comment=Docker/Podman container management
+Exec=yantrik-container-manager
+Icon=application-x-executable
+Categories=Development;System;
+Keywords=docker;podman;container;

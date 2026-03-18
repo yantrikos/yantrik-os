@@ -1,0 +1,119 @@
+// Yantrik Presentation — standalone app window.
+// Wraps the shared PresentationScreen component in its own Window.
+
+import { Theme } from "theme.slint";
+import { PresentationScreen, SlideData, PresentTheme, AiSlideProposal, AiProposalState } from "presentation.slint";
+
+export { SlideData, PresentTheme, AiSlideProposal, AiProposalState }
+
+export component PresentationApp inherits Window {
+    title: "Yantrik Presentation";
+    width: 1300px;
+    height: 800px;
+    background: Theme.bg-deep;
+
+    // ── Slide data ──
+    in property <[SlideData]> slides <=> pres.slides;
+    in-out property <int> current-slide-index <=> pres.current-slide-index;
+    in property <int> slide-count <=> pres.slide-count;
+    in-out property <int> current-layout <=> pres.current-layout;
+    in property <[PresentTheme]> themes <=> pres.themes;
+    in-out property <bool> is-presenting <=> pres.is-presenting;
+    in-out property <string> current-title <=> pres.current-title;
+    in-out property <string> current-body <=> pres.current-body;
+    in-out property <string> current-notes <=> pres.current-notes;
+
+    // ── Presentation state ──
+    in property <string> timer-text <=> pres.timer-text;
+    in property <string> next-title <=> pres.next-title;
+    in property <string> next-body <=> pres.next-body;
+    in property <string> presentation-title <=> pres.presentation-title;
+    in property <string> slide-progress <=> pres.slide-progress;
+    in property <string> file-path <=> pres.file-path;
+    in property <bool> is-modified <=> pres.is-modified;
+    in property <string> save-status <=> pres.save-status;
+    in property <int> search-count <=> pres.search-count;
+    in-out property <string> search-query <=> pres.search-query;
+    in-out property <bool> show-search <=> pres.show-search;
+    in property <int> current-transition <=> pres.current-transition;
+
+    // ── Template / speaker notes ──
+    in-out property <bool> show-templates <=> pres.show-templates;
+    in-out property <bool> pres-template-gallery-open <=> pres.pres-template-gallery-open;
+    in property <[string]> pres-template-names <=> pres.pres-template-names;
+    in-out property <bool> pres-show-speaker-notes <=> pres.pres-show-speaker-notes;
+    in-out property <string> pres-current-speaker-note <=> pres.pres-current-speaker-note;
+
+    // ── AI Assist ──
+    in-out property <bool> show-ai-panel <=> pres.show-ai-panel;
+    in property <bool> pres-ai-working <=> pres.pres-ai-working;
+    in property <string> pres-ai-status <=> pres.pres-ai-status;
+    in property <bool> pres-ai-has-proposal <=> pres.pres-ai-has-proposal;
+    in property <AiProposalState> pres-ai-proposal <=> pres.pres-ai-proposal;
+    in-out property <bool> pres-ai-apply-title <=> pres.pres-ai-apply-title;
+    in-out property <bool> pres-ai-apply-body <=> pres.pres-ai-apply-body;
+    in-out property <bool> pres-ai-apply-notes <=> pres.pres-ai-apply-notes;
+    in-out property <bool> pres-ai-apply-slide-type <=> pres.pres-ai-apply-slide-type;
+    in-out property <string> pres-ai-instruction <=> pres.pres-ai-instruction;
+
+    // ── Callbacks ──
+    callback add-slide <=> pres.add-slide;
+    callback delete-slide <=> pres.delete-slide;
+    callback duplicate-slide <=> pres.duplicate-slide;
+    callback move-slide-up <=> pres.move-slide-up;
+    callback move-slide-down <=> pres.move-slide-down;
+    callback select-slide <=> pres.select-slide;
+    callback set-layout <=> pres.set-layout;
+    callback set-theme <=> pres.set-theme;
+    callback toggle-present <=> pres.toggle-present;
+    callback export-pdf <=> pres.export-pdf;
+    callback title-edited <=> pres.title-edited;
+    callback body-edited <=> pres.body-edited;
+    callback notes-edited <=> pres.notes-edited;
+    callback next-slide <=> pres.next-slide;
+    callback prev-slide <=> pres.prev-slide;
+    callback save-presentation <=> pres.save-presentation;
+    callback load-presentation <=> pres.load-presentation;
+    callback toggle-timer <=> pres.toggle-timer;
+    callback reset-timer <=> pres.reset-timer;
+    callback key-pressed <=> pres.key-pressed;
+    callback use-template <=> pres.use-template;
+    callback export-markdown <=> pres.export-markdown;
+    callback export-outline <=> pres.export-outline;
+    callback search-slides <=> pres.search-slides;
+    callback search-next <=> pres.search-next;
+    callback set-transition <=> pres.set-transition;
+    callback undo <=> pres.undo;
+    callback redo <=> pres.redo;
+    callback generate-notes <=> pres.generate-notes;
+    callback format-bold <=> pres.format-bold;
+    callback format-italic <=> pres.format-italic;
+    callback set-font-size <=> pres.set-font-size;
+    callback set-text-color <=> pres.set-text-color;
+    callback insert-object <=> pres.insert-object;
+
+    // ── AI callbacks ──
+    callback pres-ai-generate-deck <=> pres.pres-ai-generate-deck;
+    callback pres-ai-structure-text <=> pres.pres-ai-structure-text;
+    callback pres-ai-generate-all-notes <=> pres.pres-ai-generate-all-notes;
+    callback pres-ai-improve-slide <=> pres.pres-ai-improve-slide;
+    callback pres-ai-generate-notes <=> pres.pres-ai-generate-notes;
+    callback pres-ai-simplify <=> pres.pres-ai-simplify;
+    callback pres-ai-split-slide <=> pres.pres-ai-split-slide;
+    callback pres-ai-suggest-layout <=> pres.pres-ai-suggest-layout;
+    callback pres-ai-freeform <=> pres.pres-ai-freeform;
+    callback pres-ai-apply <=> pres.pres-ai-apply;
+    callback pres-ai-dismiss <=> pres.pres-ai-dismiss;
+    callback pres-ai-preview-slide <=> pres.pres-ai-preview-slide;
+    callback pres-ai-regenerate <=> pres.pres-ai-regenerate;
+
+    // ── Template / speaker notes callbacks ──
+    callback pres-open-template-gallery <=> pres.pres-open-template-gallery;
+    callback pres-select-template <=> pres.pres-select-template;
+    callback pres-save-speaker-note <=> pres.pres-save-speaker-note;
+
+    pres := PresentationScreen {
+        width: 100%;
+        height: 100%;
+    }
+}
