@@ -13,7 +13,7 @@
 
 use yantrik_companion_core::bond::BondLevel;
 use crate::Instinct;
-use yantrik_companion_core::types::{CompanionState, UrgeSpec};
+use yantrik_companion_core::types::{CompanionState, ModelTier, UrgeSpec};
 
 use std::sync::Mutex;
 
@@ -163,19 +163,29 @@ impl Instinct for QuestionAskingInstinct {
             _ => 0.3,
         };
 
-        let execute_msg = format!(
-            "EXECUTE Question style: {style_name}.\n\
-             {style_prompt}\n\
-             \nRULES:\n\
-             - The question MUST emerge from something specific in their memory — NOT a generic ice-breaker.\n\
-             - Keep it to 1-2 sentences. Natural, conversational tone.\n\
-             - Add a brief lead-in that shows you were thinking about what they said.\n\
-             - If recall returns nothing useful to build on, respond with just \"No question today.\"\n\
-             - Do NOT ask about things they just told you in this conversation — \
-               reference things from previous conversations.",
-            style_name = style.name,
-            style_prompt = style_prompt,
-        );
+        let execute_msg = match state.model_tier {
+            ModelTier::Large => format!(
+                "EXECUTE Question style: {style_name}.\n\
+                 {style_prompt}\n\
+                 \nRULES:\n\
+                 - The question MUST emerge from something specific in their memory — NOT a generic ice-breaker.\n\
+                 - Keep it to 1-2 sentences. Natural, conversational tone.\n\
+                 - Add a brief lead-in that shows you were thinking about what they said.\n\
+                 - If recall returns nothing useful to build on, respond with just \"No question today.\"\n\
+                 - Do NOT ask about things they just told you in this conversation — \
+                   reference things from previous conversations.",
+                style_name = style.name,
+                style_prompt = style_prompt,
+            ),
+            ModelTier::Tiny => format!("EXECUTE SKIP"),
+            _ => format!(
+                "EXECUTE Task: Ask {user} one thoughtful question based on their interests or recent conversations.\n\
+                 Tool: You may use recall once.\n\
+                 Rule: Use only facts the user stated. Do not assume moods or situations.\n\
+                 Fallback: Skip.\n\
+                 Output: 1 question."
+            ),
+        };
 
         vec![UrgeSpec::new(
             "SocraticSpark",

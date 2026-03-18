@@ -22,7 +22,7 @@ impl Tool for GlobTool {
             "type": "function",
             "function": {
                 "name": "glob",
-                "description": "Find files matching a glob pattern recursively. Returns file paths sorted by modification time. Use patterns like '**/*.rs' to find all Rust files, 'src/**/*.py' for Python files under src/, or '*.toml' for TOML files in a directory.",
+                "description": "Find files by filename pattern recursively",
                 "parameters": {
                     "type": "object",
                     "properties": {

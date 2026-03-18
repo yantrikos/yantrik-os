@@ -14,7 +14,7 @@ use std::sync::Mutex;
 
 use yantrik_companion_core::bond::BondLevel;
 use crate::Instinct;
-use yantrik_companion_core::types::{CompanionState, UrgeSpec};
+use yantrik_companion_core::types::{CompanionState, UrgeSpec, ModelTier};
 
 /// Maximum age of an unreflected event to trigger a debrief (6 hours).
 const EVENT_FRESHNESS_SECS: f64 = 6.0 * 3600.0;
@@ -84,8 +84,9 @@ impl Instinct for DebriefPartnerInstinct {
 
         let user = &state.config_user_name;
 
-        let execute_msg = format!(
-            "EXECUTE Use recall with query '{event}' to gather context about this recent event \
+                let execute_msg = match state.model_tier {
+            ModelTier::Large => format!(
+                "EXECUTE Use recall with query '{event}' to gather context about this recent event \
              that {user} went through.\n\
              \n\
              {user} recently experienced: \"{event}\"\n\
@@ -105,7 +106,18 @@ impl Instinct for DebriefPartnerInstinct {
              If the event context is too vague to debrief meaningfully, respond with just \
              \"No debrief needed.\"",
             event = event_desc,
-        );
+            ),
+            ModelTier::Tiny => format!(
+                "EXECUTE SKIP",
+            ),
+            _ => format!(
+                "EXECUTE Task: Suggest one simple relationship check-in for {user}.\n\
+             Tool: Use recall for one recent contact or reminder.\n\
+             Rule: Use only details explicitly stated by the user or returned by recall. Do not infer relationship state, conflict, or emotions.\n\
+             Fallback: \"No relationship nudge needed.\"\n\
+             Output: 1 sentence.",
+            ),
+        };
 
         vec![UrgeSpec::new("DebriefPartner", &execute_msg, 0.45)
             .with_cooldown("debrief_partner:session")

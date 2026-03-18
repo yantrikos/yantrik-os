@@ -34,7 +34,7 @@
 use std::sync::Mutex;
 
 use crate::Instinct;
-use yantrik_companion_core::types::{CompanionState, UrgeSpec};
+use yantrik_companion_core::types::{CompanionState, UrgeSpec, ModelTier};
 
 /// Context Bridge instinct — bridges external events with personal relevance.
 ///
@@ -126,8 +126,9 @@ impl Instinct for ContextBridgeInstinct {
         // 2. Scan current events
         // 3. Find genuine intersections (not stretches)
         // 4. Deliver with specific reasoning
-        let execute_msg = format!(
-            "EXECUTE You are performing a Context Bridge analysis — your job is to find \
+                let execute_msg = match state.model_tier {
+            ModelTier::Large => format!(
+                "EXECUTE You are performing a Context Bridge analysis — your job is to find \
              where the WORLD and {user}'s LIFE intersect right now.\n\
              \n\
              Step 1: Build a profile of what matters to {user}.\n\
@@ -168,7 +169,18 @@ impl Instinct for ContextBridgeInstinct {
              8. If no genuine personal-relevance bridge was found after honest analysis, \
              respond with just \"No context bridge today.\" This is a GOOD outcome — it means \
              you maintained quality. Never force a bridge that isn't there.",
-        );
+            ),
+            ModelTier::Tiny => format!(
+                "EXECUTE SKIP",
+            ),
+            _ => format!(
+                "EXECUTE Task: Share one brief, grounded observation with {user}.\n\
+             Tool: You may use recall once for an explicit past detail.\n\
+             Rule: Use only details explicitly stated by the user or returned by recall. Prefer a concrete observation about a stated preference, repeated interest, or recent user-mentioned topic. Do not infer patterns, traits, emotions, or personal growth.\n\
+             Fallback: \"No suggestion right now.\"\n\
+             Output: 1 sentence.",
+            ),
+        };
 
         vec![UrgeSpec::new(
             "ContextBridge",

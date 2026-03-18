@@ -33,7 +33,7 @@ impl Tool for AntivirusScanTool {
             "type": "function",
             "function": {
                 "name": "antivirus_scan",
-                "description": "Scan a file or directory for malware using ClamAV. Returns found threats or clean status. Quarantines infected files to /tmp/quarantine/.",
+                "description": "Scan a file or directory for malware using ClamAV",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -143,7 +143,7 @@ impl Tool for AntivirusStatusTool {
             "type": "function",
             "function": {
                 "name": "antivirus_status",
-                "description": "Check ClamAV installation status, virus database version, and last update time.",
+                "description": "Check ClamAV installation status, virus database version",
                 "parameters": { "type": "object", "properties": {} }
             }
         })
@@ -229,7 +229,7 @@ impl Tool for AntivirusUpdateTool {
             "type": "function",
             "function": {
                 "name": "antivirus_update",
-                "description": "Update ClamAV virus definitions using freshclam.",
+                "description": "Update ClamAV virus definitions using freshclam",
                 "parameters": { "type": "object", "properties": {} }
             }
         })
@@ -276,7 +276,7 @@ impl Tool for AntivirusQuarantineTool {
             "type": "function",
             "function": {
                 "name": "antivirus_quarantine",
-                "description": "List files currently in the quarantine directory (/tmp/quarantine/).",
+                "description": "List files currently in the quarantine directory",
                 "parameters": { "type": "object", "properties": {} }
             }
         })

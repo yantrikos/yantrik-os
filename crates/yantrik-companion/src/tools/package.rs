@@ -38,7 +38,7 @@ impl Tool for PackageSearchTool {
             "type": "function",
             "function": {
                 "name": "package_search",
-                "description": "Search available packages by name or keyword.",
+                "description": "Search available packages by name or keyword",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -104,7 +104,7 @@ impl Tool for PackageInstallTool {
             "type": "function",
             "function": {
                 "name": "package_install",
-                "description": "Install a package from the system repository.",
+                "description": "Install a package from the system repository",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -162,7 +162,7 @@ impl Tool for PackageRemoveTool {
             "type": "function",
             "function": {
                 "name": "package_remove",
-                "description": "Remove an installed package.",
+                "description": "Remove an installed package",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -227,7 +227,7 @@ impl Tool for PackageInfoTool {
             "type": "function",
             "function": {
                 "name": "package_info",
-                "description": "Get detailed info about a package (version, description, size).",
+                "description": "Get detailed info about a package (version, description",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -262,7 +262,7 @@ impl Tool for PackageInfoTool {
                 if text.trim().is_empty() {
                     format!("Package '{package}' not found")
                 } else {
-                    let trunc = if text.len() > 2000 { &text[..2000] } else { &text };
+                    let trunc = if text.len() > 2000 { &text[..text.floor_char_boundary(2000)] } else { &text };
                     trunc.to_string()
                 }
             }
@@ -286,7 +286,7 @@ impl Tool for PackageListTool {
             "type": "function",
             "function": {
                 "name": "package_list",
-                "description": "List installed packages, optionally filtered by name.",
+                "description": "List installed packages, optionally filtered by name",
                 "parameters": {
                     "type": "object",
                     "properties": {

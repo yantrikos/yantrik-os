@@ -7,7 +7,7 @@
 use std::sync::Mutex;
 
 use crate::Instinct;
-use yantrik_companion_core::types::{CompanionState, UrgeSpec};
+use yantrik_companion_core::types::{CompanionState, UrgeSpec, ModelTier};
 
 pub struct MorningBriefInstinct {
     /// Hour to start the morning window (inclusive). Default: 6.
@@ -55,13 +55,26 @@ impl Instinct for MorningBriefInstinct {
 
         // EXECUTE prefix triggers tool-calling in generate_proactive_message,
         // so the brief gets real-time weather, calendar, email, and system data.
-        let reason = format!(
-            "EXECUTE Deliver {}'s morning brief. Call get_weather, calendar_today, \
+                let reason = match state.model_tier {
+            ModelTier::Large => format!(
+                "EXECUTE Deliver {}'s morning brief. Call get_weather, calendar_today, \
              email_check, and system_info. Then compose a concise daily briefing \
              with weather, today's events, unread emails, and system status. \
              Be warm and natural — this is {} starting their day.",
             state.config_user_name, state.config_user_name
-        );
+            ),
+            ModelTier::Tiny => format!(
+                "EXECUTE Remind about one provided goal. If no goal, say: \"Nothing actionable.\" Output: 1 sentence.",
+            ),
+            _ => format!(
+                "EXECUTE Task: Give one useful nudge about a pending goal, plan, or commitment.\n\
+             Input: time=(now).\n\
+             Tool: Use recall for one pending item.\n\
+             Rule: Use only details explicitly stated by the user or returned by recall. Do not invent deadlines, progress, or tasks.\n\
+             Fallback: \"Nothing actionable right now.\"\n\
+             Output: 1 sentence, under 20 words.",
+            ),
+        };
 
         vec![UrgeSpec::new("morning_brief", &reason, 0.9)
             .guaranteed()

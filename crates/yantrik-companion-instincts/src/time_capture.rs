@@ -13,7 +13,7 @@ use std::sync::Mutex;
 
 use yantrik_companion_core::bond::BondLevel;
 use crate::Instinct;
-use yantrik_companion_core::types::{CompanionState, UrgeSpec};
+use yantrik_companion_core::types::{CompanionState, UrgeSpec, ModelTier};
 
 pub struct TimeCaptureInstinct {
     /// Seconds between time capture checks.
@@ -68,8 +68,9 @@ impl Instinct for TimeCaptureInstinct {
 
         let user = &state.config_user_name;
 
-        let execute_msg = format!(
-            "EXECUTE Use recall with query 'excited happy proud accomplished moved grateful \
+                let execute_msg = match state.model_tier {
+            ModelTier::Large => format!(
+                "EXECUTE Use recall with query 'excited happy proud accomplished moved grateful \
              amazing beautiful' to find emotionally significant recent moments from {user}.\n\
              \n\
              Look for moments where {user} expressed genuine emotion — excitement about a \
@@ -86,7 +87,18 @@ impl Instinct for TimeCaptureInstinct {
              \n\
              If no emotional peaks found in recent context, respond with just \
              \"No time capture today.\""
-        );
+            ),
+            ModelTier::Tiny => format!(
+                "EXECUTE SKIP",
+            ),
+            _ => format!(
+                "EXECUTE Task: Surface one interesting memory connection for {user}.\n\
+             Tool: Use recall to find one relevant past memory.\n\
+             Rule: Use only details explicitly stated by the user or returned by recall. Do not invent memories or connections.\n\
+             Fallback: \"Nothing to surface right now.\"\n\
+             Output: 1 sentence.",
+            ),
+        };
 
         vec![UrgeSpec::new("TimeCapture", &execute_msg, 0.35)
             .with_cooldown("time_capture:moment")

@@ -24,7 +24,7 @@ impl Tool for CreateScheduleTool {
             "type": "function",
             "function": {
                 "name": "create_schedule",
-                "description": "Create a scheduled task. Supports one-shot (once), recurring interval, or cron expressions. Use for reminders, daily routines, birthday/anniversary alerts, periodic checks.",
+                "description": "Create recurring scheduled task",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -210,7 +210,7 @@ impl Tool for ListSchedulesTool {
             "type": "function",
             "function": {
                 "name": "list_schedules",
-                "description": "List scheduled tasks. Shows label, type, next fire time, and status.",
+                "description": "List scheduled tasks and reminders",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -268,7 +268,7 @@ impl Tool for UpdateScheduleTool {
             "type": "function",
             "function": {
                 "name": "update_schedule",
-                "description": "Update a scheduled task. Use to reschedule (change next_invoke), rename, adjust urgency, or change cron/interval. Useful after a birthday fires — set next_invoke to next year.",
+                "description": "Change an existing scheduled task",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -340,7 +340,7 @@ impl Tool for CancelScheduleTool {
             "type": "function",
             "function": {
                 "name": "cancel_schedule",
-                "description": "Cancel a scheduled task by its ID.",
+                "description": "Cancel scheduled task by ID",
                 "parameters": {
                     "type": "object",
                     "properties": {

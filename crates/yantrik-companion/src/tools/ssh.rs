@@ -51,7 +51,7 @@ impl Tool for SshListHostsTool {
             "type": "function",
             "function": {
                 "name": "ssh_list_hosts",
-                "description": "List SSH hosts from your SSH config and known_hosts.",
+                "description": "List SSH hosts from your SSH config and known_hosts",
                 "parameters": {
                     "type": "object",
                     "properties": {}
@@ -196,7 +196,7 @@ impl Tool for SshCheckHostTool {
             "type": "function",
             "function": {
                 "name": "ssh_check_host",
-                "description": "Check if an SSH host is reachable.",
+                "description": "Check if an SSH host is reachable",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -253,7 +253,7 @@ impl Tool for SshRunTool {
             "type": "function",
             "function": {
                 "name": "ssh_run",
-                "description": "Run a command on a remote host via SSH.",
+                "description": "Run a command on a remote host via SSH",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -312,7 +312,7 @@ impl Tool for SshRunTool {
 
                 // Truncate
                 if out.len() > 3000 {
-                    format!("{}...\n(truncated, {} chars)", &out[..3000], out.len())
+                    format!("{}...\n(truncated, {} chars)", &out[..out.floor_char_boundary(3000)], out.len())
                 } else {
                     out
                 }

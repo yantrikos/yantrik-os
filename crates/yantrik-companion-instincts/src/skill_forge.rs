@@ -21,7 +21,7 @@ use std::sync::Mutex;
 
 use yantrik_companion_core::bond::BondLevel;
 use crate::Instinct;
-use yantrik_companion_core::types::{CompanionState, UrgeSpec};
+use yantrik_companion_core::types::{CompanionState, UrgeSpec, ModelTier};
 
 pub struct SkillForgeInstinct {
     /// Seconds between skill forge evaluations.
@@ -72,8 +72,9 @@ impl Instinct for SkillForgeInstinct {
 
         let user = &state.config_user_name;
 
-        let execute_msg = format!(
-            "EXECUTE First, use recall with query \"learning trying to understand struggling with how to\" \
+                let execute_msg = match state.model_tier {
+            ModelTier::Large => format!(
+                "EXECUTE First, use recall with query \"learning trying to understand struggling with how to\" \
              to find what {user} is currently trying to learn or understand.\n\
              \n\
              If you find an active learning topic:\n\
@@ -94,7 +95,19 @@ impl Instinct for SkillForgeInstinct {
              \n\
              If no active learning topics found in memory, respond with just \"No skill forge today.\"\n\
              After you're done, call browser_cleanup to free resources.",
-        );
+            ),
+            ModelTier::Tiny => format!(
+                "EXECUTE Suggest one activity for {user}. Output: 1 sentence.",
+            ),
+            _ => format!(
+                "EXECUTE Task: Suggest one interesting thing for {user}.\n\
+             Input: interest=.\n\
+             Tool: You may use recall or web search once.\n\
+             Rule: Do not invent facts. Do not repeat recent suggestions.\n\
+             Fallback: \"No suggestion right now.\"\n\
+             Output: 1 sentence.",
+            ),
+        };
 
         vec![UrgeSpec::new(self.name(), &execute_msg, 0.45)
             .with_cooldown("skill_forge:insight")]

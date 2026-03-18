@@ -46,7 +46,7 @@ impl Tool for DetectTerminalErrorsTool {
             "type": "function",
             "function": {
                 "name": "detect_terminal_errors",
-                "description": "Scan the terminal scrollback for errors and warnings.",
+                "description": "Find likely errors in terminal output",
                 "parameters": {
                     "type": "object",
                     "properties": {}
@@ -113,7 +113,7 @@ impl Tool for SearchTerminalHistoryTool {
             "type": "function",
             "function": {
                 "name": "search_terminal_history",
-                "description": "Search shell command history for a pattern.",
+                "description": "Search past terminal commands or output",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -186,7 +186,7 @@ impl Tool for ExplainLastErrorTool {
             "type": "function",
             "function": {
                 "name": "explain_last_error",
-                "description": "Get the last terminal error with surrounding context for analysis.",
+                "description": "Explain the most recent terminal error",
                 "parameters": {
                     "type": "object",
                     "properties": {}

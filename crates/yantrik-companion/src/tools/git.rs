@@ -28,7 +28,7 @@ fn run_git(dir: &str, git_args: &[&str]) -> String {
             if out.trim().is_empty() {
                 "(no output)".to_string()
             } else if out.len() > 3000 {
-                format!("{}...\n(truncated, {} chars)", &out[..3000], out.len())
+                format!("{}...\n(truncated, {} chars)", &out[..out.floor_char_boundary(3000)], out.len())
             } else {
                 out.to_string()
             }
@@ -56,7 +56,7 @@ impl Tool for GitStatusTool {
             "type": "function",
             "function": {
                 "name": "git_status",
-                "description": "Show the working tree status of a git repository.",
+                "description": "Show the working tree status of a git repository",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -95,7 +95,7 @@ impl Tool for GitLogTool {
             "type": "function",
             "function": {
                 "name": "git_log",
-                "description": "Show recent git commit history.",
+                "description": "Show recent git commit history",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -139,7 +139,7 @@ impl Tool for GitDiffTool {
             "type": "function",
             "function": {
                 "name": "git_diff",
-                "description": "Show uncommitted changes in a git repository.",
+                "description": "Show uncommitted changes in a git repository",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -186,7 +186,7 @@ impl Tool for GitCloneTool {
             "type": "function",
             "function": {
                 "name": "git_clone",
-                "description": "Clone a git repository to a local directory.",
+                "description": "Clone a git repository to a local directory",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -257,7 +257,7 @@ impl Tool for GitBranchTool {
             "type": "function",
             "function": {
                 "name": "git_branch",
-                "description": "List branches in a git repository.",
+                "description": "List branches in a git repository",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -304,7 +304,7 @@ impl Tool for GitCommitTool {
             "type": "function",
             "function": {
                 "name": "git_commit",
-                "description": "Commit changes in a git repository.",
+                "description": "Commit changes in a git repository",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -357,7 +357,7 @@ impl Tool for GitShowTool {
             "type": "function",
             "function": {
                 "name": "git_show",
-                "description": "Show details of a specific git commit.",
+                "description": "Show details of a specific git commit",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -389,7 +389,7 @@ impl Tool for GitShowTool {
 
         let out = run_git(&expanded, &["show", "--stat", commit]);
         if out.len() > 3000 {
-            format!("{}...\n(truncated, {} chars)", &out[..3000], out.len())
+            format!("{}...\n(truncated, {} chars)", &out[..out.floor_char_boundary(3000)], out.len())
         } else {
             out
         }
@@ -410,7 +410,7 @@ impl Tool for GitStashTool {
             "type": "function",
             "function": {
                 "name": "git_stash",
-                "description": "Manage git stash (push, pop, or list).",
+                "description": "Manage git stash (push, pop, or list)",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -460,7 +460,7 @@ impl Tool for GitDiffFileTool {
             "type": "function",
             "function": {
                 "name": "git_diff_file",
-                "description": "Show diff for a specific file in a git repository.",
+                "description": "Show diff for a specific file in a git repository",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -487,7 +487,7 @@ impl Tool for GitDiffFileTool {
 
         let out = run_git(&expanded, &["diff", "--", file]);
         if out.len() > 3000 {
-            format!("{}...\n(truncated, {} chars)", &out[..3000], out.len())
+            format!("{}...\n(truncated, {} chars)", &out[..out.floor_char_boundary(3000)], out.len())
         } else {
             out
         }

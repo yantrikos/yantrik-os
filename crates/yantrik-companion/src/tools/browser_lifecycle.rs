@@ -426,7 +426,7 @@ impl Tool for BrowserCleanupTool {
             "type": "function",
             "function": {
                 "name": "browser_cleanup",
-                "description": "Clean up browser resources: close excess tabs, kill zombie Chromium renderer processes, and free memory. Call after completing web tasks or when the system feels slow. Use force=true to kill ALL browser processes.",
+                "description": "Close all browser tabs; reset browser state",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -535,7 +535,7 @@ impl Tool for BrowserStatusTool {
             "type": "function",
             "function": {
                 "name": "browser_status",
-                "description": "Get browser health report: number of open tabs with URLs, Chromium process count by type, total memory usage, and whether cleanup is recommended.",
+                "description": "Check browser health and open-tab count",
                 "parameters": {
                     "type": "object",
                     "properties": {}

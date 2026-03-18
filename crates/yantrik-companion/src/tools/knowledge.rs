@@ -24,7 +24,7 @@ impl Tool for SearchFixHistoryTool {
             "type": "function",
             "function": {
                 "name": "search_fix_history",
-                "description": "Search memory for past fixes, solutions, and workarounds related to a topic.",
+                "description": "Search memory for past fixes, solutions, and workarounds",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -76,7 +76,7 @@ impl Tool for SearchByTimeframeTool {
             "type": "function",
             "function": {
                 "name": "search_by_timeframe",
-                "description": "Search memories from a specific time period.",
+                "description": "Search memories from a date or time range",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -146,7 +146,7 @@ impl Tool for SummarizeWorkSessionTool {
             "type": "function",
             "function": {
                 "name": "summarize_work_session",
-                "description": "Summarize what you were working on in the last N hours.",
+                "description": "Summarize what you were working on in the last N hours",
                 "parameters": {
                     "type": "object",
                     "properties": {

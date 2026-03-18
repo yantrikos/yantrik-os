@@ -28,7 +28,7 @@ impl Tool for ClipboardHistoryTool {
             "type": "function",
             "function": {
                 "name": "clipboard_history",
-                "description": "Search or list recent clipboard history entries. Shows what the user has copied recently with timestamps and content types.",
+                "description": "Search or list recent clipboard history entries",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -97,7 +97,7 @@ impl Tool for ClipboardAnalyzeTool {
             "type": "function",
             "function": {
                 "name": "clipboard_analyze",
-                "description": "Analyze the current clipboard content: detect type (URL, code, JSON, email, sensitive data, plain text), check MIME types, and suggest available actions.",
+                "description": "Analyze the current clipboard content: detect type (URL",
                 "parameters": {
                     "type": "object",
                     "properties": {}
@@ -187,7 +187,7 @@ impl Tool for ClipboardFetchUrlTool {
             "type": "function",
             "function": {
                 "name": "clipboard_fetch_url",
-                "description": "If the clipboard contains a URL, fetch the page title and text excerpt. Useful for 'smart paste' — turning a URL into actual content.",
+                "description": "If the clipboard contains a URL, fetch the page title and",
                 "parameters": {
                     "type": "object",
                     "properties": {}
@@ -262,7 +262,7 @@ impl Tool for ClipboardTransformTool {
             "type": "function",
             "function": {
                 "name": "clipboard_transform",
-                "description": "Transform clipboard content and write the result back. Supports: format_json, minify_json, sort_lines, dedupe_lines, extract_urls, extract_emails, strip_html, decode_base64, url_decode.",
+                "description": "Transform clipboard content and write the result back",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -372,7 +372,7 @@ impl Tool for TextActionTool {
             "type": "function",
             "function": {
                 "name": "text_action",
-                "description": "Read the clipboard text and prepare it for an AI text action. Returns the clipboard content with the requested action, so you (the AI) can perform the transformation and write the result back with write_clipboard. Actions: rewrite_formal, rewrite_casual, summarize, fix_grammar, explain, translate_to.",
+                "description": "Read the clipboard text and prepare it for an AI text action",
                 "parameters": {
                     "type": "object",
                     "properties": {

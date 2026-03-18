@@ -111,7 +111,7 @@ impl Tool for AnalyzeScreenTool {
             "type": "function",
             "function": {
                 "name": "analyze_screen",
-                "description": "Take a screenshot of the current screen and analyze what's visible. Can answer specific questions about on-screen content.",
+                "description": "Capture and analyze screen contents with AI",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -159,7 +159,7 @@ impl Tool for DescribeImageTool {
             "type": "function",
             "function": {
                 "name": "describe_image",
-                "description": "Describe the contents of an image file. Supports PNG, JPG, WebP.",
+                "description": "Describe contents of an image file with AI",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -217,7 +217,7 @@ impl Tool for SmartRenameTool {
             "type": "function",
             "function": {
                 "name": "smart_rename",
-                "description": "Analyze an image and rename the file based on its content. Generates a descriptive, kebab-case filename.",
+                "description": "Analyze an image and rename the file based on its content",
                 "parameters": {
                     "type": "object",
                     "properties": {

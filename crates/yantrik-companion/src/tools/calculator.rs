@@ -22,7 +22,7 @@ impl Tool for CalculateTool {
             "type": "function",
             "function": {
                 "name": "calculate",
-                "description": "Evaluate a mathematical expression. Supports +, -, *, /, ^, sqrt(), percentages, and arbitrary precision.",
+                "description": "Evaluate a mathematical expression",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -158,7 +158,7 @@ impl Tool for UnitConvertTool {
             "type": "function",
             "function": {
                 "name": "unit_convert",
-                "description": "Convert between units: temperature (C/F/K), distance (km/mi/m/ft), weight (kg/lb/oz/g), data (B/KB/MB/GB/TB).",
+                "description": "Convert between units: temperature (C/F/K), distance",
                 "parameters": {
                     "type": "object",
                     "properties": {

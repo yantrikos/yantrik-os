@@ -26,7 +26,7 @@ impl Tool for CreateAutomationTool {
             "type": "function",
             "function": {
                 "name": "create_automation",
-                "description": "Create an automation rule. Automations run instructions when triggered. Trigger types: 'manual' (run on demand), 'schedule' (time-based with cron/interval), 'event' (on system events like WiFi connect, battery low). Steps are natural language instructions you'll execute when triggered.",
+                "description": "Create an automation rule",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -211,7 +211,7 @@ impl Tool for ListAutomationsTool {
             "type": "function",
             "function": {
                 "name": "list_automations",
-                "description": "List automation rules. Shows name, trigger type, run count, and status.",
+                "description": "List automation rules",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -283,7 +283,7 @@ impl Tool for RunAutomationTool {
             "type": "function",
             "function": {
                 "name": "run_automation",
-                "description": "Run a saved automation by name or ID. Returns the automation's steps for you to execute using tools.",
+                "description": "Run a saved automation by name or ID",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -349,7 +349,7 @@ impl Tool for DeleteAutomationTool {
             "type": "function",
             "function": {
                 "name": "delete_automation",
-                "description": "Delete an automation by name or ID.",
+                "description": "Delete an automation by name or ID",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -408,7 +408,7 @@ impl Tool for ToggleAutomationTool {
             "type": "function",
             "function": {
                 "name": "toggle_automation",
-                "description": "Enable or disable an automation.",
+                "description": "Enable or disable an automation",
                 "parameters": {
                     "type": "object",
                     "properties": {

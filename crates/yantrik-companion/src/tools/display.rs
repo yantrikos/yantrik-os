@@ -21,7 +21,7 @@ impl Tool for DisplayInfoTool {
             "type": "function",
             "function": {
                 "name": "display_info",
-                "description": "Get display resolution, refresh rate, and output name.",
+                "description": "Get display resolution, refresh rate, and output name",
                 "parameters": {
                     "type": "object",
                     "properties": {}
@@ -51,7 +51,7 @@ impl Tool for DisplayInfoTool {
 
                 if result.is_empty() {
                     // Fallback: return raw (truncated)
-                    let trunc = if text.len() > 1000 { &text[..1000] } else { &text };
+                    let trunc = if text.len() > 1000 { &text[..text.floor_char_boundary(1000)] } else { &text };
                     trunc.to_string()
                 } else {
                     result.trim().to_string()
@@ -80,7 +80,7 @@ impl Tool for SetResolutionTool {
             "type": "function",
             "function": {
                 "name": "set_resolution",
-                "description": "Change display resolution.",
+                "description": "Change display resolution",
                 "parameters": {
                     "type": "object",
                     "properties": {

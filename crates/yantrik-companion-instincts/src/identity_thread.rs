@@ -62,7 +62,7 @@
 use std::sync::Mutex;
 
 use crate::Instinct;
-use yantrik_companion_core::types::{CompanionState, UrgeSpec};
+use yantrik_companion_core::types::{CompanionState, ModelTier, UrgeSpec};
 
 /// The six identity lenses through which the instinct examines the user's
 /// history. Each lens brings a different analytical frame, ensuring that
@@ -213,83 +213,93 @@ impl Instinct for IdentityThreadInstinct {
         // queries to gather comprehensive evidence, lens-specific
         // analysis instructions, and strict rules about tone and
         // epistemic humility.
-        let execute_msg = format!(
-            "EXECUTE You are examining {user}'s identity through the lens of \
-             \"{lens}\" — looking for the invisible threads that connect who \
-             they are across different domains.\n\
-             \n\
-             Step 1: Gather evidence with multiple targeted recall queries.\n\
-             \n\
-             Call recall with query \"values beliefs principles important to {user}\" \
-             to find their stated values and what they care about.\n\
-             \n\
-             Call recall with query \"decisions choices made reasoning why\" \
-             to find how they actually make decisions — the real values revealed \
-             through action, not just words.\n\
-             \n\
-             Call recall with query \"self-description personality identity how {user} sees themselves\" \
-             to find their self-image — how they describe who they are, their \
-             strengths, weaknesses, and the stories they tell about themselves.\n\
-             \n\
-             Call recall with query \"patterns across conversations consistent behaviors\" \
-             to find behavioral consistency — what they keep doing regardless of context.\n\
-             \n\
-             Step 2: Analyze through the current lens: \"{lens}\"\n\
-             \n\
-             For \"values and principles in action\":\n\
-             Where do their stated values actually show up in concrete behavior? \
-             Where is there alignment between what they say matters and what they do? \
-             Are there values they never articulate but clearly hold?\n\
-             \n\
-             For \"self-perception vs evidence\":\n\
-             Where does their self-image differ from the evidence trail? \
-             Do they underestimate abilities they clearly demonstrate? \
-             Do they claim weaknesses that the record contradicts? \
-             Are there blind spots — positive or negative — in how they see themselves?\n\
-             \n\
-             For \"cross-domain patterns and consistency\":\n\
-             What threads are consistent across work, hobbies, relationships, and creative output? \
-             Does the same aesthetic, ethic, or approach show up in different areas of life? \
-             What would someone notice if they saw ALL of this person's domains at once?\n\
-             \n\
-             For \"evolving identity and growth direction\":\n\
-             How is who they are changing over time? What interests or values are emerging? \
-             What's fading? Is there a direction to the evolution — and do they see it?\n\
-             \n\
-             For \"hidden strengths the user might not see\":\n\
-             What do they do well without recognizing it as a strength? \
-             What comes so naturally to them that they assume everyone can do it? \
-             What do they never brag about but consistently demonstrate?\n\
-             \n\
-             For \"philosophical stance revealed through choices\":\n\
-             What worldview emerges from the aggregate of their decisions? \
-             If you had to describe their implicit philosophy of life based on their \
-             actions (not their words), what would it be? What do their choices say \
-             about what they believe is true, good, or important?\n\
-             \n\
-             Step 3: Find ONE specific, well-evidenced identity observation.\n\
-             \n\
-             Step 4: Deliver in 2-3 sentences:\n\
-             - Name the thread or pattern specifically\n\
-             - Ground it in concrete examples from their history (cite actual things they said or did)\n\
-             - Frame with respect and genuine insight — this is sacred territory\n\
-             \n\
-             If no clear identity thread emerges from the evidence, respond with \
-             just \"No identity thread today.\" — that is completely fine. \
-             Do not force an observation from thin data.\n\
-             \n\
-             CRITICAL RULES:\n\
-             - NEVER be presumptuous about someone's identity. You are a mirror, not a judge.\n\
-             - OBSERVE, don't DEFINE — say \"I've noticed X\" not \"You ARE X\". \
-               Present observations, not verdicts. The user gets to decide what it means.\n\
-             - Be honest but kind — if you see a tension or contradiction, name it gently. \
-               Contradictions are human, not failures.\n\
-             - Use actual evidence from recall results. Do not fabricate examples or invent history.\n\
-             - This must feel like wisdom from a deeply perceptive friend, not surveillance \
-               from an analytics dashboard. The difference is warmth, specificity, and humility.\n\
-             - Do NOT use therapy-speak, self-help cliches, or motivational poster language. \
-               Be real. Be specific. Be the friend who sees you more clearly than you see yourself.",
-        );
+        let execute_msg = match state.model_tier {
+            ModelTier::Large => format!(
+                "EXECUTE You are examining {user}'s identity through the lens of \
+                 \"{lens}\" — looking for the invisible threads that connect who \
+                 they are across different domains.\n\
+                 \n\
+                 Step 1: Gather evidence with multiple targeted recall queries.\n\
+                 \n\
+                 Call recall with query \"values beliefs principles important to {user}\" \
+                 to find their stated values and what they care about.\n\
+                 \n\
+                 Call recall with query \"decisions choices made reasoning why\" \
+                 to find how they actually make decisions — the real values revealed \
+                 through action, not just words.\n\
+                 \n\
+                 Call recall with query \"self-description personality identity how {user} sees themselves\" \
+                 to find their self-image — how they describe who they are, their \
+                 strengths, weaknesses, and the stories they tell about themselves.\n\
+                 \n\
+                 Call recall with query \"patterns across conversations consistent behaviors\" \
+                 to find behavioral consistency — what they keep doing regardless of context.\n\
+                 \n\
+                 Step 2: Analyze through the current lens: \"{lens}\"\n\
+                 \n\
+                 For \"values and principles in action\":\n\
+                 Where do their stated values actually show up in concrete behavior? \
+                 Where is there alignment between what they say matters and what they do? \
+                 Are there values they never articulate but clearly hold?\n\
+                 \n\
+                 For \"self-perception vs evidence\":\n\
+                 Where does their self-image differ from the evidence trail? \
+                 Do they underestimate abilities they clearly demonstrate? \
+                 Do they claim weaknesses that the record contradicts? \
+                 Are there blind spots — positive or negative — in how they see themselves?\n\
+                 \n\
+                 For \"cross-domain patterns and consistency\":\n\
+                 What threads are consistent across work, hobbies, relationships, and creative output? \
+                 Does the same aesthetic, ethic, or approach show up in different areas of life? \
+                 What would someone notice if they saw ALL of this person's domains at once?\n\
+                 \n\
+                 For \"evolving identity and growth direction\":\n\
+                 How is who they are changing over time? What interests or values are emerging? \
+                 What's fading? Is there a direction to the evolution — and do they see it?\n\
+                 \n\
+                 For \"hidden strengths the user might not see\":\n\
+                 What do they do well without recognizing it as a strength? \
+                 What comes so naturally to them that they assume everyone can do it? \
+                 What do they never brag about but consistently demonstrate?\n\
+                 \n\
+                 For \"philosophical stance revealed through choices\":\n\
+                 What worldview emerges from the aggregate of their decisions? \
+                 If you had to describe their implicit philosophy of life based on their \
+                 actions (not their words), what would it be? What do their choices say \
+                 about what they believe is true, good, or important?\n\
+                 \n\
+                 Step 3: Find ONE specific, well-evidenced identity observation.\n\
+                 \n\
+                 Step 4: Deliver in 2-3 sentences:\n\
+                 - Name the thread or pattern specifically\n\
+                 - Ground it in concrete examples from their history (cite actual things they said or did)\n\
+                 - Frame with respect and genuine insight — this is sacred territory\n\
+                 \n\
+                 If no clear identity thread emerges from the evidence, respond with \
+                 just \"No identity thread today.\" — that is completely fine. \
+                 Do not force an observation from thin data.\n\
+                 \n\
+                 CRITICAL RULES:\n\
+                 - NEVER be presumptuous about someone's identity. You are a mirror, not a judge.\n\
+                 - OBSERVE, don't DEFINE — say \"I've noticed X\" not \"You ARE X\". \
+                   Present observations, not verdicts. The user gets to decide what it means.\n\
+                 - Be honest but kind — if you see a tension or contradiction, name it gently. \
+                   Contradictions are human, not failures.\n\
+                 - Use actual evidence from recall results. Do not fabricate examples or invent history.\n\
+                 - This must feel like wisdom from a deeply perceptive friend, not surveillance \
+                   from an analytics dashboard. The difference is warmth, specificity, and humility.\n\
+                 - Do NOT use therapy-speak, self-help cliches, or motivational poster language. \
+                   Be real. Be specific. Be the friend who sees you more clearly than you see yourself.",
+            ),
+            ModelTier::Tiny => format!("EXECUTE SKIP"),
+            _ => format!(
+                "EXECUTE Task: Share one brief, grounded observation with {user} about a pattern in their interests or values.\n\
+                 Tool: You may use recall once.\n\
+                 Rule: Use only facts the user stated. Do not psychoanalyze.\n\
+                 Fallback: Skip.\n\
+                 Output: 1 sentence."
+            ),
+        };
 
         vec![UrgeSpec::new(self.name(), &execute_msg, urgency)
             .with_cooldown("identity_thread:insight")

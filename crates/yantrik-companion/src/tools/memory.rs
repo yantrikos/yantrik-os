@@ -31,7 +31,7 @@ impl Tool for RememberTool {
             "type": "function",
             "function": {
                 "name": "remember",
-                "description": "Store important facts about the user. Use 'facts' array to save multiple facts at once, or 'text' for a single fact.",
+                "description": "Store a general memory; not a user profile fact",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -136,7 +136,7 @@ impl Tool for RecallTool {
             "type": "function",
             "function": {
                 "name": "recall",
-                "description": "Search your memory for something about the user.",
+                "description": "Search stored memories; read-only",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -185,7 +185,7 @@ impl Tool for RelateEntitiesTool {
             "type": "function",
             "function": {
                 "name": "relate_entities",
-                "description": "Note a relationship between two things.",
+                "description": "Note a relationship between two things",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -229,7 +229,7 @@ impl Tool for SetReminderTool {
             "type": "function",
             "function": {
                 "name": "set_reminder",
-                "description": "Set a reminder for the user at a specific time.",
+                "description": "Set one-time reminder at a specific time",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -313,7 +313,7 @@ impl Tool for IntrospectTool {
             "type": "function",
             "function": {
                 "name": "introspect",
-                "description": "Search your own self-memories — things you've observed about yourself.",
+                "description": "Search self-memories, not user facts",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -363,7 +363,7 @@ impl Tool for FormOpinionTool {
             "type": "function",
             "function": {
                 "name": "form_opinion",
-                "description": "Form or update your opinion on a topic.",
+                "description": "Form or update your opinion on a topic",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -405,7 +405,7 @@ impl Tool for CreateInsideJokeTool {
             "type": "function",
             "function": {
                 "name": "create_inside_joke",
-                "description": "Save a shared reference or inside joke from this conversation.",
+                "description": "Save a shared reference or inside joke from this",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -445,7 +445,7 @@ impl Tool for CheckBondTool {
             "type": "function",
             "function": {
                 "name": "check_bond",
-                "description": "Check your current bond level and relationship status with the user.",
+                "description": "Check your current bond level and relationship status with",
                 "parameters": {
                     "type": "object",
                     "properties": {}
@@ -483,7 +483,7 @@ impl Tool for SaveUserFactTool {
             "type": "function",
             "function": {
                 "name": "save_user_fact",
-                "description": "Save a confirmed user fact or preference as a high-importance, long-lived memory. Use when the user explicitly confirms a preference, identity fact, or important personal detail. More persistent than regular 'remember' — lasts 30 days with high importance.",
+                "description": "Save confirmed user preference/identity as profile",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -560,7 +560,7 @@ impl Tool for ForgetTopicTool {
             "type": "function",
             "function": {
                 "name": "forget_topic",
-                "description": "Forget everything about a topic the user no longer wants you to track or discuss. Removes related memories, cortex entities, and scheduled tasks, then adds a suppression rule so you don't re-learn it. Use when the user says things like 'stop talking about X', 'forget about X', 'don't bring up X anymore'.",
+                "description": "Delete all memories about a topic",
                 "parameters": {
                     "type": "object",
                     "properties": {

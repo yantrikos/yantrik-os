@@ -30,7 +30,7 @@ impl Tool for KillProcessTool {
             "type": "function",
             "function": {
                 "name": "kill_process",
-                "description": "Kill a running process by name or PID.",
+                "description": "Stop process by PID or name",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -108,7 +108,7 @@ impl Tool for SendNotificationTool {
             "type": "function",
             "function": {
                 "name": "send_notification",
-                "description": "Display a desktop notification to the user.",
+                "description": "Show local desktop notification to user only",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -132,8 +132,8 @@ impl Tool for SendNotificationTool {
         }
 
         // Truncate to prevent abuse
-        let title = if title.len() > 100 { &title[..100] } else { title };
-        let body = if body.len() > 500 { &body[..500] } else { body };
+        let title = if title.len() > 100 { &title[..title.floor_char_boundary(100)] } else { title };
+        let body = if body.len() > 500 { &body[..body.floor_char_boundary(500)] } else { body };
 
         let mut cmd = std::process::Command::new("notify-send");
         cmd.arg("-u").arg(urgency);
@@ -167,7 +167,7 @@ impl Tool for SystemControlTool {
             "type": "function",
             "function": {
                 "name": "system_control",
-                "description": "Adjust volume, brightness, or power state.",
+                "description": "Change volume, brightness, or power state",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -234,7 +234,7 @@ impl Tool for BatteryForecastTool {
             "type": "function",
             "function": {
                 "name": "battery_forecast",
-                "description": "Get battery status with a time forecast — current level, charging state, and estimated wall-clock time until empty or full.",
+                "description": "Get battery status with a time forecast — current level",
                 "parameters": {
                     "type": "object",
                     "properties": {}

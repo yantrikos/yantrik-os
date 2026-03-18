@@ -36,7 +36,7 @@ impl Tool for MemoryStatsTool {
             "type": "function",
             "function": {
                 "name": "memory_stats",
-                "description": "Get a summary of your memory: counts by domain, tier, source, age. Use this to understand your memory health before curating.",
+                "description": "Show memory counts and storage stats only",
                 "parameters": {
                     "type": "object",
                     "properties": {},
@@ -137,7 +137,7 @@ impl Tool for ReviewMemoriesTool {
             "type": "function",
             "function": {
                 "name": "review_memories",
-                "description": "List your memories filtered by domain, source, or age. Paginated. Use this to review what you remember and decide what to keep, forget, or re-tier.",
+                "description": "List recent memories for manual review",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -257,12 +257,12 @@ impl Tool for ReviewMemoriesTool {
                             let (rid, text, domain, source, imp, tier, _ts) = row;
                             // Truncate text for readability
                             let display = if text.len() > 100 {
-                                format!("{}...", &text[..97])
+                                format!("{}...", &text[..text.floor_char_boundary(97)])
                             } else {
                                 text
                             };
                             // Short rid (first 8 chars)
-                            let short_rid = if rid.len() > 12 { &rid[..12] } else { &rid };
+                            let short_rid = if rid.len() > 12 { &rid[..rid.floor_char_boundary(12)] } else { &rid };
                             out.push_str(&format!(
                                 "[{}] imp={:.1} tier={} src={} dom={}\n  {}\n\n",
                                 short_rid, imp, tier, source, domain, display,
@@ -301,7 +301,7 @@ impl Tool for ForgetMemoryTool {
             "type": "function",
             "function": {
                 "name": "forget_memory",
-                "description": "Forget (soft-delete) a memory by its ID. The memory won't appear in recall anymore. Use after reviewing memories to remove noise, duplicates, or outdated info.",
+                "description": "Delete one memory by ID; permanent",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -356,7 +356,7 @@ impl Tool for ForgetMemoryTool {
                      VALUES (?1, '', 'forget', ?2, ?3)",
                     rusqlite::params![full_rid, reason, now_ts()],
                 );
-                format!("Forgotten: {} (reason: {})", &full_rid[..12.min(full_rid.len())], reason)
+                format!("Forgotten: {} (reason: {})", &full_rid[..full_rid.floor_char_boundary(12.min(full_rid.len()))], reason)
             }
             _ => format!("Failed to forget memory '{}'", rid_prefix),
         }
@@ -377,7 +377,7 @@ impl Tool for UpdateMemoryTool {
             "type": "function",
             "function": {
                 "name": "update_memory",
-                "description": "Update a memory's importance, domain, or storage tier. Use to re-classify memories that were auto-tagged incorrectly.",
+                "description": "Edit memory metadata, not content text",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -457,7 +457,7 @@ impl Tool for UpdateMemoryTool {
 
         let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
         match conn.execute(&sql, param_refs.as_slice()) {
-            Ok(1) => format!("Updated memory {}: {}", &full_rid[..12.min(full_rid.len())], updates.join(", ")),
+            Ok(1) => format!("Updated memory {}: {}", &full_rid[..full_rid.floor_char_boundary(12.min(full_rid.len()))], updates.join(", ")),
             Ok(_) => format!("No memory matched '{}'", rid_prefix),
             Err(e) => format!("Update failed: {e}"),
         }
@@ -478,7 +478,7 @@ impl Tool for ResolveConflictsTool {
             "type": "function",
             "function": {
                 "name": "resolve_conflicts",
-                "description": "View and resolve open memory conflicts. With no arguments, lists all open conflicts. With 'resolve_all', marks all as resolved. With a specific conflict_id, resolves just that one.",
+                "description": "Fix contradictory memories by merge or delete",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -525,7 +525,7 @@ impl Tool for ResolveConflictsTool {
                             for row in rows.flatten() {
                                 let (id, ctype, priority, reason, mem_a, mem_b) = row;
                                 let short_reason = if reason.len() > 80 {
-                                    format!("{}...", &reason[..77])
+                                    format!("{}...", &reason[..reason.floor_char_boundary(77)])
                                 } else {
                                     reason
                                 };
@@ -540,7 +540,7 @@ impl Tool for ResolveConflictsTool {
                                 ).unwrap_or_else(|_| "[deleted]".into());
                                 out.push_str(&format!(
                                     "[{}] type={} priority={}\n  {}\n  A: \"{}\"\n  B: \"{}\"\n\n",
-                                    &id[..8], ctype, priority, short_reason, text_a, text_b,
+                                    &id[..id.floor_char_boundary(8)], ctype, priority, short_reason, text_a, text_b,
                                 ));
                                 count += 1;
                             }
@@ -597,7 +597,7 @@ impl Tool for PurgeSystemNoiseTool {
             "type": "function",
             "function": {
                 "name": "purge_system_noise",
-                "description": "Bulk-forget system noise memories (domain=system/process, system/cpu, audit/tools) older than a threshold. Use after reviewing with memory_stats to clean up noise that bloats your memory.",
+                "description": "Remove low-value auto memories; not user facts",
                 "parameters": {
                     "type": "object",
                     "properties": {

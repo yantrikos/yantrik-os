@@ -21,7 +21,7 @@
 use std::sync::Mutex;
 
 use crate::Instinct;
-use yantrik_companion_core::types::{CompanionState, UrgeSpec};
+use yantrik_companion_core::types::{CompanionState, ModelTier, UrgeSpec};
 
 /// Interest-to-search strategy mappings.
 /// Each strategy defines HOW to research a particular interest category.
@@ -355,10 +355,20 @@ impl Instinct for InterestIntelligenceInstinct {
         };
 
         // Build the EXECUTE prompt with user context
-        let execute_msg = strategy
-            .research_prompt
-            .replace("{user}", user)
-            .replace("{location}", &location);
+        let execute_msg = match state.model_tier {
+            ModelTier::Large => strategy
+                .research_prompt
+                .replace("{user}", user)
+                .replace("{location}", &location),
+            ModelTier::Tiny => format!("EXECUTE SKIP"),
+            _ => format!(
+                "EXECUTE Task: Share one update for {user}'s interest.\n\
+                 Tool: Use web search once.\n\
+                 Rule: Only share verified facts from search results. Do not invent news.\n\
+                 Fallback: \"Nothing new.\"\n\
+                 Output: 1 sentence."
+            ),
+        };
 
         let mut urgency = strategy.urgency;
 

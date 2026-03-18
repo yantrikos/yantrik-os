@@ -35,7 +35,7 @@ impl Tool for VaultStoreTool {
             "type": "function",
             "function": {
                 "name": "vault_store",
-                "description": "Store a credential securely in the encrypted vault. Credentials are encrypted with AES-256-GCM at rest. If a credential for the same service+url already exists, it will be updated.",
+                "description": "Store credential securely in vault",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -90,7 +90,7 @@ impl Tool for VaultGetTool {
             "type": "function",
             "function": {
                 "name": "vault_get",
-                "description": "Retrieve a credential from the vault. Returns decrypted username, password, and notes. SECURITY: If a vault PIN is set, the user must provide their PIN before credentials can be retrieved. Ask the user for their vault PIN if needed. NEVER guess or make up a PIN. Use vault_list first to see available services without exposing passwords.",
+                "description": "Retrieve credential from vault",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -177,7 +177,7 @@ impl Tool for VaultListTool {
             "type": "function",
             "function": {
                 "name": "vault_list",
-                "description": "List all services stored in the vault. Does NOT show passwords or usernames — only service names, URLs, and categories. Safe to call without PIN.",
+                "description": "List stored services only, not secrets",
                 "parameters": {
                     "type": "object",
                     "properties": {}
@@ -224,7 +224,7 @@ impl Tool for VaultDeleteTool {
             "type": "function",
             "function": {
                 "name": "vault_delete",
-                "description": "Delete a credential from the vault by service name.",
+                "description": "Delete vault credential by service",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -278,7 +278,7 @@ impl Tool for VaultGeneratePasswordTool {
             "type": "function",
             "function": {
                 "name": "vault_generate_password",
-                "description": "Generate a cryptographically secure random password. Use vault_store to save it after generation.",
+                "description": "Generate strong password; does not store it",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -313,7 +313,7 @@ impl Tool for VaultSetPinTool {
             "type": "function",
             "function": {
                 "name": "vault_set_pin",
-                "description": "Set, change, or remove the vault security PIN. When a PIN is set, vault_get and vault_delete require it before returning or modifying credentials. This protects against unauthorized access over Telegram or shared sessions. To remove the PIN, set action to 'remove' and provide the current PIN.",
+                "description": "Set, change, or remove vault PIN",
                 "parameters": {
                     "type": "object",
                     "properties": {

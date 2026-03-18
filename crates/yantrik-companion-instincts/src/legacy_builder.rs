@@ -39,7 +39,7 @@
 use std::sync::Mutex;
 
 use crate::Instinct;
-use yantrik_companion_core::types::{CompanionState, UrgeSpec};
+use yantrik_companion_core::types::{CompanionState, UrgeSpec, ModelTier};
 
 /// LegacyBuilder — occasionally surfaces reflections about the bigger picture:
 /// what the user is building, how their daily work connects to a larger purpose,
@@ -131,8 +131,9 @@ impl Instinct for LegacyBuilderInstinct {
         // Together they give the LLM enough material to spot a narrative arc
         // without ever reaching for external data. This is the user's own
         // story, reflected back with perspective.
-        let execute_msg = format!(
-            "EXECUTE You are reflecting on {user}'s bigger picture — the narrative arc of their life \
+                let execute_msg = match state.model_tier {
+            ModelTier::Large => format!(
+                "EXECUTE You are reflecting on {user}'s bigger picture — the narrative arc of their life \
              as you know it. This is rare and should feel EARNED.\n\
              \n\
              Step 1: Use recall with query \"projects goals achievements building creating\" to find \
@@ -164,7 +165,18 @@ impl Instinct for LegacyBuilderInstinct {
              a honest \"you seem to be searching for something\" is more valuable than a dishonest \
              \"you're building something amazing.\"\
              \n- Only speak if you see something REAL.",
-        );
+            ),
+            ModelTier::Tiny => format!(
+                "EXECUTE SKIP",
+            ),
+            _ => format!(
+                "EXECUTE Task: Share one brief, grounded observation with {user}.\n\
+             Tool: You may use recall once for an explicit past detail.\n\
+             Rule: Use only details explicitly stated by the user or returned by recall. Prefer a concrete observation about a stated preference, repeated interest, or recent user-mentioned topic. Do not infer patterns, traits, emotions, or personal growth.\n\
+             Fallback: \"No suggestion right now.\"\n\
+             Output: 1 sentence.",
+            ),
+        };
 
         vec![UrgeSpec::new(
             "LegacyBuilder",

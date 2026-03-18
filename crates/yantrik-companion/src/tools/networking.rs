@@ -42,7 +42,7 @@ impl Tool for NetworkInterfacesTool {
             "type": "function",
             "function": {
                 "name": "network_interfaces",
-                "description": "List all network interfaces with their status, IP addresses, MAC addresses, and link state.",
+                "description": "List network adapters and link status",
                 "parameters": { "type": "object", "properties": {} }
             }
         })
@@ -114,7 +114,7 @@ impl Tool for NetworkPingTool {
             "type": "function",
             "function": {
                 "name": "network_ping",
-                "description": "Ping a host to check connectivity and measure latency. Sends 4 packets.",
+                "description": "Ping host for reachability only",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -186,7 +186,7 @@ impl Tool for NetworkTracerouteTool {
             "type": "function",
             "function": {
                 "name": "network_traceroute",
-                "description": "Trace the route to a host, showing each hop and latency.",
+                "description": "Trace path packets take to a host",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -232,7 +232,7 @@ impl Tool for NetworkTracerouteTool {
                     let stderr = String::from_utf8_lossy(&output.stderr);
                     format!("Traceroute failed: {}", stderr.trim())
                 } else if stdout.len() > 3000 {
-                    format!("{}\n... (truncated)", &stdout[..3000])
+                    format!("{}\n... (truncated)", &stdout[..stdout.floor_char_boundary(3000)])
                 } else {
                     stdout.to_string()
                 }
@@ -256,7 +256,7 @@ impl Tool for NetworkPortsTool {
             "type": "function",
             "function": {
                 "name": "network_ports",
-                "description": "List all open/listening network ports with the process using them.",
+                "description": "List open or listening local ports",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -284,7 +284,7 @@ impl Tool for NetworkPortsTool {
                 if text.trim().is_empty() {
                     format!("No {} ports found.", state)
                 } else if text.len() > 3000 {
-                    format!("{}\n... (truncated)", &text[..3000])
+                    format!("{}\n... (truncated)", &text[..text.floor_char_boundary(3000)])
                 } else {
                     text.to_string()
                 }
@@ -316,7 +316,7 @@ impl Tool for NetworkDnsTool {
             "type": "function",
             "function": {
                 "name": "network_dns",
-                "description": "Show current DNS servers and resolve configuration.",
+                "description": "Show current DNS server settings",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -394,7 +394,7 @@ impl Tool for NetworkDnsSetTool {
             "type": "function",
             "function": {
                 "name": "network_dns_set",
-                "description": "Set DNS servers. Common options: Cloudflare (1.1.1.1), Google (8.8.8.8), Quad9 (9.9.9.9).",
+                "description": "Set DNS server settings",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -461,7 +461,7 @@ impl Tool for NetworkVpnStatusTool {
             "type": "function",
             "function": {
                 "name": "network_vpn_status",
-                "description": "Check VPN connection status. Detects WireGuard, OpenVPN, and nmcli VPN connections.",
+                "description": "Check whether VPN is connected",
                 "parameters": { "type": "object", "properties": {} }
             }
         })
@@ -559,7 +559,7 @@ impl Tool for NetworkDiagnoseTool {
             "type": "function",
             "function": {
                 "name": "network_diagnose",
-                "description": "Run a full network health check: DNS latency, gateway ping, internet connectivity, and WiFi info. Use when the user says internet is slow or not working.",
+                "description": "Run full network health check",
                 "parameters": {
                     "type": "object",
                     "properties": {}

@@ -19,7 +19,7 @@
 use std::sync::Mutex;
 
 use crate::Instinct;
-use yantrik_companion_core::types::{CompanionState, UrgeSpec};
+use yantrik_companion_core::types::{CompanionState, UrgeSpec, ModelTier};
 
 /// Outdoor activity categories that benefit from weather awareness.
 const OUTDOOR_KEYWORDS: &[&str] = &[
@@ -107,8 +107,9 @@ impl Instinct for ActivityRecommenderInstinct {
         // Build a context-aware recommendation prompt
         let interests_str = state.user_interests.join(", ");
 
-        let execute_msg = format!(
-            "EXECUTE First use get_weather to check current and forecast conditions in {location}. \
+                let execute_msg = match state.model_tier {
+            ModelTier::Large => format!(
+                "EXECUTE First use get_weather to check current and forecast conditions in {location}. \
              Then use date_calc to check what day of the week it is and the time. \
              \
              {user}'s interests include: {interests_str}. \
@@ -127,7 +128,19 @@ impl Instinct for ActivityRecommenderInstinct {
              Keep it to 2-3 natural sentences. If conditions don't particularly favor any activity, \
              respond with just 'Nothing special to suggest right now.' \
              After you're done, call browser_cleanup to free resources.",
-        );
+            ),
+            ModelTier::Tiny => format!(
+                "EXECUTE Suggest one activity for {user}. Output: 1 sentence.",
+            ),
+            _ => format!(
+                "EXECUTE Task: Suggest one interesting thing for {user}.\n\
+             Input: interest={interests_str}.\n\
+             Tool: You may use recall or web search once.\n\
+             Rule: Do not invent facts. Do not repeat recent suggestions.\n\
+             Fallback: \"No suggestion right now.\"\n\
+             Output: 1 sentence.",
+            ),
+        };
 
         vec![UrgeSpec::new("ActivityRecommender", &execute_msg, 0.55)
             .with_cooldown("activity:recommend")

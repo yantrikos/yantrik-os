@@ -45,7 +45,7 @@
 use std::sync::Mutex;
 
 use crate::Instinct;
-use yantrik_companion_core::types::{CompanionState, UrgeSpec};
+use yantrik_companion_core::types::{CompanionState, ModelTier, UrgeSpec};
 
 /// MythBuster — the fascination-over-pedantry misconception corrector.
 ///
@@ -150,38 +150,48 @@ impl Instinct for MythBusterInstinct {
         // - Explicit anti-pedantry instruction
         // - Graceful fallback ("No myth to bust today.")
         // - browser_cleanup at the end
-        let execute_msg = format!(
-            "EXECUTE {user}'s interests include \"{interest}\". Your mission: find and share \
-             ONE genuinely surprising myth or misconception about {interest} that {user} might \
-             believe.\n\
-             \n\
-             Steps:\n\
-             1. Use web_search to search for \"common myths misconceptions about {interest}\" \
-                or \"things people get wrong about {interest}\"\n\
-             2. From the results, pick ONE myth that is:\n\
-                - Widely believed (not obscure trivia)\n\
-                - Genuinely surprising when debunked\n\
-                - Relevant to someone who cares about {interest}\n\
-             3. Use web_search again to verify the TRUTH behind the myth — get specific facts, \
-                numbers, studies, or dates. Don't just say \"it's wrong\" — find out WHY and \
-                WHAT is actually true.\n\
-             4. Deliver in 2-3 sentences with this structure:\n\
-                - State the myth briefly (what people think)\n\
-                - Explain why it's wrong with specific evidence (a study, a number, a date)\n\
-                - Share what's ACTUALLY true — the real answer is always more interesting \
-                  than the myth\n\
-             5. Call browser_cleanup when done to free resources.\n\
-             \n\
-             TONE RULES (non-negotiable):\n\
-             - Frame it as \"here's something fascinating I found\" — NOT \"you're wrong about this\"\n\
-             - Be genuinely excited about the truth, like sharing a cool discovery with a friend\n\
-             - Don't be pedantic, condescending, or lecture-y\n\
-             - Don't start with \"Did you know\" or \"Fun fact\" — just dive into it naturally\n\
-             - The vibe is a friend who reads Snopes for fun and shares the best ones\n\
-             \n\
-             If you can't find a genuinely good, surprising myth for {interest}, respond with \
-             just \"No myth to bust today.\" — don't force a weak one.",
-        );
+        let execute_msg = match state.model_tier {
+            ModelTier::Large => format!(
+                "EXECUTE {user}'s interests include \"{interest}\". Your mission: find and share \
+                 ONE genuinely surprising myth or misconception about {interest} that {user} might \
+                 believe.\n\
+                 \n\
+                 Steps:\n\
+                 1. Use web_search to search for \"common myths misconceptions about {interest}\" \
+                    or \"things people get wrong about {interest}\"\n\
+                 2. From the results, pick ONE myth that is:\n\
+                    - Widely believed (not obscure trivia)\n\
+                    - Genuinely surprising when debunked\n\
+                    - Relevant to someone who cares about {interest}\n\
+                 3. Use web_search again to verify the TRUTH behind the myth — get specific facts, \
+                    numbers, studies, or dates. Don't just say \"it's wrong\" — find out WHY and \
+                    WHAT is actually true.\n\
+                 4. Deliver in 2-3 sentences with this structure:\n\
+                    - State the myth briefly (what people think)\n\
+                    - Explain why it's wrong with specific evidence (a study, a number, a date)\n\
+                    - Share what's ACTUALLY true — the real answer is always more interesting \
+                      than the myth\n\
+                 5. Call browser_cleanup when done to free resources.\n\
+                 \n\
+                 TONE RULES (non-negotiable):\n\
+                 - Frame it as \"here's something fascinating I found\" — NOT \"you're wrong about this\"\n\
+                 - Be genuinely excited about the truth, like sharing a cool discovery with a friend\n\
+                 - Don't be pedantic, condescending, or lecture-y\n\
+                 - Don't start with \"Did you know\" or \"Fun fact\" — just dive into it naturally\n\
+                 - The vibe is a friend who reads Snopes for fun and shares the best ones\n\
+                 \n\
+                 If you can't find a genuinely good, surprising myth for {interest}, respond with \
+                 just \"No myth to bust today.\" — don't force a weak one.",
+            ),
+            ModelTier::Tiny => format!("EXECUTE SKIP"),
+            _ => format!(
+                "EXECUTE Task: Share one interesting lesser-known fact for {user}.\n\
+                 Tool: You may use web search once.\n\
+                 Rule: Do not invent facts. Only share verified information.\n\
+                 Fallback: Skip.\n\
+                 Output: 1 sentence."
+            ),
+        };
 
         vec![UrgeSpec::new(
             self.name(),

@@ -11,7 +11,7 @@ use std::sync::Mutex;
 
 use yantrik_companion_core::bond::BondLevel;
 use crate::Instinct;
-use yantrik_companion_core::types::{CompanionState, UrgeSpec};
+use yantrik_companion_core::types::{CompanionState, UrgeSpec, ModelTier};
 
 pub struct CulturalRadarInstinct {
     /// Minimum seconds between discoveries.
@@ -66,8 +66,9 @@ impl Instinct for CulturalRadarInstinct {
         let idx = (now as usize / 3600) % interests.len();
         let interest = &interests[idx];
 
-        let execute_msg = format!(
-            "EXECUTE Use recall with query \"{interest} preferences taste style\" to understand \
+                let execute_msg = match state.model_tier {
+            ModelTier::Large => format!(
+                "EXECUTE Use recall with query \"{interest} preferences taste style\" to understand \
              what specifically {user} likes about {interest} — their particular taste within it. \
              Then use web_search for \"new {interest} releases trending 2026\" or similar to find \
              new releases, trending content, emerging creators, or hidden gems in that space. \
@@ -78,7 +79,18 @@ impl Instinct for CulturalRadarInstinct {
              you know about them to explain the match. \
              If nothing genuinely good surfaces, respond with \"No cultural radar today.\" exactly. \
              After you're done, call browser_cleanup to free resources.",
-        );
+            ),
+            ModelTier::Tiny => format!(
+                "EXECUTE SKIP",
+            ),
+            _ => format!(
+                "EXECUTE Task: Share one update for {user}'s interest in .\n\
+             Tool: Use web search once.\n\
+             Rule: Use only search results. Do not invent facts or relevance.\n\
+             Fallback: \"No relevant update.\"\n\
+             Output: 1 sentence, under 25 words.",
+            ),
+        };
 
         vec![UrgeSpec::new(
             self.name(),

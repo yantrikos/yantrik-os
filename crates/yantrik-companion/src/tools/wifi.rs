@@ -36,7 +36,7 @@ impl Tool for WifiScanTool {
             "type": "function",
             "function": {
                 "name": "wifi_scan",
-                "description": "Scan for available WiFi networks.",
+                "description": "Scan for nearby Wi-Fi networks",
                 "parameters": {
                     "type": "object",
                     "properties": {}
@@ -94,7 +94,7 @@ impl Tool for WifiScanTool {
                         if text.trim().is_empty() {
                             "No WiFi networks found.".to_string()
                         } else {
-                            let trunc = if text.len() > 2000 { &text[..2000] } else { &text };
+                            let trunc = if text.len() > 2000 { &text[..text.floor_char_boundary(2000)] } else { &text };
                             trunc.to_string()
                         }
                     }
@@ -117,7 +117,7 @@ impl Tool for WifiScanTool {
                         if text.trim().is_empty() {
                             "No WiFi networks found.".to_string()
                         } else {
-                            let trunc = if text.len() > 2000 { &text[..2000] } else { &text };
+                            let trunc = if text.len() > 2000 { &text[..text.floor_char_boundary(2000)] } else { &text };
                             trunc.to_string()
                         }
                     }
@@ -143,7 +143,7 @@ impl Tool for WifiConnectTool {
             "type": "function",
             "function": {
                 "name": "wifi_connect",
-                "description": "Connect to a WiFi network by SSID.",
+                "description": "Connect to Wi-Fi by SSID",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -220,7 +220,7 @@ impl Tool for WifiStatusTool {
             "type": "function",
             "function": {
                 "name": "wifi_status",
-                "description": "Get current WiFi connection status, SSID, signal strength, and IP address.",
+                "description": "Show current Wi-Fi connection details",
                 "parameters": {
                     "type": "object",
                     "properties": {}
@@ -296,7 +296,7 @@ impl Tool for WifiDisconnectTool {
             "type": "function",
             "function": {
                 "name": "wifi_disconnect",
-                "description": "Disconnect from the current WiFi network.",
+                "description": "Disconnect current Wi-Fi",
                 "parameters": {
                     "type": "object",
                     "properties": {}

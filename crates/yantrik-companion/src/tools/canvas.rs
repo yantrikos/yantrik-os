@@ -120,7 +120,7 @@ impl Tool for GenerateDiagramTool {
             "type": "function",
             "function": {
                 "name": "generate_diagram",
-                "description": "Generate a diagram from a natural language description. Creates a visual diagram rendered as PNG.",
+                "description": "Generate a diagram from a natural language description",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -184,7 +184,7 @@ impl Tool for EditDiagramTool {
             "type": "function",
             "function": {
                 "name": "edit_diagram",
-                "description": "Edit an existing diagram by applying natural language changes to its DOT source.",
+                "description": "Edit an existing diagram by applying natural language",
                 "parameters": {
                     "type": "object",
                     "properties": {

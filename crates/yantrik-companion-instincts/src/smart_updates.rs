@@ -3,7 +3,7 @@
 use std::sync::Mutex;
 
 use yantrik_companion_core::bond::BondLevel;
-use yantrik_companion_core::types::{CompanionState, UrgeSpec};
+use yantrik_companion_core::types::{CompanionState, ModelTier, UrgeSpec};
 use crate::Instinct;
 
 pub struct SmartUpdatesInstinct {
@@ -60,8 +60,19 @@ impl Instinct for SmartUpdatesInstinct {
                     }
 
                     *last_ts = state.current_ts;
+                    let execute_msg = match state.model_tier {
+                        ModelTier::Large => action.to_string(),
+                        ModelTier::Tiny => format!("EXECUTE SKIP"),
+                        _ => format!(
+                            "EXECUTE Task: Report one system event or status change.\n\
+                             Tool: Use system tool if needed.\n\
+                             Rule: Do not invent causes or speculate.\n\
+                             Fallback: \"No action needed.\"\n\
+                             Output: 1 sentence."
+                        ),
+                    };
                     urges.push(
-                        UrgeSpec::new("smart_updates", action, 0.8)
+                        UrgeSpec::new("smart_updates", &execute_msg, 0.8)
                             .with_cooldown(&format!("smart_updates:idle:{}", task_name))
                             .with_message(&format!("Running background maintenance: {}", task_name))
                             .with_context(serde_json::json!({

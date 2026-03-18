@@ -14,7 +14,7 @@ use std::sync::Mutex;
 
 use yantrik_companion_core::bond::BondLevel;
 use crate::Instinct;
-use yantrik_companion_core::types::{CompanionState, UrgeSpec};
+use yantrik_companion_core::types::{CompanionState, UrgeSpec, ModelTier};
 
 pub struct DevilsAdvocateInstinct {
     /// Minimum seconds between challenges.
@@ -69,8 +69,9 @@ impl Instinct for DevilsAdvocateInstinct {
 
         let user = &state.config_user_name;
 
-        let execute_msg = format!(
-            "EXECUTE Use recall with query \"opinion believe think convinced sure about\" \
+                let execute_msg = match state.model_tier {
+            ModelTier::Large => format!(
+                "EXECUTE Use recall with query \"opinion believe think convinced sure about\" \
              to find a strong opinion or conviction that {user} holds. \
              Pick the ONE most firmly held belief you can find. \
              Then use web_search to find the strongest counterargument from credible sources \
@@ -82,7 +83,19 @@ impl Instinct for DevilsAdvocateInstinct {
              If you can't find a suitable opinion or credible counterargument, respond with \
              \"No devil's advocate today.\" exactly. \
              After you're done, call browser_cleanup to free resources.",
-        );
+            ),
+            ModelTier::Tiny => format!(
+                "EXECUTE SKIP",
+            ),
+            _ => format!(
+                "EXECUTE Task: Share one brief, playful remark with {user}.\n\
+             Input: context=.\n\
+             Tool: You may use recall for shared references.\n\
+             Rule: Use only details explicitly stated by the user or returned by recall. Do not invent shared history or inside jokes. Keep it light.\n\
+             Fallback: Skip -- say nothing.\n\
+             Output: 1 sentence. Tone: playful.",
+            ),
+        };
 
         vec![UrgeSpec::new(
             self.name(),

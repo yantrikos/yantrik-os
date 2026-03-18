@@ -23,7 +23,7 @@ impl Tool for ReadTerminalBufferTool {
             "type": "function",
             "function": {
                 "name": "read_terminal_buffer",
-                "description": "Read the recent output from the active terminal (scrollback buffer). Use this when the user asks you to analyze an error, fix a command, or look at terminal output. Returns the last N lines.",
+                "description": "Read recent terminal output; not run commands",
                 "parameters": {
                     "type": "object",
                     "properties": {

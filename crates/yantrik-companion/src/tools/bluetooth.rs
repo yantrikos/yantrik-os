@@ -49,7 +49,7 @@ impl Tool for BluetoothScanTool {
             "type": "function",
             "function": {
                 "name": "bluetooth_scan",
-                "description": "Scan for nearby Bluetooth devices. Returns device names and MAC addresses.",
+                "description": "Scan for nearby Bluetooth devices",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -113,7 +113,7 @@ impl Tool for BluetoothPairTool {
             "type": "function",
             "function": {
                 "name": "bluetooth_pair",
-                "description": "Pair with a Bluetooth device by MAC address.",
+                "description": "Pair with a Bluetooth device by MAC address",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -160,7 +160,7 @@ impl Tool for BluetoothConnectTool {
             "type": "function",
             "function": {
                 "name": "bluetooth_connect",
-                "description": "Connect to a paired Bluetooth device.",
+                "description": "Connect to a paired Bluetooth device",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -205,7 +205,7 @@ impl Tool for BluetoothDisconnectTool {
             "type": "function",
             "function": {
                 "name": "bluetooth_disconnect",
-                "description": "Disconnect a Bluetooth device.",
+                "description": "Disconnect a Bluetooth device",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -244,7 +244,7 @@ impl Tool for BluetoothInfoTool {
             "type": "function",
             "function": {
                 "name": "bluetooth_info",
-                "description": "Get Bluetooth adapter status and paired/connected devices.",
+                "description": "Get Bluetooth adapter status and paired/connected devices",
                 "parameters": {
                     "type": "object",
                     "properties": {}

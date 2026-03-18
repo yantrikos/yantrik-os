@@ -43,7 +43,7 @@ impl Tool for ServiceListTool {
             "type": "function",
             "function": {
                 "name": "service_list",
-                "description": "List system services and their status (running/stopped).",
+                "description": "List system services",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -63,7 +63,7 @@ impl Tool for ServiceListTool {
                     Ok(o) if o.status.success() => {
                         let text = String::from_utf8_lossy(&o.stdout);
                         if filter.is_empty() {
-                            let trunc = if text.len() > 2000 { &text[..2000] } else { &text };
+                            let trunc = if text.len() > 2000 { &text[..text.floor_char_boundary(2000)] } else { &text };
                             trunc.to_string()
                         } else {
                             let f = filter.to_lowercase();
@@ -90,7 +90,7 @@ impl Tool for ServiceListTool {
                     Ok(o) if o.status.success() => {
                         let text = String::from_utf8_lossy(&o.stdout);
                         if filter.is_empty() {
-                            let trunc = if text.len() > 2000 { &text[..2000] } else { &text };
+                            let trunc = if text.len() > 2000 { &text[..text.floor_char_boundary(2000)] } else { &text };
                             trunc.to_string()
                         } else {
                             let f = filter.to_lowercase();
@@ -129,7 +129,7 @@ impl Tool for ServiceControlTool {
             "type": "function",
             "function": {
                 "name": "service_control",
-                "description": "Start, stop, or restart a system service.",
+                "description": "Start, stop, or restart a system service",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -217,7 +217,7 @@ impl Tool for ServiceStatusTool {
             "type": "function",
             "function": {
                 "name": "service_status",
-                "description": "Check the status of a specific service.",
+                "description": "Show status of a system service",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -260,7 +260,7 @@ impl Tool for ServiceStatusTool {
                 {
                     Ok(o) => {
                         let out = String::from_utf8_lossy(&o.stdout);
-                        let trunc = if out.len() > 2000 { &out[..2000] } else { &out };
+                        let trunc = if out.len() > 2000 { &out[..out.floor_char_boundary(2000)] } else { &out };
                         trunc.to_string()
                     }
                     Err(e) => format!("Error: {e}"),

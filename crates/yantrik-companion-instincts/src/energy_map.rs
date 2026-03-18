@@ -11,7 +11,7 @@ use std::sync::Mutex;
 
 use yantrik_companion_core::bond::BondLevel;
 use crate::Instinct;
-use yantrik_companion_core::types::{CompanionState, UrgeSpec};
+use yantrik_companion_core::types::{CompanionState, UrgeSpec, ModelTier};
 
 pub struct EnergyMapInstinct {
     /// Minimum seconds between observations.
@@ -66,8 +66,9 @@ impl Instinct for EnergyMapInstinct {
 
         let user = &state.config_user_name;
 
-        let execute_msg = format!(
-            "EXECUTE Use recall with query \"productive morning evening tired focused creative \
+                let execute_msg = match state.model_tier {
+            ModelTier::Large => format!(
+                "EXECUTE Use recall with query \"productive morning evening tired focused creative \
              energy best work\" to analyze {user}'s timing patterns. \
              Look for clues about when they do complex work, when they seem most engaged, \
              when they tend to lose focus, and what time of day they're most active. \
@@ -79,7 +80,19 @@ impl Instinct for EnergyMapInstinct {
              - \"You seem to hit a wall around 2-3 PM. A short walk or break then could protect your afternoon.\" \
              Be specific and actionable, not vague. If there isn't enough data to identify a pattern, \
              respond with \"No energy insights yet.\" exactly.",
-        );
+            ),
+            ModelTier::Tiny => format!(
+                "EXECUTE Suggest water, stretch, or rest. Time: (now). Output: 1 sentence.",
+            ),
+            _ => format!(
+                "EXECUTE Task: Send one simple wellbeing prompt to {user}.\n\
+             Input: time=(now).\n\
+             Tool: You may use recall for one health signal.\n\
+             Rule: Do not infer illness, stress, or medical conditions.\n\
+             Fallback: \"Take a short break if helpful.\"\n\
+             Output: 1 sentence, under 16 words. Tone: gentle.",
+            ),
+        };
 
         vec![UrgeSpec::new(
             self.name(),

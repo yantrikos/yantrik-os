@@ -23,7 +23,7 @@ impl Tool for DiskUsageTool {
             "type": "function",
             "function": {
                 "name": "disk_usage",
-                "description": "Show disk space usage for all mounted partitions.",
+                "description": "Show disk space usage for all mounted partitions",
                 "parameters": {
                     "type": "object",
                     "properties": {}
@@ -81,7 +81,7 @@ impl Tool for MountInfoTool {
             "type": "function",
             "function": {
                 "name": "mount_info",
-                "description": "Show mounted filesystems, their types, and mount options.",
+                "description": "Show mounted filesystems, their types, and mount options",
                 "parameters": {
                     "type": "object",
                     "properties": {}
@@ -102,7 +102,7 @@ impl Tool for MountInfoTool {
                     .collect();
                 if lines.is_empty() {
                     // Show all (truncated)
-                    let trunc = if text.len() > 2000 { &text[..2000] } else { &text };
+                    let trunc = if text.len() > 2000 { &text[..text.floor_char_boundary(2000)] } else { &text };
                     trunc.to_string()
                 } else {
                     let mut result = format!("Mounted filesystems ({}):\n", lines.len());
@@ -132,7 +132,7 @@ impl Tool for DirSizeTool {
             "type": "function",
             "function": {
                 "name": "dir_size",
-                "description": "Calculate the size of a directory and its largest subdirectories.",
+                "description": "Calculate the size of a directory and its largest",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -195,7 +195,7 @@ impl Tool for AnalyzeDiskTool {
             "type": "function",
             "function": {
                 "name": "analyze_disk",
-                "description": "Analyze a directory for disk space usage: subdirectory sizes, old files, and file type breakdown. Great for finding what's eating disk space.",
+                "description": "Analyze a directory for disk space usage: subdirectory",
                 "parameters": {
                     "type": "object",
                     "properties": {

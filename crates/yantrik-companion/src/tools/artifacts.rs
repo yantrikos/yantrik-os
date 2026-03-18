@@ -25,7 +25,7 @@ impl Tool for GenerateFixSummaryTool {
             "type": "function",
             "function": {
                 "name": "generate_fix_summary",
-                "description": "Generate a Markdown fix document and save it to ~/fixes/. Also stores a memory for future recall.",
+                "description": "Generate a Markdown fix document and save it to ~/fixes/",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -123,7 +123,7 @@ impl Tool for ListFixesTool {
             "type": "function",
             "function": {
                 "name": "list_fixes",
-                "description": "List saved fix documents from ~/fixes/.",
+                "description": "List saved fix documents from ~/fixes/",
                 "parameters": {"type": "object", "properties": {}}
             }
         })
@@ -172,7 +172,7 @@ impl Tool for ReadFixTool {
             "type": "function",
             "function": {
                 "name": "read_fix",
-                "description": "Read a specific fix document from ~/fixes/.",
+                "description": "Read a specific fix document from ~/fixes/",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -195,7 +195,7 @@ impl Tool for ReadFixTool {
             Ok(expanded) => match std::fs::read_to_string(&expanded) {
                 Ok(content) => {
                     if content.len() > 4000 {
-                        format!("{}\n\n[Truncated — {} bytes total]", &content[..4000], content.len())
+                        format!("{}\n\n[Truncated — {} bytes total]", &content[..content.floor_char_boundary(4000)], content.len())
                     } else {
                         content
                     }

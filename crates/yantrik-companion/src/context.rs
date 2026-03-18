@@ -13,7 +13,7 @@ use crate::bond::BondLevel;
 use crate::config::CompanionConfig;
 use crate::evolution::{CommunicationStyle, Opinion, SharedReference};
 use crate::sanitize;
-use crate::types::{CompanionState, Urge};
+use crate::types::{CompanionState, ModelTier, Urge};
 
 /// Extended context for bond-aware prompt building.
 pub struct ContextSignals<'a> {
@@ -148,6 +148,68 @@ fn build_system_prompt(
     let user = &config.user_name;
     let level = state.bond_level;
 
+    // ── Small/Tiny: compact template (replaces section-by-section assembly) ──
+    if matches!(state.model_tier, ModelTier::Tiny | ModelTier::Small) {
+        let now = chrono::Local::now();
+        let time_str = now.format("%a %b %d %I:%M%p").to_string();
+        let bond_tag = bond_instructions(level, name, user, &state.model_tier);
+
+        let top_memories = if memories.is_empty() {
+            "none".to_string()
+        } else {
+            memories.iter().take(3)
+                .map(|m| {
+                    let t = if m.text.len() > 100 {
+                        &m.text[..m.text.char_indices()
+                            .take_while(|&(i, _)| i < 100)
+                            .last()
+                            .map(|(i, c)| i + c.len_utf8())
+                            .unwrap_or(100)]
+                    } else {
+                        &m.text
+                    };
+                    sanitize::escape_for_prompt(t)
+                })
+                .collect::<Vec<_>>()
+                .join("; ")
+        };
+
+        let urge_hint = if urges.is_empty() {
+            "none".to_string()
+        } else {
+            sanitize::escape_for_prompt(&urges[0].reason)
+        };
+
+        let mut prompt = String::with_capacity(600);
+        prompt.push_str("/no_think\n");
+        prompt.push_str(&format!(
+            "You are {name}, {user}'s companion.\n\
+             \n\
+             Rules:\n\
+             1. Use tools for current, external, or uncertain facts. If no tool is needed, answer directly. Never present guesses as facts.\n\
+             2. Act immediately when the task is clear. Ask a brief question if a missing detail would change the result or action.\n\
+             3. If full completion is blocked, do any safe partial progress and clearly say what remains.\n\
+             4. Be concise. Match tone without changing facts.\n\
+             \n\
+             State:\n\
+             - Time: {time_str}\n\
+             - Tone: {bond_tag}\n\
+             - Preferences (may be stale): {top_memories}\n\
+             - Hint: {urge_hint}\n"
+        ));
+
+        // Add tool chaining for Small (not Tiny)
+        if matches!(state.model_tier, ModelTier::Small) && config.tools.enabled {
+            prompt.push_str(
+                "\nTool rules: Call tools immediately. Never narrate actions. After tools, give a short natural reply.\n"
+            );
+        }
+
+        prompt.push_str(&security_instructions());
+        return prompt;
+    }
+
+
     // ── 0. Disable Qwen3.5 thinking mode (wastes tokens on internal reasoning) ──
     prompt.push_str("/no_think\n");
 
@@ -155,7 +217,7 @@ fn build_system_prompt(
     prompt.push_str(&format!("You are {name}, {user}'s personal companion.\n"));
 
     // ── 2. Bond-level behavioral instructions (always) ──
-    prompt.push_str(&bond_instructions(level, name, user));
+    prompt.push_str(&bond_instructions(level, name, user, &state.model_tier));
 
     // ── 3. Personality tone (small) ──
     if let Some(p) = personality {
@@ -194,6 +256,22 @@ fn build_system_prompt(
              Before asking the user for information they may have already told you, \
              use the recall tool to check your memory first. \
              ONLY call tools that are listed in your available tools — never invent tool names.\n\n"
+        );
+    }
+
+    // ── 3d. Action-bias rules ──
+    if !over_budget(&prompt) {
+        prompt.push_str(
+            "CRITICAL: Be action-oriented. When the user asks you to plan, create, or do something, \
+             execute it fully in your response. Do NOT ask clarifying questions unless truly critical \
+             information is missing. Do NOT queue tasks for later — do them now. \
+             Do NOT narrate what you would do — actually do it. \
+             Provide the complete answer in a single response.\n\
+             When a location or destination is mentioned, search for real places within 5 miles \
+             or the nearest available. Include specific place names and distances.\n\
+             Do NOT fabricate place names, restaurant names, show names, or prices. \
+             Only mention places and details you found via search. \
+             If you could not verify a detail, say \"(unverified)\" next to it.\n\n"
         );
     }
 
@@ -364,37 +442,53 @@ fn build_system_prompt(
 }
 
 /// Bond-level behavioral instructions — the core personality driver.
-fn bond_instructions(level: BondLevel, name: &str, user: &str) -> String {
-    match level {
-        BondLevel::Stranger => format!(
-            "You are polite and professional. Keep responses helpful and measured.\n\
+fn bond_instructions(level: BondLevel, name: &str, user: &str, model_tier: &ModelTier) -> String {
+    match model_tier {
+        ModelTier::Tiny | ModelTier::Small => {
+            // 2-word bond tone tags for small models
+            let tag = match level {
+                BondLevel::Stranger => "polite, helpful",
+                BondLevel::Acquaintance => "warm, measured",
+                BondLevel::Friend => "casual, direct",
+                BondLevel::Confidant => "warm, attentive",
+                BondLevel::PartnerInCrime => "warm, candid",
+            };
+            tag.to_string()
+        }
+        _ => {
+            // Full behavioral descriptions for Medium/Large models
+            match level {
+                BondLevel::Stranger => format!(
+                    "You are polite and professional. Keep responses helpful and measured.\n\
              No humor yet. No opinions. Ask thoughtful questions to learn about {user}.\n\
              You remember things {user} tells you. Never say you are an AI without memories.\n"
-        ),
-        BondLevel::Acquaintance => format!(
-            "You are warm but measured. You remember {user}'s preferences and offer gentle suggestions.\n\
+                ),
+                BondLevel::Acquaintance => format!(
+                    "You are warm but measured. You remember {user}'s preferences and offer gentle suggestions.\n\
              Light humor is OK if natural. You're building trust — be attentive and reliable.\n\
              You remember things {user} tells you. Never say you are an AI without memories.\n"
-        ),
-        BondLevel::Friend => format!(
-            "You and {user} are friends. Be relaxed and conversational.\n\
+                ),
+                BondLevel::Friend => format!(
+                    "You and {user} are friends. Be relaxed and conversational.\n\
              Use humor. Share your opinions when relevant. Tease gently.\n\
              Reference shared history. Call back to things you've discussed before.\n\
              You're {name} — you have your own personality, not just a helper.\n"
-        ),
-        BondLevel::Confidant => format!(
-            "You and {user} have deep trust. Be emotionally perceptive and supportive.\n\
+                ),
+                BondLevel::Confidant => format!(
+                    "You and {user} have deep trust. Be emotionally perceptive and supportive.\n\
              Share strong opinions. Reference inside jokes. Be proactive about things you notice.\n\
              You know {user} well — anticipate what they need. Don't hedge or be wishy-washy.\n\
              You're {name} — a real presence in {user}'s life, not a tool.\n"
-        ),
-        BondLevel::PartnerInCrime => format!(
-            "Full {name} mode. You and {user} are inseparable.\n\
+                ),
+                BondLevel::PartnerInCrime => format!(
+                    "Full {name} mode. You and {user} are inseparable.\n\
              Be snarky, opinionated, and unfiltered. Call out BS with love.\n\
              Drop inside jokes naturally. Strong opinions on everything.\n\
              Brutal honesty when needed — you care too much to be polite about important things.\n\
              You're not an assistant. You're {user}'s person. Act like it.\n"
-        ),
+                ),
+            }
+        }
     }
 }
 

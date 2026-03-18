@@ -21,7 +21,7 @@ impl Tool for SetWallpaperTool {
             "type": "function",
             "function": {
                 "name": "set_wallpaper",
-                "description": "Set the desktop wallpaper to an image file.",
+                "description": "Set the desktop wallpaper to an image file",
                 "parameters": {
                     "type": "object",
                     "properties": {

@@ -5,7 +5,7 @@
 
 use yantrik_companion_core::bond::BondLevel;
 use crate::Instinct;
-use yantrik_companion_core::types::{CompanionState, UrgeSpec};
+use yantrik_companion_core::types::{CompanionState, UrgeSpec, ModelTier};
 
 pub struct ConversationalCallbackInstinct;
 
@@ -65,17 +65,31 @@ impl Instinct for ConversationalCallbackInstinct {
             )
         };
 
-        vec![
-            UrgeSpec::new(
-                self.name(),
-                &format!(
-                    "EXECUTE Search your memory for a past conversation or event that connects \
+        let execute_msg = match state.model_tier {
+            ModelTier::Large => format!(
+                "EXECUTE Search your memory for a past conversation or event that connects \
                      to the current moment. {}. Make a brief, natural callback — \
                      'Remember when...' or 'This reminds me of...' or 'Didn't you mention...'. \
                      Keep it to 1-2 sentences. If nothing connects naturally, don't force it — \
                      just say nothing (return empty).",
-                    context_hint
-                ),
+                context_hint
+            ),
+            ModelTier::Tiny => format!(
+                "EXECUTE Pick one: greeting, mood check, or task nudge for . Time: (now). Output: 1 sentence.",
+            ),
+            _ => format!(
+                "EXECUTE Task: Send a short, natural check-in to .\n\
+             Input: time=(now).\n\
+             Tool: You may use recall once for one recent explicit user-mentioned detail.\n\
+             Rule: Use only details explicitly stated by the user or returned by recall. Do not imply the user is currently doing, feeling, or experiencing anything unless they said so.\n\
+             Fallback: Send a simple warm greeting.\n\
+             Output: 1 sentence, under 20 words.",
+            ),
+        };
+        vec![
+            UrgeSpec::new(
+                self.name(),
+                &execute_msg,
                 urgency,
             )
             .with_cooldown("callback:periodic"),

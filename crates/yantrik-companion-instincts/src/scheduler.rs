@@ -1,7 +1,7 @@
 //! Scheduler instinct — converts due scheduled tasks into urges.
 
 use crate::Instinct;
-use yantrik_companion_core::types::{CompanionState, UrgeSpec};
+use yantrik_companion_core::types::{CompanionState, UrgeSpec, ModelTier};
 
 pub struct SchedulerInstinct;
 
@@ -54,7 +54,22 @@ impl Instinct for SchedulerInstinct {
                             format!("Scheduled: {} \u{2014} {}", label, description)
                         }
                     } else {
-                        format!("EXECUTE scheduled action '{}': {}", label, act)
+                        match state.model_tier {
+                            ModelTier::Large => format!(
+                                "EXECUTE scheduled action '{}': {}", label, act
+                            ),
+                            ModelTier::Tiny => format!(
+                                "EXECUTE Run scheduled action '{}'. Output: 1 sentence.", label
+                            ),
+                            _ => format!(
+                                "EXECUTE Task: Run scheduled action '{}'.\n\
+                                 Input: action={}.\n\
+                                 Rule: Do not invent causes or speculate.\n\
+                                 Fallback: \"No action needed.\"\n\
+                                 Output: 1 sentence.",
+                                label, act
+                            ),
+                        }
                     }
                 } else if description.is_empty() {
                     format!("Scheduled: {}", label)

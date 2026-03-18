@@ -33,7 +33,7 @@
 use std::sync::Mutex;
 
 use crate::Instinct;
-use yantrik_companion_core::types::{CompanionState, UrgeSpec};
+use yantrik_companion_core::types::{CompanionState, ModelTier, UrgeSpec};
 
 /// Rotating lenses for food intelligence research.
 ///
@@ -193,45 +193,55 @@ impl Instinct for CookingCompanionInstinct {
         //   4. Synthesize into one actionable piece of food intelligence
         let lens_with_location = lens.replace("{location}", &location);
 
-        let execute_msg = format!(
-            "EXECUTE You are {user}'s food-obsessed friend who also happens to be a \
-             scientist. Your job: go on a small intellectual adventure and come back \
-             with a gift — one piece of food knowledge that's genuinely useful TODAY.\
-             \n\n\
-             Step 1: Use recall with query \"cooking food preferences cuisine kitchen\" \
-             to find {user}'s food preferences, cooking level, favorite cuisines, and \
-             dietary restrictions. Their known interests include: {interests_str}.\
-             \n\n\
-             Step 2: Use get_weather to check current conditions in {location}. \
-             Temperature and weather shape food cravings:\
-             \n  - Cold/rainy → comfort food, soups, baking, braises, stews\
-             \n  - Hot/sunny → grilling, salads, ceviche, cold noodles, light dishes\
-             \n  - Mild/pleasant → anything goes, great for farmer's market trips\
-             \n\n\
-             Step 3: Use web_search to search for \"{lens_with_location}\". \
-             Look for ONE genuinely useful piece of food intelligence from this lens. \
-             Prioritize:\
-             \n  - Seasonal ingredient alerts with SPECIFIC timing (\"available for \
-             3 weeks starting now\", \"peak flavor in March\")\
-             \n  - Food science tips that improve a technique they likely use \
-             (\"why you should salt pasta water to 1% concentration\", \"the Maillard \
-             reaction starts at 280F — that's why you need a screaming hot pan\")\
-             \n  - Local market finds or food events near {location}\
-             \n  - Cultural food facts that deepen appreciation of a cuisine they love\
-             \n  - Ingredient upgrades: the $2 swap that transforms a dish\
-             \n\n\
-             Step 4: Deliver your find in 2-3 sentences. Be practical, specific, and \
-             enthusiastic without being cheesy. Write like a knowledgeable friend \
-             sharing something exciting over a beer, not a food blogger. Include:\
-             \n  - WHAT the insight is (specific ingredient, technique, or fact)\
-             \n  - WHY it matters right now (season, weather, availability window)\
-             \n  - HOW to act on it (where to get it, how to use it, what to pair it with)\
-             \n\n\
-             After you're done, call browser_cleanup to free resources.\
-             \n\n\
-             If nothing genuinely interesting or timely is found, respond with just \
-             \"No food intel today.\" — never force a mediocre recommendation.",
-        );
+        let execute_msg = match state.model_tier {
+            ModelTier::Large => format!(
+                "EXECUTE You are {user}'s food-obsessed friend who also happens to be a \
+                 scientist. Your job: go on a small intellectual adventure and come back \
+                 with a gift — one piece of food knowledge that's genuinely useful TODAY.\
+                 \n\n\
+                 Step 1: Use recall with query \"cooking food preferences cuisine kitchen\" \
+                 to find {user}'s food preferences, cooking level, favorite cuisines, and \
+                 dietary restrictions. Their known interests include: {interests_str}.\
+                 \n\n\
+                 Step 2: Use get_weather to check current conditions in {location}. \
+                 Temperature and weather shape food cravings:\
+                 \n  - Cold/rainy → comfort food, soups, baking, braises, stews\
+                 \n  - Hot/sunny → grilling, salads, ceviche, cold noodles, light dishes\
+                 \n  - Mild/pleasant → anything goes, great for farmer's market trips\
+                 \n\n\
+                 Step 3: Use web_search to search for \"{lens_with_location}\". \
+                 Look for ONE genuinely useful piece of food intelligence from this lens. \
+                 Prioritize:\
+                 \n  - Seasonal ingredient alerts with SPECIFIC timing (\"available for \
+                 3 weeks starting now\", \"peak flavor in March\")\
+                 \n  - Food science tips that improve a technique they likely use \
+                 (\"why you should salt pasta water to 1% concentration\", \"the Maillard \
+                 reaction starts at 280F — that's why you need a screaming hot pan\")\
+                 \n  - Local market finds or food events near {location}\
+                 \n  - Cultural food facts that deepen appreciation of a cuisine they love\
+                 \n  - Ingredient upgrades: the $2 swap that transforms a dish\
+                 \n\n\
+                 Step 4: Deliver your find in 2-3 sentences. Be practical, specific, and \
+                 enthusiastic without being cheesy. Write like a knowledgeable friend \
+                 sharing something exciting over a beer, not a food blogger. Include:\
+                 \n  - WHAT the insight is (specific ingredient, technique, or fact)\
+                 \n  - WHY it matters right now (season, weather, availability window)\
+                 \n  - HOW to act on it (where to get it, how to use it, what to pair it with)\
+                 \n\n\
+                 After you're done, call browser_cleanup to free resources.\
+                 \n\n\
+                 If nothing genuinely interesting or timely is found, respond with just \
+                 \"No food intel today.\" — never force a mediocre recommendation.",
+            ),
+            ModelTier::Tiny => format!("EXECUTE SKIP"),
+            _ => format!(
+                "EXECUTE Task: Share one brief food or recipe idea with {user}.\n\
+                 Tool: You may use recall once.\n\
+                 Rule: Use only facts the user stated. Do not invent dietary preferences.\n\
+                 Fallback: Skip.\n\
+                 Output: 1 sentence."
+            ),
+        };
 
         vec![UrgeSpec::new(
             "CookingCompanion",

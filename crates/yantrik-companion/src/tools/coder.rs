@@ -856,7 +856,7 @@ impl Tool for CodeExecuteTool {
             "type": "function",
             "function": {
                 "name": "code_execute",
-                "description": "Execute code inline without saving to a file. Runs inside a bubblewrap sandbox (read-only filesystem, no network by default, PID isolation). Perfect for quick calculations, data analysis, one-off checks. Dependencies are auto-installed before sandboxed execution.\n\nEnvironment variables available:\n- YANTRIK_OUTPUT_DIR: directory for generated files (images, CSVs)\n- YANTRIK_SCRIPTS_DIR: scripts workspace directory\n\nSandbox modes:\n- 'strict' (default): No network, read-only system. For computations, file generation.\n- 'network': Allows network. For API calls, web scraping, data fetching.\n\nExamples:\n- Quick math: code_execute(language='python', code='print(2**256)')\n- Data analysis: code_execute(language='python', code='import pandas as pd; ...')\n- System check: code_execute(language='bash', code='df -h && free -m')\n- Web fetch: code_execute(language='python', code='import requests; ...', sandbox='network')",
+                "description": "Run code now without saving a script",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -947,7 +947,7 @@ impl Tool for ScriptWriteTool {
             "type": "function",
             "function": {
                 "name": "script_write",
-                "description": "Create or update a persistent script in the managed workspace. Scripts are saved with proper permissions and tracked in a registry. Use this for code that should persist and be re-runnable. After writing, use script_run to execute.\n\nThe script has access to:\n- YANTRIK_OUTPUT_DIR env var: save generated files here (charts, CSVs, HTML)\n- YANTRIK_SCRIPTS_DIR env var: the scripts workspace\n- Auto-installed dependencies (pip/npm/gem)\n\nFor visualizations, save output to YANTRIK_OUTPUT_DIR. For web dashboards, create HTML files.",
+                "description": "Create or overwrite a saved script",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -1074,7 +1074,7 @@ impl Tool for ScriptRunTool {
             "type": "function",
             "function": {
                 "name": "script_run",
-                "description": "Execute a script from the managed workspace. Scripts run inside a bubblewrap sandbox by default for security.\n\nFeatures:\n- Sandboxed execution (read-only filesystem, no network by default)\n- Auto-installs dependencies (pip/npm/gem) before execution\n- Real timeout with process kill (no zombie processes)\n- Detects generated files (images, CSVs, HTML) and reports them\n- Structured error analysis for self-healing (tells you which line to fix)\n- Environment variables: YANTRIK_OUTPUT_DIR, YANTRIK_SCRIPTS_DIR\n\nSandbox modes:\n- 'strict' (default): No network, read-only system, isolated PIDs. For computations, analysis, file generation.\n- 'network': Filesystem isolation but network allowed. For web portals, API calls, data fetching.\n- 'none': No sandbox (discouraged). Only if sandbox causes issues.\n\nIf execution fails, read the ERROR ANALYSIS section and use script_patch to fix the error, then re-run.",
+                "description": "Run a saved script from workspace",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -1176,7 +1176,7 @@ impl Tool for ScriptPatchTool {
             "type": "function",
             "function": {
                 "name": "script_patch",
-                "description": "Edit specific parts of an existing script without rewriting the whole thing. Supports:\n- Replace exact text: find old_text and replace with new_text\n- Insert at line: add new lines at a specific line number\n- Delete lines: remove a range of lines\n\nThis is the primary tool for fixing errors after script_run fails. Read the ERROR ANALYSIS from script_run, then use script_patch to fix the specific line.",
+                "description": "Edit specific parts of a saved script",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -1316,7 +1316,7 @@ impl Tool for ScriptListTool {
             "type": "function",
             "function": {
                 "name": "script_list",
-                "description": "List all scripts in the managed workspace with metadata (language, description, run history, dependencies, tags, generated files).",
+                "description": "List saved scripts with metadata",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -1397,7 +1397,7 @@ impl Tool for ScriptReadTool {
             "type": "function",
             "function": {
                 "name": "script_read",
-                "description": "Read a script's contents with line numbers. Useful for understanding existing scripts or preparing a script_patch.",
+                "description": "Read saved script with line numbers",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -1474,7 +1474,7 @@ impl Tool for ScriptDeleteTool {
             "type": "function",
             "function": {
                 "name": "script_delete",
-                "description": "Delete a script and its registry entry. Generated output files are preserved.",
+                "description": "Delete saved script and registry entry",
                 "parameters": {
                     "type": "object",
                     "properties": {

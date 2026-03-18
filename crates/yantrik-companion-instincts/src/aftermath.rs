@@ -6,7 +6,7 @@
 
 use yantrik_companion_core::bond::BondLevel;
 use crate::Instinct;
-use yantrik_companion_core::types::{CompanionState, UrgeSpec};
+use yantrik_companion_core::types::{CompanionState, UrgeSpec, ModelTier};
 
 pub struct AftermathInstinct;
 
@@ -51,18 +51,32 @@ impl Instinct for AftermathInstinct {
                 _ => 0.4,
             };
 
-            return vec![
-                UrgeSpec::new(
-                    self.name(),
-                    &format!(
-                        "EXECUTE Reflect naturally on this recent event: \"{}\". \
+            let execute_msg = match state.model_tier {
+                ModelTier::Large => format!(
+                    "EXECUTE Reflect naturally on this recent event: \"{}\". \
                          It happened about {} minutes ago. Comment on it briefly — \
                          acknowledge what happened, maybe note something interesting \
                          about how they handled it. Keep it to 1-2 sentences. \
                          Be genuine, not congratulatory. Don't use exclamation marks.",
-                        description,
-                        (age / 60.0) as u32
-                    ),
+                    description,
+                    (age / 60.0) as u32
+                ),
+                ModelTier::Tiny => format!(
+                    "EXECUTE Pick one: greeting, mood check, or task nudge for . Time: (now). Output: 1 sentence.",
+                ),
+                _ => format!(
+                    "EXECUTE Task: Send a short, natural check-in to .\n\
+             Input: time=(now).\n\
+             Tool: You may use recall once for one recent explicit user-mentioned detail.\n\
+             Rule: Use only details explicitly stated by the user or returned by recall. Do not imply the user is currently doing, feeling, or experiencing anything unless they said so.\n\
+             Fallback: Send a simple warm greeting.\n\
+             Output: 1 sentence, under 20 words.",
+                ),
+            };
+            return vec![
+                UrgeSpec::new(
+                    self.name(),
+                    &execute_msg,
                     urgency,
                 )
                 .with_cooldown(&format!("aftermath:{}", i))

@@ -22,7 +22,7 @@ impl Tool for EditFileTool {
             "type": "function",
             "function": {
                 "name": "edit_file",
-                "description": "Perform a surgical text replacement in a file. Finds old_string and replaces it with new_string. The old_string must be unique in the file (unless replace_all is true). Use read_file first to see the current content.",
+                "description": "Replace specific text inside a file",
                 "parameters": {
                     "type": "object",
                     "properties": {

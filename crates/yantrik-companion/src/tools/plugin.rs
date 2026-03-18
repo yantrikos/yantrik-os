@@ -168,7 +168,7 @@ impl Tool for PluginTool {
                         format!("Command failed with exit code: {}", output.status)
                     }
                 } else if result.len() > 3000 {
-                    format!("{}\n[Truncated — {} bytes]", &result[..3000], result.len())
+                    format!("{}\n[Truncated — {} bytes]", &result[..result.floor_char_boundary(3000)], result.len())
                 } else {
                     result
                 }

@@ -25,7 +25,7 @@ impl Tool for TelegramSendTool {
             "type": "function",
             "function": {
                 "name": "telegram_send",
-                "description": "Send a message to the user via Telegram. Use when the user asks you to text/message them, or to send a notification to their phone.",
+                "description": "Send a Telegram message",
                 "parameters": {
                     "type": "object",
                     "properties": {

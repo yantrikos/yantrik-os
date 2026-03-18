@@ -21,7 +21,7 @@ impl Tool for GetWeatherTool {
             "type": "function",
             "function": {
                 "name": "get_weather",
-                "description": "Get current weather and forecast for a location.",
+                "description": "Get current weather and forecast for a location",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -76,7 +76,7 @@ impl Tool for GetWeatherTool {
                 if text.trim().is_empty() {
                     "Could not fetch weather data.".to_string()
                 } else if text.len() > 3000 {
-                    format!("{}", &text[..3000])
+                    format!("{}", &text[..text.floor_char_boundary(3000)])
                 } else {
                     text.to_string()
                 }

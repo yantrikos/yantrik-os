@@ -5,7 +5,7 @@
 
 use std::sync::Mutex;
 use crate::Instinct;
-use yantrik_companion_core::types::{CompanionState, UrgeSpec};
+use yantrik_companion_core::types::{CompanionState, UrgeSpec, ModelTier};
 
 pub struct EmailWatchInstinct {
     interval_secs: f64,
@@ -40,8 +40,9 @@ impl Instinct for EmailWatchInstinct {
         }
 
         let user = &state.config_user_name;
-        let execute_msg = format!(
-            "EXECUTE Use email_check to fetch new emails. Before alerting, use recall to check if {} \
+                let execute_msg = match state.model_tier {
+            ModelTier::Large => format!(
+                "EXECUTE Use email_check to fetch new emails. Before alerting, use recall to check if {} \
              has previously told you to ignore or dismiss any specific email types (e.g., security alerts \
              marked as false alarms, recurring notifications they don't care about). Skip those. \
              If any remaining emails look urgent or important (from a known contact, contains deadline \
@@ -49,7 +50,19 @@ impl Instinct for EmailWatchInstinct {
              as a notification. If no new emails or nothing important, respond with just \
              \"No new important emails.\"",
             user,
-        );
+            ),
+            ModelTier::Tiny => format!(
+                "EXECUTE Report this event: . Output: 1 sentence.",
+            ),
+            _ => format!(
+                "EXECUTE Task: Report one system event or status change.\n\
+             Input: event=.\n\
+             Tool: Use system tool if needed.\n\
+             Rule: Do not invent causes or speculate.\n\
+             Fallback: \"No action needed.\"\n\
+             Output: 1 sentence. Tone: calm, direct.",
+            ),
+        };
 
         vec![UrgeSpec::new(
             "EmailWatch",

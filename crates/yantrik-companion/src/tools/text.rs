@@ -22,7 +22,7 @@ impl Tool for WordCountTool {
             "type": "function",
             "function": {
                 "name": "word_count",
-                "description": "Count lines, words, and characters in a file.",
+                "description": "Count lines, words, and characters in a file",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -74,7 +74,7 @@ impl Tool for DiffFilesTool {
             "type": "function",
             "function": {
                 "name": "diff_files",
-                "description": "Show differences between two text files.",
+                "description": "Compare two text files and show differences",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -114,7 +114,7 @@ impl Tool for DiffFilesTool {
                     "Files are identical.".to_string()
                 } else {
                     let truncated = if diff.len() > 3000 {
-                        format!("{}...\n(truncated, {} total chars)", &diff[..3000], diff.len())
+                        format!("{}...\n(truncated, {} total chars)", &diff[..diff.floor_char_boundary(3000)], diff.len())
                     } else {
                         diff.to_string()
                     };
@@ -140,7 +140,7 @@ impl Tool for HashFileTool {
             "type": "function",
             "function": {
                 "name": "hash_file",
-                "description": "Compute SHA-256 hash of a file.",
+                "description": "Compute SHA-256 hash of a file",
                 "parameters": {
                     "type": "object",
                     "properties": {

@@ -71,7 +71,7 @@ impl Tool for ListConnectionsTool {
             "type": "function",
             "function": {
                 "name": "list_connections",
-                "description": "List available and connected external services (Google, Spotify, etc). Shows which are connected and last sync time.",
+                "description": "List available and connected external services (Google",
                 "parameters": {
                     "type": "object",
                     "properties": {},
@@ -140,7 +140,7 @@ impl Tool for ConnectServiceTool {
             "type": "function",
             "function": {
                 "name": "connect_service",
-                "description": "Start OAuth2 connection for an external service. Returns an authorization URL that the user must open in their browser. After they approve, the connection completes automatically in the background. Supported: google, spotify, facebook, instagram.",
+                "description": "Start OAuth2 connection for an external service",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -342,7 +342,7 @@ impl Tool for SyncServiceTool {
             "type": "function",
             "function": {
                 "name": "sync_service",
-                "description": "Trigger a sync for a connected service. Pulls latest contacts, events, or music data.",
+                "description": "Trigger a sync for a connected service",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -421,7 +421,7 @@ impl Tool for DisconnectServiceTool {
             "type": "function",
             "function": {
                 "name": "disconnect_service",
-                "description": "Disconnect an external service and remove stored tokens.",
+                "description": "Disconnect an external service and remove stored tokens",
                 "parameters": {
                     "type": "object",
                     "properties": {

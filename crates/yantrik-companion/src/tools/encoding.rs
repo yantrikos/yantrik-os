@@ -24,7 +24,7 @@ impl Tool for Base64EncodeTool {
             "type": "function",
             "function": {
                 "name": "base64_encode",
-                "description": "Encode text to Base64.",
+                "description": "Encode text to Base64",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -82,7 +82,7 @@ impl Tool for Base64DecodeTool {
             "type": "function",
             "function": {
                 "name": "base64_decode",
-                "description": "Decode Base64 text back to plain text.",
+                "description": "Decode Base64 text back to plain text",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -121,7 +121,7 @@ impl Tool for Base64DecodeTool {
             Ok(o) if o.status.success() => {
                 let decoded = String::from_utf8_lossy(&o.stdout);
                 if decoded.len() > 5000 {
-                    format!("{}...\n(truncated, {} chars)", &decoded[..5000], decoded.len())
+                    format!("{}...\n(truncated, {} chars)", &decoded[..decoded.floor_char_boundary(5000)], decoded.len())
                 } else {
                     decoded.to_string()
                 }
@@ -146,7 +146,7 @@ impl Tool for UrlEncodeTool {
             "type": "function",
             "function": {
                 "name": "url_encode",
-                "description": "URL-encode or decode a string.",
+                "description": "URL-encode or decode a string",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -229,7 +229,7 @@ impl Tool for JsonFormatTool {
             "type": "function",
             "function": {
                 "name": "json_format",
-                "description": "Pretty-print, minify, or validate JSON text.",
+                "description": "Pretty-print, minify, or validate JSON text",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -277,7 +277,7 @@ impl Tool for JsonFormatTool {
                 match serde_json::to_string_pretty(&parsed) {
                     Ok(s) => {
                         if s.len() > 5000 {
-                            format!("{}...\n(truncated)", &s[..5000])
+                            format!("{}...\n(truncated)", &s[..s.floor_char_boundary(5000)])
                         } else {
                             s
                         }

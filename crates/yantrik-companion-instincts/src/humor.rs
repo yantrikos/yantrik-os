@@ -5,7 +5,7 @@ use std::sync::Mutex;
 
 use yantrik_companion_core::bond::BondLevel;
 use crate::Instinct;
-use yantrik_companion_core::types::{CompanionState, UrgeSpec};
+use yantrik_companion_core::types::{CompanionState, UrgeSpec, ModelTier};
 
 /// Minimum seconds between humor urges (30 minutes).
 const HUMOR_COOLDOWN_SECS: f64 = 30.0 * 60.0;
@@ -64,11 +64,9 @@ impl Instinct for HumorInstinct {
             let idx = (state.current_ts as usize / 60) % interests.len();
             let interest = &interests[idx];
 
-            urges.push(
-                UrgeSpec::new(
-                    self.name(),
-                    &format!(
-                        "EXECUTE {}'s interests include {}. First try recall with query \
+            let execute_msg = match state.model_tier {
+                ModelTier::Large => format!(
+                    "EXECUTE {}'s interests include {}. First try recall with query \
                          'shared references jokes {}' to find inside jokes. \
                          If you find shared references, make a callback about one in 1 sentence. \
                          If not, come up with a SHORT, actually funny joke or witty observation \
@@ -76,8 +74,24 @@ impl Instinct for HumorInstinct {
                          Examples of good jokes: fishing puns, coding one-liners, cooking disasters. \
                          Keep it to 1 sentence. Be genuinely funny, not corny. \
                          If you can't think of anything good, say 'nothing to share right now' exactly.",
-                        state.config_user_name, interest, interest, interest,
-                    ),
+                    state.config_user_name, interest, interest, interest,
+                ),
+                ModelTier::Tiny => format!(
+                    "EXECUTE SKIP",
+                ),
+                _ => format!(
+                    "EXECUTE Task: Share one brief, playful remark with .\n\
+             Input: context=.\n\
+             Tool: You may use recall for shared references.\n\
+             Rule: Use only details explicitly stated by the user or returned by recall. Do not invent shared history or inside jokes. Keep it light.\n\
+             Fallback: Skip -- say nothing.\n\
+             Output: 1 sentence. Tone: playful.",
+                ),
+            };
+            urges.push(
+                UrgeSpec::new(
+                    self.name(),
+                    &execute_msg,
                     urgency,
                 )
                 .with_cooldown("humor:interest"),

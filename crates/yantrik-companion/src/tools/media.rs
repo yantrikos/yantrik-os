@@ -22,7 +22,7 @@ impl Tool for ScreenshotTool {
             "type": "function",
             "function": {
                 "name": "screenshot",
-                "description": "Capture a screenshot and save to a file.",
+                "description": "Capture full screen image; not browser-only",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -86,7 +86,7 @@ impl Tool for AudioControlTool {
             "type": "function",
             "function": {
                 "name": "audio_control",
-                "description": "Set volume level or toggle mute.",
+                "description": "Set volume level or toggle mute",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -154,7 +154,7 @@ impl Tool for AudioInfoTool {
             "type": "function",
             "function": {
                 "name": "audio_info",
-                "description": "Get current audio volume and device info.",
+                "description": "Get current audio volume and device info",
                 "parameters": {
                     "type": "object",
                     "properties": {}

@@ -427,7 +427,7 @@ impl Tool for LaunchBrowserTool {
             "type": "function",
             "function": {
                 "name": "launch_browser",
-                "description": "Launch Chromium browser with remote debugging. Use headless=true for data extraction tasks (web_search, browse auto-launch headless). Use headless=false (default) when the user wants to see a visible browser window.",
+                "description": "Launch browser session for browser_* tools",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -519,7 +519,7 @@ impl Tool for BrowseTool {
             "type": "function",
             "function": {
                 "name": "browse",
-                "description": "Navigate the browser to a URL and return page text + numbered interactive elements (links, buttons, inputs). Use element numbers with browser_click_element and browser_type_element to interact.",
+                "description": "Open URL in this controlled browser session",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -564,7 +564,7 @@ impl Tool for BrowseTool {
 
         let max_text = MAX_TEXT_CHARS / 2; // Leave room for elements
         let truncated = if text.len() > max_text {
-            format!("{}...\n(truncated, {} total chars)", &text[..max_text], text.len())
+            format!("{}...\n(truncated, {} total chars)", &text[..text.floor_char_boundary(max_text)], text.len())
         } else {
             text
         };
@@ -622,7 +622,7 @@ impl Tool for BrowserReadTool {
             "type": "function",
             "function": {
                 "name": "browser_read",
-                "description": "Read the current page's text content from the browser (first 3000 chars).",
+                "description": "Extract current page text only; no screenshot or clicks",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -660,7 +660,7 @@ impl Tool for BrowserReadTool {
         };
 
         let truncated = if text.len() > MAX_TEXT_CHARS {
-            format!("{}...\n(truncated, {} total chars)", &text[..MAX_TEXT_CHARS], text.len())
+            format!("{}...\n(truncated, {} total chars)", &text[..text.floor_char_boundary(MAX_TEXT_CHARS)], text.len())
         } else {
             text
         };
@@ -683,7 +683,7 @@ impl Tool for BrowserClickTool {
             "type": "function",
             "function": {
                 "name": "browser_click",
-                "description": "Click an element on the current page by CSS selector.",
+                "description": "Click page element by CSS selector; not numbered elements",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -743,7 +743,7 @@ impl Tool for BrowserTypeTool {
             "type": "function",
             "function": {
                 "name": "browser_type",
-                "description": "Type text into an input element on the current page by CSS selector.",
+                "description": "Type into field by CSS selector; not numbered elements",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -837,7 +837,7 @@ impl Tool for BrowserScreenshotTool {
             "type": "function",
             "function": {
                 "name": "browser_screenshot",
-                "description": "Take a screenshot of the current browser tab. Saves as PNG to /tmp.",
+                "description": "Save screenshot of current tab as an image file",
                 "parameters": {
                     "type": "object",
                     "properties": {}
@@ -940,7 +940,7 @@ impl Tool for BrowserTabsTool {
             "type": "function",
             "function": {
                 "name": "browser_tabs",
-                "description": "List all open browser tabs with their titles and URLs.",
+                "description": "List open browser tabs with titles and URLs",
                 "parameters": {
                     "type": "object",
                     "properties": {}
@@ -981,7 +981,7 @@ impl Tool for BrowserSearchTool {
             "type": "function",
             "function": {
                 "name": "browser_search",
-                "description": "Search the web using the browser. Navigates to Google and returns result text.",
+                "description": "Search the web in browser; opens results page",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -1045,7 +1045,7 @@ impl Tool for BrowserSearchTool {
         }
 
         let truncated = if text.len() > MAX_TEXT_CHARS {
-            format!("{}...\n(truncated)", &text[..MAX_TEXT_CHARS])
+            format!("{}...\n(truncated)", &text[..text.floor_char_boundary(MAX_TEXT_CHARS)])
         } else {
             text
         };
@@ -1069,7 +1069,7 @@ impl Tool for WebSearchTool {
             "type": "function",
             "function": {
                 "name": "web_search",
-                "description": "Search the web and return results with titles, URLs, and snippets. Use this to find tutorials, documentation, error solutions, or any information online. For reading a specific result page, use http_fetch or browse.",
+                "description": "Search the web by query; snippets only, no page fetch",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -1466,7 +1466,7 @@ impl Tool for BrowserSnapshotTool {
             "type": "function",
             "function": {
                 "name": "browser_snapshot",
-                "description": "Get the current page's interactive elements as a numbered list. Returns clickable links, buttons, inputs, textareas etc. Use the element numbers with browser_click_element and browser_type_element. Also returns truncated page text for context.",
+                "description": "List numbered interactive elements; for element actions",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -1502,7 +1502,7 @@ impl Tool for BrowserSnapshotTool {
             let text = eval_js(&mut ws, "document.body?.innerText || ''").unwrap_or_default();
             let max = MAX_TEXT_CHARS / 2; // Leave room for elements
             let truncated = if text.len() > max {
-                format!("{}...\n(truncated, {} total chars)", &text[..max], text.len())
+                format!("{}...\n(truncated, {} total chars)", &text[..text.floor_char_boundary(max)], text.len())
             } else {
                 text.clone()
             };
@@ -1554,7 +1554,7 @@ impl Tool for BrowserClickElementTool {
             "type": "function",
             "function": {
                 "name": "browser_click_element",
-                "description": "Click an interactive element by its number from browser_snapshot. Call browser_snapshot first to get element numbers.",
+                "description": "Click numbered page element from browser_snapshot",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -1619,7 +1619,7 @@ impl Tool for BrowserTypeElementTool {
             "type": "function",
             "function": {
                 "name": "browser_type_element",
-                "description": "Type text into an input/textarea element by its number from browser_snapshot. Supports clear_first to replace existing content. Call browser_snapshot first to get element numbers.",
+                "description": "Type into numbered field from browser_snapshot",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -1723,7 +1723,7 @@ impl Tool for BrowserScrollTool {
             "type": "function",
             "function": {
                 "name": "browser_scroll",
-                "description": "Scroll the current page up or down.",
+                "description": "Scroll current page viewport up or down",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -1784,7 +1784,7 @@ impl Tool for BrowserSeeTool {
             "type": "function",
             "function": {
                 "name": "browser_see",
-                "description": "Take a screenshot of the browser and analyze it with vision AI. Returns a visual description of the page plus numbered interactive elements. Use this when browser_snapshot's text-based element scan isn't enough — for complex SPAs, dynamic UIs, or when you need to understand the page layout visually.",
+                "description": "View page image for vision; use before x,y actions",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -1947,7 +1947,7 @@ impl Tool for BrowserClickXYTool {
             "type": "function",
             "function": {
                 "name": "browser_click_xy",
-                "description": "Click at pixel coordinates (x, y) on the page. Use browser_see first to see the page and identify where to click. Coordinates are in viewport pixels matching the screenshot. Works with any website including React, Shadow DOM, etc.",
+                "description": "Click page at screen coordinates x,y; use visual layout",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -2041,7 +2041,7 @@ impl Tool for BrowserTypeXYTool {
             "type": "function",
             "function": {
                 "name": "browser_type_xy",
-                "description": "Click at coordinates (x, y) to focus an input field, then type text using keyboard events. Works with any input including React, Shadow DOM, contenteditable divs. Use browser_see first to identify the input location.",
+                "description": "Type at screen coordinates x,y; use after browser_see",
                 "parameters": {
                     "type": "object",
                     "properties": {

@@ -21,7 +21,7 @@ impl Tool for DateCalcTool {
             "type": "function",
             "function": {
                 "name": "date_calc",
-                "description": "Add or subtract days from a date. Returns the resulting date.",
+                "description": "Get current date/time or calculate date differences",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -76,7 +76,7 @@ impl Tool for TimerTool {
             "type": "function",
             "function": {
                 "name": "timer",
-                "description": "Set a countdown timer. Sends a notification when done.",
+                "description": "Start countdown timer for a duration",
                 "parameters": {
                     "type": "object",
                     "properties": {

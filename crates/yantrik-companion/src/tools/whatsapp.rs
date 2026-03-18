@@ -26,7 +26,7 @@ impl Tool for WhatsAppSendTool {
             "type": "function",
             "function": {
                 "name": "whatsapp_send",
-                "description": "Send a WhatsApp message to the user or a specified phone number. Use when the user asks you to WhatsApp them or send a WhatsApp message.",
+                "description": "Send a WhatsApp message",
                 "parameters": {
                     "type": "object",
                     "properties": {

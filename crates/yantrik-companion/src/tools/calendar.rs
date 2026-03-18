@@ -134,7 +134,7 @@ impl Tool for CalendarTodayTool {
             "type": "function",
             "function": {
                 "name": "calendar_today",
-                "description": "Get today's calendar events. Quick way to see what's on the schedule for today.",
+                "description": "Get today's calendar events; read-only",
                 "parameters": {
                     "type": "object",
                     "properties": {}
@@ -202,7 +202,7 @@ impl Tool for CalendarListEventsTool {
             "type": "function",
             "function": {
                 "name": "calendar_list_events",
-                "description": "List calendar events within a date range. Use to check upcoming events, search for specific events, or review a week/month.",
+                "description": "List calendar events within a date range",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -306,7 +306,7 @@ impl Tool for CalendarCreateEventTool {
             "type": "function",
             "function": {
                 "name": "calendar_create_event",
-                "description": "Create a new calendar event on Google Calendar. Supports timed and all-day events.",
+                "description": "Create a new calendar event on Google Calendar",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -398,7 +398,7 @@ impl Tool for CalendarDeleteEventTool {
             "type": "function",
             "function": {
                 "name": "calendar_delete_event",
-                "description": "Delete a calendar event by its ID. Get the ID from calendar_list_events or calendar_today first.",
+                "description": "Delete a calendar event by its ID",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -447,7 +447,7 @@ impl Tool for CalendarUpdateEventTool {
             "type": "function",
             "function": {
                 "name": "calendar_update_event",
-                "description": "Update an existing calendar event. Only provide the fields you want to change.",
+                "description": "Update an existing calendar event",
                 "parameters": {
                     "type": "object",
                     "properties": {

@@ -72,7 +72,7 @@ impl Tool for GitHubReposTool {
             "type": "function",
             "function": {
                 "name": "github_repos",
-                "description": "List a GitHub user's public repositories with star counts, language, and description. Can filter to only repos with stars. Accepts a username or full GitHub profile URL.",
+                "description": "List a GitHub user's public repositories with star counts",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -180,7 +180,7 @@ impl Tool for GitHubReposTool {
                 .split('T').next().unwrap_or("");
 
             let fork_marker = if fork { " [fork]" } else { "" };
-            let desc_short = if desc.len() > 80 { &desc[..80] } else { desc };
+            let desc_short = if desc.len() > 80 { &desc[..desc.floor_char_boundary(80)] } else { desc };
 
             output.push_str(&format!(
                 "  {} — ⭐{} 🍴{} [{}] updated:{}{}\n    {}\n",
@@ -212,7 +212,7 @@ impl Tool for GitHubStarsTool {
             "type": "function",
             "function": {
                 "name": "github_stars",
-                "description": "Get the star count and details for a specific GitHub repository.",
+                "description": "Get the star count and details for a specific GitHub",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -298,7 +298,7 @@ impl Tool for GitHubProfileTool {
             "type": "function",
             "function": {
                 "name": "github_profile",
-                "description": "Get a GitHub user's profile info: bio, followers, public repos, etc.",
+                "description": "Get a GitHub user's profile info: bio, followers, public",
                 "parameters": {
                     "type": "object",
                     "properties": {

@@ -17,7 +17,7 @@ use std::sync::Mutex;
 
 use yantrik_companion_core::bond::BondLevel;
 use crate::Instinct;
-use yantrik_companion_core::types::{CompanionState, UrgeSpec};
+use yantrik_companion_core::types::{CompanionState, UrgeSpec, ModelTier};
 
 /// Finance-related keywords to detect in user interests or conversation.
 const FINANCE_KEYWORDS: &[&str] = &[
@@ -87,8 +87,9 @@ impl Instinct for MoneyMindInstinct {
 
         let user = &state.config_user_name;
 
-        let execute_msg = format!(
-            "EXECUTE First, use recall with query \"money budget investing saving spending financial\" \
+                let execute_msg = match state.model_tier {
+            ModelTier::Large => format!(
+                "EXECUTE First, use recall with query \"money budget investing saving spending financial\" \
              to find {user}'s financial mentions and interests.\n\
              \n\
              Identify the specific financial topic {user} cares about most right now:\n\
@@ -109,7 +110,18 @@ impl Instinct for MoneyMindInstinct {
              \n\
              If no financial topics found in memory, respond with just \"No money mind today.\"\n\
              After you're done, call browser_cleanup to free resources.",
-        );
+            ),
+            ModelTier::Tiny => format!(
+                "EXECUTE SKIP",
+            ),
+            _ => format!(
+                "EXECUTE Task: Surface one interesting memory connection for {user}.\n\
+             Tool: Use recall to find one relevant past memory.\n\
+             Rule: Use only details explicitly stated by the user or returned by recall. Do not invent memories or connections.\n\
+             Fallback: \"Nothing to surface right now.\"\n\
+             Output: 1 sentence.",
+            ),
+        };
 
         vec![UrgeSpec::new(self.name(), &execute_msg, 0.4)
             .with_cooldown("money_mind:insight")]

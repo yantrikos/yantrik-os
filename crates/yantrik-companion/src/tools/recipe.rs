@@ -141,7 +141,7 @@ impl Tool for ListRecipesTool {
             "type": "function",
             "function": {
                 "name": "list_recipes",
-                "description": "List automation recipes. Shows name, status, step count, and trigger.",
+                "description": "List automation recipes",
                 "parameters": {
                     "type": "object",
                     "properties": {

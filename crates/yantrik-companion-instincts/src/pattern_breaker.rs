@@ -14,7 +14,7 @@ use std::sync::Mutex;
 
 use yantrik_companion_core::bond::BondLevel;
 use crate::Instinct;
-use yantrik_companion_core::types::{CompanionState, UrgeSpec};
+use yantrik_companion_core::types::{CompanionState, UrgeSpec, ModelTier};
 
 pub struct PatternBreakerInstinct {
     /// Minimum seconds between observations.
@@ -64,8 +64,9 @@ impl Instinct for PatternBreakerInstinct {
 
         let user = &state.config_user_name;
 
-        let execute_msg = format!(
-            "EXECUTE Use recall with query \"same again stuck frustrated repeated keeps happening\" \
+                let execute_msg = match state.model_tier {
+            ModelTier::Large => format!(
+                "EXECUTE Use recall with query \"same again stuck frustrated repeated keeps happening\" \
              to search {user}'s memory for recurring patterns. Look for: \
              - The same complaint appearing multiple times \
              - Projects started and stopped repeatedly \
@@ -82,7 +83,18 @@ impl Instinct for PatternBreakerInstinct {
              Frame observations as data, not criticism. Offer structural solutions (systems, triggers, \
              accountability) rather than willpower-based advice. \
              If no clear patterns emerge, respond with \"No pattern breaker today.\" exactly.",
-        );
+            ),
+            ModelTier::Tiny => format!(
+                "EXECUTE SKIP",
+            ),
+            _ => format!(
+                "EXECUTE Task: Surface one interesting memory connection for {user}.\n\
+             Tool: Use recall to find one relevant past memory.\n\
+             Rule: Use only details explicitly stated by the user or returned by recall. Do not invent memories or connections.\n\
+             Fallback: \"Nothing to surface right now.\"\n\
+             Output: 1 sentence.",
+            ),
+        };
 
         vec![UrgeSpec::new(
             self.name(),

@@ -36,7 +36,7 @@ impl Tool for DetectProjectsTool {
             "type": "function",
             "function": {
                 "name": "detect_projects",
-                "description": "Find git repositories under a directory.",
+                "description": "Find git repositories under a directory",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -151,7 +151,7 @@ impl Tool for SetActiveProjectTool {
             "type": "function",
             "function": {
                 "name": "set_active_project",
-                "description": "Mark a project as your active working context.",
+                "description": "Mark a project as your active working context",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -224,7 +224,7 @@ impl Tool for GetProjectContextTool {
             "type": "function",
             "function": {
                 "name": "get_project_context",
-                "description": "Get context about a project: branch, recent commits, language.",
+                "description": "Get context about a project: branch, recent commits",
                 "parameters": {
                     "type": "object",
                     "properties": {

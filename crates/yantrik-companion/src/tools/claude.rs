@@ -139,7 +139,7 @@ fn run_claude(prompt: &str, _verbose: bool) -> String {
                 } else {
                     // Truncate very long responses
                     if stdout.len() > 8000 {
-                        format!("{}...\n[truncated, {} total chars]", &stdout[..8000], stdout.len())
+                        format!("{}...\n[truncated, {} total chars]", &stdout[..stdout.floor_char_boundary(8000)], stdout.len())
                     } else {
                         stdout
                     }
@@ -178,7 +178,7 @@ fn run_claude_code(task: &str, cwd: &str) -> String {
                     "Claude completed task (no output)".to_string()
                 } else {
                     if stdout.len() > 8000 {
-                        format!("{}...\n[truncated, {} total chars]", &stdout[..8000], stdout.len())
+                        format!("{}...\n[truncated, {} total chars]", &stdout[..stdout.floor_char_boundary(8000)], stdout.len())
                     } else {
                         stdout
                     }

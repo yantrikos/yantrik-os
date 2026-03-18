@@ -25,7 +25,7 @@ impl Tool for RunBackgroundTool {
             "type": "function",
             "function": {
                 "name": "run_background",
-                "description": "Run a command in the background. Returns a task ID for tracking. Use for long-running operations like downloads, builds, or data processing.",
+                "description": "Start long shell command in background",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -90,7 +90,7 @@ impl Tool for ListBackgroundTasksTool {
             "type": "function",
             "function": {
                 "name": "list_background_tasks",
-                "description": "List background tasks with their status.",
+                "description": "List background shell tasks",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -130,7 +130,7 @@ impl Tool for ListBackgroundTasksTool {
         lines.push("---|-------|--------|--------".to_string());
         for t in &tasks {
             let cmd_short = if t.command.len() > 40 {
-                format!("{}...", &t.command[..40])
+                format!("{}...", &t.command[..t.command.floor_char_boundary(40)])
             } else {
                 t.command.clone()
             };
@@ -157,7 +157,7 @@ impl Tool for CheckBackgroundTaskTool {
             "type": "function",
             "function": {
                 "name": "check_background_task",
-                "description": "Check the status and output of a background task.",
+                "description": "Check one background task status",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -235,7 +235,7 @@ impl Tool for StopBackgroundTaskTool {
             "type": "function",
             "function": {
                 "name": "stop_background_task",
-                "description": "Stop a running background task.",
+                "description": "Stop a background shell task",
                 "parameters": {
                     "type": "object",
                     "properties": {

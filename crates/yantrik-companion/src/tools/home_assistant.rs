@@ -44,7 +44,7 @@ fn ha_curl(base_url: &str, token: &str, method: &str, path: &str, body: Option<&
         Ok(output) => {
             let stdout = String::from_utf8_lossy(&output.stdout);
             if stdout.len() > 3000 {
-                format!("{}\n[Truncated — {} bytes]", &stdout[..3000], stdout.len())
+                format!("{}\n[Truncated — {} bytes]", &stdout[..stdout.floor_char_boundary(3000)], stdout.len())
             } else {
                 stdout.to_string()
             }
@@ -70,7 +70,7 @@ impl Tool for HaGetStateTool {
             "type": "function",
             "function": {
                 "name": "ha_get_state",
-                "description": "Get the current state of a Home Assistant entity (e.g. light.living_room, sensor.temperature).",
+                "description": "Get the current state of a Home Assistant entity (e",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -108,7 +108,7 @@ impl Tool for HaCallServiceTool {
             "type": "function",
             "function": {
                 "name": "ha_call_service",
-                "description": "Call a Home Assistant service (e.g. turn on lights, lock door). Domain examples: light, switch, lock, climate.",
+                "description": "Call a Home Assistant service (e",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -180,7 +180,7 @@ impl Tool for HaListEntitiesTool {
             "type": "function",
             "function": {
                 "name": "ha_list_entities",
-                "description": "List Home Assistant entities, optionally filtered by domain (e.g. 'light', 'sensor').",
+                "description": "List Home Assistant entities, optionally filtered by domain",
                 "parameters": {
                     "type": "object",
                     "properties": {

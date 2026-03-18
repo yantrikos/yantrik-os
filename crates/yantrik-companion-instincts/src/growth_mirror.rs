@@ -33,7 +33,7 @@
 use std::sync::Mutex;
 
 use crate::Instinct;
-use yantrik_companion_core::types::{CompanionState, UrgeSpec};
+use yantrik_companion_core::types::{CompanionState, ModelTier, UrgeSpec};
 
 /// GrowthMirror instinct — notices patterns of improvement, skill
 /// development, or personal evolution that the user might not see
@@ -112,39 +112,49 @@ impl Instinct for GrowthMirrorInstinct {
         let user = &state.config_user_name;
         let bond_level_str = format!("{:?}", state.bond_level);
 
-        let execute_msg = format!(
-            "EXECUTE You are reflecting {user}'s personal growth back to them — \
-             something they might not notice themselves.\n\
-             \n\
-             Step 1: Call recall with query \"growth progress improvement learning\" \
-             to find evidence of development, skill gains, or expanding capability.\n\
-             \n\
-             Step 2: Call recall with query \"early conversations first questions beginnings\" \
-             to find where they started — their initial level, early struggles, or first attempts.\n\
-             \n\
-             Step 3: Compare the two result sets. Look for:\n\
-             - Skill progression (beginner questions → advanced discussions)\n\
-             - Confidence changes (hesitant → decisive, stressed → calm)\n\
-             - Expanding interests (new topics appearing over time)\n\
-             - Deepening expertise (surface-level → nuanced understanding)\n\
-             - Behavioral shifts (reactive → proactive, scattered → focused)\n\
-             \n\
-             Step 4: Find ONE specific, evidence-based growth observation. \
-             Then deliver it in 2-3 sentences that:\n\
-             - Name the SPECIFIC change observed (with concrete examples or data points)\n\
-             - Frame it positively but honestly — this is genuine observation, not flattery\n\
-             - Optionally note what it might mean or where it could lead\n\
-             \n\
-             CRITICAL RULES:\n\
-             - Be SPECIFIC, not generic. \"You've grown\" is worthless. \
-             \"You went from X to Y in Z timeframe\" is gold.\n\
-             - Use actual evidence from the recall results. Don't fabricate examples.\n\
-             - Don't be sycophantic. A real friend notices real things, not everything.\n\
-             - If no clear growth pattern emerges from the data, respond with \
-             just \"No growth mirror today.\" — that's fine. Don't force it.\n\
-             - Tone: like a perceptive friend who noticed something interesting, \
-             not a life coach giving a pep talk.",
-        );
+        let execute_msg = match state.model_tier {
+            ModelTier::Large => format!(
+                "EXECUTE You are reflecting {user}'s personal growth back to them — \
+                 something they might not notice themselves.\n\
+                 \n\
+                 Step 1: Call recall with query \"growth progress improvement learning\" \
+                 to find evidence of development, skill gains, or expanding capability.\n\
+                 \n\
+                 Step 2: Call recall with query \"early conversations first questions beginnings\" \
+                 to find where they started — their initial level, early struggles, or first attempts.\n\
+                 \n\
+                 Step 3: Compare the two result sets. Look for:\n\
+                 - Skill progression (beginner questions → advanced discussions)\n\
+                 - Confidence changes (hesitant → decisive, stressed → calm)\n\
+                 - Expanding interests (new topics appearing over time)\n\
+                 - Deepening expertise (surface-level → nuanced understanding)\n\
+                 - Behavioral shifts (reactive → proactive, scattered → focused)\n\
+                 \n\
+                 Step 4: Find ONE specific, evidence-based growth observation. \
+                 Then deliver it in 2-3 sentences that:\n\
+                 - Name the SPECIFIC change observed (with concrete examples or data points)\n\
+                 - Frame it positively but honestly — this is genuine observation, not flattery\n\
+                 - Optionally note what it might mean or where it could lead\n\
+                 \n\
+                 CRITICAL RULES:\n\
+                 - Be SPECIFIC, not generic. \"You've grown\" is worthless. \
+                 \"You went from X to Y in Z timeframe\" is gold.\n\
+                 - Use actual evidence from the recall results. Don't fabricate examples.\n\
+                 - Don't be sycophantic. A real friend notices real things, not everything.\n\
+                 - If no clear growth pattern emerges from the data, respond with \
+                 just \"No growth mirror today.\" — that's fine. Don't force it.\n\
+                 - Tone: like a perceptive friend who noticed something interesting, \
+                 not a life coach giving a pep talk.",
+            ),
+            ModelTier::Tiny => format!("EXECUTE SKIP"),
+            _ => format!(
+                "EXECUTE Task: Share one brief, grounded observation with {user} about their growth or progress.\n\
+                 Tool: You may use recall once.\n\
+                 Rule: Use only facts the user stated. Do not infer personality or emotions.\n\
+                 Fallback: Skip.\n\
+                 Output: 1 sentence."
+            ),
+        };
 
         vec![UrgeSpec::new(self.name(), &execute_msg, urgency)
             .with_cooldown("growth_mirror:reflection")

@@ -11,7 +11,7 @@ use std::sync::Mutex;
 
 use yantrik_companion_core::bond::BondLevel;
 use crate::Instinct;
-use yantrik_companion_core::types::{CompanionState, UrgeSpec};
+use yantrik_companion_core::types::{CompanionState, UrgeSpec, ModelTier};
 
 pub struct OpportunityScoutInstinct {
     /// Minimum seconds between opportunity searches.
@@ -71,8 +71,9 @@ impl Instinct for OpportunityScoutInstinct {
             )
         };
 
-        let execute_msg = format!(
-            "EXECUTE Use recall with query \"skills experience work projects interests\" \
+                let execute_msg = match state.model_tier {
+            ModelTier::Large => format!(
+                "EXECUTE Use recall with query \"skills experience work projects interests\" \
              to build a profile of {user}'s skills and interests. \
              Their known interests include: {interests_str}. \
              Then use web_search for opportunities matching their profile — search for things like: \
@@ -89,7 +90,19 @@ impl Instinct for OpportunityScoutInstinct {
              If nothing with genuine high fit is found, respond with \
              \"No opportunities spotted today.\" exactly. \
              After you're done, call browser_cleanup to free resources.",
-        );
+            ),
+            ModelTier::Tiny => format!(
+                "EXECUTE Suggest one activity for {user}. Output: 1 sentence.",
+            ),
+            _ => format!(
+                "EXECUTE Task: Suggest one interesting thing for {user}.\n\
+             Input: interest={interests_str}.\n\
+             Tool: You may use recall or web search once.\n\
+             Rule: Do not invent facts. Do not repeat recent suggestions.\n\
+             Fallback: \"No suggestion right now.\"\n\
+             Output: 1 sentence.",
+            ),
+        };
 
         vec![UrgeSpec::new(
             self.name(),

@@ -53,7 +53,7 @@ fn run_docker(args: &[&str]) -> String {
 /// Truncate a string to max_len chars, appending a notice.
 fn truncate(s: &str, max_len: usize) -> String {
     if s.len() > max_len {
-        format!("{}...\n(truncated, {} chars)", &s[..max_len], s.len())
+        format!("{}...\n(truncated, {} chars)", &s[..s.floor_char_boundary(max_len)], s.len())
     } else {
         s.to_string()
     }
@@ -73,7 +73,7 @@ impl Tool for DockerPsTool {
             "type": "function",
             "function": {
                 "name": "docker_ps",
-                "description": "List running Docker containers.",
+                "description": "List running Docker containers",
                 "parameters": {
                     "type": "object",
                     "properties": {}
@@ -105,7 +105,7 @@ impl Tool for DockerImagesTool {
             "type": "function",
             "function": {
                 "name": "docker_images",
-                "description": "List Docker images.",
+                "description": "List Docker images",
                 "parameters": {
                     "type": "object",
                     "properties": {}
@@ -137,7 +137,7 @@ impl Tool for DockerLogsTool {
             "type": "function",
             "function": {
                 "name": "docker_logs",
-                "description": "View logs from a Docker container.",
+                "description": "View logs from a Docker container",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -179,7 +179,7 @@ impl Tool for DockerStartTool {
             "type": "function",
             "function": {
                 "name": "docker_start",
-                "description": "Start a stopped Docker container.",
+                "description": "Start a stopped Docker container",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -217,7 +217,7 @@ impl Tool for DockerStopTool {
             "type": "function",
             "function": {
                 "name": "docker_stop",
-                "description": "Stop a running Docker container.",
+                "description": "Stop a running Docker container",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -255,7 +255,7 @@ impl Tool for DockerExecTool {
             "type": "function",
             "function": {
                 "name": "docker_exec",
-                "description": "Execute a command inside a Docker container.",
+                "description": "Execute a command inside a Docker container",
                 "parameters": {
                     "type": "object",
                     "properties": {

@@ -14,7 +14,7 @@
 use std::sync::Mutex;
 
 use crate::Instinct;
-use yantrik_companion_core::types::{CompanionState, UrgeSpec};
+use yantrik_companion_core::types::{CompanionState, UrgeSpec, ModelTier};
 
 pub struct DealWatchInstinct {
     /// Seconds between deal checks.
@@ -69,8 +69,9 @@ impl Instinct for DealWatchInstinct {
         // mentioned wanting specific items in conversation.
         let user = &state.config_user_name;
 
-        let execute_msg = format!(
-            "EXECUTE First use recall with query \"want to buy shopping wishlist looking for\" to check if \
+                let execute_msg = match state.model_tier {
+            ModelTier::Large => format!(
+                "EXECUTE First use recall with query \"want to buy shopping wishlist looking for\" to check if \
              {user} has mentioned wanting to buy anything specific. \
              Also use recall with query \"shopping preferences budget brands\" for their shopping style. \
              If they have specific items they want, use web_search to search for deals on the MOST \
@@ -81,7 +82,18 @@ impl Instinct for DealWatchInstinct {
              Share it in 2-3 sentences with the price, where, and why it's good. \
              If nothing notable, respond with just \"No noteworthy deals today.\" \
              After you're done, call browser_cleanup to free resources.",
-        );
+            ),
+            ModelTier::Tiny => format!(
+                "EXECUTE SKIP",
+            ),
+            _ => format!(
+                "EXECUTE Task: Find one clear, recent update about .\n\
+             Tool: Use web search once.\n\
+             Rule: Use only search results. Do not invent facts, sources, or dates. If results are weak, mixed, or outdated, output the fallback. State why it matters only if directly supported by the result.\n\
+             Fallback: \"No notable news.\"\n\
+             Output: 1 bullet, under 25 words.",
+            ),
+        };
 
         let urgency = if has_shopping_interest { 0.5 } else { 0.3 };
 

@@ -31,7 +31,7 @@ impl Tool for DiscoverToolsTool {
             "type": "function",
             "function": {
                 "name": "discover_tools",
-                "description": "Search available tools by keyword or category. Returns a compact list of matching tools with their names and descriptions. Use this when you need a capability not in your current tool set. After discovery, you can call the discovered tools directly in your next response. Use list_all=true to see every tool.",
+                "description": "Find tools by keyword; use when tool name unknown",
                 "parameters": {
                     "type": "object",
                     "properties": {

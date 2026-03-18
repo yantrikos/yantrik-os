@@ -42,7 +42,7 @@
 use std::sync::Mutex;
 
 use crate::Instinct;
-use yantrik_companion_core::types::{CompanionState, UrgeSpec};
+use yantrik_companion_core::types::{CompanionState, ModelTier, UrgeSpec};
 
 /// Search angles that rotate each evaluation, covering different facets of local life.
 ///
@@ -143,40 +143,50 @@ impl Instinct for LocalPulseInstinct {
         };
 
         // ── EXECUTE prompt ────────────────────────────────────────────────
-        let execute_msg = format!(
-            "EXECUTE You are {user}'s hyperlocal intelligence — a well-connected friend \
-             who always knows what's happening in {location}.\
-             \n\n\
-             Step 1: Use recall with query \"local favorites restaurants places {location}\" \
-             to understand {user}'s local preferences, frequented spots, and neighborhood habits.\
-             {interests_hint}\
-             \n\n\
-             Step 2: Use web_search with query \"{current_lens}\" to find CURRENT local happenings. \
-             Focus on results from the last 7 days — stale news is not local pulse.\
-             \n\n\
-             Step 3: Filter results through three quality gates:\
-             \n  - RECENCY: Must be current or upcoming (this week / this weekend / opening soon). \
-             Anything older than a week is stale.\
-             \n  - RELEVANCE: Connected to {user}'s interests if possible, or universally useful \
-             (road closures, major events, weather-affected activities).\
-             \n  - ACTIONABILITY: Something {user} can actually do, visit, avoid, or plan around. \
-             Pure FYI without action is low value.\
-             \n\n\
-             Step 4: Deliver ONE genuinely interesting local finding in 2-3 sentences:\
-             \n  - WHAT it is and WHERE (be specific — street names, neighborhoods, venues)\
-             \n  - WHY it's noteworthy (not just \"there's an event\" — what makes it special?)\
-             \n  - A SPECIFIC DETAIL that shows genuine research: opening hours, insider tips, \
-             expected wait times, parking advice, the story behind it, comparisons to alternatives\
-             \n\n\
-             If {user} has known interests, look for the intersection between local happenings \
-             and those interests. A fishing enthusiast hearing about a new bait shop is more \
-             valuable than a generic festival announcement.\
-             \n\n\
-             After research, call browser_cleanup to free resources.\
-             \n\n\
-             If nothing genuinely interesting, current, or actionable was found for {location}, \
-             respond with just \"No local pulse today.\" — do NOT fabricate or stretch a weak finding."
-        );
+        let execute_msg = match state.model_tier {
+            ModelTier::Large => format!(
+                "EXECUTE You are {user}'s hyperlocal intelligence — a well-connected friend \
+                 who always knows what's happening in {location}.\
+                 \n\n\
+                 Step 1: Use recall with query \"local favorites restaurants places {location}\" \
+                 to understand {user}'s local preferences, frequented spots, and neighborhood habits.\
+                 {interests_hint}\
+                 \n\n\
+                 Step 2: Use web_search with query \"{current_lens}\" to find CURRENT local happenings. \
+                 Focus on results from the last 7 days — stale news is not local pulse.\
+                 \n\n\
+                 Step 3: Filter results through three quality gates:\
+                 \n  - RECENCY: Must be current or upcoming (this week / this weekend / opening soon). \
+                 Anything older than a week is stale.\
+                 \n  - RELEVANCE: Connected to {user}'s interests if possible, or universally useful \
+                 (road closures, major events, weather-affected activities).\
+                 \n  - ACTIONABILITY: Something {user} can actually do, visit, avoid, or plan around. \
+                 Pure FYI without action is low value.\
+                 \n\n\
+                 Step 4: Deliver ONE genuinely interesting local finding in 2-3 sentences:\
+                 \n  - WHAT it is and WHERE (be specific — street names, neighborhoods, venues)\
+                 \n  - WHY it's noteworthy (not just \"there's an event\" — what makes it special?)\
+                 \n  - A SPECIFIC DETAIL that shows genuine research: opening hours, insider tips, \
+                 expected wait times, parking advice, the story behind it, comparisons to alternatives\
+                 \n\n\
+                 If {user} has known interests, look for the intersection between local happenings \
+                 and those interests. A fishing enthusiast hearing about a new bait shop is more \
+                 valuable than a generic festival announcement.\
+                 \n\n\
+                 After research, call browser_cleanup to free resources.\
+                 \n\n\
+                 If nothing genuinely interesting, current, or actionable was found for {location}, \
+                 respond with just \"No local pulse today.\" — do NOT fabricate or stretch a weak finding."
+            ),
+            ModelTier::Tiny => format!("EXECUTE SKIP"),
+            _ => format!(
+                "EXECUTE Task: Find one clear, recent local update.\n\
+                 Tool: Use web search once.\n\
+                 Rule: Only share facts found in search results. Do not invent events.\n\
+                 Fallback: \"Nothing notable.\"\n\
+                 Output: 1 sentence."
+            ),
+        };
 
         // ── Urgency calculation ───────────────────────────────────────────
         // Morning hours (7-10 AM) are best for day-planning local intel.

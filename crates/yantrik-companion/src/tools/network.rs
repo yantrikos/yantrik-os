@@ -29,7 +29,7 @@ impl Tool for DownloadFileTool {
             "type": "function",
             "function": {
                 "name": "download_file",
-                "description": "Download a file from a URL and save it locally.",
+                "description": "Download URL to a local file; do not open or extract",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -91,7 +91,7 @@ impl Tool for HttpFetchTool {
             "type": "function",
             "function": {
                 "name": "http_fetch",
-                "description": "Fetch raw text from a URL. Returns stripped HTML content. For smarter extraction with AI processing, use web_fetch instead.",
+                "description": "Fetch raw URL text; no AI extraction",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -119,7 +119,7 @@ impl Tool for HttpFetchTool {
             {
                 Ok(output) if output.status.success() => {
                     let headers = String::from_utf8_lossy(&output.stdout);
-                    let truncated = if headers.len() > 2000 { &headers[..2000] } else { &headers };
+                    let truncated = if headers.len() > 2000 { &headers[..headers.floor_char_boundary(2000)] } else { &headers };
                     truncated.to_string()
                 }
                 Ok(output) => {
@@ -178,7 +178,7 @@ impl Tool for WebFetchTool {
             "type": "function",
             "function": {
                 "name": "web_fetch",
-                "description": "Fetch a web page and extract information using AI. Converts HTML to clean markdown, then uses an AI model to process the content based on your prompt. Returns a focused, relevant answer instead of raw page text. Best for articles, documentation, search results, and any page where you need specific information extracted.",
+                "description": "Fetch webpage and extract answers with AI",
                 "parameters": {
                     "type": "object",
                     "properties": {

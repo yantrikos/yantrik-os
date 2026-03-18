@@ -22,7 +22,7 @@ impl Tool for GrepTool {
             "type": "function",
             "function": {
                 "name": "grep",
-                "description": "Search file contents using regex patterns. Returns matching lines with file paths and line numbers. Supports context lines and file type filtering.",
+                "description": "Search file contents with regex",
                 "parameters": {
                     "type": "object",
                     "properties": {

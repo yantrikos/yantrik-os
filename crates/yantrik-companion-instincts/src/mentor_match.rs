@@ -14,7 +14,7 @@ use std::sync::Mutex;
 
 use yantrik_companion_core::bond::BondLevel;
 use crate::Instinct;
-use yantrik_companion_core::types::{CompanionState, UrgeSpec};
+use yantrik_companion_core::types::{CompanionState, UrgeSpec, ModelTier};
 
 pub struct MentorMatchInstinct {
     /// Seconds between mentor match checks.
@@ -64,8 +64,9 @@ impl Instinct for MentorMatchInstinct {
 
         let user = &state.config_user_name;
 
-        let execute_msg = format!(
-            "EXECUTE Use recall with query 'learning struggling challenge problem trying to \
+                let execute_msg = match state.model_tier {
+            ModelTier::Large => format!(
+                "EXECUTE Use recall with query 'learning struggling challenge problem trying to \
              understand' to identify {user}'s current learning edge — the thing they're actively \
              trying to get better at or understand.\n\
              \n\
@@ -82,7 +83,19 @@ impl Instinct for MentorMatchInstinct {
              If no clear learning edge found in memories, respond with just \
              \"No mentor match today.\"\n\
              After you're done, call browser_cleanup to free resources."
-        );
+            ),
+            ModelTier::Tiny => format!(
+                "EXECUTE Suggest one activity for {user}. Output: 1 sentence.",
+            ),
+            _ => format!(
+                "EXECUTE Task: Suggest one interesting thing for {user}.\n\
+             Input: interest=.\n\
+             Tool: You may use recall or web search once.\n\
+             Rule: Do not invent facts. Do not repeat recent suggestions.\n\
+             Fallback: \"No suggestion right now.\"\n\
+             Output: 1 sentence.",
+            ),
+        };
 
         vec![UrgeSpec::new("MentorMatch", &execute_msg, 0.4)
             .with_cooldown("mentor_match:recommendation")

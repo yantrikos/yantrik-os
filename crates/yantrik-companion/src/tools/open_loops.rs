@@ -26,7 +26,7 @@ impl Tool for ShowOpenLoopsTool {
             "type": "function",
             "function": {
                 "name": "show_open_loops",
-                "description": "Show the user's open loops — unresolved commitments, unanswered messages, stalled tasks. Optionally filter by type (email, whatsapp, commitment, task, call, text, telegram, calendar).",
+                "description": "Show the user's open loops — unresolved commitments",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -129,7 +129,7 @@ impl Tool for ResolveLoopTool {
             "type": "function",
             "function": {
                 "name": "resolve_loop",
-                "description": "Mark an open loop as resolved. Provide the thread type and entity ID (from show_open_loops output).",
+                "description": "Mark an open loop as resolved",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -184,7 +184,7 @@ impl Tool for SnoozeLoopTool {
             "type": "function",
             "function": {
                 "name": "snooze_loop",
-                "description": "Snooze an open loop for a specified duration. It will reappear after the snooze period.",
+                "description": "Snooze an open loop for a specified duration",
                 "parameters": {
                     "type": "object",
                     "properties": {

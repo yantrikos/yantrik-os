@@ -5,7 +5,7 @@
 //! as actionable instructions for the LLM to execute.
 
 use crate::Instinct;
-use yantrik_companion_core::types::{CompanionState, UrgeSpec};
+use yantrik_companion_core::types::{CompanionState, UrgeSpec, ModelTier};
 
 pub struct AutomationInstinct;
 
@@ -42,10 +42,23 @@ impl Instinct for AutomationInstinct {
                     .and_then(|v| v.as_str());
 
                 let message = if let Some(cond) = condition {
-                    format!(
-                        "EXECUTE automation '{}' (check condition first: {}): {}",
-                        name, cond, steps
-                    )
+                    match state.model_tier {
+                        ModelTier::Large => format!(
+                            "EXECUTE automation '{}' (check condition first: {}): {}",
+                            name, cond, steps
+                        ),
+                        ModelTier::Tiny => format!(
+                            "EXECUTE Run automation '{}'. Output: 1 sentence.", name
+                        ),
+                        _ => format!(
+                            "EXECUTE Task: Run automation '{}'.\n\
+                             Input: condition={}, steps={}.\n\
+                             Rule: Do not invent causes or speculate.\n\
+                             Fallback: \"No action needed.\"\n\
+                             Output: 1 sentence.",
+                            name, cond, steps
+                        ),
+                    }
                 } else {
                     format!("EXECUTE automation '{}': {}", name, steps)
                 };

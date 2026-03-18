@@ -25,7 +25,7 @@
 use std::sync::Mutex;
 
 use crate::Instinct;
-use yantrik_companion_core::types::{CompanionState, UrgeSpec};
+use yantrik_companion_core::types::{CompanionState, UrgeSpec, ModelTier};
 
 /// DeepDive instinct — goes one layer deeper than the user went on a topic
 /// they mentioned recently, and comes back with a genuine discovery.
@@ -83,8 +83,9 @@ impl Instinct for DeepDiveInstinct {
         // ── Build the EXECUTE prompt ──────────────────────────────────
         let user = &state.config_user_name;
 
-        let execute_msg = format!(
-            "EXECUTE You are about to do something special: go on a small intellectual \
+                let execute_msg = match state.model_tier {
+            ModelTier::Large => format!(
+                "EXECUTE You are about to do something special: go on a small intellectual \
              adventure for {user} and come back with a genuine discovery.\n\
              \n\
              Step 1: Use recall with query \"recent topics questions mentioned\" to find \
@@ -128,7 +129,19 @@ impl Instinct for DeepDiveInstinct {
              IMPORTANT: If recall returns nothing interesting or researchable, respond \
              with just \"No deep dive today.\" — do not force it. A mediocre deep dive \
              is worse than none at all."
-        );
+            ),
+            ModelTier::Tiny => format!(
+                "EXECUTE Suggest one activity for {user}. Output: 1 sentence.",
+            ),
+            _ => format!(
+                "EXECUTE Task: Suggest one interesting thing for {user}.\n\
+             Input: interest=.\n\
+             Tool: You may use recall or web search once.\n\
+             Rule: Do not invent facts. Do not repeat recent suggestions.\n\
+             Fallback: \"No suggestion right now.\"\n\
+             Output: 1 sentence.",
+            ),
+        };
 
         vec![UrgeSpec::new(
             "DeepDive",

@@ -19,7 +19,7 @@
 use std::sync::Mutex;
 
 use crate::Instinct;
-use yantrik_companion_core::types::{CompanionState, UrgeSpec};
+use yantrik_companion_core::types::{CompanionState, UrgeSpec, ModelTier};
 
 /// Late-night topic lenses — each evaluation rotates to the next one,
 /// giving the LLM a thematic direction for its research.
@@ -126,8 +126,9 @@ impl Instinct for NightOwlInstinct {
         // deep, never preachy.  It instructs the LLM to research something
         // genuinely fascinating, personalized to the user's interests, and
         // deliver it in a tone that matches quiet night hours.
-        let execute_msg = format!(
-            "EXECUTE It's late at night and {user} is still up. The vibe is quiet, \
+                let execute_msg = match state.model_tier {
+            ModelTier::Large => format!(
+                "EXECUTE It's late at night and {user} is still up. The vibe is quiet, \
              contemplative, intellectual — the kind of headspace that only exists \
              in the small hours.\n\
              \n\
@@ -163,7 +164,19 @@ impl Instinct for NightOwlInstinct {
              \n\
              If nothing genuinely fascinating was found, respond with just \
              \"No night thoughts today.\"",
-        );
+            ),
+            ModelTier::Tiny => format!(
+                "EXECUTE Suggest one activity for {user}. Output: 1 sentence.",
+            ),
+            _ => format!(
+                "EXECUTE Task: Suggest one interesting thing for {user}.\n\
+             Input: interest=.\n\
+             Tool: You may use recall or web search once.\n\
+             Rule: Do not invent facts. Do not repeat recent suggestions.\n\
+             Fallback: \"No suggestion right now.\"\n\
+             Output: 1 sentence.",
+            ),
+        };
 
         vec![UrgeSpec::new(
             "NightOwl",

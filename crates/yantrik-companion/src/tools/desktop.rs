@@ -26,7 +26,7 @@ impl Tool for OpenUrlTool {
             "type": "function",
             "function": {
                 "name": "open_url",
-                "description": "Open a URL in the user's web browser.",
+                "description": "Open URL in user's default browser/app, outside session",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -67,7 +67,7 @@ impl Tool for ReadClipboardTool {
             "type": "function",
             "function": {
                 "name": "read_clipboard",
-                "description": "Read the current contents of the user's clipboard.",
+                "description": "Read the current contents of the user's clipboard",
                 "parameters": {
                     "type": "object",
                     "properties": {}
@@ -113,7 +113,7 @@ impl Tool for WriteClipboardTool {
             "type": "function",
             "function": {
                 "name": "write_clipboard",
-                "description": "Write text to the user's clipboard.",
+                "description": "Write text to the user's clipboard",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -163,7 +163,7 @@ impl Tool for ListFilesTool {
             "type": "function",
             "function": {
                 "name": "list_files",
-                "description": "List files in a directory on the user's system.",
+                "description": "List files in a directory; no content search",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -241,7 +241,7 @@ impl Tool for ReadFileTool {
             "type": "function",
             "function": {
                 "name": "read_file",
-                "description": "Read the contents of a text file. Supports line ranges for large files. Returns lines with line numbers.",
+                "description": "Read text file contents",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -322,7 +322,7 @@ impl Tool for RunCommandTool {
             "type": "function",
             "function": {
                 "name": "run_command",
-                "description": "Run a simple shell command. Only safe, read-only commands are allowed (ls, cat, date, uptime, df, free, whoami, pwd, echo).",
+                "description": "Run shell command only when no specialized tool fits",
                 "parameters": {
                     "type": "object",
                     "properties": {

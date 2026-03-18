@@ -54,7 +54,7 @@ impl Tool for FirewallStatusTool {
             "type": "function",
             "function": {
                 "name": "firewall_status",
-                "description": "Check if the firewall is active and show basic info (backend, rule count, default policy).",
+                "description": "Check if the firewall is active and show basic info",
                 "parameters": { "type": "object", "properties": {} }
             }
         })
@@ -121,7 +121,7 @@ impl Tool for FirewallListRulesTool {
             "type": "function",
             "function": {
                 "name": "firewall_list_rules",
-                "description": "List all current firewall rules.",
+                "description": "List all current firewall rules",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -151,7 +151,7 @@ impl Tool for FirewallListRulesTool {
                         if output.trim().is_empty() {
                             "No firewall rules configured.".to_string()
                         } else if output.len() > 3000 {
-                            format!("{}\n... (truncated)", &output[..3000])
+                            format!("{}\n... (truncated)", &output[..output.floor_char_boundary(3000)])
                         } else {
                             output
                         }
@@ -173,7 +173,7 @@ impl Tool for FirewallListRulesTool {
                         if output.trim().is_empty() {
                             "No firewall rules.".to_string()
                         } else if output.len() > 3000 {
-                            format!("{}\n... (truncated)", &output[..3000])
+                            format!("{}\n... (truncated)", &output[..output.floor_char_boundary(3000)])
                         } else {
                             output
                         }
@@ -199,7 +199,7 @@ impl Tool for FirewallAllowPortTool {
             "type": "function",
             "function": {
                 "name": "firewall_allow_port",
-                "description": "Allow incoming traffic on a port (open a port in the firewall).",
+                "description": "Allow incoming traffic on a port (open a port in the",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -258,7 +258,7 @@ impl Tool for FirewallBlockPortTool {
             "type": "function",
             "function": {
                 "name": "firewall_block_port",
-                "description": "Block incoming traffic on a port (close a port in the firewall).",
+                "description": "Block incoming traffic on a port (close a port in the",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -317,7 +317,7 @@ impl Tool for FirewallBlockIpTool {
             "type": "function",
             "function": {
                 "name": "firewall_block_ip",
-                "description": "Block all traffic from a specific IP address.",
+                "description": "Block all traffic from a specific IP address",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -377,7 +377,7 @@ impl Tool for FirewallEnableTool {
             "type": "function",
             "function": {
                 "name": "firewall_enable",
-                "description": "Enable the firewall with a default drop policy. This will block all incoming connections except established ones and explicitly allowed ports.",
+                "description": "Enable the firewall with a default drop policy",
                 "parameters": { "type": "object", "properties": {} }
             }
         })
@@ -462,7 +462,7 @@ impl Tool for FirewallDisableTool {
             "type": "function",
             "function": {
                 "name": "firewall_disable",
-                "description": "Disable the firewall (accept all traffic). Warning: this removes all protection.",
+                "description": "Disable the firewall (accept all traffic)",
                 "parameters": { "type": "object", "properties": {} }
             }
         })

@@ -29,7 +29,7 @@
 use std::sync::Mutex;
 
 use crate::Instinct;
-use yantrik_companion_core::types::{CompanionState, UrgeSpec};
+use yantrik_companion_core::types::{CompanionState, UrgeSpec, ModelTier};
 
 /// ConnectionWeaver — discovers surprising bridges between the user's interests.
 pub struct ConnectionWeaverInstinct {
@@ -157,8 +157,9 @@ impl Instinct for ConnectionWeaverInstinct {
         };
 
         // ── Build the EXECUTE prompt ──
-        let execute_msg = format!(
-            "EXECUTE You are going on a small intellectual adventure for {user}. \
+                let execute_msg = match state.model_tier {
+            ModelTier::Large => format!(
+                "EXECUTE You are going on a small intellectual adventure for {user}. \
              Your mission: find a SURPRISING, NON-OBVIOUS connection between these \
              interests of theirs: {interests_quoted}.\n\n\
              Step 1: Use recall with query \"{interests_list} preferences experiences\" \
@@ -197,7 +198,19 @@ impl Instinct for ConnectionWeaverInstinct {
             interests_quoted = interests_quoted,
             interests_list = interests_list,
             location = location,
-        );
+            ),
+            ModelTier::Tiny => format!(
+                "EXECUTE Suggest one activity for {user}. Output: 1 sentence.",
+            ),
+            _ => format!(
+                "EXECUTE Task: Suggest one interesting thing for {user}.\n\
+             Input: interest=.\n\
+             Tool: You may use recall or web search once.\n\
+             Rule: Do not invent facts. Do not repeat recent suggestions.\n\
+             Fallback: \"No suggestion right now.\"\n\
+             Output: 1 sentence.",
+            ),
+        };
 
         let interests_used: Vec<&str> = picked.iter().map(|s| s.as_str()).collect();
 

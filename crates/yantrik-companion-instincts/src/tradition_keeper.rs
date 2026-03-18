@@ -41,7 +41,7 @@
 use std::sync::Mutex;
 
 use crate::Instinct;
-use yantrik_companion_core::types::{CompanionState, UrgeSpec};
+use yantrik_companion_core::types::{CompanionState, UrgeSpec, ModelTier};
 
 /// A cultural anthropologist and historian companion instinct.
 ///
@@ -140,8 +140,9 @@ impl Instinct for TraditionKeeperInstinct {
         // to go on a small intellectual adventure and come back with the
         // ONE most fascinating piece of cultural/historical/scientific
         // significance for today.
-        let execute_msg = format!(
-            "EXECUTE You are a cultural anthropologist, historian, and astronomer rolled into one. \
+                let execute_msg = match state.model_tier {
+            ModelTier::Large => format!(
+                "EXECUTE You are a cultural anthropologist, historian, and astronomer rolled into one. \
              Your mission: discover the deeper MEANING behind today's date and share it as a gift.\
              \n\nStep 1: Use recall with query \"cultural background traditions celebrations \
              important dates\" to understand {user}'s cultural context, heritage, and any \
@@ -188,7 +189,18 @@ impl Instinct for TraditionKeeperInstinct {
              \n  - If today truly has no interesting significance (extremely rare), say \
              \"nothing notable today\" exactly.\
              \n\nStep 6: Call browser_cleanup to free resources when done.",
-        );
+            ),
+            ModelTier::Tiny => format!(
+                "EXECUTE SKIP",
+            ),
+            _ => format!(
+                "EXECUTE Task: Share one brief, grounded observation with {user}.\n\
+             Tool: You may use recall once for an explicit past detail.\n\
+             Rule: Use only details explicitly stated by the user or returned by recall. Prefer a concrete observation about a stated preference, repeated interest, or recent user-mentioned topic. Do not infer patterns, traits, emotions, or personal growth.\n\
+             Fallback: \"No suggestion right now.\"\n\
+             Output: 1 sentence.",
+            ),
+        };
 
         vec![UrgeSpec::new(
             "TraditionKeeper",

@@ -120,7 +120,7 @@ impl Tool for EmailCheckTool {
             "type": "function",
             "function": {
                 "name": "email_check",
-                "description": "Check for new emails. Syncs new messages from IMAP and returns a count plus brief list of recent emails. Use this to check the inbox.",
+                "description": "Fetch new emails into cache; read-only, no sending",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -224,7 +224,7 @@ impl Tool for EmailListTool {
             "type": "function",
             "function": {
                 "name": "email_list",
-                "description": "List emails in a folder from the local cache. Does NOT sync new emails — use email_check first to sync. Shows subject, sender, date, and read status.",
+                "description": "List cached emails in a folder; not full bodies",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -291,7 +291,7 @@ impl Tool for EmailReadTool {
             "type": "function",
             "function": {
                 "name": "email_read",
-                "description": "Read the full body of an email by its ID (from email_list or email_check output). Fetches the body from IMAP if not cached locally.",
+                "description": "Read full cached email body by ID",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -397,7 +397,7 @@ impl Tool for EmailSendTool {
             "type": "function",
             "function": {
                 "name": "email_send",
-                "description": "Send a new email via SMTP. Requires a recipient address, subject, and body text.",
+                "description": "Send a new email; not reply or forward",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -461,7 +461,7 @@ impl Tool for EmailReplyTool {
             "type": "function",
             "function": {
                 "name": "email_reply",
-                "description": "Reply to an email by its cache ID. Sets In-Reply-To header and prefixes 'Re:' to the subject.",
+                "description": "Reply to sender of an email by ID",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -545,7 +545,7 @@ impl Tool for EmailSearchTool {
             "type": "function",
             "function": {
                 "name": "email_search",
-                "description": "Search cached emails by keyword. Searches subject, sender name, and sender address. Only searches locally cached emails — use email_check to sync first.",
+                "description": "Search cached emails by keyword; not web search",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -646,7 +646,7 @@ impl Tool for EmailMarkReadTool {
             "type": "function",
             "function": {
                 "name": "email_mark_read",
-                "description": "Mark emails as read. Can mark a single email by ID, or mark ALL unread emails in a folder as read.",
+                "description": "Mark email as read by ID",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -753,7 +753,7 @@ impl Tool for EmailMarkUnreadTool {
             "type": "function",
             "function": {
                 "name": "email_mark_unread",
-                "description": "Mark an email as unread by its ID.",
+                "description": "Mark email as unread by ID",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -809,7 +809,7 @@ impl Tool for EmailFlagTool {
             "type": "function",
             "function": {
                 "name": "email_flag",
-                "description": "Star/flag an email by its ID. Flagged emails appear with a star in the inbox.",
+                "description": "Star or flag email by ID",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -865,7 +865,7 @@ impl Tool for EmailUnflagTool {
             "type": "function",
             "function": {
                 "name": "email_unflag",
-                "description": "Remove star/flag from an email by its ID.",
+                "description": "Remove star or flag from email by ID",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -921,7 +921,7 @@ impl Tool for EmailDeleteTool {
             "type": "function",
             "function": {
                 "name": "email_delete",
-                "description": "Delete an email by its ID. This permanently removes the email from the server (marks as deleted and expunges).",
+                "description": "Delete email by ID; not archive or move",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -977,7 +977,7 @@ impl Tool for EmailReplyAllTool {
             "type": "function",
             "function": {
                 "name": "email_reply_all",
-                "description": "Reply to all recipients of an email by its cache ID. Sends to the original sender AND all To/CC recipients.",
+                "description": "Reply to all recipients on an email",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -1078,7 +1078,7 @@ impl Tool for EmailForwardTool {
             "type": "function",
             "function": {
                 "name": "email_forward",
-                "description": "Forward an email to another recipient. Includes the original email body with a 'Fwd:' subject prefix.",
+                "description": "Forward email to new recipient",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -1188,7 +1188,7 @@ impl Tool for EmailMoveTool {
             "type": "function",
             "function": {
                 "name": "email_move",
-                "description": "Move an email to a different folder. Use email_list_folders to see available folders.",
+                "description": "Move email to another folder",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -1252,7 +1252,7 @@ impl Tool for EmailArchiveTool {
             "type": "function",
             "function": {
                 "name": "email_archive",
-                "description": "Archive an email — moves it out of the inbox to the archive folder. For Gmail this is '[Gmail]/All Mail'.",
+                "description": "Archive email by ID; remove from inbox, not delete",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -1315,7 +1315,7 @@ impl Tool for EmailListFoldersTool {
             "type": "function",
             "function": {
                 "name": "email_list_folders",
-                "description": "List all available email folders/labels for an account. Useful to see folder names before moving emails.",
+                "description": "List available email folders or labels",
                 "parameters": {
                     "type": "object",
                     "properties": {

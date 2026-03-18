@@ -21,7 +21,7 @@ impl Tool for ArchiveCreateTool {
             "type": "function",
             "function": {
                 "name": "archive_create",
-                "description": "Create a tar.gz archive from files or directories.",
+                "description": "Create a tar",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -118,7 +118,7 @@ impl Tool for ArchiveExtractTool {
             "type": "function",
             "function": {
                 "name": "archive_extract",
-                "description": "Extract a tar.gz archive to a directory.",
+                "description": "Extract a tar",
                 "parameters": {
                     "type": "object",
                     "properties": {

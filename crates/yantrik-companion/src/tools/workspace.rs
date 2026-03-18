@@ -27,7 +27,7 @@ impl Tool for SaveWorkspaceTool {
             "type": "function",
             "function": {
                 "name": "save_workspace",
-                "description": "Save a snapshot of the current workspace state — terminal directories, git branches, recent commands. Call this when the user is logging out, shutting down, or switching contexts.",
+                "description": "Save current workspace state",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -149,7 +149,7 @@ impl Tool for RecallWorkspaceTool {
             "type": "function",
             "function": {
                 "name": "recall_workspace",
-                "description": "Recall the last saved workspace snapshot — what the user was working on, which directories, git branches, and recent commands. Use this when resuming a session or when the user asks 'where was I?' or 'what was I doing?'.",
+                "description": "Recall last saved workspace snapshot",
                 "parameters": {
                     "type": "object",
                     "properties": {}
@@ -195,7 +195,7 @@ impl Tool for SaveWorkspaceTemplateTool {
             "type": "function",
             "function": {
                 "name": "save_workspace_template",
-                "description": "Save a named workspace template. Captures which apps to launch for a specific activity. Use when the user says 'save this as my coding workspace' or 'remember this setup'.",
+                "description": "Save workspace as reusable template",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -259,7 +259,7 @@ impl Tool for ListWorkspaceTemplatesTool {
             "type": "function",
             "function": {
                 "name": "list_workspace_templates",
-                "description": "List all saved workspace templates.",
+                "description": "List saved workspace templates",
                 "parameters": {
                     "type": "object",
                     "properties": {}
@@ -308,7 +308,7 @@ impl Tool for ApplyWorkspaceTemplateTool {
             "type": "function",
             "function": {
                 "name": "apply_workspace_template",
-                "description": "Apply a workspace template — launch the apps associated with a named template. Looks up saved templates first, falls back to built-in defaults (coding, writing, browsing, research).",
+                "description": "Apply a saved workspace template",
                 "parameters": {
                     "type": "object",
                     "properties": {

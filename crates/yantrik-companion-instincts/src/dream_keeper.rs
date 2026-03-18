@@ -11,7 +11,7 @@ use std::sync::Mutex;
 
 use yantrik_companion_core::bond::BondLevel;
 use crate::Instinct;
-use yantrik_companion_core::types::{CompanionState, UrgeSpec};
+use yantrik_companion_core::types::{CompanionState, UrgeSpec, ModelTier};
 
 pub struct DreamKeeperInstinct {
     /// Minimum seconds between dream actionizations.
@@ -61,8 +61,9 @@ impl Instinct for DreamKeeperInstinct {
 
         let user = &state.config_user_name;
 
-        let execute_msg = format!(
-            "EXECUTE Use recall with query \"dream someday want wish hope plan travel build create\" \
+                let execute_msg = match state.model_tier {
+            ModelTier::Large => format!(
+                "EXECUTE Use recall with query \"dream someday want wish hope plan travel build create\" \
              to find aspirations {user} has expressed — places they want to visit, skills they want \
              to learn, things they want to build, experiences they want to have. \
              Pick the ONE most actionable dream. Then use web_search to find specific next steps: \
@@ -78,7 +79,19 @@ impl Instinct for DreamKeeperInstinct {
              Make dreams feel close, not distant. Include specific numbers, dates, or actions. \
              If no suitable dreams are found in memory, respond with \"No dream update today.\" exactly. \
              After you're done, call browser_cleanup to free resources.",
-        );
+            ),
+            ModelTier::Tiny => format!(
+                "EXECUTE Remind {user} about one provided goal. If no goal, say: \"Nothing actionable.\" Output: 1 sentence.",
+            ),
+            _ => format!(
+                "EXECUTE Task: Give one useful nudge about a pending goal, plan, or commitment.\n\
+             Input: time=(now).\n\
+             Tool: Use recall for one pending item.\n\
+             Rule: Use only details explicitly stated by the user or returned by recall. Do not invent deadlines, progress, or tasks.\n\
+             Fallback: \"Nothing actionable right now.\"\n\
+             Output: 1 sentence, under 20 words.",
+            ),
+        };
 
         // Urgency bumped slightly — dreams with actionable windows are time-sensitive
         let urgency = 0.4;

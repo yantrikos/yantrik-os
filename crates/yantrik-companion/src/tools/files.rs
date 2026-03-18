@@ -24,7 +24,7 @@ impl Tool for WriteFileTool {
             "type": "function",
             "function": {
                 "name": "write_file",
-                "description": "Write text to a file. Creates or overwrites.",
+                "description": "Write or overwrite text file contents",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -102,7 +102,7 @@ impl Tool for ManageFilesTool {
             "type": "function",
             "function": {
                 "name": "manage_files",
-                "description": "Move, copy, or delete a file.",
+                "description": "Move, copy, rename, or delete files",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -201,7 +201,7 @@ impl Tool for SearchFilesTool {
             "type": "function",
             "function": {
                 "name": "search_files",
-                "description": "Search for text in files within a directory.",
+                "description": "Search file contents by plain text in a directory",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -290,7 +290,7 @@ fn search_dir(
                 for (i, line) in content.lines().enumerate() {
                     if line.to_lowercase().contains(query) {
                         let display_path = path.to_string_lossy().to_string();
-                        let trimmed = if line.len() > 120 { &line[..120] } else { line };
+                        let trimmed = if line.len() > 120 { &line[..line.floor_char_boundary(120)] } else { line };
                         matches.push((display_path, i + 1, trimmed.to_string()));
                         if matches.len() >= 100 {
                             return;
@@ -316,7 +316,7 @@ impl Tool for FileInfoTool {
             "type": "function",
             "function": {
                 "name": "file_info",
-                "description": "Get file metadata: size, modified time, type, permissions.",
+                "description": "Show file metadata, not contents",
                 "parameters": {
                     "type": "object",
                     "properties": {

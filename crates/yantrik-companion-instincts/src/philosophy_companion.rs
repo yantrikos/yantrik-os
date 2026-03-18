@@ -16,7 +16,7 @@ use std::sync::Mutex;
 
 use yantrik_companion_core::bond::BondLevel;
 use crate::Instinct;
-use yantrik_companion_core::types::{CompanionState, UrgeSpec};
+use yantrik_companion_core::types::{CompanionState, UrgeSpec, ModelTier};
 
 pub struct PhilosophyCompanionInstinct {
     /// Seconds between philosophy checks.
@@ -75,8 +75,9 @@ impl Instinct for PhilosophyCompanionInstinct {
 
         let user = &state.config_user_name;
 
-        let execute_msg = format!(
-            "EXECUTE Use recall with query 'why meaning purpose dilemma choice value believe \
+                let execute_msg = match state.model_tier {
+            ModelTier::Large => format!(
+                "EXECUTE Use recall with query 'why meaning purpose dilemma choice value believe \
              right wrong' to find philosophical resonance in {user}'s recent thinking.\n\
              \n\
              Look for moments where {user} grappled with:\n\
@@ -99,7 +100,19 @@ impl Instinct for PhilosophyCompanionInstinct {
              If nothing in {user}'s recent thinking resonates philosophically, respond with just \
              \"No philosophy today.\"\n\
              After you're done, call browser_cleanup to free resources."
-        );
+            ),
+            ModelTier::Tiny => format!(
+                "EXECUTE SKIP",
+            ),
+            _ => format!(
+                "EXECUTE Task: Share one brief, playful remark with {user}.\n\
+             Input: context=.\n\
+             Tool: You may use recall for shared references.\n\
+             Rule: Use only details explicitly stated by the user or returned by recall. Do not invent shared history or inside jokes. Keep it light.\n\
+             Fallback: Skip -- say nothing.\n\
+             Output: 1 sentence. Tone: playful.",
+            ),
+        };
 
         vec![UrgeSpec::new("PhilosophyCompanion", &execute_msg, urgency)
             .with_cooldown("philosophy_companion:reflection")

@@ -25,7 +25,7 @@ impl Tool for QueueTaskTool {
             "type": "function",
             "function": {
                 "name": "queue_task",
-                "description": "Add a task to your persistent work queue. Tasks are worked on during idle think cycles. Use for multi-step work that can't finish in one response (evaluations, research, file organization, reports).",
+                "description": "Add a task to your persistent work queue",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -77,7 +77,7 @@ impl Tool for ListTasksTool {
             "type": "function",
             "function": {
                 "name": "list_tasks",
-                "description": "List tasks in your work queue. Shows pending, in-progress, and recently completed tasks.",
+                "description": "List tasks in your work queue",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -139,7 +139,7 @@ impl Tool for UpdateTaskTool {
             "type": "function",
             "function": {
                 "name": "update_task",
-                "description": "Update progress on a queued task. Call this as you complete steps to track what's been done.",
+                "description": "Update progress on a queued task",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -189,7 +189,7 @@ impl Tool for CompleteTaskTool {
             "type": "function",
             "function": {
                 "name": "complete_task",
-                "description": "Mark a queued task as completed. Provide a result summary.",
+                "description": "Mark a queued task as completed",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -234,7 +234,7 @@ impl Tool for CancelTaskTool {
             "type": "function",
             "function": {
                 "name": "cancel_task",
-                "description": "Cancel a pending or in-progress task.",
+                "description": "Cancel a pending or in-progress task",
                 "parameters": {
                     "type": "object",
                     "properties": {

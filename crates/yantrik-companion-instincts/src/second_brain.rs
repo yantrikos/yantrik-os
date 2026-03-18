@@ -25,7 +25,7 @@
 use std::sync::Mutex;
 
 use crate::Instinct;
-use yantrik_companion_core::types::{CompanionState, UrgeSpec};
+use yantrik_companion_core::types::{CompanionState, ModelTier, UrgeSpec};
 
 /// The six lenses through which SecondBrain examines the user's memory.
 /// Each activation picks the next mode in rotation, ensuring broad coverage
@@ -179,41 +179,51 @@ impl SecondBrainInstinct {
             ),
         };
 
-        format!(
-            "EXECUTE You are {user}'s Second Brain — an externalized subconscious that \
-             surfaces self-knowledge through pattern recognition across their memories.\n\
-             \n\
-             Current analysis mode: \"{mode}\"\n\
-             \n\
-             Step 1 — GATHER DATA:\n\
-             {recall_queries}\n\
-             \n\
-             Step 2 — ANALYZE through the lens of \"{mode}\":\n\
-             {analysis_guide}\n\
-             \n\
-             Step 3 — DELIVER ONE INSIGHT:\n\
-             Find the ONE most genuine and interesting insight from your analysis. \
-             Deliver it in 2-3 sentences following these rules:\n\
-             - Name the pattern SPECIFICALLY — cite dates, quotes, or concrete instances \
-               from the recalled memories. \"You mentioned X on [date]\" is good. \
-               \"You seem to like things\" is too vague.\n\
-             - Frame WITHOUT JUDGMENT — observe, don't prescribe. \
-               Say \"I noticed X\" or \"Something interesting:\" — NEVER \"You should\" or \
-               \"You need to\" or \"Maybe try.\"\n\
-             - Be GENUINELY INSIGHTFUL — the user should feel like they learned something \
-               about themselves they hadn't consciously articulated. If the insight is \
-               obvious or shallow, it's not worth sharing.\n\
-             \n\
-             If no clear pattern emerges from the recalled data, respond with exactly: \
-             \"No second brain insight today.\"\n\
-             \n\
-             CRITICAL RULES:\n\
-             - Use ONLY recall — no web_search, no browse, no external tools. \
-               This is purely about {user}'s own data.\n\
-             - Be OBSERVATIONAL, not PRESCRIPTIVE. You are a mirror, not a coach.\n\
-             - The tone should be warm but precise — like a trusted friend who happens \
-               to have perfect memory and pattern-matching ability."
-        )
+        match state.model_tier {
+            ModelTier::Large => format!(
+                "EXECUTE You are {user}'s Second Brain — an externalized subconscious that \
+                 surfaces self-knowledge through pattern recognition across their memories.\n\
+                 \n\
+                 Current analysis mode: \"{mode}\"\n\
+                 \n\
+                 Step 1 — GATHER DATA:\n\
+                 {recall_queries}\n\
+                 \n\
+                 Step 2 — ANALYZE through the lens of \"{mode}\":\n\
+                 {analysis_guide}\n\
+                 \n\
+                 Step 3 — DELIVER ONE INSIGHT:\n\
+                 Find the ONE most genuine and interesting insight from your analysis. \
+                 Deliver it in 2-3 sentences following these rules:\n\
+                 - Name the pattern SPECIFICALLY — cite dates, quotes, or concrete instances \
+                   from the recalled memories. \"You mentioned X on [date]\" is good. \
+                   \"You seem to like things\" is too vague.\n\
+                 - Frame WITHOUT JUDGMENT — observe, don't prescribe. \
+                   Say \"I noticed X\" or \"Something interesting:\" — NEVER \"You should\" or \
+                   \"You need to\" or \"Maybe try.\"\n\
+                 - Be GENUINELY INSIGHTFUL — the user should feel like they learned something \
+                   about themselves they hadn't consciously articulated. If the insight is \
+                   obvious or shallow, it's not worth sharing.\n\
+                 \n\
+                 If no clear pattern emerges from the recalled data, respond with exactly: \
+                 \"No second brain insight today.\"\n\
+                 \n\
+                 CRITICAL RULES:\n\
+                 - Use ONLY recall — no web_search, no browse, no external tools. \
+                   This is purely about {user}'s own data.\n\
+                 - Be OBSERVATIONAL, not PRESCRIPTIVE. You are a mirror, not a coach.\n\
+                 - The tone should be warm but precise — like a trusted friend who happens \
+                   to have perfect memory and pattern-matching ability."
+            ),
+            ModelTier::Tiny => format!("EXECUTE SKIP"),
+            _ => format!(
+                "EXECUTE Task: Share one brief, useful connection between things {user} has mentioned.\n\
+                 Tool: You may use recall once.\n\
+                 Rule: Use only facts the user stated. Do not invent connections.\n\
+                 Fallback: Skip.\n\
+                 Output: 1 sentence."
+            ),
+        }
     }
 }
 

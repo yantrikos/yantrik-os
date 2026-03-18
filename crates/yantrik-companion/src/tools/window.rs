@@ -37,7 +37,7 @@ impl Tool for ListWindowsTool {
             "type": "function",
             "function": {
                 "name": "list_windows",
-                "description": "List all open windows with their titles and app names.",
+                "description": "List desktop app windows; not browser tabs",
                 "parameters": {
                     "type": "object",
                     "properties": {}
@@ -89,7 +89,7 @@ impl Tool for FocusWindowTool {
             "type": "function",
             "function": {
                 "name": "focus_window",
-                "description": "Focus (bring to front) a window by title or app name.",
+                "description": "Focus (bring to front) a window by title or app name",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -133,7 +133,7 @@ impl Tool for CloseWindowTool {
             "type": "function",
             "function": {
                 "name": "close_window",
-                "description": "Close a window by title or app name.",
+                "description": "Close a desktop window; not browser tabs",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -181,7 +181,7 @@ impl Tool for FocusContextTool {
             "type": "function",
             "function": {
                 "name": "focus_context",
-                "description": "Organize windows for a task context. Lists all windows, classifies them by relevance to the given context (coding, browsing, writing, communication), focuses the most relevant one, and returns the full classification so you can suggest closing distractors.",
+                "description": "Organize windows for a task context",
                 "parameters": {
                     "type": "object",
                     "properties": {

@@ -9,7 +9,7 @@
 use std::sync::Mutex;
 
 use crate::Instinct;
-use yantrik_companion_core::types::{CompanionState, UrgeSpec};
+use yantrik_companion_core::types::{CompanionState, UrgeSpec, ModelTier};
 
 pub struct MemoryWeaverInstinct {
     /// Minimum idle time (seconds) before weaving urges fire.
@@ -105,8 +105,9 @@ impl Instinct for MemoryWeaverInstinct {
             let has_conflicts = state.open_conflicts_count > 0;
             let has_patterns = !state.active_patterns.is_empty();
 
-            let execute_msg = format!(
-                "EXECUTE Review my memory graph ({} memories{}{}). \
+                        let execute_msg = match state.model_tier {
+                ModelTier::Large => format!(
+                    "EXECUTE Review my memory graph ({} memories{}{}). \
                  Find one interesting connection between memories from different conversations \
                  and share it as a brief, natural insight (1-2 sentences). \
                  If nothing interesting stands out, say nothing.",
@@ -121,7 +122,18 @@ impl Instinct for MemoryWeaverInstinct {
                 } else {
                     String::new()
                 },
-            );
+                ),
+                ModelTier::Tiny => format!(
+                    "EXECUTE SKIP",
+                ),
+                _ => format!(
+                    "EXECUTE Task: Surface one interesting memory connection for .\n\
+             Tool: Use recall to find one relevant past memory.\n\
+             Rule: Use only details explicitly stated by the user or returned by recall. Do not invent memories or connections.\n\
+             Fallback: \"Nothing to surface right now.\"\n\
+             Output: 1 sentence.",
+                ),
+            };
 
             urges.push(
                 UrgeSpec::new(self.name(), &execute_msg, urgency)

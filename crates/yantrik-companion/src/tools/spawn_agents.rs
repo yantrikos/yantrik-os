@@ -27,7 +27,7 @@ impl Tool for SpawnAgentsTool {
             "type": "function",
             "function": {
                 "name": "spawn_agents",
-                "description": "Run 2-5 independent tasks in parallel using sub-agents. Each sub-agent gets its own LLM conversation and tools. Use when you have multiple independent tasks that don't depend on each other — e.g., 'check email', 'browse HN', 'get weather' simultaneously.",
+                "description": "Run 2-5 independent tasks in parallel using sub-agents",
                 "parameters": {
                     "type": "object",
                     "properties": {

@@ -41,7 +41,7 @@
 use std::sync::Mutex;
 
 use crate::Instinct;
-use yantrik_companion_core::types::{CompanionState, UrgeSpec};
+use yantrik_companion_core::types::{CompanionState, UrgeSpec, ModelTier};
 
 /// Wonder "lenses" — rotating angles from which to look at the world.
 ///
@@ -210,8 +210,9 @@ impl Instinct for WonderSenseInstinct {
         // Build the EXECUTE prompt — this is the heart of the instinct.
         // It instructs the LLM to go on a small intellectual adventure
         // and come back with something genuinely wonderful.
-        let execute_msg = format!(
-            "EXECUTE You are going on a small intellectual adventure. Your mission: \
+                let execute_msg = match state.model_tier {
+            ModelTier::Large => format!(
+                "EXECUTE You are going on a small intellectual adventure. Your mission: \
              find ONE genuinely fascinating fact and bring it back as a gift.\n\
              \n\
              CONTEXT:\n\
@@ -260,7 +261,19 @@ impl Instinct for WonderSenseInstinct {
              to stay silent than to share something mediocre.",
             state.current_hour,
             state.config_user_name,
-        );
+            ),
+            ModelTier::Tiny => format!(
+                "EXECUTE Suggest one activity for . Output: 1 sentence.",
+            ),
+            _ => format!(
+                "EXECUTE Task: Suggest one interesting thing for .\n\
+             Input: interest=.\n\
+             Tool: You may use recall or web search once.\n\
+             Rule: Do not invent facts. Do not repeat recent suggestions.\n\
+             Fallback: \"No suggestion right now.\"\n\
+             Output: 1 sentence.",
+            ),
+        };
 
         vec![UrgeSpec::new(
             self.name(),

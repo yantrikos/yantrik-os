@@ -6,7 +6,7 @@
 
 use yantrik_companion_core::bond::BondLevel;
 use crate::Instinct;
-use yantrik_companion_core::types::{CompanionState, UrgeSpec};
+use yantrik_companion_core::types::{CompanionState, UrgeSpec, ModelTier};
 
 use std::sync::Mutex;
 
@@ -68,18 +68,32 @@ impl Instinct for SilenceRevealInstinct {
             *last = state.current_ts;
         }
 
-        vec![
-            UrgeSpec::new(
-                self.name(),
-                &format!(
-                    "EXECUTE Earlier, I held back from saying something (about: '{}', \
+        let execute_msg = match state.model_tier {
+            ModelTier::Large => format!(
+                "EXECUTE Earlier, I held back from saying something (about: '{}', \
                      because: '{}'). Mention this naturally — something like \
                      'I almost brought this up earlier but...' or 'I noticed something \
                      earlier but didn't want to interrupt...'. Keep it brief and genuine. \
                      1-2 sentences. This should feel like sharing a small moment of \
                      self-awareness, not making a big deal of it.",
-                    urge_key, suppress_reason
-                ),
+                urge_key, suppress_reason
+            ),
+            ModelTier::Tiny => format!(
+                "EXECUTE Pick one: greeting, mood check, or task nudge for . Time: (now). Output: 1 sentence.",
+            ),
+            _ => format!(
+                "EXECUTE Task: Send a short, natural check-in to .\n\
+             Input: time=(now).\n\
+             Tool: You may use recall once for one recent explicit user-mentioned detail.\n\
+             Rule: Use only details explicitly stated by the user or returned by recall. Do not imply the user is currently doing, feeling, or experiencing anything unless they said so.\n\
+             Fallback: Send a simple warm greeting.\n\
+             Output: 1 sentence, under 20 words.",
+            ),
+        };
+        vec![
+            UrgeSpec::new(
+                self.name(),
+                &execute_msg,
                 0.45,
             )
             .with_cooldown("silence_reveal:weekly"),

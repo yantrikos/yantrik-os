@@ -22,7 +22,7 @@ impl Tool for ListProcessesTool {
             "type": "function",
             "function": {
                 "name": "list_processes",
-                "description": "List running processes sorted by CPU or memory usage.",
+                "description": "List running processes by CPU or memory use",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -114,7 +114,7 @@ impl Tool for SystemInfoTool {
             "type": "function",
             "function": {
                 "name": "system_info",
-                "description": "Get system information: CPU, RAM, uptime, load average, hostname, kernel.",
+                "description": "Read CPU, memory, disk, and network stats",
                 "parameters": {
                     "type": "object",
                     "properties": {}
@@ -228,7 +228,7 @@ impl Tool for DiagnoseProcessTool {
             "type": "function",
             "function": {
                 "name": "diagnose_process",
-                "description": "Deep-diagnose a running process: memory (RSS), CPU%, threads, children, open files. Use when you notice a process consuming resources.",
+                "description": "Inspect one process deeply: CPU, memory, handles",
                 "parameters": {
                     "type": "object",
                     "properties": {

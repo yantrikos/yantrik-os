@@ -5,7 +5,7 @@
 
 use yantrik_companion_core::bond::BondLevel;
 use crate::Instinct;
-use yantrik_companion_core::types::{CompanionState, UrgeSpec};
+use yantrik_companion_core::types::{CompanionState, UrgeSpec, ModelTier};
 
 use std::sync::Mutex;
 
@@ -70,17 +70,31 @@ impl Instinct for EveningReflectionInstinct {
             _ => 0.4,
         };
 
-        vec![
-            UrgeSpec::new(
-                self.name(),
-                &format!(
-                    "EXECUTE Give a brief end-of-day reflection. Today's events: [{}]. \
+        let execute_msg = match state.model_tier {
+            ModelTier::Large => format!(
+                "EXECUTE Give a brief end-of-day reflection. Today's events: [{}]. \
                      Summarize what stood out, acknowledge effort or progress, and optionally \
                      suggest what tomorrow might bring. Keep it warm but concise — 2-3 sentences. \
                      Don't be overly enthusiastic or use exclamation marks. \
                      Speak like a friend winding down the day together.",
-                    events_summary
-                ),
+                events_summary
+            ),
+            ModelTier::Tiny => format!(
+                "EXECUTE Remind about one provided goal. If no goal, say: \"Nothing actionable.\" Output: 1 sentence.",
+            ),
+            _ => format!(
+                "EXECUTE Task: Give one useful nudge about a pending goal, plan, or commitment.\n\
+             Input: time=(now).\n\
+             Tool: Use recall for one pending item.\n\
+             Rule: Use only details explicitly stated by the user or returned by recall. Do not invent deadlines, progress, or tasks.\n\
+             Fallback: \"Nothing actionable right now.\"\n\
+             Output: 1 sentence, under 20 words.",
+            ),
+        };
+        vec![
+            UrgeSpec::new(
+                self.name(),
+                &execute_msg,
                 urgency,
             )
             .with_cooldown("evening_reflection:daily"),

@@ -14,7 +14,7 @@ use std::sync::Mutex;
 
 use yantrik_companion_core::bond::BondLevel;
 use crate::Instinct;
-use yantrik_companion_core::types::{CompanionState, UrgeSpec};
+use yantrik_companion_core::types::{CompanionState, UrgeSpec, ModelTier};
 
 pub struct FutureSelfInstinct {
     /// Minimum seconds between projections.
@@ -64,8 +64,9 @@ impl Instinct for FutureSelfInstinct {
 
         let user = &state.config_user_name;
 
-        let execute_msg = format!(
-            "EXECUTE Use recall with query \"progress learning goal started project building\" \
+                let execute_msg = match state.model_tier {
+            ModelTier::Large => format!(
+                "EXECUTE Use recall with query \"progress learning goal started project building\" \
              to find active trajectories in {user}'s life — skills being learned, projects in progress, \
              habits being formed or abandoned. \
              Pick the ONE most interesting trajectory and project it forward. \
@@ -78,7 +79,18 @@ impl Instinct for FutureSelfInstinct {
              Be honest but kind. Positive trajectories deserve encouragement. Stalled ones deserve \
              a gentle nudge, not guilt. If there's nothing to project, respond with \
              \"No future projection today.\" exactly.",
-        );
+            ),
+            ModelTier::Tiny => format!(
+                "EXECUTE SKIP",
+            ),
+            _ => format!(
+                "EXECUTE Task: Share one brief, grounded observation with {user}.\n\
+             Tool: You may use recall once for an explicit past detail.\n\
+             Rule: Use only details explicitly stated by the user or returned by recall. Prefer a concrete observation about a stated preference, repeated interest, or recent user-mentioned topic. Do not infer patterns, traits, emotions, or personal growth.\n\
+             Fallback: \"No suggestion right now.\"\n\
+             Output: 1 sentence.",
+            ),
+        };
 
         vec![UrgeSpec::new(
             self.name(),
