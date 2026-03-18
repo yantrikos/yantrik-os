@@ -35,21 +35,33 @@ fi
 if [ "${1:-}" != "--skip-build" ]; then
     step "Syncing source to native FS..."
     wsl.exe -d Ubuntu -- bash -lc \
-        "rsync -a --delete $WIN_SRC/ $WSL_SRC/ \
+        "rsync -a --checksum --delete $WIN_SRC/ $WSL_SRC/ \
             --exclude target --exclude .git/objects --exclude .claude/worktrees \
             --exclude '*.gguf' --exclude training/"
 
-    step "Building ($PROFILE) via WSL2..."
-    wsl.exe -d Ubuntu -- bash -lc \
-        "cd $WSL_SRC && \
-         export RUSTC_WRAPPER=sccache 2>/dev/null || true && \
-         RUSTFLAGS=\"-A warnings\" CARGO_TARGET_DIR=$WSL_TARGET \
-         cargo build $PROFILE_FLAG \
-            -p yantrik-ui -p yantrik \
+    # Determine packages to build
+    if [ "${BUILD_ALL:-}" = "1" ]; then
+        PACKAGES="-p yantrik-ui -p yantrik \
             -p weather-service -p system-monitor-service -p notes-service \
             -p notifications-service -p calendar-service -p network-service \
             -p email-service \
-         2>&1"
+            -p yantrik-notes -p yantrik-email -p yantrik-calendar \
+            -p yantrik-weather -p yantrik-system-monitor -p yantrik-terminal \
+            -p yantrik-music-player -p yantrik-text-editor -p yantrik-image-viewer \
+            -p yantrik-spreadsheet -p yantrik-document-editor -p yantrik-presentation \
+            -p yantrik-network-manager -p yantrik-container-manager \
+            -p yantrik-download-manager -p yantrik-snippet-manager"
+        step "Building ALL packages ($PROFILE) via WSL2..."
+    else
+        PACKAGES="-p yantrik-ui -p yantrik"
+        step "Building core packages ($PROFILE) via WSL2... (set BUILD_ALL=1 for all)"
+    fi
+
+    wsl.exe -d Ubuntu -- bash -lc \
+        "cd $WSL_SRC && \
+         export RUSTC_WRAPPER=sccache && \
+         RUSTFLAGS=\"-A warnings\" CARGO_TARGET_DIR=$WSL_TARGET \
+         cargo build $PROFILE_FLAG $PACKAGES 2>&1"
 
     # Verify binaries exist
     wsl.exe -d Ubuntu -- bash -lc \
@@ -83,6 +95,18 @@ wsl.exe -d Ubuntu -- bash -lc "
     done
 " || warn "Failed to deploy some services (non-fatal)"
 
+# Step 2a2: Deploy app binaries
+step "Deploying apps..."
+APPS="yantrik-notes yantrik-email yantrik-calendar yantrik-weather yantrik-system-monitor yantrik-terminal yantrik-music-player yantrik-text-editor yantrik-image-viewer yantrik-spreadsheet yantrik-document-editor yantrik-presentation yantrik-network-manager yantrik-container-manager yantrik-download-manager yantrik-snippet-manager"
+wsl.exe -d Ubuntu -- bash -lc "
+    for app in $APPS; do
+        if [ -f $WSL_TARGET/$PROFILE/\$app ]; then
+            sudo cp $WSL_TARGET/$PROFILE/\$app $REMOTE_BIN/\$app &&
+            sudo chmod +x $REMOTE_BIN/\$app
+        fi
+    done
+" || warn "Failed to deploy some apps (non-fatal)"
+
 # Step 2b: Deploy i18n translation files
 I18N_SRC="$WSL_SRC/crates/yantrik-ui/i18n"
 wsl.exe -d Ubuntu -- bash -lc "
@@ -100,6 +124,15 @@ wsl.exe -d Ubuntu -- bash -lc "
         sudo cp $SKILLS_SRC/*.yaml /opt/yantrik/skills/ 2>/dev/null
     fi
 " || warn "Failed to deploy skill manifests (non-fatal)"
+
+# Step 2d: Deploy .desktop files
+DESKTOP_SRC="$WSL_SRC/apps/desktop-files"
+wsl.exe -d Ubuntu -- bash -lc "
+    if [ -d '$DESKTOP_SRC' ]; then
+        sudo mkdir -p /usr/share/applications &&
+        sudo cp $DESKTOP_SRC/*.desktop /usr/share/applications/ 2>/dev/null
+    fi
+" || warn "Failed to deploy .desktop files (non-fatal)"
 
 # Step 3: Restart yantrik-ui
 step "Restarting yantrik-ui..."

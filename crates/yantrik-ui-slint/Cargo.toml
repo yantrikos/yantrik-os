@@ -1,0 +1,14 @@
+[package]
+name = "yantrik-ui-slint"
+version = "0.3.0"
+edition = "2021"
+description = "Yantrik OS — Slint UI compilation crate (generated types)"
+
+[dependencies]
+slint = { workspace = true }
+# These are needed so build.rs can resolve their include paths via `links`
+yantrik-design-tokens = { workspace = true }
+yantrik-ui-kit = { workspace = true }
+
+[build-dependencies]
+slint-build = "1.9"

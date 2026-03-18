@@ -65,7 +65,9 @@ mod voice;
 mod windows;
 mod wire;
 
-slint::include_modules!();
+// Slint-generated types live in yantrik-ui-slint (separate crate so that
+// Rust-only changes here don't trigger Slint recompilation).
+pub use yantrik_ui_slint::*;
 
 fn main() {
     // Initialize tracing

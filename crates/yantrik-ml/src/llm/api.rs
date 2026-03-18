@@ -398,10 +398,10 @@ impl ApiLLM {
     /// - Non-Ollama local models (llama-server, etc.): typically lack proper jinja
     ///   templates for native tool calling.
     /// - NOT used for cloud APIs (OpenAI, Anthropic) which handle tools natively.
-    /// Maximum tools Ollama's nemotron template can handle natively before
-    /// its Go XML renderer hits "XML syntax error: unexpected EOF".
-    /// Empirically safe at 12; above this we fall back to text-injection.
-    const MAX_OLLAMA_NEMOTRON_NATIVE_TOOLS: usize = 12;
+    /// Maximum tools Ollama's nemotron template can handle natively.
+    /// Fixed in Ollama 0.17+: tested with 30 tools successfully.
+    /// Previously limited to 12 due to Go XML renderer bug.
+    const MAX_OLLAMA_NEMOTRON_NATIVE_TOOLS: usize = 40;
 
     fn use_text_injection_tools(&self) -> bool {
         // Cloud APIs handle tools natively

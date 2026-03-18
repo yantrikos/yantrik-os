@@ -914,12 +914,9 @@ dependencies = [
  "chrono",
  "serde",
  "serde_json",
- "tokio",
- "tracing",
- "tracing-subscriber",
  "uuid7",
  "yantrik-ipc-contracts",
- "yantrik-ipc-transport",
+ "yantrik-service-sdk",
 ]
 
 [[package]]
@@ -2071,11 +2068,8 @@ dependencies = [
  "native-tls",
  "serde",
  "serde_json",
- "tokio",
- "tracing",
- "tracing-subscriber",
  "yantrik-ipc-contracts",
- "yantrik-ipc-transport",
+ "yantrik-service-sdk",
 ]
 
 [[package]]
@@ -4729,13 +4723,11 @@ dependencies = [
 name = "network-service"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "serde",
  "serde_json",
- "tokio",
- "tracing",
- "tracing-subscriber",
  "yantrik-ipc-contracts",
- "yantrik-ipc-transport",
+ "yantrik-service-sdk",
 ]
 
 [[package]]
@@ -4799,12 +4791,9 @@ dependencies = [
  "chrono",
  "serde",
  "serde_json",
- "tokio",
- "tracing",
- "tracing-subscriber",
  "uuid7",
  "yantrik-ipc-contracts",
- "yantrik-ipc-transport",
+ "yantrik-service-sdk",
 ]
 
 [[package]]
@@ -4814,12 +4803,9 @@ dependencies = [
  "chrono",
  "serde",
  "serde_json",
- "tokio",
- "tracing",
- "tracing-subscriber",
  "uuid7",
  "yantrik-ipc-contracts",
- "yantrik-ipc-transport",
+ "yantrik-service-sdk",
 ]
 
 [[package]]
@@ -7369,11 +7355,8 @@ dependencies = [
  "libc",
  "serde",
  "serde_json",
- "tokio",
- "tracing",
- "tracing-subscriber",
  "yantrik-ipc-contracts",
- "yantrik-ipc-transport",
+ "yantrik-service-sdk",
 ]
 
 [[package]]
@@ -8689,12 +8672,9 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
- "tokio",
- "tracing",
- "tracing-subscriber",
  "ureq 2.12.1",
  "yantrik-ipc-contracts",
- "yantrik-ipc-transport",
+ "yantrik-service-sdk",
 ]
 
 [[package]]
@@ -9687,6 +9667,37 @@ dependencies = [
 ]
 
 [[package]]
+name = "yantrik-app-runtime"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "slint",
+ "tracing",
+ "tracing-subscriber",
+ "yantrik-ipc-contracts",
+ "yantrik-ipc-transport",
+]
+
+[[package]]
+name = "yantrik-calendar"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "serde",
+ "serde_json",
+ "slint",
+ "slint-build",
+ "tracing",
+ "ureq 2.12.1",
+ "yantrik-app-runtime",
+ "yantrik-design-tokens",
+ "yantrik-ipc-contracts",
+ "yantrik-ipc-transport",
+ "yantrik-ui-kit",
+]
+
+[[package]]
 name = "yantrik-companion"
 version = "0.1.0"
 dependencies = [
@@ -9734,8 +9745,94 @@ dependencies = [
 ]
 
 [[package]]
+name = "yantrik-container-manager"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "slint",
+ "slint-build",
+ "tracing",
+ "yantrik-app-runtime",
+ "yantrik-design-tokens",
+ "yantrik-ipc-contracts",
+ "yantrik-ipc-transport",
+ "yantrik-ui-kit",
+]
+
+[[package]]
 name = "yantrik-design-tokens"
 version = "0.1.0"
+
+[[package]]
+name = "yantrik-document-editor"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "slint",
+ "slint-build",
+ "tracing",
+ "yantrik-app-runtime",
+ "yantrik-design-tokens",
+ "yantrik-ipc-contracts",
+ "yantrik-ipc-transport",
+ "yantrik-ui-kit",
+]
+
+[[package]]
+name = "yantrik-download-manager"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "slint",
+ "slint-build",
+ "tracing",
+ "yantrik-app-runtime",
+ "yantrik-design-tokens",
+ "yantrik-ipc-contracts",
+ "yantrik-ipc-transport",
+ "yantrik-ui-kit",
+]
+
+[[package]]
+name = "yantrik-email"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "imap",
+ "lettre",
+ "native-tls",
+ "serde",
+ "serde_json",
+ "slint",
+ "slint-build",
+ "tracing",
+ "ureq 2.12.1",
+ "uuid7",
+ "yantrik-app-runtime",
+ "yantrik-design-tokens",
+ "yantrik-ipc-contracts",
+ "yantrik-ipc-transport",
+ "yantrik-ui-kit",
+]
+
+[[package]]
+name = "yantrik-image-viewer"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "slint",
+ "slint-build",
+ "tracing",
+ "yantrik-app-runtime",
+ "yantrik-design-tokens",
+ "yantrik-ipc-contracts",
+ "yantrik-ipc-transport",
+ "yantrik-ui-kit",
+]
 
 [[package]]
 name = "yantrik-ipc-contracts"
@@ -9792,6 +9889,55 @@ dependencies = [
 ]
 
 [[package]]
+name = "yantrik-music-player"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "slint",
+ "slint-build",
+ "tracing",
+ "yantrik-app-runtime",
+ "yantrik-design-tokens",
+ "yantrik-ipc-contracts",
+ "yantrik-ipc-transport",
+ "yantrik-ui-kit",
+]
+
+[[package]]
+name = "yantrik-network-manager"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "slint",
+ "slint-build",
+ "tracing",
+ "yantrik-app-runtime",
+ "yantrik-design-tokens",
+ "yantrik-ipc-contracts",
+ "yantrik-ipc-transport",
+ "yantrik-ui-kit",
+]
+
+[[package]]
+name = "yantrik-notes"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "slint",
+ "slint-build",
+ "tracing",
+ "uuid7",
+ "yantrik-app-runtime",
+ "yantrik-design-tokens",
+ "yantrik-ipc-contracts",
+ "yantrik-ipc-transport",
+ "yantrik-ui-kit",
+]
+
+[[package]]
 name = "yantrik-os"
 version = "0.1.0"
 dependencies = [
@@ -9803,6 +9949,22 @@ dependencies = [
  "sysinfo",
  "tracing",
  "zbus",
+]
+
+[[package]]
+name = "yantrik-presentation"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "slint",
+ "slint-build",
+ "tracing",
+ "yantrik-app-runtime",
+ "yantrik-design-tokens",
+ "yantrik-ipc-contracts",
+ "yantrik-ipc-transport",
+ "yantrik-ui-kit",
 ]
 
 [[package]]
@@ -9823,6 +9985,87 @@ name = "yantrik-shell-core"
 version = "0.1.0"
 dependencies = [
  "tracing",
+]
+
+[[package]]
+name = "yantrik-snippet-manager"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "slint",
+ "slint-build",
+ "tracing",
+ "yantrik-app-runtime",
+ "yantrik-design-tokens",
+ "yantrik-ipc-contracts",
+ "yantrik-ipc-transport",
+ "yantrik-ui-kit",
+]
+
+[[package]]
+name = "yantrik-spreadsheet"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "slint",
+ "slint-build",
+ "tracing",
+ "yantrik-app-runtime",
+ "yantrik-design-tokens",
+ "yantrik-ipc-contracts",
+ "yantrik-ipc-transport",
+ "yantrik-ui-kit",
+]
+
+[[package]]
+name = "yantrik-system-monitor"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "slint",
+ "slint-build",
+ "sysinfo",
+ "tracing",
+ "yantrik-app-runtime",
+ "yantrik-design-tokens",
+ "yantrik-ipc-contracts",
+ "yantrik-ipc-transport",
+ "yantrik-ui-kit",
+]
+
+[[package]]
+name = "yantrik-terminal"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "slint",
+ "slint-build",
+ "tracing",
+ "yantrik-app-runtime",
+ "yantrik-design-tokens",
+ "yantrik-ipc-contracts",
+ "yantrik-ipc-transport",
+ "yantrik-ui-kit",
+]
+
+[[package]]
+name = "yantrik-text-editor"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "slint",
+ "slint-build",
+ "tracing",
+ "yantrik-app-runtime",
+ "yantrik-design-tokens",
+ "yantrik-ipc-contracts",
+ "yantrik-ipc-transport",
+ "yantrik-ui-kit",
 ]
 
 [[package]]
@@ -9868,6 +10111,23 @@ name = "yantrik-ui-kit"
 version = "0.1.0"
 dependencies = [
  "yantrik-design-tokens",
+]
+
+[[package]]
+name = "yantrik-weather"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "slint",
+ "slint-build",
+ "tracing",
+ "ureq 2.12.1",
+ "yantrik-app-runtime",
+ "yantrik-design-tokens",
+ "yantrik-ipc-contracts",
+ "yantrik-ipc-transport",
+ "yantrik-ui-kit",
 ]
 
 [[package]]

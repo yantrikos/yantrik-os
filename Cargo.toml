@@ -9,6 +9,7 @@ members = [
     "crates/yantrik-manifest",
     "crates/yantrik-shell-core",
     "crates/yantrik-ui-kit",
+    "crates/yantrik-ui-slint",
     "crates/yantrik-ipc-transport",
     "crates/yantrik-service-sdk",
     "crates/yantrikdb-server",

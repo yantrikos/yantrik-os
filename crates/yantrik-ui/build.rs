@@ -1,17 +1,4 @@
 fn main() {
-    // Resolve shared design tokens path from yantrik-design-tokens crate (via `links` mechanism)
-    let design_tokens_path = std::env::var("DEP_YANTRIK_DESIGN_TOKENS_SLINT_PATH")
-        .expect("yantrik-design-tokens must be a dependency (provides DEP_YANTRIK_DESIGN_TOKENS_SLINT_PATH)");
-
-    // Resolve shared UI kit path from yantrik-ui-kit crate
-    let ui_kit_path = std::env::var("DEP_YANTRIK_UI_KIT_SLINT_PATH")
-        .expect("yantrik-ui-kit must be a dependency (provides DEP_YANTRIK_UI_KIT_SLINT_PATH)");
-
-    let config = slint_build::CompilerConfiguration::new()
-        .with_style("fluent-dark".into())
-        .with_include_paths(vec![design_tokens_path.into(), ui_kit_path.into()]);
-    slint_build::compile_with_config("ui/app.slint", config).unwrap();
-
     // Embed build date
     let date = chrono_lite_date();
     println!("cargo:rustc-env=BUILD_DATE={date}");
@@ -35,7 +22,6 @@ fn main() {
         if let Some(ver) = read_cargo_version(&toml_path) {
             println!("cargo:rustc-env=COMPONENT_{env_name}_VERSION={ver}");
         }
-        // Also embed git hash for each component's repo (if it's a separate repo via patch)
         if let Some(hash) = git_short_hash_at(crate_path) {
             println!("cargo:rustc-env=COMPONENT_{env_name}_GIT={hash}");
         }
@@ -62,9 +48,7 @@ fn git_short_hash() -> Option<String> {
         .map(|s| s.trim().to_string())
 }
 
-fn git_short_hash_at(path: &str) -> Option<String> {
-    // All crates are in the same workspace repo, so they share the same git hash
-    // But in production builds they may come from separate repos via git deps
+fn git_short_hash_at(_path: &str) -> Option<String> {
     git_short_hash()
 }
 
@@ -73,7 +57,6 @@ fn read_cargo_version(toml_path: &str) -> Option<String> {
     for line in content.lines() {
         let trimmed = line.trim();
         if trimmed.starts_with("version") && trimmed.contains('=') {
-            // version = "0.1.0"
             let val = trimmed.split('=').nth(1)?.trim();
             let ver = val.trim_matches('"').trim_matches('\'');
             return Some(ver.to_string());

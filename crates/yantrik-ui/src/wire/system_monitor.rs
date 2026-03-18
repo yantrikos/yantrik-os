@@ -320,6 +320,11 @@ pub fn wire(ui: &App, ctx: &AppContext) {
         let mut score = 100.0f32;
         let mut issues: Vec<&str> = Vec::new();
 
+        // Read values back from UI (set by either service or fallback branch)
+        let overall_cpu = ui.get_mon_cpu_usage();
+        let mem_pct = ui.get_mon_memory_usage();
+        let swap_pct = ui.get_mon_swap_usage();
+
         // CPU pressure
         if overall_cpu > 90.0 {
             score -= 30.0;
