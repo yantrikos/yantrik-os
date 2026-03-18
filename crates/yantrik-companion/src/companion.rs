@@ -3546,13 +3546,14 @@ fn execute_tool_round_tracked(
     trust_state: &crate::trust_model::TrustState,
     model_family: ModelFamily,
 ) {
+    let agent_spawner_any = agent_spawner.map(|s| s as &dyn std::any::Any);
     let ctx = ToolContext {
         db,
         max_permission: max_perm,
         registry_metadata: None,
         task_manager: Some(task_manager),
         incognito,
-        agent_spawner,
+        agent_spawner: agent_spawner_any,
     };
 
     for (idx, (name, args)) in tool_calls.iter().enumerate() {
@@ -3634,7 +3635,7 @@ fn execute_tool_round_tracked(
                 registry_metadata: Some(&metadata),
                 task_manager: Some(task_manager),
                 incognito,
-                agent_spawner,
+                agent_spawner: agent_spawner_any,
             };
             registry.execute(&disc_ctx, name, args)
         } else {

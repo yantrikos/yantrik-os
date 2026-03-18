@@ -10,6 +10,8 @@ pub mod connectors;
 pub mod evolution;
 pub mod instincts;
 pub mod permission;
+pub mod sanitize;
+pub mod tools;
 pub mod types;
 pub mod urge_defaults;
 

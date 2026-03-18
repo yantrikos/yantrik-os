@@ -7,6 +7,8 @@ description = "Yantrik companion agent — instincts, urges, context, learning, 
 [dependencies]
 yantrik-companion-core = { workspace = true }
 yantrik-companion-instincts = { workspace = true }
+yantrik-companion-cortex = { workspace = true }
+yantrik-companion-tools = { workspace = true }
 yantrikdb-core = { workspace = true }
 yantrik-ml = { workspace = true, features = ["api-llm", "claude-cli"] }
 yantrik-os = { workspace = true }

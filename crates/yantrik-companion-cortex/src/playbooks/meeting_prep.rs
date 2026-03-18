@@ -8,8 +8,8 @@
 //!
 //! Action: Notify with meeting details and suggest opening prep materials.
 
-use crate::cortex::playbook::{CortexAction, PlaybookState};
-use crate::cortex::schema;
+use crate::playbook::{CortexAction, PlaybookState};
+use crate::schema;
 
 /// Evaluate meeting prep needs. Pure Rust, no LLM.
 pub fn evaluate(state: &PlaybookState) -> Vec<CortexAction> {

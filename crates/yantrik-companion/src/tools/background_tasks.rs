@@ -60,7 +60,10 @@ impl Tool for RunBackgroundTool {
         }
 
         let tm = match &ctx.task_manager {
-            Some(tm) => tm,
+            Some(any) => match any.downcast_ref::<std::sync::Mutex<crate::task_manager::TaskManager>>() {
+                Some(tm) => tm,
+                None => return "Background tasks not available".to_string(),
+            },
             None => return "Background tasks not available".to_string(),
         };
 
@@ -109,7 +112,10 @@ impl Tool for ListBackgroundTasksTool {
         let status_filter = args.get("status").and_then(|v| v.as_str());
 
         let tm = match &ctx.task_manager {
-            Some(tm) => tm,
+            Some(any) => match any.downcast_ref::<std::sync::Mutex<crate::task_manager::TaskManager>>() {
+                Some(tm) => tm,
+                None => return "Background tasks not available".to_string(),
+            },
             None => return "Background tasks not available".to_string(),
         };
 
@@ -187,7 +193,10 @@ impl Tool for CheckBackgroundTaskTool {
             .unwrap_or(20) as usize;
 
         let tm = match &ctx.task_manager {
-            Some(tm) => tm,
+            Some(any) => match any.downcast_ref::<std::sync::Mutex<crate::task_manager::TaskManager>>() {
+                Some(tm) => tm,
+                None => return "Background tasks not available".to_string(),
+            },
             None => return "Background tasks not available".to_string(),
         };
 
@@ -257,7 +266,10 @@ impl Tool for StopBackgroundTaskTool {
         };
 
         let tm = match &ctx.task_manager {
-            Some(tm) => tm,
+            Some(any) => match any.downcast_ref::<std::sync::Mutex<crate::task_manager::TaskManager>>() {
+                Some(tm) => tm,
+                None => return "Background tasks not available".to_string(),
+            },
             None => return "Background tasks not available".to_string(),
         };
 

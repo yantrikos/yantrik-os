@@ -8,7 +8,7 @@
 //!
 //! Action: Notify with sender + subject, no auto-action.
 
-use crate::cortex::playbook::{CortexAction, PlaybookState};
+use crate::playbook::{CortexAction, PlaybookState};
 
 /// Evaluate unread VIP emails. Pure Rust, no LLM.
 pub fn evaluate(state: &PlaybookState) -> Vec<CortexAction> {

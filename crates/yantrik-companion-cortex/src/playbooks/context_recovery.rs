@@ -7,8 +7,8 @@
 //!
 //! Action: Notify with "Welcome back" context summary of what was happening.
 
-use crate::cortex::playbook::{CortexAction, PlaybookState};
-use crate::cortex::focus::ActivityType;
+use crate::playbook::{CortexAction, PlaybookState};
+use crate::focus::ActivityType;
 
 /// Evaluate context recovery needs. Pure Rust, no LLM.
 pub fn evaluate(state: &PlaybookState) -> Vec<CortexAction> {

@@ -228,7 +228,7 @@ impl ContextCortex {
     pub fn seed_entities(
         &self,
         conn: &Connection,
-        entities: &[crate::connectors::SeedEntity],
+        entities: &[yantrik_companion_core::SeedEntity],
     ) {
         for seed in entities {
             let entity_type = match entity::EntityType::from_str(seed.entity_type) {

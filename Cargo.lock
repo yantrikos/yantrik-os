@@ -9718,7 +9718,9 @@ dependencies = [
  "url",
  "uuid7",
  "yantrik-companion-core",
+ "yantrik-companion-cortex",
  "yantrik-companion-instincts",
+ "yantrik-companion-tools",
  "yantrik-ml",
  "yantrik-os",
  "yantrikdb-core",
@@ -9728,10 +9730,24 @@ dependencies = [
 name = "yantrik-companion-core"
 version = "0.1.0"
 dependencies = [
+ "rusqlite",
  "serde",
  "serde_json",
  "serde_yaml",
+ "tracing",
  "yantrik-ml",
+ "yantrikdb-core",
+]
+
+[[package]]
+name = "yantrik-companion-cortex"
+version = "0.1.0"
+dependencies = [
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tracing",
+ "yantrik-companion-core",
 ]
 
 [[package]]
@@ -9742,6 +9758,25 @@ dependencies = [
  "serde",
  "serde_json",
  "yantrik-companion-core",
+]
+
+[[package]]
+name = "yantrik-companion-tools"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "chrono",
+ "html2text",
+ "regex",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "tracing",
+ "tungstenite",
+ "ureq 2.12.1",
+ "yantrik-companion-core",
+ "yantrikdb-core",
 ]
 
 [[package]]

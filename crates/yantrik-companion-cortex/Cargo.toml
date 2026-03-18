@@ -1,0 +1,12 @@
+[package]
+name = "yantrik-companion-cortex"
+version = "0.1.0"
+edition = "2021"
+description = "Context Cortex — cross-system intelligence framework for the Yantrik companion"
+
+[dependencies]
+yantrik-companion-core = { workspace = true }
+rusqlite = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }

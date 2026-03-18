@@ -62,7 +62,10 @@ impl Tool for SpawnAgentsTool {
         }
 
         let spawner = match &ctx.agent_spawner {
-            Some(s) => s,
+            Some(any) => match any.downcast_ref::<super::AgentSpawnerContext>() {
+                Some(s) => s,
+                None => return "Error: agent spawning not available in this context.".to_string(),
+            },
             None => return "Error: agent spawning not available in this context.".to_string(),
         };
 

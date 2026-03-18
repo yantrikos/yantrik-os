@@ -3,6 +3,8 @@ resolver = "2"
 members = [
     "crates/yantrik-companion-core",
     "crates/yantrik-companion-instincts",
+    "crates/yantrik-companion-cortex",
+    "crates/yantrik-companion-tools",
     "crates/yantrik-companion",
     "crates/yantrik-design-tokens",
     "crates/yantrik-ipc-contracts",
@@ -98,6 +100,8 @@ libc = "0.2"
 # Internal crates
 yantrik-companion-core = { path = "crates/yantrik-companion-core" }
 yantrik-companion-instincts = { path = "crates/yantrik-companion-instincts" }
+yantrik-companion-cortex = { path = "crates/yantrik-companion-cortex" }
+yantrik-companion-tools = { path = "crates/yantrik-companion-tools" }
 yantrik-design-tokens = { path = "crates/yantrik-design-tokens" }
 yantrik-ipc-contracts = { path = "crates/yantrik-ipc-contracts" }
 yantrik-shell-core = { path = "crates/yantrik-shell-core" }
