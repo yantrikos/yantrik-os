@@ -623,6 +623,8 @@ export component TextEditorScreen inherits Rectangle {
                             font-size: 12px;
                             text <=> root.ai-prompt;
                             input-type: text;
+                            wrap: word-wrap;
+                            single-line: false;
                             accepted => {
                                 if root.ai-prompt != "" {
                                     root.ai-request(root.ai-prompt);

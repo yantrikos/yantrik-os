@@ -1,0 +1,6 @@
+[package]
+name = "yantrik-design-tokens"
+version = "0.1.0"
+edition = "2021"
+description = "Yantrik OS design tokens — shared colors, typography, spacing, motion"
+links = "yantrik_design_tokens"

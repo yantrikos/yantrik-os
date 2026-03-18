@@ -1,0 +1,26 @@
+[package]
+id = "com.yantrikos.notes"
+name = "Notes Service"
+version = "0.1.0"
+description = "Markdown note creation, editing, search, and tagging"
+publisher = "Yantrik OS"
+roles = ["service"]
+icon = "notes"
+
+[[permissions]]
+capability = "filesystem.user_data"
+reason = "Stores notes as markdown files in user data directory"
+
+[service]
+binary = "notes-service"
+methods = [
+    "notes.list",
+    "notes.get",
+    "notes.create",
+    "notes.update",
+    "notes.delete",
+    "notes.set_pinned",
+    "notes.set_tags",
+    "notes.search",
+]
+autostart = false

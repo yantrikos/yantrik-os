@@ -13,37 +13,46 @@ name = "test-brain"
 path = "src/bin/test_brain.rs"
 
 [dependencies]
-yantrik-companion = { path = "../yantrik-companion" }
-yantrik-ml = { git = "https://github.com/yantrikos/yantrik-ml.git", features = ["api-llm", "claude-cli"] }
-yantrikdb-core = { git = "https://github.com/yantrikos/yantrikdb.git" }
-yantrik-os = { path = "../yantrik-os" }
-slint = { version = "1.9", features = ["renderer-software"] }
-crossbeam-channel = "0.5"
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-serde_yaml = "0.9"
-cpal = "0.15"
-rubato = "0.16"
+yantrik-companion = { workspace = true }
+yantrik-ml = { workspace = true, features = ["api-llm", "claude-cli"] }
+yantrikdb-core = { workspace = true }
+yantrik-os = { workspace = true }
+yantrik-design-tokens = { workspace = true }
+yantrik-ipc-contracts = { workspace = true }
+yantrik-ipc-transport = { workspace = true }
+yantrik-shell-core = { workspace = true }
+yantrik-ui-kit = { workspace = true }
+slint = { workspace = true }
+crossbeam-channel = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+cpal = { workspace = true }
+rubato = { workspace = true }
 anyhow = "1"
 pty-process = "0.5"
 vt100 = "0.16"
-native-tls = "0.2"
-imap = "2.4"
-lettre = { version = "0.11", default-features = false, features = ["rustls-tls", "builder", "smtp-transport", "hostname"] }
-base64 = "0.22"
-ureq = { version = "2", features = ["json"] }
-mailparse = "0.15"
-html2text = "0.12"
-rusqlite = { version = "0.32", features = ["bundled"] }
-libc = "0.2"
+native-tls = { workspace = true }
+imap = { workspace = true }
+lettre = { workspace = true, features = ["hostname"] }
+base64 = { workspace = true }
+ureq = { workspace = true }
+mailparse = { workspace = true }
+html2text = { workspace = true }
+rusqlite = { workspace = true }
+libc = { workspace = true }
 kamadak-exif = "0.5"
 
 [features]
 default = ["claude-cli"]
 claude-cli = ["yantrik-ml/claude-cli"]
 llamacpp = ["yantrik-ml/llamacpp"]
+llamacpp-cuda = ["llamacpp", "yantrik-ml/llamacpp-cuda"]
+llamacpp-rocm = ["llamacpp", "yantrik-ml/llamacpp-rocm"]
+llamacpp-vulkan = ["llamacpp", "yantrik-ml/llamacpp-vulkan"]
+llamacpp-metal = ["llamacpp", "yantrik-ml/llamacpp-metal"]
 cuda = ["yantrik-ml/cuda"]
 metal = ["yantrik-ml/metal"]
 accelerate = ["yantrik-ml/accelerate"]

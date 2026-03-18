@@ -1,0 +1,24 @@
+[package]
+id = "com.yantrikos.weather"
+name = "Weather Service"
+version = "0.1.0"
+description = "Weather forecasts, hourly/daily predictions, AQI, and alerts via Open-Meteo"
+publisher = "Yantrik OS"
+roles = ["service"]
+icon = "weather-sun"
+
+[[permissions]]
+capability = "network.internet"
+reason = "Fetches weather data from Open-Meteo API"
+
+[service]
+binary = "weather-service"
+methods = [
+    "weather.current",
+    "weather.hourly",
+    "weather.daily",
+    "weather.alerts",
+    "weather.air_quality",
+    "weather.geocode",
+]
+autostart = true

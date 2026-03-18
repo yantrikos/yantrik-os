@@ -1663,6 +1663,7 @@ export component App inherits Window {
     callback navigate(int);
     callback search-memories(string);
     callback cancel-voice();
+    callback voice-hotkey-pressed();
     callback launch-app(string);
     callback lens-query(string);
     callback lens-submit(string);
@@ -1677,6 +1678,19 @@ export component App inherits Window {
         clip: true;
         width: 100%;
         height: 100%;
+
+        // Global hotkey: Super+Space for voice activation
+        global-keys := FocusScope {
+            width: 0; height: 0;
+            key-pressed(event) => {
+                // Ctrl+Space as voice hotkey (more reliable than Super across platforms)
+                if event.modifiers.control && event.text == " " {
+                    root.voice-hotkey-pressed();
+                    return accept;
+                }
+                return reject;
+            }
+        }
 
         // Boot screen
         if current-screen == 0 : BootScreen {

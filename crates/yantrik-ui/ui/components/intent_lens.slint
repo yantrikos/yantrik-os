@@ -8,7 +8,7 @@
 // Invoke: Super key or click anchor dot / orb.
 // Dismiss: Escape or click outside.
 
-import { Theme } from "../theme.slint";
+import { Theme } from "theme.slint";
 import { MessageData, MessageBubble } from "message_bubble.slint";
 import { ListView } from "std-widgets.slint";
 
@@ -176,6 +176,8 @@ export component IntentLens inherits Rectangle {
                             width: parent.width;
                             color: Theme.text-primary;
                             font-size: 18px;
+                            wrap: word-wrap;
+                            single-line: false;
                             text <=> root.input-text;
                             accepted => {
                                 if root.input-text != "" {
@@ -876,6 +878,8 @@ export component IntentLens inherits Rectangle {
                                 width: parent.width - 24px;
                                 color: Theme.text-primary;
                                 font-size: 14px;
+                                wrap: word-wrap;
+                                single-line: false;
                                 text <=> chat-text;
                                 accepted => {
                                     if chat-text != "" {

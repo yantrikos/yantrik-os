@@ -446,7 +446,8 @@ fn apply_weather_data(ui: &App, data: WeatherData) {
     }
 }
 
-/// Spawn a thread to fetch weather data from Open-Meteo API.
+/// Spawn a thread to fetch weather data.
+/// Tries the weather-service via JSON-RPC first, falls back to direct Open-Meteo API.
 fn fetch_weather_async(
     slot: Arc<Mutex<Option<WeatherData>>>,
     lat: f64,
@@ -456,14 +457,198 @@ fn fetch_weather_async(
 ) {
     let name = location_name.to_string();
     std::thread::spawn(move || {
-        let data = fetch_weather_blocking(lat, lon, &name, use_fahrenheit);
+        let data = match fetch_via_service(lat, lon, &name, use_fahrenheit) {
+            Ok(d) => d,
+            Err(_) => {
+                // Service not running — fall back to direct API
+                fetch_weather_blocking(lat, lon, &name, use_fahrenheit)
+            }
+        };
         *slot.lock().unwrap() = Some(data);
     });
 }
 
-/// Geocode a location name using Open-Meteo Geocoding API.
-/// Returns (lat, lon, resolved_name) or None.
+/// Try fetching weather data via the weather-service JSON-RPC.
+fn fetch_via_service(
+    lat: f64,
+    lon: f64,
+    location_name: &str,
+    use_fahrenheit: bool,
+) -> Result<WeatherData, String> {
+    use yantrik_ipc_transport::SyncRpcClient;
+
+    let client = SyncRpcClient::for_service("weather");
+    let params = serde_json::json!({
+        "lat": lat,
+        "lon": lon,
+        "name": location_name,
+        "fahrenheit": use_fahrenheit,
+    });
+
+    // Fetch current
+    let current_json = client
+        .call("weather.current", params.clone())
+        .map_err(|e| e.message)?;
+    let svc_current: yantrik_ipc_contracts::weather::CurrentWeather =
+        serde_json::from_value(current_json).map_err(|e| e.to_string())?;
+
+    // Fetch hourly
+    let hourly_json = client
+        .call("weather.hourly", params.clone())
+        .map_err(|e| e.message)?;
+    let svc_hourly: Vec<yantrik_ipc_contracts::weather::HourlyForecast> =
+        serde_json::from_value(hourly_json).map_err(|e| e.to_string())?;
+
+    // Fetch daily
+    let daily_json = client
+        .call("weather.daily", params.clone())
+        .map_err(|e| e.message)?;
+    let svc_daily: Vec<yantrik_ipc_contracts::weather::DailyForecast> =
+        serde_json::from_value(daily_json).map_err(|e| e.to_string())?;
+
+    // Fetch alerts
+    let alerts_json = client
+        .call("weather.alerts", params.clone())
+        .map_err(|e| e.message)?;
+    let svc_alerts: Vec<yantrik_ipc_contracts::weather::WeatherAlert> =
+        serde_json::from_value(alerts_json).map_err(|e| e.to_string())?;
+
+    // Fetch AQI
+    let aqi_json = client
+        .call("weather.air_quality", params)
+        .map_err(|e| e.message)?;
+    let svc_aqi: yantrik_ipc_contracts::weather::AirQuality =
+        serde_json::from_value(aqi_json).map_err(|e| e.to_string())?;
+
+    // Convert service types → Slint UI types
+    let deg_symbol = if use_fahrenheit { "\u{00B0}F" } else { "\u{00B0}C" };
+    let wind_label = if use_fahrenheit { "mph" } else { "km/h" };
+
+    let temp_c = if use_fahrenheit {
+        (svc_current.temperature - 32.0) * 5.0 / 9.0
+    } else {
+        svc_current.temperature
+    };
+    let dew_point_val = {
+        let dp_c = compute_dew_point(temp_c, svc_current.humidity as f64);
+        if use_fahrenheit {
+            dp_c * 9.0 / 5.0 + 32.0
+        } else {
+            dp_c
+        }
+    };
+
+    let current = WeatherCurrent {
+        temperature: format!("{:.0}{}", svc_current.temperature, deg_symbol).into(),
+        feels_like: format!("{:.0}{}", svc_current.feels_like, deg_symbol).into(),
+        condition: svc_current.condition.into(),
+        icon: svc_current.icon.into(),
+        location: location_name.into(),
+        humidity: format!("{}%", svc_current.humidity).into(),
+        wind_speed: format!("{:.0} {}", svc_current.wind_speed, wind_label).into(),
+        wind_direction: svc_current.wind_direction.into(),
+        uv_index: format!("{:.0}", svc_current.uv_index).into(),
+        visibility: "Good".into(),
+        pressure: format!("{:.0} hPa", svc_current.pressure_hpa).into(),
+        cloud_cover: "".into(),
+        dew_point: format!("{:.0}{}", dew_point_val, deg_symbol).into(),
+        sunrise: "".into(),
+        sunset: "".into(),
+        is_loading: false,
+        error_text: "".into(),
+    };
+
+    let hourly: Vec<WeatherHourly> = svc_hourly
+        .iter()
+        .map(|h| WeatherHourly {
+            time: h.time.clone().into(),
+            icon: h.icon.clone().into(),
+            temp: format!("{:.0}\u{00B0}", h.temperature).into(),
+            is_current: h.time == "Now",
+        })
+        .collect();
+
+    // Compute global min/max for daily temperature range bars
+    let mut global_min = f64::MAX;
+    let mut global_max = f64::MIN;
+    for d in &svc_daily {
+        if d.temp_low < global_min {
+            global_min = d.temp_low;
+        }
+        if d.temp_high > global_max {
+            global_max = d.temp_high;
+        }
+    }
+    let range = (global_max - global_min).max(1.0);
+
+    let daily: Vec<WeatherDaily> = svc_daily
+        .iter()
+        .enumerate()
+        .map(|(i, d)| {
+            let day_name = if i == 0 {
+                "Today".to_string()
+            } else {
+                day_of_week(&d.date)
+            };
+            WeatherDaily {
+                day_name: day_name.into(),
+                icon: d.icon.clone().into(),
+                high: format!("{:.0}\u{00B0}", d.temp_high).into(),
+                low: format!("{:.0}\u{00B0}", d.temp_low).into(),
+                precip_chance: if d.precipitation_chance > 0 {
+                    format!("{}%", d.precipitation_chance).into()
+                } else {
+                    "0mm".into()
+                },
+                high_value: d.temp_high as f32,
+                low_value: d.temp_low as f32,
+                temp_range_min: ((d.temp_low - global_min) / range) as f32,
+                temp_range_max: ((d.temp_high - global_min) / range) as f32,
+            }
+        })
+        .collect();
+
+    let alerts: Vec<WeatherAlert> = svc_alerts
+        .iter()
+        .map(|a| {
+            let severity = match a.severity.as_str() {
+                "emergency" => 2,
+                "warning" => 1,
+                _ => 0,
+            };
+            WeatherAlert {
+                title: a.title.clone().into(),
+                description: a.description.clone().into(),
+                severity,
+                icon: "\u{26A0}\u{FE0F}".into(),
+            }
+        })
+        .collect();
+
+    let aqi_level = svc_aqi.level;
+    let aqi_value = format!("{:.0}", svc_aqi.value);
+    let aqi_label = svc_aqi.label;
+
+    Ok(WeatherData {
+        current: Some(current),
+        hourly: Some(hourly),
+        daily: Some(daily),
+        alerts: Some(alerts),
+        aqi_value: Some(aqi_value),
+        aqi_label: Some(aqi_label),
+        aqi_level: Some(aqi_level),
+        error: None,
+    })
+}
+
+/// Geocode a location name. Tries weather-service first, falls back to direct API.
 fn geocode_location(query: &str) -> Option<(f64, f64, String)> {
+    // Try service first
+    if let Ok(loc) = geocode_via_service(query) {
+        return Some((loc.lat, loc.lon, loc.name));
+    }
+
+    // Fallback: direct API call
     let encoded = query.replace(' ', "+");
     let url = format!(
         "https://geocoding-api.open-meteo.com/v1/search?name={}&count=1&language=en&format=json",
@@ -496,6 +681,18 @@ fn geocode_location(query: &str) -> Option<(f64, f64, String)> {
     };
 
     Some((lat, lon, resolved))
+}
+
+fn geocode_via_service(
+    query: &str,
+) -> Result<yantrik_ipc_contracts::weather::Location, String> {
+    use yantrik_ipc_transport::SyncRpcClient;
+
+    let client = SyncRpcClient::for_service("weather");
+    let result = client
+        .call("weather.geocode", serde_json::json!({ "query": query }))
+        .map_err(|e| e.message)?;
+    serde_json::from_value(result).map_err(|e| e.to_string())
 }
 
 /// Blocking weather fetch using curl (available on the Alpine VM).

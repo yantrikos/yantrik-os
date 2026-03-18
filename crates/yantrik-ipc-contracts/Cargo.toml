@@ -1,0 +1,10 @@
+[package]
+name = "yantrik-ipc-contracts"
+version = "0.1.0"
+edition = "2021"
+description = "Yantrik OS service interface contracts — shared types and traits for IPC"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }

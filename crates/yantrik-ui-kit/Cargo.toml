@@ -1,0 +1,9 @@
+[package]
+name = "yantrik-ui-kit"
+version = "0.1.0"
+edition = "2021"
+description = "Yantrik OS UI kit — reusable Slint components (buttons, inputs, dialogs, charts)"
+links = "yantrik_ui_kit"
+
+[dependencies]
+yantrik-design-tokens = { workspace = true }

@@ -1137,6 +1137,8 @@ export component SpreadsheetScreen inherits Rectangle {
                     height: parent.height - 12px;
                     color: Theme.text-primary;
                     font-size: 11px;
+                    wrap: word-wrap;
+                    single-line: false;
                     text <=> root.sheet-ai-prompt;
                     accepted => { root.sheet-ai-submit(self.text); }
                 }

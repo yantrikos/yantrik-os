@@ -1,0 +1,10 @@
+[package]
+name = "yantrik-manifest"
+version = "0.1.0"
+edition = "2021"
+description = "Yantrik OS package manifest — service/app metadata, permissions, dependencies"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = "0.8"

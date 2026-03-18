@@ -1,94 +1,196 @@
-// Voice mode overlay — full-screen mic visualization.
-// States: listening → transcribing → speaking.
+// Voice overlay — compact floating panel for JARVIS-level voice interaction.
+// Non-modal: doesn't block desktop. Shows in bottom-right corner.
+//
+// States:
+//   0 = listening (pulsing orb, "Listening...")
+//   1 = processing/transcribing (spinning orb, shows transcription)
+//   2 = speaking (waveform, shows response)
+//
+// Features:
+//   - Compact pill when idle with just the orb
+//   - Expands to show transcription and response
+//   - Cancel button
+//   - Follow mode indicator
+//   - Keyboard shortcut hint (Ctrl+Space)
 
 import { Theme } from "theme.slint";
 import { Orb } from "components/orb.slint";
 
 export component VoiceOverlay inherits Rectangle {
-    // 0=listening, 1=transcribing, 2=speaking
     in property <int> voice-state: 0;
     in property <string> transcribed-text: "";
     in property <string> response-text: "";
     callback cancel-pressed();
 
-    background: Theme.overlay-backdrop;
+    // Don't block clicks on desktop — only intercept within our panel
+    background: transparent;
 
+    // Position: bottom-right floating panel
     VerticalLayout {
-        alignment: center;
-        spacing: 32px;
-        padding: 32px;
+        alignment: end;
+        padding-bottom: 80px;  // above the dock
+        padding-right: 20px;
 
-        // Large orb
         HorizontalLayout {
-            alignment: center;
-            Orb {
-                size-px: 180;
-                is-thinking: voice-state == 1;
-                has-urges: false;
-            }
-        }
+            alignment: end;
 
-        // State label
-        Text {
-            text: voice-state == 0 ? "Listening..." :
-                  voice-state == 1 ? "Transcribing..." :
-                  "Speaking...";
-            color: Theme.amber;
-            font-size: Theme.font-title;
-            horizontal-alignment: center;
-            letter-spacing: 1px;
-        }
+            // The voice panel
+            voice-panel := Rectangle {
+                width: 360px;
+                height: panel-content.preferred-height + 32px;
+                background: Theme.bg-card;
+                border-radius: 20px;
+                border-width: 1px;
+                border-color: voice-state == 0 ? Theme.cyan-glow :
+                              voice-state == 1 ? Theme.amber :
+                              Theme.color-success;
+                drop-shadow-color: voice-state == 0 ? Theme.cyan-glow.with-alpha(0.3) :
+                                   voice-state == 1 ? Theme.amber.with-alpha(0.3) :
+                                   Theme.color-success.with-alpha(0.3);
+                drop-shadow-blur: 20px;
+                drop-shadow-offset-y: 4px;
 
-        // Transcribed text (appears after transcription)
-        if transcribed-text != "" : Rectangle {
-            background: Theme.bg-card;
-            border-radius: Theme.radius-card;
-            height: trans-text.preferred-height + 24px;
+                panel-content := VerticalLayout {
+                    x: 24px;
+                    y: 16px;
+                    width: parent.width - 48px;
+                    spacing: 12px;
 
-            trans-text := Text {
-                x: 16px;
-                y: 12px;
-                width: parent.width - 32px;
-                text: "\"" + transcribed-text + "\"";
-                color: Theme.text-primary;
-                font-size: Theme.font-body;
-                font-italic: true;
-                wrap: word-wrap;
-            }
-        }
+                    // Top row: orb + state label + cancel
+                    HorizontalLayout {
+                        spacing: 12px;
+                        alignment: start;
 
-        // Response text (while speaking)
-        if response-text != "" : Text {
-            text: response-text;
-            color: Theme.text-secondary;
-            font-size: Theme.font-body;
-            horizontal-alignment: center;
-            wrap: word-wrap;
-        }
+                        // Pulsing orb
+                        Orb {
+                            size-px: 36;
+                            is-thinking: voice-state == 1;
+                            has-urges: false;
+                        }
 
-        // Cancel button
-        HorizontalLayout {
-            alignment: center;
+                        // State label + hint
+                        VerticalLayout {
+                            alignment: center;
+                            spacing: 2px;
 
-            TouchArea {
-                width: 60px;
-                height: 60px;
-                clicked => { root.cancel-pressed(); }
+                            Text {
+                                text: voice-state == 0 ? "Listening..." :
+                                      voice-state == 1 ? "Thinking..." :
+                                      "Speaking...";
+                                color: voice-state == 0 ? Theme.cyan-glow :
+                                       voice-state == 1 ? Theme.amber :
+                                       Theme.color-success;
+                                font-size: Theme.font-body;
+                                font-weight: 600;
+                            }
 
-                Rectangle {
-                    width: 60px;
-                    height: 60px;
-                    border-radius: 30px;
-                    background: Theme.bg-elevated;
-                    border-width: 1px;
-                    border-color: Theme.text-dim;
+                            Text {
+                                text: voice-state == 0 ? "Say something or Ctrl+Space to cancel" :
+                                      voice-state == 2 ? "Speak to interrupt" :
+                                      "";
+                                color: Theme.text-dim;
+                                font-size: 11px;
+                                visible: voice-state != 1;
+                            }
+                        }
 
-                    Text {
-                        text: "✕";
-                        color: Theme.text-secondary;
-                        font-size: 24px;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
+                        // Spacer
+                        Rectangle { horizontal-stretch: 1; }
+
+                        // Cancel button
+                        TouchArea {
+                            width: 28px;
+                            height: 28px;
+                            clicked => { root.cancel-pressed(); }
+
+                            cancel-btn := Rectangle {
+                                width: 28px;
+                                height: 28px;
+                                border-radius: 14px;
+                                background: parent.has-hover ? Theme.bg-elevated : transparent;
+
+                                Text {
+                                    text: "✕";
+                                    color: Theme.text-dim;
+                                    font-size: 14px;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+                    }
+
+                    // Transcribed text (what user said)
+                    if transcribed-text != "" : Rectangle {
+                        background: Theme.bg-elevated;
+                        border-radius: 12px;
+                        height: trans-text.preferred-height + 16px;
+
+                        trans-text := Text {
+                            x: 12px;
+                            y: 8px;
+                            width: parent.width - 24px;
+                            text: "\"" + transcribed-text + "\"";
+                            color: Theme.text-primary;
+                            font-size: Theme.font-small;
+                            font-italic: true;
+                            wrap: word-wrap;
+                        }
+                    }
+
+                    // Response text (what AI is saying)
+                    if response-text != "" : Rectangle {
+                        background: transparent;
+                        height: resp-text.preferred-height + 8px;
+
+                        resp-text := Text {
+                            x: 4px;
+                            y: 4px;
+                            width: parent.width - 8px;
+                            text: response-text;
+                            color: Theme.text-secondary;
+                            font-size: Theme.font-small;
+                            wrap: word-wrap;
+                        }
+                    }
+
+                    // Listening animation (subtle pulsing bar)
+                    if voice-state == 0 : Rectangle {
+                        height: 3px;
+                        border-radius: 1.5px;
+                        background: Theme.cyan-glow;
+                        opacity: 0.6;
+
+                        animate width {
+                            duration: 1200ms;
+                            easing: ease-in-out;
+                        }
+
+                        // Pulsing effect via opacity
+                        states [
+                            pulse when voice-state == 0 : {
+                                opacity: 0.3;
+                            }
+                        ]
+                        animate opacity {
+                            duration: 800ms;
+                            easing: ease-in-out;
+                        }
+                    }
+
+                    // Speaking animation (waveform-like bars)
+                    if voice-state == 2 : HorizontalLayout {
+                        height: 16px;
+                        spacing: 3px;
+                        alignment: center;
+
+                        for i in [1, 2, 3, 4, 5, 4, 3, 2, 1] : Rectangle {
+                            width: 3px;
+                            height: i * 2px + 4px;
+                            border-radius: 1.5px;
+                            background: Theme.color-success;
+                            opacity: 0.7;
+                        }
                     }
                 }
             }

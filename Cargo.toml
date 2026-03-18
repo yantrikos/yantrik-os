@@ -1,16 +1,101 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/yantrik-companion-core",
+    "crates/yantrik-companion-instincts",
     "crates/yantrik-companion",
+    "crates/yantrik-design-tokens",
+    "crates/yantrik-ipc-contracts",
+    "crates/yantrik-manifest",
+    "crates/yantrik-shell-core",
+    "crates/yantrik-ui-kit",
+    "crates/yantrik-ipc-transport",
     "crates/yantrikdb-server",
     "crates/yantrik",
     "crates/yantrik-ui",
     "crates/yantrik-os",
+    "services/weather-service",
+    "services/system-monitor-service",
+    "services/notes-service",
 ]
 
-# Optimize dependencies (candle, tokenizers) even in dev builds.
-# Without this, quantized LLM inference is ~100x slower.
-[profile.dev.package."*"]
+# ── Shared dependencies ──────────────────────────────────────────────
+# All crates reference these via { workspace = true } to prevent version drift.
+[workspace.dependencies]
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+
+# Database
+rusqlite = { version = "0.32", features = ["bundled"] }
+
+# Async / networking
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
+axum = "0.8"
+ureq = { version = "2", features = ["json"] }
+
+# Observability
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Time / IDs
+chrono = { version = "0.4", features = ["serde"] }
+uuid7 = "1"
+
+# Text / parsing
+regex = "1"
+html2text = "0.12"
+mailparse = "0.15"
+base64 = "0.22"
+
+# Email
+imap = "2.4"
+native-tls = "0.2"
+lettre = { version = "0.11", default-features = false, features = ["rustls-tls", "builder", "smtp-transport"] }
+
+# Audio
+cpal = "0.15"
+rubato = "0.16"
+
+# WebSocket
+tungstenite = "0.24"
+url = "2"
+
+# Concurrency
+crossbeam-channel = "0.5"
+
+# UI
+slint = { version = "1.9", features = ["renderer-software"] }
+
+# System
+sysinfo = "0.33"
+libc = "0.2"
+
+# Internal crates
+yantrik-companion-core = { path = "crates/yantrik-companion-core" }
+yantrik-companion-instincts = { path = "crates/yantrik-companion-instincts" }
+yantrik-design-tokens = { path = "crates/yantrik-design-tokens" }
+yantrik-ipc-contracts = { path = "crates/yantrik-ipc-contracts" }
+yantrik-shell-core = { path = "crates/yantrik-shell-core" }
+yantrik-ui-kit = { path = "crates/yantrik-ui-kit" }
+yantrik-ipc-transport = { path = "crates/yantrik-ipc-transport" }
+yantrik-manifest = { path = "crates/yantrik-manifest" }
+yantrik-companion = { path = "crates/yantrik-companion" }
+yantrik-os = { path = "crates/yantrik-os" }
+yantrikdb-core = { git = "https://github.com/yantrikos/yantrikdb.git" }
+yantrik-ml = { git = "https://github.com/yantrikos/yantrik-ml.git" }
+yantrikdb-server = { path = "crates/yantrikdb-server" }
+
+# Only optimize LLM-critical deps in dev builds (candle, tokenizers).
+# Everything else compiles at opt-level 0 for faster debug builds.
+[profile.dev.package.candle-core]
+opt-level = 2
+[profile.dev.package.candle-nn]
+opt-level = 2
+[profile.dev.package.candle-transformers]
+opt-level = 2
+[profile.dev.package.tokenizers]
 opt-level = 2
 
 # Local override: adds "thinking": false to API requests for Qwen3.5/DeepSeek

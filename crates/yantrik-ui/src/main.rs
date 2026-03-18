@@ -89,6 +89,9 @@ fn main() {
     // Wire all callbacks
     wire::wire_all(&ui, &ctx);
 
+    // Start background services
+    let service_manager = start_services();
+
     // Debug: navigate to specific screen on startup via env var
     if let Ok(screen_str) = std::env::var("YANTRIK_START_SCREEN") {
         if let Ok(screen) = screen_str.parse::<i32>() {
@@ -101,7 +104,34 @@ fn main() {
     // Run
     tracing::info!("Starting Yantrik OS desktop shell");
     ui.run().unwrap();
+
+    // Clean shutdown
     tracing::info!("Yantrik OS shutting down");
+    service_manager.stop_all();
+}
+
+/// Start background services via the ServiceManager.
+/// Services are discovered from the binary directory alongside the main executable.
+fn start_services() -> yantrik_shell_core::service_manager::ServiceManager {
+    use yantrik_shell_core::service_manager::ServiceManager;
+
+    // Services binary dir: same directory as the main yantrik-ui binary
+    let services_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+        .unwrap_or_else(|| PathBuf::from("."));
+
+    let mgr = ServiceManager::new(services_dir);
+
+    // Register built-in services
+    mgr.register("weather", "weather-service", true);
+    mgr.register("system-monitor", "system-monitor-service", true);
+    mgr.register("notes", "notes-service", false);
+
+    // Start autostart services (best-effort — binary may not exist in dev)
+    mgr.start_autostart();
+
+    mgr
 }
 
 fn load_config(path: Option<PathBuf>) -> CompanionConfig {

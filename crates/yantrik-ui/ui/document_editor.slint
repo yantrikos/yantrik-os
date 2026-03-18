@@ -1219,9 +1219,9 @@ export component DocumentEditorScreen inherits Rectangle {
     Rectangle {
         visible: root.show-ai-panel;
         x: parent.width - 280px;
-        y: 36px;
+        y: 80px;  // 36px (tabs) + 44px (command band)
         width: 280px;
-        height: parent.height - 36px - 24px;
+        height: parent.height - 80px - 28px;  // minus top bars minus status bar
         background: Theme.bg-card;
         border-width: 1px;
         border-color: Theme.separator;
@@ -1330,6 +1330,8 @@ export component DocumentEditorScreen inherits Rectangle {
                     height: parent.height - 12px;
                     color: Theme.text-primary;
                     font-size: 11px;
+                    wrap: word-wrap;
+                    single-line: false;
                     text <=> root.doc-ai-prompt;
                     accepted => { root.doc-ai-submit(self.text); }
                 }

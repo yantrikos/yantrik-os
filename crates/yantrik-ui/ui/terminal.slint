@@ -535,7 +535,8 @@ export component TerminalScreen inherits Rectangle {
                         width: parent.width - 20px;
                         color: Theme.text-primary;
                         font-size: Theme.fs-body;
-                        single-line: true;
+                        wrap: word-wrap;
+                        single-line: false;
                         accepted => { root.ai-bar-submit(self.text); }
                     }
 

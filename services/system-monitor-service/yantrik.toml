@@ -1,0 +1,25 @@
+[package]
+id = "com.yantrikos.system-monitor"
+name = "System Monitor Service"
+version = "0.1.0"
+description = "CPU, memory, disk, network, and process monitoring via /proc"
+publisher = "Yantrik OS"
+roles = ["service"]
+icon = "monitor"
+
+[[permissions]]
+capability = "system.proc"
+reason = "Reads /proc for CPU, memory, disk, network, and process information"
+
+[[permissions]]
+capability = "system.kill"
+reason = "Can send SIGTERM/SIGKILL to processes"
+
+[service]
+binary = "system-monitor-service"
+methods = [
+    "sysmon.snapshot",
+    "sysmon.processes",
+    "sysmon.kill_process",
+]
+autostart = true

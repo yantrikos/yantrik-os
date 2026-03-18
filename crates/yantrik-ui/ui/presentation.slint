@@ -1305,6 +1305,8 @@ export component PresentationScreen inherits Rectangle {
                     height: parent.height;
                     color: Theme.text-primary;
                     font-size: 10px;
+                    wrap: word-wrap;
+                    single-line: false;
                     text <=> root.pres-ai-instruction;
                     vertical-alignment: center;
                 }
@@ -1708,6 +1710,8 @@ export component PresentationScreen inherits Rectangle {
                         height: parent.height;
                         color: Theme.text-primary;
                         font-size: 10px;
+                        wrap: word-wrap;
+                        single-line: false;
                         vertical-alignment: center;
                         accepted => { root.pres-ai-freeform(self.text); self.text = ""; }
                     }

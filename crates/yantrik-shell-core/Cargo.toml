@@ -1,0 +1,8 @@
+[package]
+name = "yantrik-shell-core"
+version = "0.1.0"
+edition = "2021"
+description = "Yantrik OS shell core — app registry, screen routing, .desktop scanning"
+
+[dependencies]
+tracing = { workspace = true }
