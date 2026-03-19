@@ -1,0 +1,15 @@
+[package]
+name = "yantrik-chat"
+version = "0.1.0"
+edition = "2021"
+description = "Universal chat transport layer — providers, router, policy, store"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+rusqlite = { workspace = true }
+chrono = { workspace = true }
+tracing = { workspace = true }
+crossbeam-channel = { workspace = true }
+tungstenite = { workspace = true }
+ureq = { workspace = true }

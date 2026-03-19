@@ -19,6 +19,7 @@ pub mod audio_convert;
 pub mod automation;
 pub mod background;
 pub mod brain_loop;
+pub mod chat_bridge;
 pub mod bond;
 pub mod companion;
 pub mod config;

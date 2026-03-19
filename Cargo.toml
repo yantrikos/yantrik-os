@@ -5,6 +5,7 @@ members = [
     "crates/yantrik-companion-instincts",
     "crates/yantrik-companion-cortex",
     "crates/yantrik-companion-tools",
+    "crates/yantrik-chat",
     "crates/yantrik-companion",
     "crates/yantrik-design-tokens",
     "crates/yantrik-ipc-contracts",
@@ -110,6 +111,7 @@ yantrik-ipc-transport = { path = "crates/yantrik-ipc-transport" }
 yantrik-service-sdk = { path = "crates/yantrik-service-sdk" }
 yantrik-app-runtime = { path = "crates/yantrik-app-runtime" }
 yantrik-manifest = { path = "crates/yantrik-manifest" }
+yantrik-chat = { path = "crates/yantrik-chat" }
 yantrik-companion = { path = "crates/yantrik-companion" }
 yantrik-os = { path = "crates/yantrik-os" }
 yantrikdb-core = { git = "https://github.com/yantrikos/yantrikdb.git" }

@@ -9698,10 +9698,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "yantrik-chat"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "crossbeam-channel",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tracing",
+ "tungstenite",
+ "ureq 2.12.1",
+]
+
+[[package]]
 name = "yantrik-companion"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "crossbeam-channel",
  "html2text",
  "imap",
  "lettre",
@@ -9717,6 +9732,7 @@ dependencies = [
  "ureq 2.12.1",
  "url",
  "uuid7",
+ "yantrik-chat",
  "yantrik-companion-core",
  "yantrik-companion-cortex",
  "yantrik-companion-instincts",
@@ -10129,6 +10145,7 @@ dependencies = [
  "tracing-subscriber",
  "ureq 2.12.1",
  "vt100",
+ "yantrik-chat",
  "yantrik-companion",
  "yantrik-ipc-contracts",
  "yantrik-ipc-transport",

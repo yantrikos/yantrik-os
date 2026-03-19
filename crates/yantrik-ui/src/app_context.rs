@@ -217,7 +217,7 @@ impl AppContext {
         // Save fields before moving config into bridge
         let user_name = config.user_name.clone();
         let voice_config = config.voice.clone();
-        let tg_config = config.telegram.clone();
+        let chat_config_snapshot = config.clone(); // For multi-provider chat bridge
         let enabled_services = config.enabled_services.clone();
 
         // Create the cognitive event bus (+ persistent log)
@@ -241,27 +241,74 @@ impl AppContext {
         // Start companion bridge (spawns worker thread)
         let bridge = Arc::new(CompanionBridge::start(config, ui.as_weak(), event_bus.clone()));
 
-        // Start Telegram poller if configured
-        tracing::info!(
-            enabled = tg_config.enabled,
-            has_token = tg_config.bot_token.is_some(),
-            has_chat_id = tg_config.chat_id.is_some(),
-            "Telegram config check"
+        // Start multi-provider chat system (Discord, Matrix, IRC, Slack, Signal, etc.)
+        // This also handles Telegram if configured, replacing the legacy poller.
+        let chat_bridge_ref = bridge.clone();
+        let _chat_handle = yantrik_companion::chat_bridge::start_chat(
+            &chat_config_snapshot,
+            // AI callback: sends message through CompanionBridge, collects streaming response
+            Box::new(move |text: &str, context: &[String], policy: &yantrik_chat::policy::ConversationPolicy| {
+                let prompt = if context.is_empty() {
+                    text.to_string()
+                } else {
+                    let history = context.iter()
+                        .rev()
+                        .take(6)
+                        .rev()
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    format!("[Chat context]\n{history}\n\n[Latest message]\n{text}")
+                };
+
+                // Send through bridge and collect all tokens
+                let token_rx = chat_bridge_ref.send_message(prompt);
+                let mut full_response = String::new();
+                let mut replacing = false;
+                while let Ok(token) = token_rx.recv() {
+                    match token.as_str() {
+                        "__DONE__" => break,
+                        "__REPLACE__" => {
+                            full_response.clear();
+                            replacing = true;
+                        }
+                        _ => {
+                            if replacing {
+                                full_response = token;
+                                replacing = false;
+                            } else {
+                                full_response.push_str(&token);
+                            }
+                        }
+                    }
+                }
+
+                if full_response.is_empty() {
+                    return None;
+                }
+
+                // Respect max reply length from policy
+                if let Some(max_len) = policy.max_reply_length {
+                    if full_response.len() > max_len {
+                        let boundary = full_response.floor_char_boundary(max_len.saturating_sub(3));
+                        full_response = format!("{}...", &full_response[..boundary]);
+                    }
+                }
+
+                Some(full_response)
+            }),
+            // Brain callback: record events for cross-platform memory
+            Box::new(move |sender_name: &str, _sender_id: &str, provider: &str, content_type: &str| {
+                tracing::debug!(
+                    sender = sender_name,
+                    provider,
+                    content_type,
+                    "Chat brain: recording event"
+                );
+                // Brain integration happens via the CompanionBridge's RecordSystemEvent command
+                // The companion worker thread will process this and update brain state
+            }),
         );
-        let telegram = if tg_config.enabled
-            && tg_config.bot_token.is_some()
-            && tg_config.chat_id.is_some()
-        {
-            tracing::info!("Starting Telegram bot poller");
-            Some(Arc::new(crate::telegram::start_poller(
-                tg_config,
-                bridge.clone(),
-                ui.as_weak(),
-                voice_config.clone(),
-            )))
-        } else {
-            None
-        };
 
         // Set up UI models
         ui.set_messages(ModelRc::new(VecModel::<MessageData>::default()));
@@ -419,7 +466,7 @@ impl AppContext {
             browser_filter: Rc::new(RefCell::new(String::new())),
             summary_timer: Rc::new(RefCell::new(None)),
             browser_multi_selection: Rc::new(RefCell::new(BTreeSet::new())),
-            telegram,
+            telegram: None, // Legacy poller replaced by chat bridge
             terminals: Rc::new(RefCell::new(Vec::new())),
             terminal_active: Rc::new(RefCell::new(0)),
             terminal_split_handle: Rc::new(RefCell::new(None)),

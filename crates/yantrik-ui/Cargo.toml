@@ -14,6 +14,7 @@ path = "src/bin/test_brain.rs"
 
 [dependencies]
 yantrik-companion = { workspace = true }
+yantrik-chat = { workspace = true }
 yantrik-ml = { workspace = true, features = ["api-llm", "claude-cli"] }
 yantrikdb-core = { workspace = true }
 yantrik-os = { workspace = true }

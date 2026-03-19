@@ -1088,6 +1088,146 @@ impl Default for WhatsAppConfig {
     }
 }
 
+// ── Chat Providers Config ──────────────────────────────────────────────────
+
+/// Unified multi-provider chat configuration.
+/// Each provider can be independently enabled/disabled.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatConfig {
+    /// Master switch — if false, no chat providers start.
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub discord: DiscordConfig,
+    #[serde(default)]
+    pub matrix: MatrixConfig,
+    #[serde(default)]
+    pub irc: IrcConfig,
+    #[serde(default)]
+    pub slack: SlackConfig,
+    #[serde(default)]
+    pub signal: SignalConfig,
+    /// Webhook listen port for WhatsApp (Meta requires a public endpoint).
+    #[serde(default = "default_webhook_port")]
+    pub webhook_port: u16,
+}
+
+fn default_webhook_port() -> u16 { 9880 }
+
+impl Default for ChatConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            discord: DiscordConfig::default(),
+            matrix: MatrixConfig::default(),
+            irc: IrcConfig::default(),
+            slack: SlackConfig::default(),
+            signal: SignalConfig::default(),
+            webhook_port: default_webhook_port(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiscordConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub bot_token: Option<String>,
+    /// Only respond in these guild IDs. Empty = all.
+    #[serde(default)]
+    pub allowed_guilds: Vec<String>,
+}
+
+impl Default for DiscordConfig {
+    fn default() -> Self { Self { enabled: false, bot_token: None, allowed_guilds: vec![] } }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MatrixConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    /// Homeserver URL (e.g., "https://matrix.org").
+    #[serde(default)]
+    pub homeserver: Option<String>,
+    #[serde(default)]
+    pub access_token: Option<String>,
+    /// Only respond in these room IDs. Empty = all joined rooms.
+    #[serde(default)]
+    pub allowed_rooms: Vec<String>,
+}
+
+impl Default for MatrixConfig {
+    fn default() -> Self {
+        Self { enabled: false, homeserver: None, access_token: None, allowed_rooms: vec![] }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IrcConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub server: Option<String>,
+    #[serde(default = "default_irc_port")]
+    pub port: u16,
+    #[serde(default = "default_irc_nick")]
+    pub nick: String,
+    #[serde(default)]
+    pub channels: Vec<String>,
+}
+
+fn default_irc_port() -> u16 { 6667 }
+fn default_irc_nick() -> String { "yantrik".into() }
+
+impl Default for IrcConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false, server: None, port: default_irc_port(),
+            nick: default_irc_nick(), channels: vec![],
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SlackConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    /// Bot token (xoxb-...).
+    #[serde(default)]
+    pub bot_token: Option<String>,
+    /// App-level token (xapp-...) for Socket Mode.
+    #[serde(default)]
+    pub app_token: Option<String>,
+    /// Only respond in these channel IDs. Empty = all.
+    #[serde(default)]
+    pub allowed_channels: Vec<String>,
+}
+
+impl Default for SlackConfig {
+    fn default() -> Self {
+        Self { enabled: false, bot_token: None, app_token: None, allowed_channels: vec![] }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SignalConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    /// Phone number registered with signal-cli (e.g., "+1234567890").
+    #[serde(default)]
+    pub account: Option<String>,
+    /// Path to signal-cli binary (default: "signal-cli").
+    #[serde(default)]
+    pub signal_cli_path: Option<String>,
+}
+
+impl Default for SignalConfig {
+    fn default() -> Self {
+        Self { enabled: false, account: None, signal_cli_path: None }
+    }
+}
+
 // ── Memory Evolution Config ─────────────────────────────────────────────────
 
 /// Configuration for memory evolution features (V23).
@@ -1486,6 +1626,9 @@ pub struct CompanionConfig {
     /// CK-5 Generative Understanding — cognitive primitives config.
     #[serde(default)]
     pub ck5: CK5Config,
+    /// Multi-provider chat integration (Discord, Matrix, IRC, Slack, Signal).
+    #[serde(default)]
+    pub chat: ChatConfig,
 }
 
 /// OAuth connector configuration for external services.
@@ -1613,6 +1756,7 @@ impl Default for CompanionConfig {
             mcp_servers: Vec::new(),
             enabled_services: default_enabled_services(),
             ck5: CK5Config::default(),
+            chat: ChatConfig::default(),
         }
     }
 }

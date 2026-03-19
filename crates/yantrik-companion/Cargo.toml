@@ -9,6 +9,7 @@ yantrik-companion-core = { workspace = true }
 yantrik-companion-instincts = { workspace = true }
 yantrik-companion-cortex = { workspace = true }
 yantrik-companion-tools = { workspace = true }
+yantrik-chat = { workspace = true }
 yantrikdb-core = { workspace = true }
 yantrik-ml = { workspace = true, features = ["api-llm", "claude-cli"] }
 yantrik-os = { workspace = true }
@@ -28,3 +29,4 @@ html2text = { workspace = true }
 mailparse = { workspace = true }
 ureq = { workspace = true }
 regex = { workspace = true }
+crossbeam-channel = { workspace = true }
