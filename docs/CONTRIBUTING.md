@@ -31,7 +31,7 @@ Registered once in `wire/mod.rs`. This keeps `main.rs` untouched when adding fea
 
 ### Tool Pattern
 
-Each tool category lives in `crates/yantrikdb-companion/src/tools/<name>.rs`:
+Each tool category lives in `crates/yantrik-companion/src/tools/<name>.rs`:
 
 ```rust
 pub fn register(reg: &mut ToolRegistry) {
@@ -164,4 +164,4 @@ bash deploy/yantrik-os/boot-desktop.sh
 ### Known Issues
 
 - **rustc 1.93.1 ICE in `check_mod_deathness`**: Add `#[allow(dead_code)]` to affected module declarations
-- **Private repos**: yantrik-ml, yantrikdb-core, yantrik-companion are private. Needs `gh auth token` for cargo git deps. Use workspace `[patch]` sections for local development.
+- **Local development**: Use workspace `[patch]` sections to override git dependencies with local paths when developing across multiple repos simultaneously.
