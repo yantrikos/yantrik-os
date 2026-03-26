@@ -308,9 +308,9 @@ yantrik ask --config /opt/yantrik/config.yaml "Check system health"
 
 ## License
 
-Proprietary. See LICENSE for details.
+GPL-3.0. See [LICENSE](LICENSE) for details.
 
 ## Links
 
 - **Releases**: https://releases.yantrikos.com
-- **Issues**: https://github.com/spranab/yantrik-os/issues
+- **Issues**: https://github.com/yantrikos/yantrik-os/issues
