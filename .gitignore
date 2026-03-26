@@ -24,6 +24,10 @@ memory.db.bak
 # Claude Code (local settings with permissions, API keys in MCP config)
 .mcp.json
 .claude/settings.local.json
+".claude/settings copy.json"
+
+# Scripts (local-only)
+scripts/
 
 # Python
 __pycache__/
@@ -49,6 +53,22 @@ lib.long-type-*.txt
 
 # Secrets
 google_client_*
+*.secret*
+
+# Personal scripts (not part of the project)
+create_*_epics.py
+create_*_epic.py
+migrate_*.py
+reddit_post.png
+skill_store_screenshot.png
+
+# Test scripts (local-only)
+test-*.sh
+test_*.sh
+test_*.py
+
+# Brainstorm outputs
+brainstorm_*.py
 
 # Training artifacts
 training/checkpoints*/
@@ -60,3 +80,4 @@ deploy/yantrik-os/cache/
 
 # Tracker DB
 .tracker.db
+jira.py
