@@ -1640,6 +1640,9 @@ pub struct ConnectorsConfig {
     /// Google OAuth2 client ID (from Google Cloud Console).
     #[serde(default)]
     pub google_client_id: Option<String>,
+    /// Google OAuth2 client secret (from Google Cloud Console).
+    #[serde(default)]
+    pub google_client_secret: Option<String>,
     /// Spotify OAuth2 client ID (from Spotify Developer Dashboard).
     #[serde(default)]
     pub spotify_client_id: Option<String>,
@@ -1701,6 +1704,7 @@ impl Default for ConnectorsConfig {
         Self {
             callback_port: default_connector_port(),
             google_client_id: None,
+            google_client_secret: None,
             spotify_client_id: None,
             spotify_client_secret: None,
             facebook_app_id: None,

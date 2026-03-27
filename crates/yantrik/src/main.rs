@@ -100,7 +100,7 @@ fn main() {
 }
 
 fn load_config(path: Option<PathBuf>) -> CompanionConfig {
-    match path {
+    let config = match path {
         Some(p) => {
             tracing::info!(path = %p.display(), "Loading config");
             CompanionConfig::from_yaml(&p).expect("failed to load config")
@@ -109,7 +109,21 @@ fn load_config(path: Option<PathBuf>) -> CompanionConfig {
             tracing::info!("Using default config");
             CompanionConfig::default()
         }
+    };
+
+    // Propagate OAuth credentials from config to env vars (if not already set)
+    if let Some(ref id) = config.connectors.google_client_id {
+        if std::env::var("GOOGLE_CLIENT_ID").is_err() {
+            std::env::set_var("GOOGLE_CLIENT_ID", id);
+        }
     }
+    if let Some(ref secret) = config.connectors.google_client_secret {
+        if std::env::var("GOOGLE_CLIENT_SECRET").is_err() {
+            std::env::set_var("GOOGLE_CLIENT_SECRET", secret);
+        }
+    }
+
+    config
 }
 
 fn build_companion(config: CompanionConfig) -> CompanionService {

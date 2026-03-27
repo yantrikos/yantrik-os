@@ -8,10 +8,15 @@ pub mod db;
 
 use crate::config::EmailAccountConfig;
 
-// Google OAuth2 constants (same as UI module)
-const GOOGLE_CLIENT_ID: &str = "REDACTED_GOOGLE_CLIENT_ID";
-const GOOGLE_CLIENT_SECRET: &str = "REDACTED_GOOGLE_CLIENT_SECRET";
 const GOOGLE_TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
+
+fn google_client_id() -> String {
+    std::env::var("GOOGLE_CLIENT_ID").unwrap_or_default()
+}
+
+fn google_client_secret() -> String {
+    std::env::var("GOOGLE_CLIENT_SECRET").unwrap_or_default()
+}
 
 /// Ensure the OAuth2 access token is fresh. Refreshes in-place if expired.
 ///
@@ -43,8 +48,8 @@ pub fn ensure_fresh_token(account: &mut EmailAccountConfig, config_path: Option<
     let body = format!(
         "refresh_token={}&client_id={}&client_secret={}&grant_type=refresh_token",
         urlencoding(refresh_token),
-        urlencoding(GOOGLE_CLIENT_ID),
-        urlencoding(GOOGLE_CLIENT_SECRET),
+        urlencoding(&google_client_id()),
+        urlencoding(&google_client_secret()),
     );
 
     let resp: serde_json::Value = ureq::post(GOOGLE_TOKEN_URL)

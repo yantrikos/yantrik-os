@@ -82,6 +82,18 @@ fn main() {
     let config_path = std::env::args().nth(1).map(PathBuf::from);
     let config = load_config(config_path.clone());
 
+    // Propagate OAuth credentials from config to env vars (if not already set)
+    if let Some(ref id) = config.connectors.google_client_id {
+        if std::env::var("GOOGLE_CLIENT_ID").is_err() {
+            std::env::set_var("GOOGLE_CLIENT_ID", id);
+        }
+    }
+    if let Some(ref secret) = config.connectors.google_client_secret {
+        if std::env::var("GOOGLE_CLIENT_SECRET").is_err() {
+            std::env::set_var("GOOGLE_CLIENT_SECRET", secret);
+        }
+    }
+
     // Create Slint UI
     let ui = App::new().unwrap();
 

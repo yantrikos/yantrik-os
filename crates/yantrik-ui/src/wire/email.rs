@@ -15,11 +15,17 @@ use crate::app_context::AppContext;
 use crate::{App, EmailAttachmentData, EmailDetailData, EmailFolderData, EmailListItem, EmailSignatureData, EmailThreadMessage};
 
 // ── Google OAuth2 Constants ──
-const GOOGLE_CLIENT_ID: &str = "REDACTED_GOOGLE_CLIENT_ID";
-const GOOGLE_CLIENT_SECRET: &str = "REDACTED_GOOGLE_CLIENT_SECRET";
 const GOOGLE_AUTH_URL: &str = "https://accounts.google.com/o/oauth2/v2/auth";
 const GOOGLE_TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
 const GOOGLE_SCOPES: &str = "https://mail.google.com/ https://www.googleapis.com/auth/calendar email profile";
+
+fn google_client_id() -> String {
+    std::env::var("GOOGLE_CLIENT_ID").unwrap_or_default()
+}
+
+fn google_client_secret() -> String {
+    std::env::var("GOOGLE_CLIENT_SECRET").unwrap_or_default()
+}
 
 /// Resolved email server settings.
 struct EmailServer {
@@ -849,7 +855,7 @@ fn oauth2_authorize_google(
     let auth_url = format!(
         "{}?client_id={}&redirect_uri={}&response_type=code&scope={}&access_type=offline&prompt=consent",
         GOOGLE_AUTH_URL,
-        urlencoding(GOOGLE_CLIENT_ID),
+        urlencoding(&google_client_id()),
         urlencoding(&redirect_uri),
         urlencoding(GOOGLE_SCOPES),
     );
@@ -972,8 +978,8 @@ fn oauth2_exchange_code(code: &str, redirect_uri: &str) -> Result<OAuthTokens, S
         .send_string(&format!(
             "code={}&client_id={}&client_secret={}&redirect_uri={}&grant_type=authorization_code",
             urlencoding(code),
-            urlencoding(GOOGLE_CLIENT_ID),
-            urlencoding(GOOGLE_CLIENT_SECRET),
+            urlencoding(&google_client_id()),
+            urlencoding(&google_client_secret()),
             urlencoding(redirect_uri),
         ))
         .map_err(|e| format!("Token exchange failed: {}", e))?
@@ -999,8 +1005,8 @@ fn oauth2_refresh_token(refresh_token: &str) -> Result<OAuthTokens, String> {
         .send_string(&format!(
             "refresh_token={}&client_id={}&client_secret={}&grant_type=refresh_token",
             urlencoding(refresh_token),
-            urlencoding(GOOGLE_CLIENT_ID),
-            urlencoding(GOOGLE_CLIENT_SECRET),
+            urlencoding(&google_client_id()),
+            urlencoding(&google_client_secret()),
         ))
         .map_err(|e| format!("Token refresh failed: {}", e))?
         .into_json()
