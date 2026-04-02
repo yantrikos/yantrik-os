@@ -2,20 +2,39 @@
 
 ## Architecture
 
-Yantrik OS is a single Rust binary that combines three threads:
+The runtime is still organized around **three cooperating roles** (same mental model as the README):
 
 1. **Main thread** — Slint UI (event loop, rendering)
-2. **SystemObserver thread** — D-Bus, inotify, sysinfo polling (battery, WiFi, processes, idle)
-3. **Companion Worker thread** — LLM inference, memory search, tool execution
+2. **SystemObserver** — D-Bus, inotify, sysinfo polling (battery, WiFi, processes, idle)
+3. **Companion worker** — LLM inference, memory search, tool execution
 
-```
-crates/
-  yantrik-os/        # SystemObserver, events, platform abstraction
-  yantrikdb-core/    # Memory DB (SQLite + HNSW vector search, knowledge graph, vault)
-  yantrik-ml/        # LLM backends (Ollama API, OpenAI API, Claude CLI, llama.cpp)
-  yantrik-companion/ # Agent brain: tools, instincts, bond, personality, cortex
-  yantrik-ui/        # Slint desktop shell (all UI, wiring, features)
-```
+The **Cargo workspace** is larger than the classic “five crates” diagram. The authoritative list of packages is **`[workspace].members` in the repo root `Cargo.toml`**.
+
+### Layout (summary)
+
+**Crates (`crates/`):**
+
+| Crate | Role |
+|-------|------|
+| `yantrik` | Main binary / composition |
+| `yantrik-ui` | Desktop shell, Slint, `wire/` callbacks |
+| `yantrik-os` | System observer, platform integration |
+| `yantrik-companion` | Agent loop, wiring to tools and ML |
+| `yantrik-companion-core` | `Tool` trait, `ToolContext`, shared types |
+| `yantrik-companion-tools` | **Tool implementations** (one module per domain) |
+| `yantrik-companion-instincts` | Proactive instincts |
+| `yantrik-companion-cortex` | Cortex / pattern logic |
+| `yantrik-chat` | Chat-side plumbing |
+| `yantrik-ml` | LLM backends (also pulled in via workspace dependencies / path patches) |
+| `yantrikdb-core`, `yantrikdb-server` | Memory DB and server |
+| `yantrik-app-runtime` | App host / runtime |
+| `yantrik-ui-slint`, `yantrik-ui-kit`, `yantrik-shell-core` | UI layers and shell primitives |
+| `yantrik-ipc-contracts`, `yantrik-ipc-transport` | IPC |
+| `yantrik-service-sdk`, `yantrik-manifest`, `yantrik-design-tokens` | Shared infrastructure |
+
+**Apps (`apps/`)** — One package per built-in app (e.g. `spreadsheet`, `email`, `terminal`).
+
+**Services (`services/`)** — Background services (e.g. `email-service`, `calendar-service`).
 
 ### Wire Pattern
 
@@ -27,11 +46,11 @@ pub fn wire(ui: &App, ctx: &AppContext) {
 }
 ```
 
-Registered once in `wire/mod.rs`. This keeps `main.rs` untouched when adding features.
+Registered once in [`crates/yantrik-ui/src/wire/mod.rs`](../crates/yantrik-ui/src/wire/mod.rs). This keeps entrypoints thin when adding features.
 
 ### Tool Pattern
 
-Each tool category lives in `crates/yantrik-companion/src/tools/<name>.rs`:
+Each tool category lives in **`crates/yantrik-companion-tools/src/<name>.rs`**. The crate re-exports the `Tool` trait from `yantrik-companion-core` (see [`lib.rs`](../crates/yantrik-companion-tools/src/lib.rs)).
 
 ```rust
 pub fn register(reg: &mut ToolRegistry) {
@@ -55,11 +74,12 @@ Permission levels: `Safe` (read-only) < `Standard` (reversible writes) < `Sensit
 
 ## Adding a New Tool
 
-1. Create `crates/yantrik-companion/src/tools/mytool.rs`
-2. Implement `Tool` trait for each tool (see `git.rs` for a complete example)
-3. Add `pub mod mytool;` to `tools/mod.rs`
-4. Add `mytool::register(&mut reg);` in `build_registry()`
-5. Run `cargo check -p yantrik-companion`
+1. Create `crates/yantrik-companion-tools/src/mytool.rs`
+2. Implement `Tool` for each tool (see [`git.rs`](../crates/yantrik-companion-tools/src/git.rs) for a full example with `register()`)
+3. Add `pub mod mytool;` to [`lib.rs`](../crates/yantrik-companion-tools/src/lib.rs) and call `mytool::register(reg)` from `register_all()`
+4. Run `cargo check -p yantrik-companion-tools` (and `cargo check -p yantrik-companion` if you change how tools are wired in the main agent)
+
+Some tools need config from the running app (e.g. canvas, vision, github) and are **registered from `yantrik-companion`** instead of inside `register_all()`—follow existing patterns in `lib.rs` comments when adding similar tools.
 
 **Tips:**
 - Shell out to system CLIs when possible (no extra Rust deps)
@@ -145,10 +165,12 @@ Set `enabled: false` or delete the file to revert to the default Firelight theme
 cd /mnt/c/Users/<you>/path/to/yantrik-os
 CARGO_TARGET_DIR=/home/<user>/target-yantrik cargo check
 
-# Check specific crate
+# Check specific workspace members (non-exhaustive)
 cargo check -p yantrik-ui
 cargo check -p yantrik-companion
-cargo check -p yantrik-ml
+cargo check -p yantrik-companion-tools
+cargo check -p yantrik-os
+cargo check -p yantrik
 ```
 
 ### Run in QEMU
