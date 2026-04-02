@@ -145,6 +145,10 @@ export component SettingsScreen inherits Rectangle {
     callback delete-provider(string);
     callback test-provider(string);
     callback test-new-provider(string, string, string);              // url, key, auth
+    callback provider-preset-selected(string);                        // preset id → fills form
+    in-out property <string> provider-form-name: "";
+    in-out property <string> provider-form-url: "";
+    in-out property <string> selected-preset: "";  // tracks which preset button is highlighted
     callback set-primary-provider(string);
     callback set-fallback-provider(string);
     callback select-model(string);
@@ -1233,6 +1237,9 @@ export component SettingsScreen inherits Rectangle {
                                     clicked => {
                                         root.provider-panel-open = true;
                                         root.editing-provider-id = "";
+                                        root.selected-preset = "";
+                                        root.provider-form-name = "";
+                                        root.provider-form-url = "";
                                     }
                                     add-btn-row := HorizontalLayout {
                                         spacing: Theme.sp-1;
@@ -2470,7 +2477,7 @@ export component SettingsScreen inherits Rectangle {
                             x: (parent.width - 480px) / 2;
                             y: (parent.height - self.height) / 2;
                             width: 480px;
-                            height: provider-panel-layout.preferred-height;
+                            height: min(provider-panel-layout.preferred-height, parent.height - 40px);
                             background: Theme.bg-deep;
                             border-radius: Theme.r-lg;
                             border-width: 1px;
@@ -2482,6 +2489,9 @@ export component SettingsScreen inherits Rectangle {
                             // Block clicks from propagating to backdrop
                             TouchArea {}
 
+                            Flickable {
+                                width: 100%;
+                                height: 100%;
                             provider-panel-layout := VerticalLayout {
                                 padding: Theme.sp-6;
                                 spacing: Theme.sp-4;
@@ -2501,30 +2511,38 @@ export component SettingsScreen inherits Rectangle {
                                     font-size: Theme.fs-caption;
                                 }
 
-                                // Preset buttons — 4x3 grid
+                                // Preset buttons — categorized grid
                                 VerticalLayout {
-                                    spacing: Theme.sp-2;
+                                    spacing: Theme.sp-3;
+
+                                    // ── CLOUD ──
+                                    Text {
+                                        text: "CLOUD";
+                                        color: Theme.text-dim;
+                                        font-size: 10px;
+                                        font-weight: 600;
+                                        letter-spacing: 2px;
+                                    }
                                     HorizontalLayout {
                                         spacing: Theme.sp-2;
-                                        for preset-info[pidx] in [
-                                            { label: "Ollama",     value: "ollama" },
-                                            { label: "OpenAI",     value: "openai" },
-                                            { label: "Anthropic",  value: "anthropic" },
-                                            { label: "OpenRouter", value: "openrouter" }
+                                        for p in [
+                                            { label: "OpenAI",    value: "openai" },
+                                            { label: "Anthropic", value: "anthropic" },
+                                            { label: "Google",    value: "gemini" },
+                                            { label: "DeepSeek",  value: "deepseek" },
+                                            { label: "Groq",      value: "groq" }
                                         ] : TouchArea {
                                             horizontal-stretch: 1;
-                                            height: 36px;
-                                            clicked => {
-                                                root.provider-panel-open = true;
-                                            }
+                                            height: 32px;
+                                            clicked => { root.selected-preset = p.value; root.provider-preset-selected(p.value); }
                                             Rectangle {
                                                 border-radius: Theme.r-md;
-                                                background: Theme.hover-fill;
+                                                background: root.selected-preset == p.value ? Theme.accent-dim : Theme.hover-fill;
                                                 border-width: 1px;
-                                                border-color: Theme.border-subtle;
+                                                border-color: root.selected-preset == p.value ? Theme.accent : Theme.border-subtle;
                                                 Text {
-                                                    text: preset-info.label;
-                                                    color: Theme.text-primary;
+                                                    text: p.label;
+                                                    color: root.selected-preset == p.value ? Theme.accent : Theme.text-primary;
                                                     font-size: Theme.fs-caption;
                                                     horizontal-alignment: center;
                                                     vertical-alignment: center;
@@ -2534,57 +2552,145 @@ export component SettingsScreen inherits Rectangle {
                                     }
                                     HorizontalLayout {
                                         spacing: Theme.sp-2;
-                                        for preset-info2[pidx2] in [
-                                            { label: "Gemini",    value: "gemini" },
-                                            { label: "Together",  value: "together" },
-                                            { label: "Groq",      value: "groq" },
-                                            { label: "Fireworks", value: "fireworks" }
-                                        ] : TouchArea {
-                                            horizontal-stretch: 1;
-                                            height: 36px;
-                                            clicked => {
-                                                root.provider-panel-open = true;
-                                            }
-                                            Rectangle {
-                                                border-radius: Theme.r-md;
-                                                background: Theme.hover-fill;
-                                                border-width: 1px;
-                                                border-color: Theme.border-subtle;
-                                                Text {
-                                                    text: preset-info2.label;
-                                                    color: Theme.text-primary;
-                                                    font-size: Theme.fs-caption;
-                                                    horizontal-alignment: center;
-                                                    vertical-alignment: center;
-                                                }
-                                            }
-                                        }
-                                    }
-                                    HorizontalLayout {
-                                        spacing: Theme.sp-2;
-                                        for preset-info3[pidx3] in [
+                                        for p in [
                                             { label: "Mistral",     value: "mistral" },
-                                            { label: "DeepSeek",    value: "deepseek" },
-                                            { label: "HuggingFace", value: "huggingface" },
-                                            { label: "Custom",      value: "custom" }
+                                            { label: "xAI Grok",    value: "xai" },
+                                            { label: "Perplexity",  value: "perplexity" },
+                                            { label: "Cerebras",    value: "cerebras" },
+                                            { label: "SambaNova",   value: "sambanova" }
                                         ] : TouchArea {
                                             horizontal-stretch: 1;
-                                            height: 36px;
-                                            clicked => {
-                                                root.provider-panel-open = true;
-                                            }
+                                            height: 32px;
+                                            clicked => { root.selected-preset = p.value; root.provider-preset-selected(p.value); }
                                             Rectangle {
                                                 border-radius: Theme.r-md;
-                                                background: Theme.hover-fill;
+                                                background: root.selected-preset == p.value ? Theme.accent-dim : Theme.hover-fill;
                                                 border-width: 1px;
-                                                border-color: Theme.border-subtle;
+                                                border-color: root.selected-preset == p.value ? Theme.accent : Theme.border-subtle;
                                                 Text {
-                                                    text: preset-info3.label;
-                                                    color: Theme.text-primary;
+                                                    text: p.label;
+                                                    color: root.selected-preset == p.value ? Theme.accent : Theme.text-primary;
                                                     font-size: Theme.fs-caption;
                                                     horizontal-alignment: center;
                                                     vertical-alignment: center;
                                                 }
+                                            }
+                                        }
+                                    }
+                                    HorizontalLayout {
+                                        spacing: Theme.sp-2;
+                                        for p in [
+                                            { label: "Qwen",    value: "qwen" },
+                                            { label: "MiniMax", value: "minimax" },
+                                            { label: "Kimi",    value: "kimi" },
+                                            { label: "Baidu",   value: "baidu" },
+                                            { label: "Zhipu GLM", value: "zhipu" }
+                                        ] : TouchArea {
+                                            horizontal-stretch: 1;
+                                            height: 32px;
+                                            clicked => { root.selected-preset = p.value; root.provider-preset-selected(p.value); }
+                                            Rectangle {
+                                                border-radius: Theme.r-md;
+                                                background: root.selected-preset == p.value ? Theme.accent-dim : Theme.hover-fill;
+                                                border-width: 1px;
+                                                border-color: root.selected-preset == p.value ? Theme.accent : Theme.border-subtle;
+                                                Text {
+                                                    text: p.label;
+                                                    color: root.selected-preset == p.value ? Theme.accent : Theme.text-primary;
+                                                    font-size: Theme.fs-caption;
+                                                    horizontal-alignment: center;
+                                                    vertical-alignment: center;
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    // ── AGGREGATORS & BUDGET ──
+                                    Text {
+                                        text: "AGGREGATORS & BUDGET";
+                                        color: Theme.text-dim;
+                                        font-size: 10px;
+                                        font-weight: 600;
+                                        letter-spacing: 2px;
+                                    }
+                                    HorizontalLayout {
+                                        spacing: Theme.sp-2;
+                                        for p in [
+                                            { label: "OpenRouter",  value: "openrouter" },
+                                            { label: "Together",    value: "together" },
+                                            { label: "Fireworks",   value: "fireworks" },
+                                            { label: "HuggingFace", value: "huggingface" },
+                                            { label: "NanoGPT",     value: "nanogpt" }
+                                        ] : TouchArea {
+                                            horizontal-stretch: 1;
+                                            height: 32px;
+                                            clicked => { root.selected-preset = p.value; root.provider-preset-selected(p.value); }
+                                            Rectangle {
+                                                border-radius: Theme.r-md;
+                                                background: root.selected-preset == p.value ? Theme.accent-dim : Theme.hover-fill;
+                                                border-width: 1px;
+                                                border-color: root.selected-preset == p.value ? Theme.accent : Theme.border-subtle;
+                                                Text {
+                                                    text: p.label;
+                                                    color: root.selected-preset == p.value ? Theme.accent : Theme.text-primary;
+                                                    font-size: Theme.fs-caption;
+                                                    horizontal-alignment: center;
+                                                    vertical-alignment: center;
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    // ── LOCAL INFERENCE ──
+                                    Text {
+                                        text: "LOCAL INFERENCE";
+                                        color: Theme.text-dim;
+                                        font-size: 10px;
+                                        font-weight: 600;
+                                        letter-spacing: 2px;
+                                    }
+                                    HorizontalLayout {
+                                        spacing: Theme.sp-2;
+                                        for p in [
+                                            { label: "Ollama",       value: "ollama" },
+                                            { label: "Ollama Cloud", value: "ollama-cloud" },
+                                            { label: "llama.cpp",    value: "llamacpp" },
+                                            { label: "LM Studio",    value: "lmstudio" },
+                                            { label: "vLLM",         value: "vllm" }
+                                        ] : TouchArea {
+                                            horizontal-stretch: 1;
+                                            height: 32px;
+                                            clicked => { root.selected-preset = p.value; root.provider-preset-selected(p.value); }
+                                            Rectangle {
+                                                border-radius: Theme.r-md;
+                                                background: root.selected-preset == p.value ? Theme.accent-dim : Theme.hover-fill;
+                                                border-width: 1px;
+                                                border-color: root.selected-preset == p.value ? Theme.accent : Theme.border-subtle;
+                                                Text {
+                                                    text: p.label;
+                                                    color: root.selected-preset == p.value ? Theme.accent : Theme.text-primary;
+                                                    font-size: Theme.fs-caption;
+                                                    horizontal-alignment: center;
+                                                    vertical-alignment: center;
+                                                }
+                                            }
+                                        }
+                                    }
+                                    // Custom
+                                    TouchArea {
+                                        height: 32px;
+                                        clicked => { root.selected-preset = "custom"; root.provider-preset-selected("custom"); }
+                                        Rectangle {
+                                            border-radius: Theme.r-md;
+                                            background: root.selected-preset == "custom" ? Theme.accent-dim : Theme.hover-fill;
+                                            border-width: 1px;
+                                            border-color: root.selected-preset == "custom" ? Theme.accent : Theme.border-subtle;
+                                            Text {
+                                                text: "Custom";
+                                                color: root.selected-preset == "custom" ? Theme.accent : Theme.text-primary;
+                                                font-size: Theme.fs-caption;
+                                                horizontal-alignment: center;
+                                                vertical-alignment: center;
                                             }
                                         }
                                     }
@@ -2612,6 +2718,7 @@ export component SettingsScreen inherits Rectangle {
                                             border-color: Theme.border-subtle;
                                             clip: true;
                                             prov-name-input := TextInput {
+                                                text <=> root.provider-form-name;
                                                 color: Theme.text-primary;
                                                 font-size: Theme.fs-body;
                                                 vertical-alignment: center;
@@ -2635,6 +2742,7 @@ export component SettingsScreen inherits Rectangle {
                                             border-color: Theme.border-subtle;
                                             clip: true;
                                             prov-url-input := TextInput {
+                                                text <=> root.provider-form-url;
                                                 color: Theme.text-primary;
                                                 font-size: Theme.fs-body;
                                                 vertical-alignment: center;
@@ -2760,6 +2868,7 @@ export component SettingsScreen inherits Rectangle {
                                     }
                                 }
                             }
+                            } // Flickable
                         }
                     }
                 }

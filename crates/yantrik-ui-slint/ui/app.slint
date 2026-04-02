@@ -278,6 +278,10 @@ export component App inherits Window {
     callback delete-provider(string);
     callback test-provider(string);
     callback test-new-provider(string, string, string);
+    callback provider-preset-selected(string);
+    in-out property <string> settings-provider-form-name: "";
+    in-out property <string> settings-provider-form-url: "";
+    in-out property <string> settings-selected-preset: "";
     callback set-primary-provider(string);
     callback set-fallback-provider(string);
     callback select-model(string);
@@ -2045,6 +2049,10 @@ export component App inherits Window {
                 delete-provider(id) => { root.delete-provider(id); }
                 test-provider(id) => { root.test-provider(id); }
                 test-new-provider(url, key, auth) => { root.test-new-provider(url, key, auth); }
+                provider-preset-selected(preset) => { root.provider-preset-selected(preset); }
+                provider-form-name <=> root.settings-provider-form-name;
+                provider-form-url <=> root.settings-provider-form-url;
+                selected-preset <=> root.settings-selected-preset;
                 set-primary-provider(id) => { root.set-primary-provider(id); }
                 set-fallback-provider(id) => { root.set-fallback-provider(id); }
                 select-model(id) => { root.select-model(id); }

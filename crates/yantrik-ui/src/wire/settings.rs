@@ -448,6 +448,45 @@ pub fn wire(ui: &App, ctx: &AppContext) {
         tracing::info!("Add provider panel opened");
     });
 
+    // Provider preset selected — fill form fields with known defaults
+    let ui_weak = ui.as_weak();
+    ui.on_provider_preset_selected(move |preset| {
+        let Some(ui) = ui_weak.upgrade() else { return };
+        let preset_str = preset.to_string();
+        let (name, url) = match preset_str.as_str() {
+            "openai"       => ("OpenAI",       "https://api.openai.com/v1"),
+            "anthropic"    => ("Anthropic",     "https://api.anthropic.com/v1"),
+            "gemini"       => ("Google Gemini", "https://generativelanguage.googleapis.com/v1beta/openai"),
+            "deepseek"     => ("DeepSeek",      "https://api.deepseek.com/v1"),
+            "groq"         => ("Groq",          "https://api.groq.com/openai/v1"),
+            "mistral"      => ("Mistral",       "https://api.mistral.ai/v1"),
+            "xai"          => ("xAI Grok",      "https://api.x.ai/v1"),
+            "perplexity"   => ("Perplexity",    "https://api.perplexity.ai"),
+            "cerebras"     => ("Cerebras",      "https://api.cerebras.ai/v1"),
+            "sambanova"    => ("SambaNova",     "https://api.sambanova.ai/v1"),
+            "qwen"         => ("Qwen",          "https://dashscope.aliyuncs.com/compatible-mode/v1"),
+            "minimax"      => ("MiniMax",       "https://api.minimax.chat/v1"),
+            "kimi"         => ("Kimi",          "https://api.moonshot.cn/v1"),
+            "baidu"        => ("Baidu",         "https://qianfan.baidubce.com/v2"),
+            "zhipu"        => ("Zhipu GLM",     "https://open.bigmodel.cn/api/paas/v4"),
+            "openrouter"   => ("OpenRouter",    "https://openrouter.ai/api/v1"),
+            "together"     => ("Together",      "https://api.together.xyz/v1"),
+            "fireworks"    => ("Fireworks",     "https://api.fireworks.ai/inference/v1"),
+            "huggingface"  => ("HuggingFace",   "https://api-inference.huggingface.co/v1"),
+            "nanogpt"      => ("NanoGPT",       "https://api.nano-gpt.com/v1"),
+            "ollama"       => ("Ollama",        "http://localhost:11434/v1"),
+            "ollama-cloud" => ("Ollama Cloud",  ""),
+            "llamacpp"     => ("llama.cpp",     "http://localhost:8080/v1"),
+            "lmstudio"     => ("LM Studio",     "http://localhost:1234/v1"),
+            "vllm"         => ("vLLM",          "http://localhost:8000/v1"),
+            _              => ("Custom",        ""),
+        };
+        tracing::info!(preset = %preset_str, name, url, "Provider preset selected");
+        ui.set_settings_provider_form_name(name.into());
+        ui.set_settings_provider_form_url(url.into());
+        ui.set_settings_provider_test_result("".into());
+    });
+
     // Save provider
     let ui_weak = ui.as_weak();
     let ps = providers.clone();

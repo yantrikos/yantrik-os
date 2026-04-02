@@ -1,0 +1,356 @@
+// Login Screen — graphical authentication for Yantrik OS.
+// Shown on boot (installed system). User enters username + password.
+// Authenticates via PAM, then transitions to desktop.
+
+import { Theme } from "theme.slint";
+
+export component LoginScreen inherits Rectangle {
+    background: Theme.bg-deep;
+
+    in property <string> clock-text: "00:00";
+    in property <string> date-text: "";
+    in property <string> error-text: "";
+    in property <string> hostname: "yantrik-os";
+
+    // Internal state
+    property <bool> show-password: false;
+    property <float> bg-phase: 0;
+
+    callback login-attempt(/* username */ string, /* password */ string);
+
+    // Animated background phase
+    Timer {
+        interval: 16ms;
+        running: true;
+        triggered => {
+            bg-phase = mod(bg-phase + 0.0006, 1.0);
+        }
+    }
+
+    // ── Animated gradient background ──
+    Rectangle {
+        width: 100%;
+        height: 100%;
+        background: Theme.bg-deep;
+
+        // Top gradient
+        Rectangle {
+            width: 100%;
+            height: 45%;
+            y: 0;
+            background: @linear-gradient(180deg, Theme.bg-deep 0%, Theme.bg-deep.transparentize(100%) 100%);
+        }
+
+        // Bottom gradient
+        Rectangle {
+            width: 100%;
+            height: 45%;
+            y: parent.height - self.height;
+            background: @linear-gradient(0deg, Theme.bg-deep 0%, Theme.bg-deep.transparentize(100%) 100%);
+        }
+
+        // Animated cyan glow (breathing)
+        Rectangle {
+            width: 500px;
+            height: 500px;
+            x: (parent.width - self.width) / 2;
+            y: parent.height * 0.06;
+            border-radius: 250px;
+            background: @radial-gradient(circle, Theme.cyan.transparentize(94%) 0%, Theme.cyan.transparentize(100%) 70%);
+            opacity: 0.7 + 0.3 * sin(bg-phase * 6.2832 * 1rad);
+        }
+
+        // Animated amber glow
+        Rectangle {
+            width: 300px;
+            height: 300px;
+            x: (parent.width - self.width) / 2 - 100px;
+            y: parent.height * 0.65;
+            border-radius: 150px;
+            background: @radial-gradient(circle, Theme.amber.transparentize(96%) 0%, Theme.amber.transparentize(100%) 70%);
+            opacity: 0.5 + 0.3 * sin(bg-phase * 4.712 * 1rad);
+        }
+    }
+
+    // ── Center content ──
+    VerticalLayout {
+        alignment: center;
+        spacing: 0;
+        padding-left: 40px;
+        padding-right: 40px;
+
+        // Clock — large, thin, elegant
+        Text {
+            text: root.clock-text;
+            color: Theme.text-primary;
+            font-size: 80px;
+            font-weight: 200;
+            horizontal-alignment: center;
+            letter-spacing: 4px;
+        }
+
+        // Date
+        if root.date-text != "" : Text {
+            text: root.date-text;
+            color: Theme.text-secondary;
+            font-size: Theme.fs-title-2;
+            font-weight: Theme.fw-body;
+            horizontal-alignment: center;
+            letter-spacing: 1px;
+        }
+
+        Rectangle { height: Theme.sp-5; }
+
+        // Orb
+        HorizontalLayout {
+            alignment: center;
+            Rectangle {
+                width: 80px;
+                height: 80px;
+
+                // Outer glow
+                Rectangle {
+                    width: 64px;
+                    height: 64px;
+                    border-radius: 32px;
+                    background: Theme.cyan.transparentize(80%);
+                    x: (parent.width - self.width) / 2;
+                    y: (parent.height - self.height) / 2;
+                    opacity: 0.6 + 0.3 * sin(bg-phase * 6.2832 * 1rad);
+
+                    // Inner orb
+                    Rectangle {
+                        width: 32px;
+                        height: 32px;
+                        border-radius: 16px;
+                        background: Theme.cyan;
+                        x: (parent.width - self.width) / 2;
+                        y: (parent.height - self.height) / 2;
+                        opacity: 0.9;
+                    }
+                }
+            }
+        }
+
+        Rectangle { height: Theme.sp-2; }
+
+        // "Yantrik OS" branding
+        Text {
+            text: "Yantrik OS";
+            color: Theme.text-primary;
+            font-size: Theme.fs-headline;
+            font-weight: 300;
+            horizontal-alignment: center;
+            letter-spacing: 3px;
+        }
+
+        Rectangle { height: Theme.sp-1; }
+
+        // Hostname
+        Text {
+            text: root.hostname;
+            color: Theme.text-dim;
+            font-size: Theme.fs-micro;
+            horizontal-alignment: center;
+            letter-spacing: 1px;
+            opacity: 0.6;
+        }
+
+        Rectangle { height: Theme.sp-5; }
+
+        // Username field
+        Text {
+            text: "Username";
+            color: Theme.text-dim;
+            font-size: Theme.fs-caption;
+            horizontal-alignment: center;
+            letter-spacing: 0.5px;
+        }
+
+        Rectangle { height: Theme.sp-1; }
+
+        HorizontalLayout {
+            alignment: center;
+
+            Rectangle {
+                width: 300px;
+                height: 44px;
+                border-radius: Theme.r-xl;
+                background: Theme.bg-input;
+                border-width: 1px;
+                border-color: username-input.has-focus ? Theme.cyan : Theme.border-default;
+                clip: true;
+
+                animate border-color { duration: Theme.dur-normal; easing: ease-out; }
+                drop-shadow-blur: username-input.has-focus ? 8px : 0;
+                drop-shadow-color: Theme.cyan.transparentize(70%);
+                animate drop-shadow-blur { duration: Theme.dur-normal; }
+
+                TouchArea {
+                    clicked => { username-input.focus(); }
+                }
+
+                username-input := TextInput {
+                    x: Theme.sp-3;
+                    y: 0;
+                    width: parent.width - Theme.sp-3 * 2;
+                    height: parent.height;
+                    color: Theme.text-primary;
+                    font-size: Theme.fs-body;
+                    horizontal-alignment: center;
+                    selection-background-color: Theme.cyan.transparentize(60%);
+
+                    accepted => {
+                        password-input.focus();
+                    }
+                }
+            }
+        }
+
+        Rectangle { height: Theme.sp-3; }
+
+        // Password field
+        Text {
+            text: "Password";
+            color: Theme.text-dim;
+            font-size: Theme.fs-caption;
+            horizontal-alignment: center;
+            letter-spacing: 0.5px;
+        }
+
+        Rectangle { height: Theme.sp-1; }
+
+        HorizontalLayout {
+            alignment: center;
+
+            Rectangle {
+                width: 300px;
+                height: 44px;
+                border-radius: Theme.r-xl;
+                background: Theme.bg-input;
+                border-width: 1px;
+                border-color: root.error-text != "" ? Theme.color-danger
+                            : password-input.has-focus ? Theme.cyan
+                            : Theme.border-default;
+                clip: true;
+
+                animate border-color { duration: Theme.dur-normal; easing: ease-out; }
+                drop-shadow-blur: password-input.has-focus ? 8px : 0;
+                drop-shadow-color: root.error-text != "" ? Theme.color-danger.transparentize(70%) : Theme.cyan.transparentize(70%);
+                animate drop-shadow-blur { duration: Theme.dur-normal; }
+
+                TouchArea {
+                    clicked => { password-input.focus(); }
+                }
+
+                password-input := TextInput {
+                    x: Theme.sp-3;
+                    y: 0;
+                    width: parent.width - 50px;
+                    height: parent.height;
+                    color: Theme.text-primary;
+                    font-size: Theme.fs-body;
+                    horizontal-alignment: center;
+                    input-type: root.show-password ? InputType.text : InputType.password;
+                    selection-background-color: Theme.cyan.transparentize(60%);
+
+                    accepted => {
+                        root.login-attempt(username-input.text, self.text);
+                    }
+                }
+
+                // Show/hide toggle
+                Rectangle {
+                    x: parent.width - 40px;
+                    y: (parent.height - self.height) / 2;
+                    width: 32px;
+                    height: 32px;
+                    border-radius: 16px;
+                    background: pwd-toggle.has-hover ? Theme.hover-fill : transparent;
+                    animate background { duration: Theme.dur-fast; }
+
+                    Text {
+                        text: root.show-password ? "◉" : "○";
+                        color: Theme.text-dim;
+                        font-size: Theme.fs-body;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                        width: 100%;
+                        height: 100%;
+                    }
+
+                    pwd-toggle := TouchArea {
+                        clicked => { root.show-password = !root.show-password; }
+                    }
+                }
+            }
+        }
+
+        Rectangle { height: Theme.sp-2; }
+
+        // Login button
+        HorizontalLayout {
+            alignment: center;
+
+            Rectangle {
+                width: 160px;
+                height: 40px;
+                border-radius: Theme.r-xl;
+                background: login-btn.has-hover ? Theme.cyan.transparentize(70%) : Theme.cyan.transparentize(85%);
+                border-width: 1px;
+                border-color: Theme.cyan.transparentize(40%);
+                animate background { duration: Theme.dur-fast; }
+
+                Text {
+                    text: "Log In";
+                    color: Theme.cyan;
+                    font-size: Theme.fs-body;
+                    font-weight: 500;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                    width: 100%;
+                    height: 100%;
+                    letter-spacing: 1px;
+                }
+
+                login-btn := TouchArea {
+                    clicked => {
+                        root.login-attempt(username-input.text, password-input.text);
+                    }
+                }
+            }
+        }
+
+        // Error text
+        if root.error-text != "" : Text {
+            text: root.error-text;
+            color: Theme.color-danger;
+            font-size: Theme.fs-caption;
+            horizontal-alignment: center;
+            animate opacity { duration: Theme.dur-normal; easing: ease-out; }
+        }
+
+        Rectangle { height: Theme.sp-3; }
+
+        // Hint
+        Text {
+            text: "Enter credentials and press Enter";
+            color: Theme.text-dim;
+            font-size: Theme.fs-micro;
+            horizontal-alignment: center;
+            opacity: 0.4;
+        }
+
+        Rectangle { height: 40px; }
+    }
+
+    // Auto-focus username on show
+    FocusScope {
+        key-pressed(event) => {
+            if !username-input.has-focus && !password-input.has-focus {
+                username-input.focus();
+            }
+            accept
+        }
+    }
+}
