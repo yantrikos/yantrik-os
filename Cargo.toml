@@ -18,6 +18,7 @@ members = [
     "crates/yantrikdb-server",
     "crates/yantrik",
     "crates/yantrik-ui",
+    "crates/yantrik-ml",
     "crates/yantrik-os",
     "services/weather-service",
     "services/system-monitor-service",

@@ -17,6 +17,26 @@ use serde::{Deserialize, Serialize};
 
 // ── Step Types ──
 
+/// Comparison operator for Filter steps.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum FilterOp {
+    Equals,
+    NotEquals,
+    Contains,
+    GreaterThan,
+    LessThan,
+}
+
+/// Aggregation operator for Aggregate steps.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum AggregateOp {
+    Count,
+    Sum,
+    Min,
+    Max,
+    Avg,
+}
+
 /// A single step in a recipe.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
@@ -30,9 +50,13 @@ pub enum RecipeStep {
         on_error: ErrorAction,
     },
     /// LLM decides what to do with context. Variable references like {{var}} are resolved.
+    /// When `fallback_template` is set and no LLM is available, the template is used instead.
     Think {
         prompt: String,
         store_as: String,
+        /// Template string with {{var}} substitution, used when LLM is unavailable.
+        #[serde(default)]
+        fallback_template: Option<String>,
     },
     /// Jump to target_step if condition is true. Evaluated in pure Rust, no LLM.
     JumpIf {
@@ -82,6 +106,50 @@ pub enum RecipeStep {
         /// Output format.
         #[serde(default)]
         format: RenderFormat,
+    },
+
+    // ── Deterministic steps (no LLM needed) ──
+
+    /// Format data using a template string with {{variable}} substitution.
+    Format {
+        input_vars: Vec<String>,
+        template: String,
+        store_as: String,
+    },
+    /// Filter a collection (JSON array in a variable) by a predicate.
+    Filter {
+        input_var: String,
+        field: String,
+        op: FilterOp,
+        value: String,
+        store_as: String,
+    },
+    /// Sort a collection by a field.
+    Sort {
+        input_var: String,
+        by_field: String,
+        #[serde(default)]
+        descending: bool,
+        store_as: String,
+    },
+    /// Aggregate a collection (count, sum, min, max, avg).
+    Aggregate {
+        input_var: String,
+        op: AggregateOp,
+        field: Option<String>,
+        store_as: String,
+    },
+    /// Extract a value from structured output using a key path or regex.
+    Extract {
+        input_var: String,
+        pattern: String,
+        store_as: String,
+    },
+    /// Branch: if condition is true run then_steps, else run else_steps.
+    Branch {
+        condition: String,
+        then_steps: Vec<RecipeStep>,
+        else_steps: Vec<RecipeStep>,
     },
 }
 

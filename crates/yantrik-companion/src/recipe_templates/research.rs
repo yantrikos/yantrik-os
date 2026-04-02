@@ -16,6 +16,7 @@ fn think(prompt: &str, store: &str) -> RecipeStep {
     RecipeStep::Think {
         prompt: prompt.to_string(),
         store_as: store.to_string(),
+        fallback_template: None,
     }
 }
 

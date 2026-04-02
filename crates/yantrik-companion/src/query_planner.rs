@@ -188,6 +188,7 @@ pub fn plan_or_direct(
     recipe_steps.push(RecipeStep::Think {
         prompt: synthesize_prompt,
         store_as: "final_answer".to_string(),
+        fallback_template: None,
     });
 
     let goal = format!("Research plan for: {}", &user_text[..user_text.len().min(100)]);

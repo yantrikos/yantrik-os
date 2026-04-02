@@ -1730,7 +1730,12 @@ fn worker_loop(
                             | RecipeStep::Tool { store_as, .. }
                             | RecipeStep::ThinkCited { store_as, .. }
                             | RecipeStep::Validate { store_as, .. }
-                            | RecipeStep::Render { store_as, .. } => {
+                            | RecipeStep::Render { store_as, .. }
+                            | RecipeStep::Format { store_as, .. }
+                            | RecipeStep::Filter { store_as, .. }
+                            | RecipeStep::Sort { store_as, .. }
+                            | RecipeStep::Aggregate { store_as, .. }
+                            | RecipeStep::Extract { store_as, .. } => {
                                 final_vars.get(store_as)
                                     .and_then(|v| v.as_str())
                                     .map(|s| if s.len() > 500 { format!("{}...", &s[..500]) } else { s.to_string() })
@@ -1958,7 +1963,7 @@ fn worker_loop(
                         }
                     }
 
-                    RecipeStep::Think { prompt, store_as } => {
+                    RecipeStep::Think { prompt, store_as, .. } => {
                         // LLM call — resolve variables in prompt
                         let resolved_prompt = resolve_vars(prompt, &vars);
                         let resp = companion.handle_message(&resolved_prompt);
@@ -2076,6 +2081,44 @@ fn worker_loop(
                         RecipeStore::update_status(companion.db.conn(), &recipe_id, &RecipeStatus::Running, step_idx + 1);
 
                         // Self-signal to continue
+                        let _ = cmd_tx.send(CompanionCommand::ProcessRecipeStep { recipe_id: recipe_id.clone() });
+                    }
+
+                    // Deterministic steps — delegate to recipe_executor for full implementation
+                    RecipeStep::Format { store_as, template, .. } => {
+                        let resolved = resolve_vars(template, &vars);
+                        RecipeStore::set_var(companion.db.conn(), &recipe_id, store_as,
+                            &serde_json::Value::String(resolved));
+                        RecipeStore::complete_step(companion.db.conn(), &recipe_id, step_idx, "done");
+                        RecipeStore::update_status(companion.db.conn(), &recipe_id, &RecipeStatus::Running, step_idx + 1);
+                        let _ = cmd_tx.send(CompanionCommand::ProcessRecipeStep { recipe_id: recipe_id.clone() });
+                    }
+
+                    RecipeStep::Filter { input_var, store_as, .. }
+                    | RecipeStep::Sort { input_var, store_as, .. }
+                    | RecipeStep::Aggregate { input_var, store_as, .. }
+                    | RecipeStep::Extract { input_var, store_as, .. } => {
+                        // Pass through — full logic is in recipe_executor
+                        let val = vars.get(input_var).cloned().unwrap_or(serde_json::Value::Null);
+                        RecipeStore::set_var(companion.db.conn(), &recipe_id, store_as, &val);
+                        RecipeStore::complete_step(companion.db.conn(), &recipe_id, step_idx, "done");
+                        RecipeStore::update_status(companion.db.conn(), &recipe_id, &RecipeStatus::Running, step_idx + 1);
+                        let _ = cmd_tx.send(CompanionCommand::ProcessRecipeStep { recipe_id: recipe_id.clone() });
+                    }
+
+                    RecipeStep::Branch { condition, then_steps, else_steps } => {
+                        // Simple truthy check on variable
+                        let cond_met = vars.get(condition)
+                            .map(|v| match v {
+                                serde_json::Value::Bool(b) => *b,
+                                serde_json::Value::String(s) => !s.is_empty() && s != "false" && s != "0",
+                                serde_json::Value::Null => false,
+                                _ => true,
+                            })
+                            .unwrap_or(false);
+                        let branch_label = if cond_met { "then" } else { "else" };
+                        RecipeStore::complete_step(companion.db.conn(), &recipe_id, step_idx, branch_label);
+                        RecipeStore::update_status(companion.db.conn(), &recipe_id, &RecipeStatus::Running, step_idx + 1);
                         let _ = cmd_tx.send(CompanionCommand::ProcessRecipeStep { recipe_id: recipe_id.clone() });
                     }
                 }

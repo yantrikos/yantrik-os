@@ -6,7 +6,7 @@
 
 use crate::companion::CompanionService;
 use crate::recipe::{
-    ErrorAction, RecipeStatus, RecipeStep, RecipeStore, StepResult,
+    AggregateOp, ErrorAction, FilterOp, RecipeStatus, RecipeStep, RecipeStore, StepResult,
     WaitCondition, resolve_vars, resolve_vars_in_json,
 };
 use yantrik_ml::{ChatMessage, GenerationConfig};
@@ -196,7 +196,7 @@ fn execute_step(
             StepResult::Continue
         }
 
-        RecipeStep::Think { prompt, store_as } => {
+        RecipeStep::Think { prompt, store_as, fallback_template } => {
             let resolved_prompt = resolve_vars(prompt, vars);
 
             let messages = vec![
@@ -223,7 +223,18 @@ fn execute_step(
                     RecipeStore::set_var(service.db.conn(), recipe_id, store_as, &val);
                     StepResult::Continue
                 }
-                Err(e) => StepResult::Failed(format!("LLM error: {}", e)),
+                Err(e) => {
+                    // Use fallback template if available when LLM is unavailable
+                    if let Some(tmpl) = fallback_template {
+                        let resolved = resolve_vars(tmpl, vars);
+                        let val = serde_json::Value::String(truncate(&resolved));
+                        RecipeStore::set_var(service.db.conn(), recipe_id, store_as, &val);
+                        tracing::info!(recipe_id, "Think step used fallback template (LLM unavailable)");
+                        StepResult::Continue
+                    } else {
+                        StepResult::Failed(format!("LLM error: {}", e))
+                    }
+                }
             }
         }
 
@@ -301,6 +312,51 @@ fn execute_step(
             store_as,
             format,
         } => execute_render(service, recipe_id, input_var, store_as, format, vars),
+
+        RecipeStep::Format {
+            input_vars: _,
+            template,
+            store_as,
+        } => {
+            let resolved = resolve_vars(template, vars);
+            let val = serde_json::Value::String(truncate(&resolved));
+            RecipeStore::set_var(service.db.conn(), recipe_id, store_as, &val);
+            StepResult::Continue
+        }
+
+        RecipeStep::Filter {
+            input_var,
+            field,
+            op,
+            value,
+            store_as,
+        } => execute_filter(service, recipe_id, input_var, field, op, value, store_as, vars),
+
+        RecipeStep::Sort {
+            input_var,
+            by_field,
+            descending,
+            store_as,
+        } => execute_sort(service, recipe_id, input_var, by_field, *descending, store_as, vars),
+
+        RecipeStep::Aggregate {
+            input_var,
+            op,
+            field,
+            store_as,
+        } => execute_aggregate(service, recipe_id, input_var, op, field.as_deref(), store_as, vars),
+
+        RecipeStep::Extract {
+            input_var,
+            pattern,
+            store_as,
+        } => execute_extract(service, recipe_id, input_var, pattern, store_as, vars),
+
+        RecipeStep::Branch {
+            condition,
+            then_steps,
+            else_steps,
+        } => execute_branch(service, recipe_id, condition, then_steps, else_steps, vars),
     }
 }
 
@@ -632,6 +688,348 @@ fn render_cited_output(
     }
 
     result
+}
+
+// ── Filter: filter JSON array by field comparison ──
+
+fn execute_filter(
+    service: &mut CompanionService,
+    recipe_id: &str,
+    input_var: &str,
+    field: &str,
+    op: &FilterOp,
+    value: &str,
+    store_as: &str,
+    vars: &HashMap<String, serde_json::Value>,
+) -> StepResult {
+
+    let input = match vars.get(input_var) {
+        Some(v) => v.clone(),
+        None => return StepResult::Failed(format!("Filter: variable '{}' not found", input_var)),
+    };
+
+    // Parse the input as a JSON array (may be a string containing JSON or a direct array)
+    let arr = match parse_json_array(&input) {
+        Some(a) => a,
+        None => return StepResult::Failed(format!("Filter: '{}' is not a JSON array", input_var)),
+    };
+
+    let filtered: Vec<serde_json::Value> = arr
+        .into_iter()
+        .filter(|item| {
+            let field_val = item.get(field);
+            match op {
+                FilterOp::Equals => {
+                    field_val.map_or(false, |v| value_matches_str(v, value))
+                }
+                FilterOp::NotEquals => {
+                    field_val.map_or(true, |v| !value_matches_str(v, value))
+                }
+                FilterOp::Contains => {
+                    field_val
+                        .and_then(|v| v.as_str())
+                        .map_or(false, |s| s.contains(value))
+                }
+                FilterOp::GreaterThan => {
+                    compare_field_value(field_val, value)
+                        .map_or(false, |ord| ord == std::cmp::Ordering::Greater)
+                }
+                FilterOp::LessThan => {
+                    compare_field_value(field_val, value)
+                        .map_or(false, |ord| ord == std::cmp::Ordering::Less)
+                }
+            }
+        })
+        .collect();
+
+    let result = serde_json::to_string(&filtered).unwrap_or_else(|_| "[]".to_string());
+    let val = serde_json::Value::String(truncate(&result));
+    RecipeStore::set_var(service.db.conn(), recipe_id, store_as, &val);
+    StepResult::Continue
+}
+
+// ── Sort: sort JSON array by field ──
+
+fn execute_sort(
+    service: &mut CompanionService,
+    recipe_id: &str,
+    input_var: &str,
+    by_field: &str,
+    descending: bool,
+    store_as: &str,
+    vars: &HashMap<String, serde_json::Value>,
+) -> StepResult {
+    let input = match vars.get(input_var) {
+        Some(v) => v.clone(),
+        None => return StepResult::Failed(format!("Sort: variable '{}' not found", input_var)),
+    };
+
+    let mut arr = match parse_json_array(&input) {
+        Some(a) => a,
+        None => return StepResult::Failed(format!("Sort: '{}' is not a JSON array", input_var)),
+    };
+
+    arr.sort_by(|a, b| {
+        let va = a.get(by_field);
+        let vb = b.get(by_field);
+        let ord = compare_json_values(va, vb);
+        if descending { ord.reverse() } else { ord }
+    });
+
+    let result = serde_json::to_string(&arr).unwrap_or_else(|_| "[]".to_string());
+    let val = serde_json::Value::String(truncate(&result));
+    RecipeStore::set_var(service.db.conn(), recipe_id, store_as, &val);
+    StepResult::Continue
+}
+
+// ── Aggregate: count/sum/min/max/avg over JSON array ──
+
+fn execute_aggregate(
+    service: &mut CompanionService,
+    recipe_id: &str,
+    input_var: &str,
+    op: &AggregateOp,
+    field: Option<&str>,
+    store_as: &str,
+    vars: &HashMap<String, serde_json::Value>,
+) -> StepResult {
+
+    let input = match vars.get(input_var) {
+        Some(v) => v.clone(),
+        None => return StepResult::Failed(format!("Aggregate: variable '{}' not found", input_var)),
+    };
+
+    let arr = match parse_json_array(&input) {
+        Some(a) => a,
+        None => return StepResult::Failed(format!("Aggregate: '{}' is not a JSON array", input_var)),
+    };
+
+    let result_str = match op {
+        AggregateOp::Count => arr.len().to_string(),
+        AggregateOp::Sum | AggregateOp::Min | AggregateOp::Max | AggregateOp::Avg => {
+            let values: Vec<f64> = arr
+                .iter()
+                .filter_map(|item| {
+                    let v = match field {
+                        Some(f) => item.get(f)?,
+                        None => item,
+                    };
+                    json_to_f64(v)
+                })
+                .collect();
+
+            if values.is_empty() {
+                "0".to_string()
+            } else {
+                match op {
+                    AggregateOp::Sum => values.iter().sum::<f64>().to_string(),
+                    AggregateOp::Min => values.iter().cloned().fold(f64::INFINITY, f64::min).to_string(),
+                    AggregateOp::Max => values.iter().cloned().fold(f64::NEG_INFINITY, f64::max).to_string(),
+                    AggregateOp::Avg => {
+                        let sum: f64 = values.iter().sum();
+                        (sum / values.len() as f64).to_string()
+                    }
+                    _ => unreachable!(),
+                }
+            }
+        }
+    };
+
+    let val = serde_json::Value::String(result_str);
+    RecipeStore::set_var(service.db.conn(), recipe_id, store_as, &val);
+    StepResult::Continue
+}
+
+// ── Extract: key path traversal or regex extraction ──
+
+fn execute_extract(
+    service: &mut CompanionService,
+    recipe_id: &str,
+    input_var: &str,
+    pattern: &str,
+    store_as: &str,
+    vars: &HashMap<String, serde_json::Value>,
+) -> StepResult {
+    let input = match vars.get(input_var) {
+        Some(v) => v.clone(),
+        None => return StepResult::Failed(format!("Extract: variable '{}' not found", input_var)),
+    };
+
+    if pattern.starts_with('/') {
+        // Regex extraction — pattern is "/regex/"
+        let regex_str = pattern.trim_start_matches('/').trim_end_matches('/');
+        match regex::Regex::new(regex_str) {
+            Ok(re) => {
+                let text = match &input {
+                    serde_json::Value::String(s) => s.clone(),
+                    other => serde_json::to_string(other).unwrap_or_default(),
+                };
+                let extracted = re
+                    .find(&text)
+                    .map(|m| m.as_str().to_string())
+                    .unwrap_or_default();
+                let val = serde_json::Value::String(extracted);
+                RecipeStore::set_var(service.db.conn(), recipe_id, store_as, &val);
+                StepResult::Continue
+            }
+            Err(e) => StepResult::Failed(format!("Extract: invalid regex '{}': {}", regex_str, e)),
+        }
+    } else {
+        // Dot-notation key path traversal (e.g. "data.name" or "items.0.title")
+        let parsed = match &input {
+            serde_json::Value::String(s) => {
+                serde_json::from_str::<serde_json::Value>(s).unwrap_or(input.clone())
+            }
+            other => other.clone(),
+        };
+
+        let mut current = &parsed;
+        for key in pattern.split('.') {
+            current = if let Ok(idx) = key.parse::<usize>() {
+                match current.get(idx) {
+                    Some(v) => v,
+                    None => {
+                        let val = serde_json::Value::String(String::new());
+                        RecipeStore::set_var(service.db.conn(), recipe_id, store_as, &val);
+                        return StepResult::Continue;
+                    }
+                }
+            } else {
+                match current.get(key) {
+                    Some(v) => v,
+                    None => {
+                        let val = serde_json::Value::String(String::new());
+                        RecipeStore::set_var(service.db.conn(), recipe_id, store_as, &val);
+                        return StepResult::Continue;
+                    }
+                }
+            };
+        }
+
+        let result = match current {
+            serde_json::Value::String(s) => s.clone(),
+            other => serde_json::to_string(other).unwrap_or_default(),
+        };
+        let val = serde_json::Value::String(truncate(&result));
+        RecipeStore::set_var(service.db.conn(), recipe_id, store_as, &val);
+        StepResult::Continue
+    }
+}
+
+// ── Branch: conditional execution of step lists ──
+
+fn execute_branch(
+    service: &mut CompanionService,
+    recipe_id: &str,
+    condition: &str,
+    then_steps: &[RecipeStep],
+    else_steps: &[RecipeStep],
+    vars: &HashMap<String, serde_json::Value>,
+) -> StepResult {
+    // Evaluate condition: check if the variable named by `condition` is truthy.
+    // A value is truthy if it exists, is non-empty, and is not "false" or "0".
+    let is_truthy = vars.get(condition).map_or(false, |v| {
+        match v {
+            serde_json::Value::Null => false,
+            serde_json::Value::Bool(b) => *b,
+            serde_json::Value::Number(n) => n.as_f64().map_or(false, |f| f != 0.0),
+            serde_json::Value::String(s) => {
+                !s.is_empty() && s != "false" && s != "0"
+            }
+            serde_json::Value::Array(a) => !a.is_empty(),
+            serde_json::Value::Object(o) => !o.is_empty(),
+        }
+    });
+
+    let steps_to_run = if is_truthy { then_steps } else { else_steps };
+
+    // Execute each sub-step inline, reloading vars between steps
+    let mut current_vars = vars.clone();
+    for sub_step in steps_to_run {
+        let result = execute_step(service, recipe_id, sub_step, &current_vars);
+        match result {
+            StepResult::Continue | StepResult::Notify(_) => {
+                if let StepResult::Notify(msg) = &result {
+                    deliver_notification(service, recipe_id, msg);
+                }
+                // Reload vars after each sub-step
+                current_vars = RecipeStore::get_vars(service.db.conn(), recipe_id);
+            }
+            StepResult::Failed(err) => return StepResult::Failed(err),
+            StepResult::Waiting => return StepResult::Waiting,
+            StepResult::Done => return StepResult::Done,
+            StepResult::JumpTo(t) => return StepResult::JumpTo(t),
+        }
+    }
+
+    StepResult::Continue
+}
+
+// ── JSON helpers for Filter/Sort/Aggregate ──
+
+/// Parse a serde_json::Value into a Vec. Handles both direct arrays and strings containing JSON.
+fn parse_json_array(val: &serde_json::Value) -> Option<Vec<serde_json::Value>> {
+    match val {
+        serde_json::Value::Array(a) => Some(a.clone()),
+        serde_json::Value::String(s) => {
+            serde_json::from_str::<Vec<serde_json::Value>>(s).ok()
+        }
+        _ => None,
+    }
+}
+
+/// Check if a JSON value matches a string representation (handles numbers and strings).
+fn value_matches_str(v: &serde_json::Value, s: &str) -> bool {
+    match v {
+        serde_json::Value::String(vs) => vs == s,
+        serde_json::Value::Number(n) => n.to_string() == s,
+        serde_json::Value::Bool(b) => b.to_string() == s,
+        serde_json::Value::Null => s.is_empty() || s == "null",
+        _ => false,
+    }
+}
+
+/// Compare a JSON field value against a string threshold numerically.
+fn compare_field_value(
+    field_val: Option<&serde_json::Value>,
+    threshold: &str,
+) -> Option<std::cmp::Ordering> {
+    let fv = json_to_f64(field_val?)?;
+    let tv: f64 = threshold.parse().ok()?;
+    fv.partial_cmp(&tv)
+}
+
+/// Compare two optional JSON values for sorting.
+fn compare_json_values(
+    a: Option<&serde_json::Value>,
+    b: Option<&serde_json::Value>,
+) -> std::cmp::Ordering {
+    match (a, b) {
+        (None, None) => std::cmp::Ordering::Equal,
+        (None, Some(_)) => std::cmp::Ordering::Less,
+        (Some(_), None) => std::cmp::Ordering::Greater,
+        (Some(va), Some(vb)) => {
+            // Try numeric comparison first
+            if let (Some(na), Some(nb)) = (json_to_f64(va), json_to_f64(vb)) {
+                return na.partial_cmp(&nb).unwrap_or(std::cmp::Ordering::Equal);
+            }
+            // Fall back to string comparison
+            let sa = va.as_str().map(|s| s.to_string())
+                .unwrap_or_else(|| serde_json::to_string(va).unwrap_or_default());
+            let sb = vb.as_str().map(|s| s.to_string())
+                .unwrap_or_else(|| serde_json::to_string(vb).unwrap_or_default());
+            sa.cmp(&sb)
+        }
+    }
+}
+
+/// Extract an f64 from a JSON value (handles numbers and numeric strings).
+fn json_to_f64(v: &serde_json::Value) -> Option<f64> {
+    match v {
+        serde_json::Value::Number(n) => n.as_f64(),
+        serde_json::Value::String(s) => s.parse::<f64>().ok(),
+        _ => None,
+    }
 }
 
 /// Deliver a recipe notification as a proactive message.

@@ -252,6 +252,16 @@ fn build_companion(config: CompanionConfig) -> CompanionService {
     let snapshot = yantrik_companion::skills::load_skill_snapshot_with_services(&skills_dir, &config_services);
     companion.apply_skill_snapshot(&snapshot);
 
+    // Initialize CognitiveRouter for LLM-free tool/recipe routing
+    let router_embedder: Box<dyn yantrik_ml::Embedder> = if let Some(ref dir) = companion.config.yantrikdb.embedder_model_dir {
+        Box::new(CandleEmbedder::from_dir(std::path::Path::new(dir))
+            .expect("failed to load router embedder"))
+    } else {
+        Box::new(CandleEmbedder::from_hub("sentence-transformers/all-MiniLM-L6-v2", None)
+            .expect("failed to load router embedder"))
+    };
+    companion.init_cognitive_router(router_embedder);
+
     companion
 }
 

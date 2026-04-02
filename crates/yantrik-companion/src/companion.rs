@@ -10,6 +10,7 @@ use yantrik_ml::{
     ModelCapabilityProfile, ModelFamily, ToolFamily,
     parse_tool_calls, extract_text_content,
     ChatTemplate, template_for_family,
+    CognitiveRouter, RouteDecision,
 };
 
 use crate::active_context::ActiveDayContext;
@@ -618,6 +619,11 @@ pub struct CompanionService {
     /// Cognitive Event Bus — typed, causal, replayable event system.
     pub event_bus: Option<yantrik_os::EventBus>,
 
+    /// Cognitive Router — embedding-based tool routing without LLM.
+    /// Handles conversation, tool matching, and template responses.
+    /// Falls through to LLM for creative/complex tasks.
+    pub cognitive_router: Option<CognitiveRouter>,
+
     /// Model Capability Profile — auto-detected from LLM model name.
     /// Controls tool exposure, routing strategy, context budgets, and guardrails.
     pub capability_profile: ModelCapabilityProfile,
@@ -877,6 +883,7 @@ impl CompanionService {
             user_interests,
             user_location,
             event_bus: None,
+            cognitive_router: None, // initialized via init_cognitive_router()
             capability_profile,
             active_context: ActiveDayContext::new(),
             trust_state,
@@ -889,6 +896,40 @@ impl CompanionService {
     /// Attach a cognitive event bus for tool execution tracing.
     pub fn set_event_bus(&mut self, bus: yantrik_os::EventBus) {
         self.event_bus = Some(bus);
+    }
+
+    /// Initialize the cognitive router with an embedder and register all tools.
+    ///
+    /// Call after construction. The router handles conversation and tool routing
+    /// without touching the LLM — only creative/complex tasks fall through.
+    pub fn init_cognitive_router(&mut self, embedder: Box<dyn yantrik_ml::Embedder>) {
+        let router = CognitiveRouter::new(embedder);
+
+        // Register all tools from the companion's registry
+        let all_meta = self.registry.list_metadata(PermissionLevel::Dangerous);
+        for meta in &all_meta {
+            router.register_tool(meta.name, &meta.description, meta.category);
+        }
+
+        // Register recipe templates alongside tools
+        let templates = crate::recipe_templates::all_templates();
+        let recipe_count = templates.len();
+        for t in &templates {
+            router.register_recipe(
+                t.id,
+                t.name,
+                t.description,
+                t.category,
+                t.keywords,
+            );
+        }
+
+        tracing::info!(
+            tools = all_meta.len(),
+            recipes = recipe_count,
+            "Cognitive Router initialized (tools + recipes)"
+        );
+        self.cognitive_router = Some(router);
     }
 
     /// Get the family-aware chat template for this model.
@@ -1127,7 +1168,7 @@ impl CompanionService {
                     };
                     vars.insert(store_as.clone(), truncated);
                 }
-                RecipeStep::Think { prompt, store_as } => {
+                RecipeStep::Think { prompt, store_as, .. } => {
                     // Resolve variables in prompt
                     let resolved_prompt = resolve_template_vars(prompt, &vars);
 
@@ -1229,6 +1270,91 @@ impl CompanionService {
                 tool_calls_made: vec![],
                 offline_mode: false,
             };
+        }
+
+        // Step 0.3: Cognitive Router — try to handle without LLM
+        // Conversation (greetings/farewell) and high-confidence tool matches
+        // are handled instantly. Everything else falls through to the LLM pipeline.
+        if let Some(ref router) = self.cognitive_router {
+            let decision = router.route(user_text);
+            tracing::info!(
+                decision = ?decision,
+                tool_count = router.tool_count(),
+                recipe_count = router.recipe_count(),
+                "CognitiveRouter decision"
+            );
+            match decision {
+                RouteDecision::Conversation { response } => {
+                    tracing::info!(path = "cognitive-router", "Conversation handled without LLM");
+                    // Still record interaction for bond tracking
+                    if self.config.bond.enabled {
+                        let (new_level, level_changed) = BondTracker::score_interaction(
+                            self.db.conn(), user_text, &response, 0,
+                        );
+                        self.bond_level = new_level;
+                        self.bond_level_changed = level_changed;
+                    }
+                    return AgentResponse {
+                        message: response,
+                        memories_recalled: 0,
+                        urges_delivered: vec![],
+                        tool_calls_made: vec![],
+                        offline_mode: false,
+                    };
+                }
+                RouteDecision::Tool { ref name, score, .. } if score >= 0.50 && self.config.tools.enabled => {
+                    // Handle virtual tools (no registry entry needed)
+                    let response = if name == "current_time" {
+                        CognitiveRouter::current_time_response()
+                    } else {
+                        let tool_ctx = ToolContext {
+                            db: &self.db,
+                            max_permission: parse_permission(&self.config.tools.max_permission),
+                            registry_metadata: None,
+                            task_manager: Some(&self.task_manager),
+                            agent_spawner: None,
+                            incognito: self.incognito,
+                        };
+                        let args = extract_router_args(name, user_text);
+                        let raw_result = self.registry.execute(&tool_ctx, name, &args);
+                        CognitiveRouter::format_response_with_bond(
+                            name, &raw_result, self.bond_level as u8 * 2,
+                        )
+                    };
+                    tracing::info!(
+                        tool = name.as_str(), score,
+                        path = "cognitive-router",
+                        "Tool executed without LLM"
+                    );
+                    return AgentResponse {
+                        message: response,
+                        memories_recalled: 0,
+                        urges_delivered: vec![],
+                        tool_calls_made: vec![name.clone()],
+                        offline_mode: false,
+                    };
+                }
+                RouteDecision::Recipe { ref id, ref name, score } if score >= 0.40 => {
+                    // Recipe match — look up template and execute
+                    tracing::info!(
+                        recipe_id = id.as_str(), recipe_name = name.as_str(), score,
+                        path = "cognitive-router",
+                        "Recipe matched without LLM"
+                    );
+                    if let Some(template) = crate::recipe_templates::get_template(id) {
+                        let steps = (template.steps)();
+                        let goal = template.description.to_string();
+                        if let Some(response) = self.execute_recipe_sync(user_text, &steps, &goal) {
+                            return response;
+                        }
+                        tracing::warn!(recipe_id = id.as_str(), "Recipe execution failed, falling through");
+                    } else {
+                        tracing::warn!(recipe_id = id.as_str(), "Recipe template not found");
+                    }
+                }
+                // NeedsLLM or low-confidence match → fall through to LLM pipeline
+                _ => {}
+            }
         }
 
         // Step 0.5: Query Planner — ask LLM if this needs a recipe
@@ -2062,6 +2188,71 @@ impl CompanionService {
                 tool_calls_made: vec![],
                 offline_mode: false,
             };
+        }
+
+        // Step 0.3: Cognitive Router — try to handle without LLM (streaming)
+        if let Some(ref router) = self.cognitive_router {
+            let decision = router.route(user_text);
+            tracing::info!(decision = ?decision, "CognitiveRouter (streaming)");
+            match decision {
+                RouteDecision::Conversation { response } => {
+                    on_token(&response);
+                    if self.config.bond.enabled {
+                        let (new_level, level_changed) = BondTracker::score_interaction(
+                            self.db.conn(), user_text, &response, 0,
+                        );
+                        self.bond_level = new_level;
+                        self.bond_level_changed = level_changed;
+                    }
+                    return AgentResponse {
+                        message: response,
+                        memories_recalled: 0,
+                        urges_delivered: vec![],
+                        tool_calls_made: vec![],
+                        offline_mode: false,
+                    };
+                }
+                RouteDecision::Tool { ref name, score, .. } if score >= 0.50 && self.config.tools.enabled => {
+                    // Handle virtual tools (no registry entry needed)
+                    let response = if name == "current_time" {
+                        CognitiveRouter::current_time_response()
+                    } else {
+                        let tool_ctx = ToolContext {
+                            db: &self.db,
+                            max_permission: parse_permission(&self.config.tools.max_permission),
+                            registry_metadata: None,
+                            task_manager: Some(&self.task_manager),
+                            agent_spawner: None,
+                            incognito: self.incognito,
+                        };
+                        let args = extract_router_args(name, user_text);
+                        let raw_result = self.registry.execute(&tool_ctx, name, &args);
+                        CognitiveRouter::format_response_with_bond(
+                            name, &raw_result, self.bond_level as u8 * 2,
+                        )
+                    };
+                    on_token(&response);
+                    tracing::info!(tool = name.as_str(), score, "Tool executed without LLM (streaming)");
+                    return AgentResponse {
+                        message: response,
+                        memories_recalled: 0,
+                        urges_delivered: vec![],
+                        tool_calls_made: vec![name.clone()],
+                        offline_mode: false,
+                    };
+                }
+                RouteDecision::Recipe { ref id, ref name, score } if score >= 0.40 => {
+                    if let Some(template) = crate::recipe_templates::get_template(id) {
+                        let steps = (template.steps)();
+                        let goal = template.description.to_string();
+                        if let Some(response) = self.execute_recipe_sync(user_text, &steps, &goal) {
+                            on_token(&response.message);
+                            return response;
+                        }
+                    }
+                }
+                _ => {} // Fall through to LLM pipeline
+            }
         }
 
         // Steps 1-6 are identical to handle_message
@@ -4276,4 +4467,286 @@ fn strip_think_tags(text: &str) -> String {
     }
     result.push_str(remaining);
     result.trim().to_string()
+}
+
+// ── Slot extraction for CognitiveRouter direct tool execution ──────────
+
+/// Extract tool-specific arguments from user query text.
+/// Maps the raw query into the JSON args format each tool expects.
+fn extract_router_args(tool_name: &str, query: &str) -> serde_json::Value {
+    match tool_name {
+        // Math
+        "calculate" => {
+            // Extract math expression: strip leading words
+            let expr = query
+                .to_lowercase()
+                .replace("what is", "")
+                .replace("what's", "")
+                .replace("calculate", "")
+                .replace("compute", "")
+                .replace("evaluate", "")
+                .replace("how much is", "")
+                .replace('?', "")
+                .trim()
+                .to_string();
+            serde_json::json!({ "expression": expr })
+        }
+        // Time/Date
+        "date_calc" => serde_json::json!({ "date": "today", "days": 0 }),
+        "timer" => {
+            // Extract duration: "set timer 5 minutes"
+            let q = query.to_lowercase();
+            let duration = extract_number(&q).unwrap_or(5);
+            let unit = if q.contains("hour") { "hours" }
+                else if q.contains("second") { "seconds" }
+                else { "minutes" };
+            serde_json::json!({ "duration": duration, "unit": unit })
+        }
+        // Unit conversion: "convert 100 miles to km"
+        "unit_convert" => {
+            let q = query.to_lowercase();
+            let value = extract_number(&q).unwrap_or(0) as f64;
+            // Find "to" keyword and split
+            let unit_map = [
+                ("miles", "mi"), ("kilometers", "km"), ("km", "km"), ("mi", "mi"),
+                ("celsius", "c"), ("fahrenheit", "f"), ("kelvin", "k"),
+                ("pounds", "lb"), ("kilograms", "kg"), ("kg", "kg"), ("lb", "lb"),
+                ("inches", "in"), ("feet", "ft"), ("meters", "m"), ("yards", "yd"),
+                ("gallons", "gal"), ("liters", "l"), ("ounces", "oz"), ("grams", "g"),
+                ("gb", "gb"), ("mb", "mb"), ("tb", "tb"), ("kb", "kb"),
+            ];
+            let mut from_unit = "";
+            let mut to_unit = "";
+            let words: Vec<&str> = q.split_whitespace().collect();
+            let to_idx = words.iter().position(|&w| w == "to").unwrap_or(words.len());
+            // Before "to" → from unit
+            for word in &words[..to_idx] {
+                for &(name, code) in &unit_map {
+                    if *word == name { from_unit = code; break; }
+                }
+            }
+            // After "to" → to unit
+            for word in words.iter().skip(to_idx + 1) {
+                for &(name, code) in &unit_map {
+                    if *word == name { to_unit = code; break; }
+                }
+            }
+            serde_json::json!({ "value": value, "from": from_unit, "to": to_unit })
+        }
+        // Git
+        "git_status" => {
+            let path = extract_path(query).unwrap_or_else(|| {
+                std::env::var("HOME").unwrap_or_else(|_| ".".into())
+            });
+            serde_json::json!({ "path": path })
+        }
+        "git_commit" => {
+            let msg = query.to_lowercase()
+                .replace("commit", "")
+                .replace("my changes", "")
+                .replace("git", "")
+                .trim()
+                .to_string();
+            let msg = if msg.is_empty() { "Update".to_string() } else { msg };
+            serde_json::json!({ "path": ".", "message": msg })
+        }
+        "git_log" | "git_diff" => serde_json::json!({ "path": "." }),
+        // Files
+        "read_file" => {
+            let path = extract_path(query).unwrap_or(".".into());
+            serde_json::json!({ "path": path })
+        }
+        "glob" => {
+            let pattern = query.to_lowercase()
+                .replace("find all", "")
+                .replace("find", "")
+                .replace("list all", "")
+                .replace("files", "")
+                .trim()
+                .to_string();
+            let pattern = if pattern.is_empty() { "*".into() } else { format!("**/*.{}", pattern.trim()) };
+            serde_json::json!({ "pattern": pattern })
+        }
+        "grep" => {
+            let q = query.to_lowercase();
+            let term = q.replace("search for", "")
+                .replace("search", "")
+                .replace("in source code", "")
+                .replace("in code", "")
+                .replace("in files", "")
+                .replace("grep", "")
+                .trim()
+                .to_string();
+            serde_json::json!({ "pattern": term, "path": "." })
+        }
+        // System
+        "list_processes" => serde_json::json!({}),
+        "kill_process" => {
+            let pid = extract_number(&query.to_lowercase());
+            serde_json::json!({ "pid": pid.unwrap_or(0) })
+        }
+        "disk_usage" => serde_json::json!({ "path": "/" }),
+        "system_info" => serde_json::json!({}),
+        "battery_forecast" => serde_json::json!({}),
+        // Screenshot
+        "screenshot" => serde_json::json!({}),
+        // Network
+        "network_ping" => {
+            let host = extract_ip_or_host(query).unwrap_or("8.8.8.8".into());
+            serde_json::json!({ "host": host })
+        }
+        "network_interfaces" | "network_ports" => serde_json::json!({}),
+        "wifi_scan" => serde_json::json!({}),
+        "wifi_connect" => {
+            let ssid = extract_quoted_or_last_word(query);
+            serde_json::json!({ "ssid": ssid })
+        }
+        "bluetooth_scan" => serde_json::json!({}),
+        "bluetooth_connect" => {
+            let device = extract_quoted_or_last_word(query);
+            serde_json::json!({ "device": device })
+        }
+        // Docker
+        "docker_ps" => serde_json::json!({}),
+        "docker_start" | "docker_stop" => {
+            let container = extract_quoted_or_last_word(query);
+            serde_json::json!({ "container": container })
+        }
+        // Security
+        "antivirus_scan" => {
+            let path = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+            serde_json::json!({ "path": path })
+        }
+        "firewall_list_rules" | "firewall_status" => serde_json::json!({}),
+        // Audio
+        "audio_control" => {
+            let level = extract_number(&query.to_lowercase()).unwrap_or(50);
+            serde_json::json!({ "volume": level })
+        }
+        // Weather
+        "get_weather" => serde_json::json!({}),
+        // Web
+        "web_search" => {
+            let q = query.to_lowercase()
+                .replace("search the web for", "")
+                .replace("search for", "")
+                .replace("web search", "")
+                .replace("google for", "")
+                .replace("search online for", "")
+                .replace("look up", "")
+                .trim()
+                .to_string();
+            serde_json::json!({ "query": q })
+        }
+        "browse" | "open_url" => {
+            let url = extract_url(query).unwrap_or("about:blank".into());
+            serde_json::json!({ "url": url })
+        }
+        "download_file" => {
+            let url = extract_url(query).unwrap_or_default();
+            serde_json::json!({ "url": url })
+        }
+        // Vault
+        "vault_store" => serde_json::json!({ "query": query }),
+        "vault_retrieve" => serde_json::json!({ "query": query }),
+        // Memory
+        "remember" => {
+            let text = query.to_lowercase()
+                .replace("remember that", "")
+                .replace("remember i", "I")
+                .replace("remember my", "my")
+                .replace("remember", "")
+                .trim()
+                .to_string();
+            serde_json::json!({ "text": text, "importance": 0.7 })
+        }
+        "recall" => {
+            let q = query.to_lowercase()
+                .replace("do you remember", "")
+                .replace("what do you know about", "")
+                .replace("recall", "")
+                .trim()
+                .to_string();
+            serde_json::json!({ "query": q })
+        }
+        // Encoding
+        "base64_encode" => {
+            let text = query.replace("encode", "").replace("to base64", "").replace("base64", "").trim().to_string();
+            serde_json::json!({ "text": text })
+        }
+        // Packages
+        "package_list" => serde_json::json!({}),
+        // Services
+        "service_control" => {
+            let q = query.to_lowercase();
+            let action = if q.contains("stop") { "stop" }
+                else if q.contains("restart") { "restart" }
+                else { "start" };
+            let service = extract_quoted_or_last_word(query);
+            serde_json::json!({ "action": action, "service": service })
+        }
+        // Archive
+        "archive_create" => {
+            let source = extract_path(query).unwrap_or_else(|| ".".into());
+            let output = format!("{}.tar.gz", source.trim_end_matches('/'));
+            serde_json::json!({ "output_path": output, "source_paths": [source] })
+        }
+        // Notification
+        "send_notification" => serde_json::json!({ "message": query }),
+        // Desktop
+        "set_wallpaper" => {
+            let path = extract_path(query).unwrap_or_default();
+            serde_json::json!({ "path": path })
+        }
+        // Default: pass query as-is
+        _ => serde_json::json!({ "query": query }),
+    }
+}
+
+/// Extract a number from text.
+fn extract_number(text: &str) -> Option<u64> {
+    text.split_whitespace()
+        .find_map(|w| w.trim_matches(|c: char| !c.is_ascii_digit()).parse::<u64>().ok())
+}
+
+/// Extract a file path from text (looks for / or . separated segments).
+fn extract_path(text: &str) -> Option<String> {
+    text.split_whitespace()
+        .find(|w| w.contains('/') || w.contains('\\') || (w.contains('.') && w.len() > 2))
+        .map(|s| s.to_string())
+}
+
+/// Extract an IP address or hostname from text.
+fn extract_ip_or_host(text: &str) -> Option<String> {
+    text.split_whitespace()
+        .find(|w| {
+            w.contains('.') && w.chars().all(|c| c.is_ascii_digit() || c == '.')
+            || w.contains(".com") || w.contains(".io") || w.contains(".org")
+        })
+        .map(|s| s.to_string())
+}
+
+/// Extract a URL from text.
+fn extract_url(text: &str) -> Option<String> {
+    text.split_whitespace()
+        .find(|w| w.starts_with("http") || w.contains(".com") || w.contains(".io") || w.contains(".org"))
+        .map(|s| {
+            if s.starts_with("http") { s.to_string() }
+            else { format!("https://{}", s) }
+        })
+}
+
+/// Extract a quoted string or the last meaningful word.
+fn extract_quoted_or_last_word(text: &str) -> String {
+    // Check for quoted strings
+    if let Some(start) = text.find('"') {
+        if let Some(end) = text[start + 1..].find('"') {
+            return text[start + 1..start + 1 + end].to_string();
+        }
+    }
+    // Fall back to last word
+    text.split_whitespace()
+        .last()
+        .unwrap_or("unknown")
+        .to_string()
 }
