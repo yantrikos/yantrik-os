@@ -306,7 +306,8 @@ mod platform {
         }
 
         let addr = unsafe { ifr.ifr_ifru.ifru_addr };
-        if addr.sa_family != libc::AF_INET as u16 {
+        // `sa_family` is `u8` on macOS/BSD and `u16` on Linux — compare via `u32`.
+        if addr.sa_family as u32 != libc::AF_INET as u32 {
             return None;
         }
 
