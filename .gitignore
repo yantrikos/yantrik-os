@@ -81,3 +81,18 @@ deploy/yantrik-os/cache/
 # Tracker DB
 .tracker.db
 jira.py
+truenas
+
+# Patent files (backed up on TrueNAS)
+yantrikdb_patent*
+patent_drawings*
+patent_figures/
+
+# Training (backed up on TrueNAS)
+training/
+
+# Misc local-only files
+prompt_catalog.db
+Cargo.companion.toml
+Dockerfile.build
+.dockerignore
