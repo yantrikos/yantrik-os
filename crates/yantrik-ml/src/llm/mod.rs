@@ -10,6 +10,9 @@ mod api;
 mod claude_cli;
 #[cfg(feature = "llamacpp")]
 mod llamacpp;
+#[cfg(feature = "cognitive-kernel")]
+mod cognitive_kernel;
+mod cognitive_router;
 mod fallback;
 
 #[cfg(feature = "candle-llm")]
@@ -20,6 +23,9 @@ pub use self::api::ApiLLM;
 pub use self::claude_cli::ClaudeCliLLM;
 #[cfg(feature = "llamacpp")]
 pub use self::llamacpp::LlamaCppLLM;
+#[cfg(feature = "cognitive-kernel")]
+pub use self::cognitive_kernel::CognitiveKernelLLM;
+pub use self::cognitive_router::{CognitiveRouter, RouteDecision, PlanShape};
 pub use self::fallback::{FallbackLLM, FallbackConfig};
 
 /// Backward-compatible alias for `CandleLLM`.

@@ -35,6 +35,12 @@ sysinfo = { version = "0.33", optional = true }
 # llama.cpp backend (optional)
 llama-cpp-2 = { version = "0.1", optional = true }
 
+# Cognitive Kernel backend (optional)
+ort = { version = "2.0.0-rc.12", optional = true, default-features = false, features = ["ndarray"] }
+ndarray = { version = "0.16", optional = true }
+regex-lite = { version = "0.1", optional = true }
+chrono = { version = "0.4", optional = true }
+
 [features]
 default = ["candle-llm", "candle-stt"]
 
@@ -55,6 +61,9 @@ claude-cli = []
 
 # llama.cpp backend (CPU-only base)
 llamacpp = ["dep:llama-cpp-2"]
+
+# Cognitive Kernel (ONNX-based cortical columns)
+cognitive-kernel = ["dep:ort", "dep:ndarray", "dep:tokenizers", "dep:regex-lite", "dep:chrono"]
 
 # llama.cpp GPU acceleration variants
 llamacpp-cuda = ["llamacpp", "llama-cpp-2/cuda"]          # NVIDIA (GeForce, Quadro, Tesla)
