@@ -6,7 +6,7 @@ fn main() {
 
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
     let shared_ui_path = std::path::Path::new(&manifest_dir)
-        .join("../../crates/yantrik-ui/ui");
+        .join("../../crates/yantrik-ui-slint/ui");
 
     let config = slint_build::CompilerConfiguration::new()
         .with_style("fluent-dark".into())

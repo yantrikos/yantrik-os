@@ -185,5 +185,9 @@ bash deploy/yantrik-os/boot-desktop.sh
 
 ### Known Issues
 
-- **rustc 1.93.1 ICE in `check_mod_deathness`**: Add `#[allow(dead_code)]` to affected module declarations
-- **Local development**: Use workspace `[patch]` sections to override git dependencies with local paths when developing across multiple repos simultaneously.
+- **rustc 1.93.x internal compiler error (ICE) around dead-code / early lints**  
+  This is a **compiler bug**, not bad code in Yantrik. The `yantrik-ui` crate already carries mitigations: see **`crates/yantrik-ui/src/main.rs`** (`#![allow(unused)]` at crate root and `#[allow(dead_code)]` on the `mod` lines called out in comments there).  
+  If you still hit an ICE on **`cargo check`** with another crate, use the stack trace to find the **`mod`** involved and add `#[allow(dead_code)]` on that declaration, or try **`rustup update`** to a newer stable toolchain where the bug may already be fixed.
+
+- **`[patch]` in the root `Cargo.toml`**  
+  The workspace may patch `yantrik-ml` / `yantrikdb-core` to **path dependencies** for in-tree builds. That is intentional for this repo. Only edit `[patch]` when you are deliberately developing those libraries from separate local checkouts alongside `yantrik-os`; otherwise leave it as committed.
