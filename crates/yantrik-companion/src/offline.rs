@@ -103,8 +103,9 @@ impl OfflineResponder {
             || lower.starts_with("good evening")
         {
             return format!(
-                "Hey {}! I'm running in local mode right now — the AI backend is offline. \
-                 But I can still remember things, check your system, and recall what I know.",
+                "Hey {}! I'm here. I can remember things, recall what I know, \
+                 and help you navigate your system. To unlock deeper conversation, \
+                 set up an AI provider in Settings → AI.",
                 user_name
             );
         }
@@ -123,16 +124,16 @@ impl OfflineResponder {
                 .collect::<Vec<_>>()
                 .join("\n");
             return format!(
-                "I can't think deeply right now — the AI backend is offline. \
-                 But I had some things on my mind:\n{}\n\
-                 Your files, apps, and settings still work normally.",
+                "Here's what I noticed:\n{}\n\n\
+                 For deeper conversation, configure an AI provider in Settings → AI.",
                 urge_text
             );
         }
 
         // Bare fallback
-        "I can't think deeply right now — the AI backend is offline. \
-         But I'm still here. Your files, apps, and settings all work normally."
+        "I'm listening. I can remember things you tell me, recall what I know, \
+         and help you with your files and system. \
+         For deeper conversation, set up an AI provider in Settings \u{2192} AI."
             .to_string()
     }
 }

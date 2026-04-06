@@ -243,7 +243,7 @@ fn is_noisy_process(name: &str) -> bool {
 pub fn load_system_config(path: Option<PathBuf>) -> yantrik_os::SystemObserverConfig {
     let Some(p) = path else {
         return yantrik_os::SystemObserverConfig {
-            mock: true,
+            mock: false,
             ..Default::default()
         };
     };

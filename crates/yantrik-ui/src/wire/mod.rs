@@ -55,6 +55,8 @@ pub mod app_framework;
 pub mod cross_app;
 pub mod universal_actions;
 pub mod command_palette;
+pub mod installer;
+pub mod login;
 
 use crate::app_context::AppContext;
 use crate::App;
@@ -105,5 +107,7 @@ pub fn wire_all(ui: &App, ctx: &AppContext) {
     cross_app::wire(ui, ctx);
     ai_onboarding::wire(ui, ctx);
     ai_provider::wire(ui, ctx);
+    installer::wire(ui, ctx);
+    login::wire(ui, ctx);
     callbacks::wire(ui, ctx);
 }

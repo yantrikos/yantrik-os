@@ -79,21 +79,64 @@ component OnboardField inherits Rectangle {
     in property <string> placeholder;
     in-out property <string> value;
     in property <color> text-color: Theme.text-primary;
+    in property <bool> is-password: false;
+    in property <string> label: "";
 
-    width: 280px;
-    height: 36px;
-    border-radius: Theme.r-md;
-    background: Theme.border-default;
-    border-width: 1px;
-    border-color: Theme.border-strong;
-    clip: true;
+    width: 340px;
+    height: self.label != "" ? 68px : 44px;
 
-    TextInput {
-        text <=> root.value;
-        color: root.text-color;
-        font-size: Theme.fs-headline;
-        horizontal-alignment: center;
-        vertical-alignment: center;
+    VerticalLayout {
+        spacing: 4px;
+
+        // Label above field
+        if root.label != "" : Text {
+            text: root.label;
+            color: Theme.text-secondary;
+            font-size: Theme.fs-caption;
+            letter-spacing: 0.5px;
+        }
+
+        Rectangle {
+            height: 44px;
+            border-radius: Theme.r-xl;
+            background: Theme.bg-input;
+            border-width: 1px;
+            border-color: field-input.has-focus ? Theme.cyan : Theme.border-default;
+            clip: true;
+            animate border-color { duration: Theme.dur-normal; }
+            drop-shadow-blur: field-input.has-focus ? 6px : 0;
+            drop-shadow-color: Theme.cyan.transparentize(80%);
+            animate drop-shadow-blur { duration: Theme.dur-normal; }
+
+            TouchArea {
+                clicked => { field-input.focus(); }
+            }
+
+            // Placeholder text
+            if root.value == "" && !field-input.has-focus : Text {
+                x: 16px;
+                width: parent.width - 32px;
+                height: parent.height;
+                text: root.placeholder;
+                color: Theme.text-dim;
+                font-size: Theme.fs-body;
+                vertical-alignment: center;
+                opacity: 0.5;
+            }
+
+            field-input := TextInput {
+                x: 16px;
+                y: 0;
+                width: parent.width - 32px;
+                height: parent.height;
+                text <=> root.value;
+                color: root.text-color;
+                font-size: Theme.fs-body;
+                vertical-alignment: center;
+                input-type: root.is-password ? InputType.password : InputType.text;
+                selection-background-color: Theme.cyan.transparentize(60%);
+            }
+        }
     }
 }
 
@@ -168,6 +211,10 @@ export component OnboardingScreen inherits Rectangle {
     callback set-names(string, string);  // (user_name, companion_name)
     callback set-profile(/* interests */ string, /* home_loc */ string,
                          /* notif_pref */ string);
+    callback install-to-disk(/* username */ string, /* password */ string,
+                             /* full_name */ string, /* hostname */ string,
+                             /* companion_name */ string, /* target_disk */ string);
+    callback install-reboot();
 
     // AI setup callbacks
     callback ai-mode-selected(string);       // "local", "cloud", "later"
@@ -175,6 +222,9 @@ export component OnboardingScreen inherits Rectangle {
     callback ai-api-key-submitted(string, string);  // (provider_type, api_key)
     callback ai-test-connection();
     callback ai-skip-setup();
+
+    /// True when booted from ISO with installer mode (shows username/password/disk fields)
+    in property <bool> installer-mode: false;
 
     // AI setup input properties (set from wire)
     in property <bool> ai-hw-cpu-ok: false;
@@ -187,6 +237,18 @@ export component OnboardingScreen inherits Rectangle {
     in property <string> ai-hw-ram-label: "";
     in property <string> ai-hw-gpu-label: "";
     in property <string> ai-hw-disk-label: "";
+    // Disk info for installer — populated by backend
+    in property <string> disk-1-name: "";   // e.g. "sda"
+    in property <string> disk-1-size: "";   // e.g. "80G"
+    in property <string> disk-1-model: "";  // e.g. "VBOX HARDDISK"
+    in property <string> disk-2-name: "";
+    in property <string> disk-2-size: "";
+    in property <string> disk-2-model: "";
+    in property <string> disk-3-name: "";
+    in property <string> disk-3-size: "";
+    in property <string> disk-3-model: "";
+    in-out property <string> selected-disk: "";  // e.g. "sda"
+    property <string> erase-mode: "full";  // "full" = erase entire disk
     in property <string> ai-hw-recommend: "local";  // "local" or "cloud"
     in property <string> ai-test-status: "";         // "", "testing", "success", "error: ..."
     in property <string> ai-test-model: "";
@@ -201,12 +263,22 @@ export component OnboardingScreen inherits Rectangle {
     // Phase tracking:
     // 0=dim, 1=orb kindles, 2=greeting, 3=name-input,
     // 4=interests, 5=location+notif, 6=hw-scan, 7=ai-mode-select,
-    // 8=ai-provider-setup, 9=ai-test, 10=instruction, 11=ready
+    // 8=ai-provider-setup, 9=ai-test, 10=instruction/install-summary,
+    // 11=install-progress (installer only), 12=install-complete (installer only)
     property <int> phase: 0;
     property <float> timer-elapsed: 0;
     property <string> input-user-name: "";
     property <string> input-companion-name: "";
     property <string> input-home-location: "";
+    // Installer fields (only shown when installer-mode is true)
+    property <string> input-username: "";
+    property <string> input-password: "";
+    property <string> input-password-confirm: "";
+    property <string> input-hostname: "yantrik";
+    property <string> install-error: "";
+    property <bool> installing: false;
+    in-out property <int> install-progress: 0;
+    in-out property <string> install-status: "";
 
     // Interest state — 14 categories, tracked as booleans
     property <bool> int-technology: false;
@@ -245,7 +317,7 @@ export component OnboardingScreen inherits Rectangle {
 
     Timer {
         interval: 16ms;
-        running: phase < 3 || phase == 6;
+        running: phase < 3 || phase == 6 || phase == 11;
         triggered => {
             timer-elapsed += 0.016;
             if timer-elapsed > 0.5 && phase == 0 { phase = 1; }
@@ -260,6 +332,10 @@ export component OnboardingScreen inherits Rectangle {
                 if hw-scan-progress > 0.60 && hw-scan-step < 4 { hw-scan-step = 4; }
                 if hw-scan-progress > 0.75 && hw-scan-step < 5 { hw-scan-step = 5; }
                 if hw-scan-progress > 0.90 && hw-scan-step < 6 { hw-scan-step = 6; }
+            }
+            // Auto-advance to install complete when progress reaches 100
+            if phase == 11 && root.install-progress >= 100 {
+                phase = 12;
             }
         }
     }
@@ -317,6 +393,9 @@ export component OnboardingScreen inherits Rectangle {
                     : phase == 7 ? "How should I think?"
                     : phase == 8 ? "Set up your AI provider."
                     : phase == 9 ? "Testing your AI..."
+                    : phase == 10 && root.installer-mode ? "Ready to install."
+                    : phase == 11 ? "Installing..."
+                    : phase == 12 ? "Installation complete!"
                     : "You're all set.";
                 color: Theme.cyan;
                 font-size: phase < 4 ? 28px : 22px;
@@ -328,52 +407,184 @@ export component OnboardingScreen inherits Rectangle {
                 animate font-size { duration: 400ms; }
             }
 
-            // ── Phase 3: Name input ──────────────────────────────
+            // ── Phase 3: Account Setup ──────────────────────────────
 
             if phase == 3: VerticalLayout {
-                spacing: Theme.sp-4;
+                spacing: Theme.sp-2;
+                padding-left: 40px;
+                padding-right: 40px;
                 opacity: 1.0;
                 animate opacity { duration: 800ms; easing: ease-out; }
 
-                Text {
-                    text: "What should I call you?";
-                    color: Theme.text-secondary;
-                    font-size: Theme.fs-body;
-                    horizontal-alignment: center;
-                    letter-spacing: 1px;
-                }
-
-                HorizontalLayout {
+                // Two-column layout for installer mode
+                if root.installer-mode: HorizontalLayout {
                     alignment: center;
-                    OnboardField {
-                        value <=> root.input-user-name;
-                        placeholder: "Your name";
+                    spacing: 40px;
+
+                    // Left column: Personal
+                    VerticalLayout {
+                        spacing: 6px;
+                        width: 340px;
+
+                        Text {
+                            text: "Your Identity";
+                            color: Theme.cyan;
+                            font-size: Theme.fs-body;
+                            font-weight: 600;
+                            letter-spacing: 1px;
+                        }
+
+                        Rectangle { height: 4px; }
+
+                        OnboardField {
+                            label: "Full Name";
+                            value <=> root.input-user-name;
+                            placeholder: "e.g. John Doe";
+                        }
+
+                        OnboardField {
+                            label: "Username (login)";
+                            value <=> root.input-username;
+                            placeholder: "e.g. john";
+                        }
+
+                        OnboardField {
+                            label: "Password";
+                            value <=> root.input-password;
+                            placeholder: "Choose a strong password";
+                            is-password: true;
+                        }
+
+                        OnboardField {
+                            label: "Confirm Password";
+                            value <=> root.input-password-confirm;
+                            placeholder: "Re-enter password";
+                            is-password: true;
+                        }
+                    }
+
+                    // Right column: System
+                    VerticalLayout {
+                        spacing: 6px;
+                        width: 340px;
+
+                        Text {
+                            text: "System";
+                            color: Theme.cyan;
+                            font-size: Theme.fs-body;
+                            font-weight: 600;
+                            letter-spacing: 1px;
+                        }
+
+                        Rectangle { height: 4px; }
+
+                        OnboardField {
+                            label: "Computer Name";
+                            value <=> root.input-hostname;
+                            placeholder: "e.g. my-desktop";
+                        }
+
+                        Rectangle { height: 10px; }
+
+                        Text {
+                            text: "Your AI Companion";
+                            color: Theme.cyan;
+                            font-size: Theme.fs-body;
+                            font-weight: 600;
+                            letter-spacing: 1px;
+                        }
+
+                        Rectangle { height: 4px; }
+
+                        OnboardField {
+                            label: "Companion Name";
+                            value <=> root.input-companion-name;
+                            placeholder: "e.g. Yantrik";
+                            text-color: Theme.amber;
+                        }
+
+                        Rectangle { height: 10px; }
+
+                        // Subtle info text
+                        Text {
+                            text: "Your companion is an AI assistant that\nlives on your desktop and helps you\nwith daily tasks.";
+                            color: Theme.text-dim;
+                            font-size: Theme.fs-caption;
+                            opacity: 0.6;
+                            wrap: word-wrap;
+                        }
                     }
                 }
 
-                Text {
-                    text: "And what would you like to call me?";
-                    color: Theme.text-secondary;
-                    font-size: Theme.fs-body;
-                    horizontal-alignment: center;
-                    letter-spacing: 1px;
-                }
+                // Single column for non-installer mode
+                if !root.installer-mode: VerticalLayout {
+                    spacing: Theme.sp-3;
 
-                HorizontalLayout {
-                    alignment: center;
-                    OnboardField {
-                        value <=> root.input-companion-name;
-                        text-color: Theme.amber;
+                    Text {
+                        text: "What should I call you?";
+                        color: Theme.text-secondary;
+                        font-size: Theme.fs-body;
+                        horizontal-alignment: center;
+                        letter-spacing: 1px;
+                    }
+
+                    HorizontalLayout {
+                        alignment: center;
+                        OnboardField {
+                            value <=> root.input-user-name;
+                            placeholder: "Your name";
+                        }
+                    }
+
+                    Text {
+                        text: "And what would you like to call me?";
+                        color: Theme.text-secondary;
+                        font-size: Theme.fs-body;
+                        horizontal-alignment: center;
+                        letter-spacing: 1px;
+                    }
+
+                    HorizontalLayout {
+                        alignment: center;
+                        OnboardField {
+                            value <=> root.input-companion-name;
+                            text-color: Theme.amber;
+                            placeholder: "Companion name";
+                        }
                     }
                 }
+
+                // Error display
+                if root.install-error != "": Text {
+                    text: root.install-error;
+                    color: Theme.amber;
+                    font-size: Theme.fs-caption;
+                    horizontal-alignment: center;
+                }
+
+                Rectangle { height: Theme.sp-2; }
 
                 HorizontalLayout {
                     alignment: center;
                     PillButton {
-                        label: "Next →";
+                        label: "Next \u{2192}";
                         clicked => {
-                            root.set-names(root.input-user-name, root.input-companion-name);
-                            root.phase = 4;
+                            if root.installer-mode {
+                                if root.input-username == "" {
+                                    root.install-error = "Username is required";
+                                } else if root.input-password == "" {
+                                    root.install-error = "Password is required";
+                                } else if root.input-password != root.input-password-confirm {
+                                    root.install-error = "Passwords don't match";
+                                } else {
+                                    root.install-error = "";
+                                    root.set-names(root.input-user-name, root.input-companion-name);
+                                    root.phase = 4;
+                                }
+                            } else {
+                                root.set-names(root.input-user-name, root.input-companion-name);
+                                root.phase = 4;
+                            }
                         }
                     }
                 }
@@ -1295,9 +1506,9 @@ export component OnboardingScreen inherits Rectangle {
                 }
             }
 
-            // ── Phase 10: Instruction + ready ─────────────────────
+            // ── Phase 10: Instruction (non-installer) / Install summary (installer) ──
 
-            if phase >= 10: VerticalLayout {
+            if phase == 10 && !root.installer-mode: VerticalLayout {
                 spacing: Theme.sp-3;
                 animate opacity { duration: 1200ms; easing: ease-out; }
 
@@ -1319,11 +1530,573 @@ export component OnboardingScreen inherits Rectangle {
                     opacity: 0.4;
                 }
             }
+
+            if phase == 10 && root.installer-mode: VerticalLayout {
+                spacing: Theme.sp-3;
+                padding-left: 40px;
+                padding-right: 40px;
+                animate opacity { duration: 800ms; easing: ease-out; }
+
+                HorizontalLayout {
+                    alignment: center;
+                    spacing: 40px;
+
+                    // Left: Disk Selection
+                    VerticalLayout {
+                        spacing: 8px;
+                        width: 360px;
+
+                        Text {
+                            text: "Select Installation Disk";
+                            color: Theme.cyan;
+                            font-size: Theme.fs-body;
+                            font-weight: 600;
+                            letter-spacing: 1px;
+                        }
+
+                        Text {
+                            text: "Choose where to install Yantrik OS";
+                            color: Theme.text-dim;
+                            font-size: Theme.fs-caption;
+                        }
+
+                        Rectangle { height: 4px; }
+
+                        // Disk list
+                        if root.disk-1-name == "" && root.disk-2-name == "" : Text {
+                            text: "Scanning for disks...";
+                            color: Theme.text-dim;
+                            font-size: Theme.fs-body;
+                            horizontal-alignment: center;
+                        }
+
+                        // Disk 1
+                        if root.disk-1-name != "": Rectangle {
+                            property <bool> is-selected: root.selected-disk == root.disk-1-name;
+                            width: 360px;
+                            height: 64px;
+                            border-radius: Theme.r-lg;
+                            background: is-selected ? Theme.cyan-glow : Theme.hover-fill;
+                            border-width: is-selected ? 2px : 1px;
+                            border-color: is-selected ? Theme.cyan : Theme.border-default;
+                            animate background, border-color { duration: Theme.dur-normal; }
+
+                            TouchArea { clicked => { root.selected-disk = root.disk-1-name; } }
+
+                            HorizontalLayout {
+                                padding: 12px;
+                                spacing: 12px;
+
+                                VerticalLayout {
+                                    alignment: center;
+                                    Rectangle {
+                                        width: 18px; height: 18px; border-radius: 9px;
+                                        border-width: 2px;
+                                        border-color: is-selected ? Theme.cyan : Theme.border-strong;
+                                        Rectangle {
+                                            x: 4px; y: 4px; width: 10px; height: 10px;
+                                            border-radius: 5px;
+                                            background: is-selected ? Theme.cyan : transparent;
+                                        }
+                                    }
+                                }
+
+                                VerticalLayout {
+                                    alignment: center;
+                                    spacing: 2px;
+                                    Text {
+                                        text: "/dev/" + root.disk-1-name + "  (" + root.disk-1-size + ")";
+                                        color: Theme.text-primary;
+                                        font-size: Theme.fs-body;
+                                        font-weight: 500;
+                                    }
+                                    Text {
+                                        text: root.disk-1-model;
+                                        color: Theme.text-dim;
+                                        font-size: Theme.fs-caption;
+                                    }
+                                }
+                            }
+                        }
+
+                        // Disk 2
+                        if root.disk-2-name != "": Rectangle {
+                            property <bool> is-selected: root.selected-disk == root.disk-2-name;
+                            width: 360px;
+                            height: 64px;
+                            border-radius: Theme.r-lg;
+                            background: is-selected ? Theme.cyan-glow : Theme.hover-fill;
+                            border-width: is-selected ? 2px : 1px;
+                            border-color: is-selected ? Theme.cyan : Theme.border-default;
+                            animate background, border-color { duration: Theme.dur-normal; }
+
+                            TouchArea { clicked => { root.selected-disk = root.disk-2-name; } }
+
+                            HorizontalLayout {
+                                padding: 12px;
+                                spacing: 12px;
+
+                                VerticalLayout {
+                                    alignment: center;
+                                    Rectangle {
+                                        width: 18px; height: 18px; border-radius: 9px;
+                                        border-width: 2px;
+                                        border-color: is-selected ? Theme.cyan : Theme.border-strong;
+                                        Rectangle {
+                                            x: 4px; y: 4px; width: 10px; height: 10px;
+                                            border-radius: 5px;
+                                            background: is-selected ? Theme.cyan : transparent;
+                                        }
+                                    }
+                                }
+
+                                VerticalLayout {
+                                    alignment: center;
+                                    spacing: 2px;
+                                    Text {
+                                        text: "/dev/" + root.disk-2-name + "  (" + root.disk-2-size + ")";
+                                        color: Theme.text-primary;
+                                        font-size: Theme.fs-body;
+                                        font-weight: 500;
+                                    }
+                                    Text {
+                                        text: root.disk-2-model;
+                                        color: Theme.text-dim;
+                                        font-size: Theme.fs-caption;
+                                    }
+                                }
+                            }
+                        }
+
+                        // Disk 3
+                        if root.disk-3-name != "": Rectangle {
+                            property <bool> is-selected: root.selected-disk == root.disk-3-name;
+                            width: 360px;
+                            height: 64px;
+                            border-radius: Theme.r-lg;
+                            background: is-selected ? Theme.cyan-glow : Theme.hover-fill;
+                            border-width: is-selected ? 2px : 1px;
+                            border-color: is-selected ? Theme.cyan : Theme.border-default;
+                            animate background, border-color { duration: Theme.dur-normal; }
+
+                            TouchArea { clicked => { root.selected-disk = root.disk-3-name; } }
+
+                            HorizontalLayout {
+                                padding: 12px;
+                                spacing: 12px;
+
+                                VerticalLayout {
+                                    alignment: center;
+                                    Rectangle {
+                                        width: 18px; height: 18px; border-radius: 9px;
+                                        border-width: 2px;
+                                        border-color: is-selected ? Theme.cyan : Theme.border-strong;
+                                        Rectangle {
+                                            x: 4px; y: 4px; width: 10px; height: 10px;
+                                            border-radius: 5px;
+                                            background: is-selected ? Theme.cyan : transparent;
+                                        }
+                                    }
+                                }
+
+                                VerticalLayout {
+                                    alignment: center;
+                                    spacing: 2px;
+                                    Text {
+                                        text: "/dev/" + root.disk-3-name + "  (" + root.disk-3-size + ")";
+                                        color: Theme.text-primary;
+                                        font-size: Theme.fs-body;
+                                        font-weight: 500;
+                                    }
+                                    Text {
+                                        text: root.disk-3-model;
+                                        color: Theme.text-dim;
+                                        font-size: Theme.fs-caption;
+                                    }
+                                }
+                            }
+                        }
+
+                        Rectangle { height: 8px; }
+
+                        // Erase mode
+                        Text {
+                            text: "Installation Type";
+                            color: Theme.cyan;
+                            font-size: Theme.fs-body;
+                            font-weight: 600;
+                            letter-spacing: 1px;
+                        }
+
+                        // Erase entire disk option
+                        Rectangle {
+                            width: 360px;
+                            height: 52px;
+                            border-radius: Theme.r-lg;
+                            background: root.erase-mode == "full" ? Theme.cyan-glow : Theme.hover-fill;
+                            border-width: root.erase-mode == "full" ? 2px : 1px;
+                            border-color: root.erase-mode == "full" ? Theme.cyan : Theme.border-default;
+
+                            TouchArea {
+                                clicked => { root.erase-mode = "full"; }
+                            }
+
+                            HorizontalLayout {
+                                padding: 12px;
+                                spacing: 12px;
+
+                                VerticalLayout {
+                                    alignment: center;
+                                    Rectangle {
+                                        width: 18px; height: 18px;
+                                        border-radius: 9px;
+                                        border-width: 2px;
+                                        border-color: root.erase-mode == "full" ? Theme.cyan : Theme.border-strong;
+                                        Rectangle {
+                                            x: 4px; y: 4px;
+                                            width: 10px; height: 10px;
+                                            border-radius: 5px;
+                                            background: root.erase-mode == "full" ? Theme.cyan : transparent;
+                                        }
+                                    }
+                                }
+
+                                VerticalLayout {
+                                    alignment: center;
+                                    spacing: 2px;
+                                    Text {
+                                        text: "Erase disk and install Yantrik OS";
+                                        color: Theme.text-primary;
+                                        font-size: Theme.fs-body;
+                                        font-weight: 500;
+                                    }
+                                    Text {
+                                        text: "All data on the selected disk will be erased";
+                                        color: Theme.text-dim;
+                                        font-size: Theme.fs-micro;
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Right: Summary
+                    VerticalLayout {
+                        spacing: 8px;
+                        width: 300px;
+
+                        Text {
+                            text: "Installation Summary";
+                            color: Theme.cyan;
+                            font-size: Theme.fs-body;
+                            font-weight: 600;
+                            letter-spacing: 1px;
+                        }
+
+                        Rectangle { height: 4px; }
+
+                        Rectangle {
+                            width: 300px;
+                            border-radius: Theme.r-lg;
+                            background: Theme.hover-fill;
+                            border-width: 1px;
+                            border-color: Theme.border-default;
+                            height: install-summary-col.preferred-height;
+
+                            install-summary-col := VerticalLayout {
+                                padding: 16px;
+                                spacing: 10px;
+
+                                HorizontalLayout {
+                                    Text { text: "User"; color: Theme.text-dim; font-size: Theme.fs-caption; horizontal-stretch: 1; }
+                                    Text { text: root.input-user-name != "" ? root.input-user-name : root.input-username; color: Theme.text-primary; font-size: Theme.fs-caption; font-weight: 500; }
+                                }
+
+                                HorizontalLayout {
+                                    Text { text: "Login"; color: Theme.text-dim; font-size: Theme.fs-caption; horizontal-stretch: 1; }
+                                    Text { text: root.input-username; color: Theme.text-primary; font-size: Theme.fs-caption; font-weight: 500; }
+                                }
+
+                                HorizontalLayout {
+                                    Text { text: "Host"; color: Theme.text-dim; font-size: Theme.fs-caption; horizontal-stretch: 1; }
+                                    Text { text: root.input-hostname; color: Theme.text-primary; font-size: Theme.fs-caption; font-weight: 500; }
+                                }
+
+                                HorizontalLayout {
+                                    Text { text: "Disk"; color: Theme.text-dim; font-size: Theme.fs-caption; horizontal-stretch: 1; }
+                                    Text {
+                                        text: root.selected-disk != "" ? "/dev/" + root.selected-disk : "Auto-detect";
+                                        color: Theme.text-primary; font-size: Theme.fs-caption; font-weight: 500;
+                                    }
+                                }
+
+                                HorizontalLayout {
+                                    Text { text: "Companion"; color: Theme.text-dim; font-size: Theme.fs-caption; horizontal-stretch: 1; }
+                                    Text {
+                                        text: root.input-companion-name != "" ? root.input-companion-name : root.companion-name;
+                                        color: Theme.amber; font-size: Theme.fs-caption; font-weight: 500;
+                                    }
+                                }
+
+                                Rectangle { height: 1px; background: Theme.separator; }
+
+                                Text {
+                                    text: "\u{26A0} This will erase the selected disk.\nAll existing data will be permanently lost.";
+                                    color: Theme.amber;
+                                    font-size: Theme.fs-micro;
+                                    horizontal-alignment: center;
+                                    wrap: word-wrap;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if root.install-error != "": Text {
+                    text: root.install-error;
+                    color: Theme.amber;
+                    font-size: Theme.fs-caption;
+                    horizontal-alignment: center;
+                }
+
+                Rectangle { height: Theme.sp-2; }
+
+                HorizontalLayout {
+                    alignment: center;
+                    spacing: Theme.sp-3;
+
+                    PillButton {
+                        label: "\u{2190} Back";
+                        clicked => { root.phase = 9; }
+                    }
+
+                    PillButton {
+                        label: "Install Now";
+                        width: 180px;
+                        clicked => {
+                            root.install-error = "";
+                            root.installing = true;
+                            // Don't reset install-progress here — would break parent binding
+                            root.install-to-disk(
+                                root.input-username, root.input-password,
+                                root.input-user-name, root.input-hostname,
+                                root.input-companion-name != "" ? root.input-companion-name : root.companion-name,
+                                root.selected-disk
+                            );
+                            root.phase = 11;
+                        }
+                    }
+                }
+            }
+
+            // ── Phase 11: Installation progress (installer only) ─────
+
+            if phase == 11: VerticalLayout {
+                spacing: Theme.sp-4;
+                animate opacity { duration: 600ms; easing: ease-out; }
+
+                // Progress bar
+                HorizontalLayout {
+                    alignment: center;
+                    Rectangle {
+                        width: 340px;
+                        height: 6px;
+                        border-radius: 3px;
+                        background: Theme.hover-fill-strong;
+
+                        Rectangle {
+                            width: parent.width * root.install-progress / 100;
+                            height: parent.height;
+                            border-radius: 3px;
+                            background: Theme.cyan;
+                            drop-shadow-blur: 6px;
+                            drop-shadow-color: Theme.cyan-glow;
+                            animate width { duration: 300ms; }
+                        }
+                    }
+                }
+
+                // Percentage
+                Text {
+                    text: root.install-progress + "%";
+                    color: Theme.cyan;
+                    font-size: Theme.fs-headline;
+                    font-weight: 600;
+                    horizontal-alignment: center;
+                }
+
+                // Status text
+                Text {
+                    text: root.install-status;
+                    color: Theme.text-secondary;
+                    font-size: Theme.fs-body;
+                    horizontal-alignment: center;
+                }
+
+                // Step checklist
+                HorizontalLayout {
+                    alignment: center;
+                    VerticalLayout {
+                        width: 280px;
+                        spacing: Theme.sp-2;
+
+                        HorizontalLayout {
+                            spacing: Theme.sp-3;
+                            Text {
+                                text: root.install-progress >= 10 ? "\u{2713}" : "\u{25CB}";
+                                color: root.install-progress >= 10 ? Theme.color-success : Theme.text-dim;
+                                font-size: Theme.fs-body;
+                                width: 20px;
+                            }
+                            Text {
+                                text: "Partitioning disk";
+                                color: root.install-progress >= 10 ? Theme.text-primary : Theme.text-dim;
+                                font-size: Theme.fs-body;
+                            }
+                        }
+
+                        HorizontalLayout {
+                            spacing: Theme.sp-3;
+                            Text {
+                                text: root.install-progress >= 25 ? "\u{2713}" : "\u{25CB}";
+                                color: root.install-progress >= 25 ? Theme.color-success : Theme.text-dim;
+                                font-size: Theme.fs-body;
+                                width: 20px;
+                            }
+                            Text {
+                                text: "Formatting";
+                                color: root.install-progress >= 25 ? Theme.text-primary : Theme.text-dim;
+                                font-size: Theme.fs-body;
+                            }
+                        }
+
+                        HorizontalLayout {
+                            spacing: Theme.sp-3;
+                            Text {
+                                text: root.install-progress >= 60 ? "\u{2713}" : "\u{25CB}";
+                                color: root.install-progress >= 60 ? Theme.color-success : Theme.text-dim;
+                                font-size: Theme.fs-body;
+                                width: 20px;
+                            }
+                            Text {
+                                text: "Copying files";
+                                color: root.install-progress >= 60 ? Theme.text-primary : Theme.text-dim;
+                                font-size: Theme.fs-body;
+                            }
+                        }
+
+                        HorizontalLayout {
+                            spacing: Theme.sp-3;
+                            Text {
+                                text: root.install-progress >= 80 ? "\u{2713}" : "\u{25CB}";
+                                color: root.install-progress >= 80 ? Theme.color-success : Theme.text-dim;
+                                font-size: Theme.fs-body;
+                                width: 20px;
+                            }
+                            Text {
+                                text: "Installing bootloader";
+                                color: root.install-progress >= 80 ? Theme.text-primary : Theme.text-dim;
+                                font-size: Theme.fs-body;
+                            }
+                        }
+
+                        HorizontalLayout {
+                            spacing: Theme.sp-3;
+                            Text {
+                                text: root.install-progress >= 95 ? "\u{2713}" : "\u{25CB}";
+                                color: root.install-progress >= 95 ? Theme.color-success : Theme.text-dim;
+                                font-size: Theme.fs-body;
+                                width: 20px;
+                            }
+                            Text {
+                                text: "Configuring system";
+                                color: root.install-progress >= 95 ? Theme.text-primary : Theme.text-dim;
+                                font-size: Theme.fs-body;
+                            }
+                        }
+
+                        HorizontalLayout {
+                            spacing: Theme.sp-3;
+                            Text {
+                                text: root.install-progress >= 100 ? "\u{2713}" : "\u{25CB}";
+                                color: root.install-progress >= 100 ? Theme.color-success : Theme.text-dim;
+                                font-size: Theme.fs-body;
+                                width: 20px;
+                            }
+                            Text {
+                                text: "Complete";
+                                color: root.install-progress >= 100 ? Theme.color-success : Theme.text-dim;
+                                font-size: Theme.fs-body;
+                                font-weight: root.install-progress >= 100 ? 600 : 400;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ── Phase 12: Installation complete (installer only) ─────
+
+            if phase == 12: VerticalLayout {
+                spacing: Theme.sp-5;
+                animate opacity { duration: 800ms; easing: ease-out; }
+
+                Text {
+                    text: "Yantrik OS has been installed successfully.";
+                    color: Theme.text-secondary;
+                    font-size: Theme.fs-body;
+                    horizontal-alignment: center;
+                    letter-spacing: 1px;
+                }
+
+                HorizontalLayout {
+                    alignment: center;
+                    Rectangle {
+                        width: 340px;
+                        height: reboot-col.preferred-height;
+                        border-radius: Theme.r-lg;
+                        background: Theme.hover-fill;
+                        border-width: 1px;
+                        border-color: Theme.color-success.transparentize(75%);
+
+                        reboot-col := VerticalLayout {
+                            padding: Theme.sp-5;
+                            spacing: Theme.sp-3;
+                            alignment: center;
+
+                            Text {
+                                text: "\u{2713}";
+                                color: Theme.color-success;
+                                font-size: 48px;
+                                horizontal-alignment: center;
+                            }
+
+                            Text {
+                                text: "Remove the installation media and reboot to start using Yantrik OS.";
+                                color: Theme.text-secondary;
+                                font-size: Theme.fs-body;
+                                horizontal-alignment: center;
+                                wrap: word-wrap;
+                            }
+                        }
+                    }
+                }
+
+                HorizontalLayout {
+                    alignment: center;
+                    PillButton {
+                        label: "Reboot";
+                        width: 180px;
+                        clicked => {
+                            root.install-reboot();
+                        }
+                    }
+                }
+            }
         }
     }
 
-    // Ready orb tap area (only after instruction shown)
-    if phase >= 10: TouchArea {
+    // Ready orb tap area (only in non-installer mode after instruction shown)
+    if phase == 10 && !root.installer-mode: TouchArea {
         width: 100%;
         height: 100%;
         clicked => { root.ready(); }
@@ -1343,7 +2116,7 @@ export component OnboardingScreen inherits Rectangle {
             font-size: Theme.fs-micro;
             horizontal-alignment: right;
             vertical-alignment: center;
-            opacity: phase >= 3 && phase < 10 ? 0.4 : 0;
+            opacity: phase >= 3 && phase < 10 && !root.installing ? 0.4 : 0;
             animate opacity { duration: Theme.dur-slow; }
         }
     }

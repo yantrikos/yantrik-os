@@ -14,6 +14,7 @@ import { DesktopScreen } from "desktop.slint";
 import { BondScreen, BondData } from "bond.slint";
 import { PersonalityScreen, OpinionData, SharedRefData } from "personality.slint";
 import { LockScreen } from "lock.slint";
+import { LoginScreen } from "login.slint";
 import { SettingsScreen, SettingsCategoryItem, AIProviderData, AIModelData, AIStatusData } from "settings.slint";
 import { SkillData } from "skill_store.slint";
 import { MemoryBrowser, MemoryItem } from "memory_browser.slint";
@@ -245,6 +246,11 @@ export component App inherits Window {
     in property <string> lock-greeting: "";
     callback try-unlock(string);
     callback lock-screen();
+
+    // Login screen (screen 32) — graphical login after install
+    in property <string> login-error: "";
+    in property <string> login-hostname: "yantrik-os";
+    callback login-attempt(/* username */ string, /* password */ string);
 
     // Settings state (screen 7)
     in-out property <string> settings-user-name: "";
@@ -1617,6 +1623,25 @@ export component App inherits Window {
     callback onboarding-set-profile(/* interests */ string, /* home_location */ string,
                                      /* notif_pref */ string);
 
+    // Installer mode (disk install from live ISO)
+    in property <bool> onboard-installer-mode: false;
+    in-out property <int> onboard-install-progress: 0;
+    in-out property <string> onboard-install-status: "";
+    in property <string> onboard-disk-1-name: "";
+    in property <string> onboard-disk-1-size: "";
+    in property <string> onboard-disk-1-model: "";
+    in property <string> onboard-disk-2-name: "";
+    in property <string> onboard-disk-2-size: "";
+    in property <string> onboard-disk-2-model: "";
+    in property <string> onboard-disk-3-name: "";
+    in property <string> onboard-disk-3-size: "";
+    in property <string> onboard-disk-3-model: "";
+    in-out property <string> onboard-selected-disk: "";
+    callback onboard-install-to-disk(/* username */ string, /* password */ string,
+                                     /* full_name */ string, /* hostname */ string,
+                                     /* companion_name */ string, /* target_disk */ string);
+    callback onboard-install-reboot();
+
     // AI onboarding setup (V59)
     in property <bool> onboard-ai-hw-cpu-ok: false;
     in property <bool> onboard-ai-hw-ram-ok: false;
@@ -1716,6 +1741,7 @@ export component App inherits Window {
         if current-screen == 2 : OnboardingScreen {
             width: 100%; height: 100%;
             companion-name: root.settings-companion-name;
+            installer-mode: root.onboard-installer-mode;
             // AI hardware scan properties
             ai-hw-cpu-ok: root.onboard-ai-hw-cpu-ok;
             ai-hw-ram-ok: root.onboard-ai-hw-ram-ok;
@@ -1750,6 +1776,22 @@ export component App inherits Window {
             ai-api-key-submitted(provider, key) => { root.onboard-ai-api-key-submitted(provider, key); }
             ai-test-connection => { root.onboard-ai-test-connection(); }
             ai-skip-setup => { root.onboard-ai-skip-setup(); }
+            disk-1-name: root.onboard-disk-1-name;
+            disk-1-size: root.onboard-disk-1-size;
+            disk-1-model: root.onboard-disk-1-model;
+            disk-2-name: root.onboard-disk-2-name;
+            disk-2-size: root.onboard-disk-2-size;
+            disk-2-model: root.onboard-disk-2-model;
+            disk-3-name: root.onboard-disk-3-name;
+            disk-3-size: root.onboard-disk-3-size;
+            disk-3-model: root.onboard-disk-3-model;
+            selected-disk <=> root.onboard-selected-disk;
+            install-to-disk(username, password, full-name, hostname, comp-name, target-disk) => {
+                root.onboard-install-to-disk(username, password, full-name, hostname, comp-name, target-disk);
+            }
+            install-progress <=> root.onboard-install-progress;
+            install-status <=> root.onboard-install-status;
+            install-reboot => { root.onboard-install-reboot(); }
             ready => {
                 root.current-screen = 1;
                 root.navigate(1);
@@ -1770,6 +1812,16 @@ export component App inherits Window {
             greeting-text: root.lock-greeting;
             error-text: root.lock-error;
             try-unlock(pin) => { root.try-unlock(pin); }
+        }
+
+        // Login screen (installed system boot)
+        if current-screen == 32 : LoginScreen {
+            width: 100%; height: 100%;
+            clock-text: root.clock-text;
+            date-text: root.lock-date-text;
+            error-text: root.login-error;
+            hostname: root.login-hostname;
+            login-attempt(username, password) => { root.login-attempt(username, password); }
         }
 
         // Desktop (the main experience)

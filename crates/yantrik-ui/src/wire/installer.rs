@@ -3,7 +3,136 @@
 //! This runs the same operations as the text-based `yantrik-install` script but
 //! from within the Slint UI, reporting progress back via a callback.
 
+use slint::ComponentHandle;
 use std::process::Command;
+
+use crate::app_context::AppContext;
+use crate::App;
+
+/// Wire the installer callbacks.
+pub fn wire(ui: &App, _ctx: &AppContext) {
+    // Detect installer mode
+    if std::path::Path::new("/opt/yantrik/.installer-mode").exists() {
+        ui.set_onboard_installer_mode(true);
+        tracing::info!("Installer mode detected — disk install UI enabled");
+    }
+
+    // Populate disk list for the UI
+    if std::path::Path::new("/opt/yantrik/.installer-mode").exists() {
+        let ui_weak_disks = ui.as_weak();
+        std::thread::spawn(move || {
+            let disks = detect_disks();
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(ui) = ui_weak_disks.upgrade() {
+                    if let Some(d) = disks.get(0) {
+                        ui.set_onboard_disk_1_name(d.name.clone().into());
+                        ui.set_onboard_disk_1_size(d.size.clone().into());
+                        ui.set_onboard_disk_1_model(d.model.clone().into());
+                        // Auto-select first disk
+                        ui.set_onboard_selected_disk(d.name.clone().into());
+                    }
+                    if let Some(d) = disks.get(1) {
+                        ui.set_onboard_disk_2_name(d.name.clone().into());
+                        ui.set_onboard_disk_2_size(d.size.clone().into());
+                        ui.set_onboard_disk_2_model(d.model.clone().into());
+                    }
+                    if let Some(d) = disks.get(2) {
+                        ui.set_onboard_disk_3_name(d.name.clone().into());
+                        ui.set_onboard_disk_3_size(d.size.clone().into());
+                        ui.set_onboard_disk_3_model(d.model.clone().into());
+                    }
+                }
+            });
+        });
+    }
+
+    // Handle install-to-disk callback from onboarding UI
+    let ui_weak = ui.as_weak();
+    ui.on_onboard_install_to_disk(move |username, password, full_name, hostname, companion_name, target_disk| {
+        let username = username.to_string();
+        let password = password.to_string();
+        let full_name = full_name.to_string();
+        let hostname = hostname.to_string();
+        let companion_name = companion_name.to_string();
+        let target_disk = target_disk.to_string();
+        let weak = ui_weak.clone();
+
+        std::thread::spawn(move || {
+            tracing::info!(
+                username = %username,
+                target_disk = %target_disk,
+                hostname = %hostname,
+                "Installer thread started"
+            );
+
+            // Report initial status
+            {
+                let w = weak.clone();
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(ui) = w.upgrade() {
+                        ui.set_onboard_install_status("Preparing installation...".into());
+                    }
+                });
+            }
+
+            let state = InstallerState {
+                username: username.clone(),
+                password,
+                full_name,
+                hostname,
+                language: String::new(),
+                locale: String::new(),
+                target_disk: target_disk.clone(),
+                partition_scheme: "auto".into(),
+                ai_provider: String::new(),
+                ai_api_key: String::new(),
+            };
+
+            let weak2 = weak.clone();
+            let result = run_install(&state, Box::new(move |percent, status| {
+                tracing::info!(percent, status, "Install progress");
+                let weak3 = weak2.clone();
+                let status = status.to_string();
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(ui) = weak3.upgrade() {
+                        ui.set_onboard_install_progress(percent);
+                        ui.set_onboard_install_status(status.into());
+                    }
+                });
+            }));
+
+            let weak_final = weak.clone();
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(ui) = weak_final.upgrade() {
+                    match result {
+                        Ok(()) => {
+                            ui.set_onboard_install_status("Installation complete!".into());
+                            ui.set_onboard_install_progress(100);
+                            // Phase 12 (complete) is shown automatically by the UI
+                            // when install-progress reaches 100
+                        }
+                        Err(e) => {
+                            tracing::error!(error = %e, "Installation failed");
+                            ui.set_onboard_install_status(format!("Installation failed: {e}").into());
+                        }
+                    }
+                }
+            });
+        });
+    });
+
+    // Handle reboot button from install-complete screen
+    ui.on_onboard_install_reboot(move || {
+        tracing::info!("User requested reboot after installation");
+        std::thread::spawn(|| {
+            // Force reboot to avoid squashfs unmount loop
+            let _ = Command::new("sudo")
+                .args(["reboot", "-f"])
+                .env("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
+                .status();
+        });
+    });
+}
 
 /// Shared installer state collected across onboarding callbacks.
 #[derive(Debug, Clone, Default)]
@@ -25,17 +154,24 @@ type ProgressFn = Box<dyn Fn(i32, &str) + Send>;
 
 /// Run the full installation. Blocks the calling thread.
 pub fn run_install(state: &InstallerState, progress: ProgressFn) -> Result<(), String> {
+    progress(1, "Detecting target disk...");
+
+    tracing::info!(target_disk = %state.target_disk, "Installer: starting, target_disk from UI");
+
     let disk_name = if state.target_disk.is_empty() {
-        // Auto-detect: pick first non-removable block device
+        tracing::info!("Installer: no disk selected, auto-detecting...");
         auto_detect_disk()?
     } else {
         state.target_disk.clone()
     };
     let disk = format!("/dev/{}", disk_name);
 
+    tracing::info!(disk = %disk, "Installer: will use disk");
+
     // Validate block device exists
     if !std::path::Path::new(&disk).exists() {
-        return Err(format!("{disk} does not exist"));
+        return Err(format!("{disk} does not exist. Available devices:\n{}",
+            list_block_devices()));
     }
 
     tracing::info!(disk = %disk, "Installer: target disk resolved");
@@ -167,12 +303,18 @@ fn install_to_target(
         &format!("127.0.0.1\tlocalhost\n127.0.1.1\t{hostname}\n"),
     )?;
 
-    // ── Step 7: Create user account ─────────────────────────────
-    progress(63, "Creating user account...");
+    // ── Step 7: Bind-mount for chroot (needed BEFORE any chroot commands) ──
+    progress(62, "Preparing chroot environment...");
+    run_cmd("mount", &["--bind", "/dev", &format!("{mount_dir}/dev")])?;
+    run_cmd("mount", &["--bind", "/proc", &format!("{mount_dir}/proc")])?;
+    run_cmd("mount", &["--bind", "/sys", &format!("{mount_dir}/sys")])?;
+
+    // ── Step 8: Create user account ─────────────────────────────
+    progress(65, "Creating user account...");
     create_user(mount_dir, state)?;
 
-    // ── Step 8: Set locale ──────────────────────────────────────
-    progress(66, "Configuring locale...");
+    // ── Step 9: Set locale ──────────────────────────────────────
+    progress(68, "Configuring locale...");
     let locale = if state.locale.is_empty() {
         "en_US.UTF-8"
     } else {
@@ -190,23 +332,18 @@ fn install_to_target(
         &format!("LANG={locale}\n"),
     );
 
-    // ── Step 9: Configure AI provider ───────────────────────────
-    progress(68, "Configuring AI provider...");
+    // ── Step 10: Configure AI provider ───────────────────────────
+    progress(70, "Configuring AI provider...");
     configure_ai(mount_dir, state);
 
-    // ── Step 10: Remove live-boot packages (not needed on installed system) ──
-    progress(70, "Removing live-boot packages...");
+    // ── Step 11: Remove live-boot packages (not needed on installed system) ──
+    progress(73, "Removing live-boot packages...");
     let _ = chroot_cmd(mount_dir, &["apt-get", "remove", "-y", "--purge",
         "live-boot", "live-config", "live-config-systemd"]);
     let _ = chroot_cmd(mount_dir, &["apt-get", "autoremove", "-y"]);
 
-    // ── Step 11: Bind-mount for chroot ──────────────────────────
-    progress(75, "Installing bootloader...");
-    run_cmd("mount", &["--bind", "/dev", &format!("{mount_dir}/dev")])?;
-    run_cmd("mount", &["--bind", "/proc", &format!("{mount_dir}/proc")])?;
-    run_cmd("mount", &["--bind", "/sys", &format!("{mount_dir}/sys")])?;
-
     // ── Step 12: Install GRUB ───────────────────────────────────
+    progress(75, "Installing bootloader...");
     if is_efi {
         tracing::info!("Installer: installing GRUB for EFI");
         chroot_cmd(
@@ -728,4 +865,97 @@ fn chroot_cmd(mount_dir: &str, args: &[&str]) -> Result<String, String> {
         let stderr = String::from_utf8_lossy(&output.stderr);
         Err(format!("chroot {}: {stderr}", args.first().unwrap_or(&"")))
     }
+}
+
+/// List block devices for error messages.
+fn list_block_devices() -> String {
+    Command::new("lsblk")
+        .args(["-o", "NAME,SIZE,TYPE,MODEL"])
+        .env("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+        .unwrap_or_else(|_| "lsblk unavailable".into())
+}
+
+struct DiskInfo {
+    name: String,
+    size: String,
+    model: String,
+}
+
+/// Detect available disks and return structured info.
+fn detect_disks() -> Vec<DiskInfo> {
+    // Use lsblk with JSON output for reliable parsing
+    let output = Command::new("lsblk")
+        .args(["-dn", "-o", "NAME,SIZE,MODEL,TYPE,RO,RM", "--json", "-e", "7,11"])
+        .env("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
+        .output();
+
+    let mut disks = Vec::new();
+
+    let Ok(output) = output else {
+        tracing::warn!("lsblk failed for disk detection");
+        // Fallback: try non-JSON
+        return detect_disks_fallback();
+    };
+
+    if !output.status.success() {
+        return detect_disks_fallback();
+    }
+
+    let text = String::from_utf8_lossy(&output.stdout);
+    // Parse JSON: {"blockdevices": [{"name":"sda","size":"80G","model":"VBOX HARDDISK","type":"disk","ro":false,"rm":false}, ...]}
+    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) {
+        if let Some(devices) = json["blockdevices"].as_array() {
+            for dev in devices {
+                let dtype = dev["type"].as_str().unwrap_or("");
+                if dtype != "disk" { continue; }
+
+                let ro = dev["ro"].as_bool().unwrap_or(true);
+                let rm = dev["rm"].as_bool().unwrap_or(true);
+                if ro || rm { continue; }
+
+                let name = dev["name"].as_str().unwrap_or("").to_string();
+                if name.starts_with("loop") || name.starts_with("sr") || name.starts_with("fd") {
+                    continue;
+                }
+
+                let size = dev["size"].as_str().unwrap_or("?").to_string();
+                let model = dev["model"].as_str().unwrap_or("Unknown").trim().to_string();
+                let model = if model.is_empty() { "Unknown".to_string() } else { model };
+
+                tracing::info!(name = %name, size = %size, model = %model, "Detected disk");
+                disks.push(DiskInfo { name, size, model });
+            }
+        }
+    }
+
+    disks
+}
+
+/// Fallback disk detection without JSON.
+fn detect_disks_fallback() -> Vec<DiskInfo> {
+    let output = Command::new("lsblk")
+        .args(["-dn", "-o", "NAME,SIZE,TYPE,RO,RM", "-e", "7,11"])
+        .env("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
+        .output();
+
+    let mut disks = Vec::new();
+    let Ok(output) = output else { return disks; };
+
+    let text = String::from_utf8_lossy(&output.stdout);
+    for line in text.lines() {
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() < 5 { continue; }
+        let (name, size, dtype, ro, rm) = (parts[0], parts[1], parts[2], parts[3], parts[4]);
+        if dtype != "disk" || ro == "1" || rm == "1" { continue; }
+        if name.starts_with("loop") || name.starts_with("sr") || name.starts_with("fd") { continue; }
+
+        disks.push(DiskInfo {
+            name: name.to_string(),
+            size: size.to_string(),
+            model: "Disk".to_string(),
+        });
+    }
+    disks
 }

@@ -211,9 +211,9 @@ apt-get install -y -qq epiphany-browser 2>/dev/null || true
 
 # ── Utilities (installer essentials) ──
 apt-get install -y -qq \
-    jq parted rsync openssh-server \
+    jq parted rsync openssh-server openssl \
     dosfstools e2fsprogs grub-efi-amd64-bin grub-pc-bin \
-    initramfs-tools || true
+    libpam-modules initramfs-tools || true
 
 # ── Calamares installer ──
 apt-get install -y -qq \
@@ -590,22 +590,8 @@ if [ "$(tty)" = "/dev/tty1" ] && [ -z "$WAYLAND_DISPLAY" ]; then
 
     # Check if installer mode was requested via kernel param
     if grep -q 'yantrik.install=true' /proc/cmdline 2>/dev/null; then
-        if command -v calamares >/dev/null 2>&1; then
-            # Launch Calamares graphical installer through labwc
-            mkdir -p ~/.config/labwc
-            cp ~/.config/labwc/autostart ~/.config/labwc/autostart.bak 2>/dev/null || true
-            # Write installer autostart (no nested heredoc — use printf)
-            printf '#!/bin/sh\nmako &\nexport QT_QPA_PLATFORM=wayland\nexport QT_WAYLAND_DISABLE_WINDOWDECORATION=1\nsudo env XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" WAYLAND_DISPLAY="$WAYLAND_DISPLAY" QT_QPA_PLATFORM=wayland calamares >> /opt/yantrik/logs/calamares.log 2>&1 &\n' > ~/.config/labwc/autostart
-            chmod +x ~/.config/labwc/autostart
-            labwc 2>/opt/yantrik/logs/labwc.log
-            # Restore original autostart after installer exits
-            cp ~/.config/labwc/autostart.bak ~/.config/labwc/autostart 2>/dev/null || true
-        elif [ -x /opt/yantrik/bin/yantrik-install ]; then
-            # Fallback: text-based installer
-            clear
-            sudo /opt/yantrik/bin/yantrik-install
-        fi
-        exec /bin/bash --login
+        # Create marker so yantrik-ui shows disk install fields in onboarding
+        touch /opt/yantrik/.installer-mode
     fi
 
     # Crash guard: if labwc crashed recently, don't loop — drop to shell
@@ -829,6 +815,7 @@ sequence:
     - services-systemd
     - grubcfg
     - bootloader
+    - shellprocess@yantrik-post-install
     - umount
   - show:
     - finished
@@ -951,6 +938,111 @@ restartNowChecked: true
 restartNowCommand: "systemctl reboot"
 FINISHED
 
+    # ── Post-install hook: configure the installed system for the new user ──
+    sudo tee "$CALA_DIR/modules/shellprocess@yantrik-post-install.conf" > /dev/null <<'POSTINST'
+---
+dontChroot: false
+script:
+  - command: "/opt/yantrik/bin/yantrik-post-install.sh"
+    timeout: 120
+POSTINST
+
+    # The actual post-install script (runs inside the installed system chroot)
+    sudo tee "$ROOTFS/opt/yantrik/bin/yantrik-post-install.sh" > /dev/null <<'POSTSCRIPT'
+#!/bin/bash
+# Yantrik OS — Post-install setup (runs inside chroot after Calamares)
+# Configures the new user's desktop, marks onboarding done, updates config.
+
+set -e
+
+LOG="/opt/yantrik/logs/post-install.log"
+exec >> "$LOG" 2>&1
+echo "=== Post-install $(date) ==="
+
+# Find the real user (not root, not yantrik live user)
+REAL_USER=""
+REAL_HOME=""
+for dir in /home/*; do
+    u=$(basename "$dir")
+    [ "$u" = "yantrik" ] && continue
+    [ "$u" = "lost+found" ] && continue
+    if id "$u" &>/dev/null; then
+        REAL_USER="$u"
+        REAL_HOME="$dir"
+        break
+    fi
+done
+
+# Fallback: if Calamares created the yantrik user on disk, use that
+if [ -z "$REAL_USER" ]; then
+    REAL_USER="yantrik"
+    REAL_HOME="/home/yantrik"
+fi
+
+echo "User: $REAL_USER ($REAL_HOME)"
+
+# 1. Copy labwc desktop config to the new user
+LABWC_SRC="/home/yantrik/.config/labwc"
+LABWC_DST="$REAL_HOME/.config/labwc"
+if [ -d "$LABWC_SRC" ] && [ "$REAL_USER" != "yantrik" ]; then
+    mkdir -p "$REAL_HOME/.config"
+    cp -r "$LABWC_SRC" "$LABWC_DST"
+    echo "Copied labwc config"
+fi
+
+# 2. Copy .bash_profile for auto-start desktop
+if [ -f "/home/yantrik/.bash_profile" ] && [ "$REAL_USER" != "yantrik" ]; then
+    cp /home/yantrik/.bash_profile "$REAL_HOME/.bash_profile"
+    echo "Copied .bash_profile"
+fi
+
+# 3. Fix ownership
+if [ "$REAL_USER" != "yantrik" ]; then
+    REAL_UID=$(id -u "$REAL_USER")
+    REAL_GID=$(id -g "$REAL_USER")
+    chown -R "$REAL_UID:$REAL_GID" "$REAL_HOME/.config" "$REAL_HOME/.bash_profile" 2>/dev/null || true
+fi
+
+# 4. Mark onboarding as complete (so desktop boots, not onboarding wizard)
+mkdir -p "$REAL_HOME/.yantrik"
+touch "$REAL_HOME/.yantrik/.onboarding_complete"
+chown -R "$(id -u "$REAL_USER"):$(id -g "$REAL_USER")" "$REAL_HOME/.yantrik" 2>/dev/null || true
+echo "Onboarding marked complete"
+
+# 5. Update Yantrik config with the new username
+CONFIG="/opt/yantrik/config.yaml"
+if [ -f "$CONFIG" ]; then
+    sed -i "s/^user_name:.*/user_name: \"$REAL_USER\"/" "$CONFIG"
+    echo "Config updated: user_name=$REAL_USER"
+fi
+
+# 6. Set auto-login for the new user (override getty)
+mkdir -p /etc/systemd/system/getty@tty1.service.d
+cat > /etc/systemd/system/getty@tty1.service.d/autologin.conf <<AUTOLOGIN
+[Service]
+ExecStart=
+ExecStart=-/sbin/agetty --autologin $REAL_USER --noclear %I \$TERM
+AUTOLOGIN
+echo "Auto-login set for $REAL_USER"
+
+# 7. Remove installer-mode marker
+rm -f /opt/yantrik/.installer-mode
+echo "Installer mode marker removed"
+
+# 8. Ensure the new user is in required groups
+for grp in sudo video audio input; do
+    usermod -aG "$grp" "$REAL_USER" 2>/dev/null || true
+done
+
+# 9. Fix /opt/yantrik ownership for the new user
+chown -R "$(id -u "$REAL_USER"):$(id -g "$REAL_USER")" /opt/yantrik/data /opt/yantrik/logs 2>/dev/null || true
+
+echo "=== Post-install done ==="
+POSTSCRIPT
+    sudo chmod +x "$ROOTFS/opt/yantrik/bin/yantrik-post-install.sh"
+
+    ok "Post-install hook configured"
+
     # Simple slideshow (placeholder)
     sudo tee "$CALA_DIR/branding/yantrik/show.qml" > /dev/null <<'QML'
 import QtQuick 2.0
@@ -986,112 +1078,13 @@ DESKTOP
 
     ok "Calamares installer configured"
 else
-    info "Calamares not available — creating text-based installer"
-
-    # Fallback: simple text installer script
-    sudo tee "$ROOTFS/opt/yantrik/bin/yantrik-install" > /dev/null <<'TEXT_INSTALLER'
-#!/bin/bash
-# Yantrik OS — Text-based Installer
-# Copies the live system to a target disk
-
-set -euo pipefail
-
-CYAN='\033[0;36m'
-GREEN='\033[0;32m'
-AMBER='\033[0;33m'
-RED='\033[0;31m'
-BOLD='\033[1m'
-NC='\033[0m'
-
-echo
-echo -e "${CYAN}╔═══════════════════════════════════════════╗${NC}"
-echo -e "${CYAN}║${NC}  ${BOLD}Yantrik OS${NC} — Disk Installer             ${CYAN}║${NC}"
-echo -e "${CYAN}╚═══════════════════════════════════════════╝${NC}"
-echo
-
-# List available disks
-echo -e "${BOLD}Available disks:${NC}"
-lsblk -d -o NAME,SIZE,MODEL | grep -v loop | grep -v sr
-echo
-
-echo -n "Target disk (e.g., sda): "
-read -r TARGET_DISK
-
-if [ -z "$TARGET_DISK" ]; then
-    echo -e "${RED}No disk specified. Aborting.${NC}"
-    exit 1
+    info "Calamares not available — text installer will be primary"
 fi
 
-DISK="/dev/$TARGET_DISK"
-if [ ! -b "$DISK" ]; then
-    echo -e "${RED}$DISK is not a valid block device.${NC}"
-    exit 1
-fi
-
-echo
-echo -e "${AMBER}WARNING: This will ERASE ALL DATA on $DISK${NC}"
-echo -n "Type 'yes' to continue: "
-read -r CONFIRM
-[ "$CONFIRM" = "yes" ] || exit 1
-
-echo
-echo -e "${CYAN}::${NC} Partitioning $DISK..."
-
-# GPT partition table: EFI (512M) + root (rest)
-parted -s "$DISK" mklabel gpt
-parted -s "$DISK" mkpart EFI fat32 1MiB 513MiB
-parted -s "$DISK" set 1 esp on
-parted -s "$DISK" mkpart root ext4 513MiB 100%
-
-# Format
-mkfs.fat -F32 "${DISK}1"
-mkfs.ext4 -q -L YANTRIK "${DISK}2"
-
-# Mount
-MOUNT_DIR="/mnt/yantrik-install"
-mkdir -p "$MOUNT_DIR"
-mount "${DISK}2" "$MOUNT_DIR"
-mkdir -p "$MOUNT_DIR/boot/efi"
-mount "${DISK}1" "$MOUNT_DIR/boot/efi"
-
-echo -e "${CYAN}::${NC} Copying system (this takes a few minutes)..."
-rsync -aAXH --exclude='/proc/*' --exclude='/sys/*' --exclude='/dev/*' \
-    --exclude='/run/*' --exclude='/tmp/*' --exclude='/mnt/*' \
-    --exclude='/live/*' --exclude='/cdrom/*' \
-    / "$MOUNT_DIR/" --info=progress2
-
-# Fix fstab
-cat > "$MOUNT_DIR/etc/fstab" <<FSTAB
-LABEL=YANTRIK  /           ext4  defaults,noatime  0  1
-${DISK}1       /boot/efi   vfat  defaults          0  2
-FSTAB
-
-# Install GRUB
-mount --bind /dev "$MOUNT_DIR/dev"
-mount --bind /proc "$MOUNT_DIR/proc"
-mount --bind /sys "$MOUNT_DIR/sys"
-
-chroot "$MOUNT_DIR" grub-install --target=x86_64-efi \
-    --efi-directory=/boot/efi --bootloader-id=yantrik 2>/dev/null || \
-chroot "$MOUNT_DIR" grub-install --target=i386-pc "$DISK" 2>/dev/null || true
-chroot "$MOUNT_DIR" update-grub
-
-# Cleanup
-umount "$MOUNT_DIR/sys" "$MOUNT_DIR/proc" "$MOUNT_DIR/dev"
-umount "$MOUNT_DIR/boot/efi"
-umount "$MOUNT_DIR"
-
-echo
-echo -e "${GREEN}Installation complete!${NC}"
-echo -e "Remove the installation media and reboot."
-echo -n "Reboot now? [y/N] "
-read -r REBOOT
-[ "$REBOOT" = "y" ] && reboot
-TEXT_INSTALLER
-    sudo chmod +x "$ROOTFS/opt/yantrik/bin/yantrik-install"
-
-    ok "Text-based installer created"
-fi
+# Always install the text-based installer (used by GRUB "Install" option)
+sudo cp "$SCRIPT_DIR/yantrik-install.sh" "$ROOTFS/opt/yantrik/bin/yantrik-install"
+sudo chmod +x "$ROOTFS/opt/yantrik/bin/yantrik-install"
+ok "Text installer ready"
 
 # ═══════════════════════════════════════════════════════════════
 # STEP 10: Build ISO image
@@ -1172,12 +1165,7 @@ menuentry "Install Yantrik OS" {
     initrd /live/initrd
 }
 
-menuentry "Yantrik OS — Live Desktop (Try without installing)" {
-    linux /live/vmlinuz boot=live live-config.username=yantrik live-config.user-fullname=yantrik console=tty1 console=ttyS0,115200 quiet
-    initrd /live/initrd
-}
-
-menuentry "Install Yantrik OS (Safe Mode — software rendering)" {
+menuentry "Install Yantrik OS (Safe Mode)" {
     linux /live/vmlinuz boot=live yantrik.install=true live-config.username=yantrik live-config.user-fullname=yantrik console=tty1 console=ttyS0,115200 nomodeset quiet
     initrd /live/initrd
 }
