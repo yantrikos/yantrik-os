@@ -634,6 +634,23 @@ impl CognitiveRouter {
         self.recipes.lock().map(|r| r.len()).unwrap_or(0)
     }
 
+    /// Return a one-shot debug summary of router state.
+    ///
+    /// Lists registered tool and recipe counts, tunable thresholds, and the
+    /// number of built-in keyword rules. Useful for `tracing::debug!` at
+    /// startup or in a `/router-status` admin command.
+    pub fn debug_summary(&self) -> String {
+        let tool_n = self.tool_count();
+        let recipe_n = self.recipe_count();
+        let kw_n = KEYWORD_RULES.len();
+        format!(
+            "CognitiveRouter state: tools={tool_n}, recipes={recipe_n}, \
+             keyword_rules={kw_n}, similarity_threshold={:.2}, \
+             recipe_composite_boost={:.1}",
+            self.similarity_threshold, self.recipe_composite_boost,
+        )
+    }
+
     /// Detect the execution shape of a query.
     pub fn plan_shape(query: &str) -> PlanShape {
         detect_plan_shape(&query.to_lowercase())
@@ -710,6 +727,16 @@ impl CognitiveRouter {
         let tool_score = best_tool.as_ref().map(|(_, s)| *s).unwrap_or(0.0);
         let recipe_score = best_recipe.as_ref().map(|(_, _, s)| *s).unwrap_or(0.0);
 
+        tracing::trace!(
+            tool_score,
+            recipe_score,
+            threshold = self.similarity_threshold,
+            shape = ?shape,
+            best_tool = best_tool.as_ref().map(|(n, _)| n.as_str()).unwrap_or("none"),
+            best_recipe = best_recipe.as_ref().map(|(id, _, _)| id.as_str()).unwrap_or("none"),
+            "Router: score comparison"
+        );
+
         // Recipe wins if it scores higher AND above threshold
         if recipe_score > tool_score && recipe_score >= self.similarity_threshold {
             let (id, name, score) = best_recipe.unwrap();
@@ -739,7 +766,11 @@ impl CognitiveRouter {
 
         // ── Layer 2: Below threshold → needs LLM ──
         tracing::debug!(
-            shape = ?shape, ms = t0.elapsed().as_millis(),
+            shape = ?shape,
+            best_tool_score = tool_score,
+            best_recipe_score = recipe_score,
+            threshold = self.similarity_threshold,
+            ms = t0.elapsed().as_millis(),
             "Router: needs LLM"
         );
         RouteDecision::NeedsLLM
