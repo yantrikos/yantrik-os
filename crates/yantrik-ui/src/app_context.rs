@@ -87,6 +87,8 @@ impl AppContext {
         let user_settings = crate::wire::settings::load();
         ui.global::<ThemeMode>().set_dark(user_settings.dark_mode);
         ui.set_settings_dark_mode(user_settings.dark_mode);
+        ui.global::<ThemeMode>().set_high_contrast(user_settings.high_contrast);
+        ui.set_settings_high_contrast(user_settings.high_contrast);
         ui.set_settings_tool_permission(user_settings.tool_permission.clone().into());
         ui.set_settings_auto_lock_secs(user_settings.auto_lock_secs);
         ui.set_dnd_mode(user_settings.dnd_mode);

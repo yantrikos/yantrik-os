@@ -269,6 +269,7 @@ export component App inherits Window {
     in property <string> settings-llm-api-url: "";
     in property <string> settings-llm-api-model: "";
     in-out property <bool> settings-dark-mode: true;
+    in-out property <bool> settings-high-contrast: false;
     in-out property <bool> settings-incognito-mode: false;
     in-out property <string> settings-accent-color: "cyan";
 
@@ -340,6 +341,7 @@ export component App inherits Window {
     callback filter-skill-category(string);
 
     callback toggle-dark-mode();
+    callback toggle-high-contrast();
     callback toggle-incognito-mode();
     callback cycle-accent-color();
     callback cycle-tool-permission();
@@ -2067,10 +2069,12 @@ export component App inherits Window {
                 version-text: root.settings-version;
                 notification-count: root.notification-unread-count;
                 dark-mode <=> root.settings-dark-mode;
+                high-contrast <=> root.settings-high-contrast;
                 incognito-mode <=> root.settings-incognito-mode;
                 dnd-mode <=> root.dnd-mode;
                 accent-color <=> root.settings-accent-color;
                 toggle-dark-mode => { root.toggle-dark-mode(); }
+                toggle-high-contrast => { root.toggle-high-contrast(); }
                 toggle-incognito-mode => { root.toggle-incognito-mode(); }
                 toggle-dnd-mode => { root.toggle-dnd-mode(); }
                 cycle-accent-color => { root.cycle-accent-color(); }
