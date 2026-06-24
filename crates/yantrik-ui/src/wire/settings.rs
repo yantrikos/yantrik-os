@@ -19,6 +19,7 @@ const WALLPAPER_PRESETS: &[&str] = &["aurora", "sunset", "ocean", "nebula"];
 #[serde(default)]
 pub struct UserSettings {
     pub dark_mode: bool,
+    pub high_contrast: bool,
     pub accent_color: String,
     pub tool_permission: String,
     pub auto_lock_secs: i32,
@@ -34,6 +35,7 @@ impl Default for UserSettings {
     fn default() -> Self {
         Self {
             dark_mode: true,
+            high_contrast: false,
             accent_color: "cyan".into(),
             tool_permission: "sensitive".into(),
             auto_lock_secs: 300,
@@ -139,6 +141,21 @@ pub fn wire(ui: &App, ctx: &AppContext) {
             st.dark_mode = new_val;
         }
         persist(&s);
+    });
+
+    // High contrast toggle
+    let ui_weak = ui.as_weak();
+    let s = settings.clone();
+    ui.on_toggle_high_contrast(move || {
+        let Some(ui) = ui_weak.upgrade() else { return };
+        let new_val = !ui.get_settings_high_contrast();
+        ui.set_settings_high_contrast(new_val);
+        ui.global::<ThemeMode>().set_high_contrast(new_val);
+        if let Ok(mut st) = s.lock() {
+            st.high_contrast = new_val;
+        }
+        persist(&s);
+        tracing::info!(high_contrast = new_val, "High contrast toggled");
     });
 
     // Cycle accent color: cyan → amber → purple → green → pink → cyan

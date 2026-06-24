@@ -6,6 +6,7 @@
 
 export global ThemeMode {
     in-out property <bool> dark: true;
+    in-out property <bool> high-contrast: false;
 }
 
 // Accent color presets — index selects which accent palette is active.
@@ -85,16 +86,20 @@ export global Theme {
     // ─── Surface hierarchy (4-tier depth) ─────────────────────────
     // base → default → raised → floating
     // Each tier +6-8% luminance for clear depth without blur.
-    out property <color> bg-deep:     ThemeOverrides.enabled ? ThemeOverrides.bg-deep-override
+    out property <color> bg-deep:     ThemeMode.high-contrast ? #000000
+        : ThemeOverrides.enabled ? ThemeOverrides.bg-deep-override
         : (ThemeMode.dark ? #0c0c14 : #f4f4f6);
-    out property <color> bg-surface:  ThemeOverrides.enabled ? ThemeOverrides.bg-surface-override
+    out property <color> bg-surface:  ThemeMode.high-contrast ? #000000
+        : ThemeOverrides.enabled ? ThemeOverrides.bg-surface-override
         : (ThemeMode.dark ? #161622 : #eaeaee);
-    out property <color> bg-card:     ThemeOverrides.enabled ? ThemeOverrides.bg-card-override
+    out property <color> bg-card:     ThemeMode.high-contrast ? #0a0a0a
+        : ThemeOverrides.enabled ? ThemeOverrides.bg-card-override
         : (ThemeMode.dark ? #1e1e2e : #ffffff);
-    out property <color> bg-elevated: ThemeOverrides.enabled ? ThemeOverrides.bg-elevated-override
+    out property <color> bg-elevated: ThemeMode.high-contrast ? #111111
+        : ThemeOverrides.enabled ? ThemeOverrides.bg-elevated-override
         : (ThemeMode.dark ? #262638 : #ffffff);
-    out property <color> bg-input:    ThemeMode.dark ? #12121e : #f0f0f4;
-    out property <color> bg-selected: ThemeMode.dark ? #1a1a2a : #e4e4ee;
+    out property <color> bg-input:    ThemeMode.high-contrast ? #111111 : (ThemeMode.dark ? #12121e : #f0f0f4);
+    out property <color> bg-selected: ThemeMode.high-contrast ? #222222 : (ThemeMode.dark ? #1a1a2a : #e4e4ee);
 
     // ─── Amber palette ────────────────────────────────────────────
     out property <color> amber:             ThemeOverrides.enabled ? ThemeOverrides.amber-override
@@ -155,22 +160,25 @@ export global Theme {
 
     // ─── Text hierarchy ───────────────────────────────────────────
     // Primary (92% white), Secondary (60%), Tertiary/dim (40%)
-    out property <color> text-primary:   ThemeOverrides.enabled ? ThemeOverrides.text-primary-override
+    out property <color> text-primary:   ThemeMode.high-contrast ? #ffffff
+        : ThemeOverrides.enabled ? ThemeOverrides.text-primary-override
         : (ThemeMode.dark ? #e8eaef : #1a1c20);
-    out property <color> text-secondary: ThemeOverrides.enabled ? ThemeOverrides.text-secondary-override
+    out property <color> text-secondary: ThemeMode.high-contrast ? #ffffff
+        : ThemeOverrides.enabled ? ThemeOverrides.text-secondary-override
         : (ThemeMode.dark ? #8890a0 : #5a6474);
-    out property <color> text-dim:       ThemeOverrides.enabled ? ThemeOverrides.text-dim-override
+    out property <color> text-dim:       ThemeMode.high-contrast ? #cccccc
+        : ThemeOverrides.enabled ? ThemeOverrides.text-dim-override
         : (ThemeMode.dark ? #4a5060 : #a0a8b4);
 
     // ─── Borders & overlays ───────────────────────────────────────
     out property <color> overlay-backdrop:  ThemeMode.dark ? #00000060 : #00000030;
     out property <color> overlay-shadow:    ThemeMode.dark ? #00000080 : #00000040;
-    out property <color> border-subtle:     ThemeMode.dark ? #ffffff06 : #00000006;
-    out property <color> border-default:    ThemeMode.dark ? #ffffff0a : #0000000a;
-    out property <color> border-strong:     ThemeMode.dark ? #ffffff14 : #00000014;
-    out property <color> separator:         ThemeMode.dark ? #ffffff08 : #0000000c;
-    out property <color> hover-fill:        ThemeMode.dark ? #ffffff08 : #00000008;
-    out property <color> hover-fill-strong: ThemeMode.dark ? #ffffff10 : #00000010;
+    out property <color> border-subtle:     ThemeMode.high-contrast ? #ffffff50 : (ThemeMode.dark ? #ffffff06 : #00000006);
+    out property <color> border-default:    ThemeMode.high-contrast ? #ffffff80 : (ThemeMode.dark ? #ffffff0a : #0000000a);
+    out property <color> border-strong:     ThemeMode.high-contrast ? #ffffff : (ThemeMode.dark ? #ffffff14 : #00000014);
+    out property <color> separator:         ThemeMode.high-contrast ? #ffffff50 : (ThemeMode.dark ? #ffffff08 : #0000000c);
+    out property <color> hover-fill:        ThemeMode.high-contrast ? #ffffff18 : (ThemeMode.dark ? #ffffff08 : #00000008);
+    out property <color> hover-fill-strong: ThemeMode.high-contrast ? #ffffff28 : (ThemeMode.dark ? #ffffff10 : #00000010);
     out property <color> tint-cyan:         ThemeMode.dark ? #4ecdc418 : #1a8a9a14;
     out property <color> tint-amber:        ThemeMode.dark ? #d4a57414 : #b0784014;
 

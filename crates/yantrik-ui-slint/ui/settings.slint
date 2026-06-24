@@ -95,8 +95,10 @@ export component SettingsScreen inherits Rectangle {
 
     // Appearance
     in-out property <bool> dark-mode: true;
+    in-out property <bool> high-contrast: false;
     in-out property <string> accent-color: "cyan";
     callback toggle-dark-mode();
+    callback toggle-high-contrast();
     callback cycle-accent-color();
 
     // Wallpaper
@@ -472,6 +474,55 @@ export component SettingsScreen inherits Rectangle {
                                                     animate color { duration: Theme.dur-fast; }
                                                 }
                                             }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // High Contrast toggle
+                        Rectangle {
+                            background: Theme.bg-card;
+                            border-radius: Theme.r-lg;
+                            border-width: 1px;
+                            border-color: Theme.border-subtle;
+                            height: 52px;
+
+                            HorizontalLayout {
+                                padding-left: Theme.sp-4;
+                                padding-right: Theme.sp-4;
+
+                                Text {
+                                    text: "High Contrast";
+                                    color: Theme.text-secondary;
+                                    font-size: Theme.fs-body;
+                                    horizontal-stretch: 1;
+                                    vertical-alignment: center;
+                                }
+
+                                hc-ta := TouchArea {
+                                    width: 44px;
+                                    height: 36px;
+                                    clicked => { root.toggle-high-contrast(); }
+
+                                    Rectangle {
+                                        width: 44px;
+                                        height: 24px;
+                                        y: (parent.height - 24px) / 2;
+                                        border-radius: Theme.r-lg;
+                                        background: root.high-contrast ? Theme.accent : Theme.border-default;
+                                        border-width: 1px;
+                                        border-color: root.high-contrast ? Theme.accent-dim : Theme.border-subtle;
+                                        animate background { duration: Theme.dur-fast; }
+
+                                        Rectangle {
+                                            width: 18px;
+                                            height: 18px;
+                                            x: root.high-contrast ? parent.width - 21px : 3px;
+                                            y: 3px;
+                                            border-radius: 9px;
+                                            background: Theme.text-primary;
+                                            animate x { duration: Theme.dur-fast; easing: ease-in-out; }
                                         }
                                     }
                                 }
