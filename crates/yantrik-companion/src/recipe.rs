@@ -780,8 +780,13 @@ impl RecipeStore {
 
     /// Get recipes that need processing (pending or running).
     pub fn get_resumable(conn: &Connection) -> Vec<String> {
+        // Only genuinely in-flight recipes are resumable. 'pending' is the status
+        // register_builtin() stamps on a recipe *definition* that has never run —
+        // including it here made every boot execute all ~50 built-in templates with
+        // their {{variables}} unsubstituted, saturating the companion worker so real
+        // user queries never got serviced. 'waiting' is handled by get_expired_waiting().
         let mut stmt = conn
-            .prepare("SELECT id FROM recipes WHERE status IN ('pending', 'running')")
+            .prepare("SELECT id FROM recipes WHERE status = 'running'")
             .expect("prepare resumable");
 
         stmt.query_map([], |row| row.get::<_, String>(0))

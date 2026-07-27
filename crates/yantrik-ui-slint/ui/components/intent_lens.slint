@@ -176,8 +176,12 @@ export component IntentLens inherits Rectangle {
                             width: parent.width;
                             color: Theme.text-primary;
                             font-size: 18px;
-                            wrap: word-wrap;
-                            single-line: false;
+                            // single-line: true is REQUIRED for `accepted` to fire.
+                            // With single-line: false, Slint treats Return as "insert
+                            // newline" and never invokes accepted — which made the
+                            // Intent Lens (the shell's primary interaction) impossible
+                            // to submit with Enter.
+                            single-line: true;
                             text <=> root.input-text;
                             accepted => {
                                 if root.input-text != "" {
