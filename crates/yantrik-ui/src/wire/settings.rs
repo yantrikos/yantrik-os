@@ -453,7 +453,21 @@ pub fn wire(ui: &App, ctx: &AppContext) {
     ui.on_provider_preset_selected(move |preset| {
         let Some(ui) = ui_weak.upgrade() else { return };
         let preset_str = preset.to_string();
-        let (name, url) = match preset_str.as_str() {
+        let (name, url) = provider_preset(&preset_str);
+        tracing::info!(preset = %preset_str, name, url, "Provider preset selected");
+        ui.set_settings_provider_form_name(name.into());
+        ui.set_settings_provider_form_url(url.into());
+        ui.set_settings_provider_test_result("".into());
+    });
+
+    wire_rest(ui, ctx, providers);
+}
+
+/// Known provider presets: id -> (display name, OpenAI-compatible base URL).
+///
+/// Shared with onboarding so first boot and Settings cannot drift apart.
+pub(crate) fn provider_preset(id: &str) -> (&'static str, &'static str) {
+    match id {
             "openai"       => ("OpenAI",       "https://api.openai.com/v1"),
             "anthropic"    => ("Anthropic",     "https://api.anthropic.com/v1"),
             "gemini"       => ("Google Gemini", "https://generativelanguage.googleapis.com/v1beta/openai"),
@@ -480,17 +494,17 @@ pub fn wire(ui: &App, ctx: &AppContext) {
             "lmstudio"     => ("LM Studio",     "http://localhost:1234/v1"),
             "vllm"         => ("vLLM",          "http://localhost:8000/v1"),
             _              => ("Custom",        ""),
-        };
-        tracing::info!(preset = %preset_str, name, url, "Provider preset selected");
-        ui.set_settings_provider_form_name(name.into());
-        ui.set_settings_provider_form_url(url.into());
-        ui.set_settings_provider_test_result("".into());
-    });
+    }
+}
 
+/// Remainder of the settings wiring, split out when `provider_preset` was
+/// lifted to a shared function.
+fn wire_rest(ui: &App, ctx: &AppContext, providers: Arc<Mutex<ProviderStore>>) {
     // Save provider
     let ui_weak = ui.as_weak();
     let ps = providers.clone();
     let bridge = ctx.bridge.clone();
+    let bridge_for_save = ctx.bridge.clone();
     ui.on_save_provider(move |name, ptype, url, key, auth| {
         let entry = ProviderStoreEntry {
             id: format!("{}-{}", ptype.to_string().to_lowercase(), uuid_short()),
@@ -503,10 +517,10 @@ pub fn wire(ui: &App, ctx: &AppContext) {
             is_fallback: false,
         };
         tracing::info!(name = %entry.name, provider_type = %entry.provider_type, "Saving provider");
-        if let Ok(mut store) = ps.lock() {
+        let made_primary = if let Ok(mut store) = ps.lock() {
             // If this is the first provider, make it primary
             let make_primary = store.entries.is_empty();
-            store.entries.push(entry);
+            store.entries.push(entry.clone());
             if make_primary {
                 if let Some(e) = store.entries.last_mut() {
                     e.is_primary = true;
@@ -517,6 +531,33 @@ pub fn wire(ui: &App, ctx: &AppContext) {
                 push_providers_to_ui(&ui, &store);
                 push_ai_status_to_ui(&ui, &store, bridge.is_online());
             }
+            make_primary
+        } else { false };
+
+        // Hot-reload the LLM backend if this is the primary provider
+        if made_primary {
+            // Default model per provider type
+            let default_model = match entry.provider_type.as_str() {
+                "ollama" => "llama3.2:latest",
+                "openai" => "gpt-4o-mini",
+                "anthropic" => "claude-3-5-sonnet-latest",
+                "google" => "gemini-2.0-flash",
+                "deepseek" => "deepseek-chat",
+                _ => "default",
+            };
+            // Build base URL with /v1 suffix for OpenAI-compatible APIs
+            let base_url = if entry.provider_type == "ollama" && !entry.base_url.contains("/v1") {
+                format!("{}/v1", entry.base_url.trim_end_matches('/'))
+            } else {
+                entry.base_url.clone()
+            };
+            tracing::info!(model = default_model, "Hot-reloading LLM with new primary provider");
+            bridge_for_save.reload_llm(
+                entry.provider_type.clone(),
+                base_url,
+                entry.api_key.clone(),
+                default_model.to_string(),
+            );
         }
     });
 
@@ -640,11 +681,15 @@ pub fn wire(ui: &App, ctx: &AppContext) {
 
     // Select model
     let ui_weak = ui.as_weak();
+    let ui_weak_sm = ui.as_weak();
+    let ps_sm = providers.clone();
+    let bridge_sm = ctx.bridge.clone();
     ui.on_select_model(move |model_id| {
         let id = model_id.to_string();
-        tracing::info!(model = %id, "Model selected");
+        tracing::info!(model = %id, "Model selected — reloading LLM");
+
         // Update the UI to show the selected model as active
-        if let Some(ui) = ui_weak.upgrade() {
+        if let Some(ui) = ui_weak_sm.upgrade() {
             let models = ui.get_settings_available_models();
             let updated: Vec<AIModelData> = (0..models.row_count())
                 .filter_map(|i| {
@@ -654,6 +699,38 @@ pub fn wire(ui: &App, ctx: &AppContext) {
                 })
                 .collect();
             ui.set_settings_available_models(ModelRc::new(VecModel::from(updated)));
+            // Update the active model display
+            ui.set_settings_llm_api_model(id.clone().into());
+        }
+
+        // Find the primary provider and hot-reload the LLM with the new model
+        let primary = if let Ok(store) = ps_sm.lock() {
+            store.entries.iter().find(|e| e.is_primary).cloned()
+        } else {
+            None
+        };
+
+        if let Some(provider) = primary {
+            // Build base URL with /v1 suffix for OpenAI-compatible APIs
+            let base_url = if provider.provider_type == "ollama" && !provider.base_url.contains("/v1") {
+                format!("{}/v1", provider.base_url.trim_end_matches('/'))
+            } else {
+                provider.base_url.clone()
+            };
+            tracing::info!(model = %id, base_url = %base_url, "Hot-reloading LLM with selected model");
+            bridge_sm.reload_llm(
+                provider.provider_type.clone(),
+                base_url,
+                provider.api_key.clone(),
+                id,
+            );
+            // Push fresh AI status with new online state
+            if let (Some(ui), Ok(store)) = (ui_weak_sm.upgrade(), ps_sm.lock()) {
+                push_ai_status_to_ui(&ui, &store, true);
+                push_providers_to_ui(&ui, &store);
+            }
+        } else {
+            tracing::warn!("No primary provider configured — cannot reload LLM");
         }
     });
 
@@ -841,14 +918,17 @@ fn push_ai_status_to_ui(ui: &App, store: &ProviderStore, online: bool) {
 // Provider testing + model fetching
 // ──────────────────────────────────────────────────────────────
 
-struct TestResult {
-    success: bool,
-    message: String,
-    latency_ms: i32,
+pub(crate) struct TestResult {
+    pub success: bool,
+    pub message: String,
+    pub latency_ms: i32,
 }
 
 /// Test a provider connection by hitting its models endpoint.
-fn test_provider_connection(base_url: &str, api_key: Option<&str>, auth_type: &str) -> TestResult {
+///
+/// Shared with onboarding (`wire::ai_onboarding`) so first boot validates a
+/// provider the same way Settings does, instead of simulating a result.
+pub(crate) fn test_provider_connection(base_url: &str, api_key: Option<&str>, auth_type: &str) -> TestResult {
     let url = if base_url.contains("/v1") {
         format!("{}/models", base_url.trim_end_matches('/'))
     } else {

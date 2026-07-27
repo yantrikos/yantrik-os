@@ -955,6 +955,9 @@ export component OnboardingScreen inherits Rectangle {
                                 font-size: Theme.fs-body;
                                 font-weight: 500;
                                 horizontal-alignment: center;
+                                // Without this the string is clipped mid-word
+                                // inside the fixed 300px card ("...recomm").
+                                wrap: word-wrap;
                             }
                         }
                     }

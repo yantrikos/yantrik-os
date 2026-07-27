@@ -39,6 +39,10 @@ imap = { workspace = true }
 lettre = { workspace = true, features = ["hostname"] }
 base64 = { workspace = true }
 ureq = { workspace = true }
+# One-shot hardware read for the first-boot scan. The system observer only
+# publishes on its poll cycle (10s by default), which is far too slow for a
+# scan the user is watching.
+sysinfo = { workspace = true }
 mailparse = { workspace = true }
 html2text = { workspace = true }
 rusqlite = { workspace = true }
@@ -56,4 +60,5 @@ llamacpp-metal = ["llamacpp", "yantrik-ml/llamacpp-metal"]
 cuda = ["yantrik-ml/cuda"]
 metal = ["yantrik-ml/metal"]
 accelerate = ["yantrik-ml/accelerate"]
+kokoro-tts = ["yantrik-ml/kokoro-neural-tts"]
 

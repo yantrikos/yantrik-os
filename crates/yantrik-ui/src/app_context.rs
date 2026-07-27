@@ -73,6 +73,9 @@ pub struct AppContext {
     pub terminal_split_handle: Rc<RefCell<Option<Rc<RefCell<Option<TerminalHandle>>>>>>,
     pub user_name: String,
     pub config_path: Option<PathBuf>,
+    /// Configured LLM endpoint, so first-boot probes test the endpoint the
+    /// companion will actually use rather than assuming localhost.
+    pub llm_base_url: Option<String>,
     pub skill_registry: Rc<RefCell<SkillRegistry>>,
     pub i18n: I18n,
     pub entity_graph: SharedEntityGraph,
@@ -216,6 +219,7 @@ impl AppContext {
 
         // Save fields before moving config into bridge
         let user_name = config.user_name.clone();
+        let llm_base_url = config.llm.api_base_url.clone();
         let voice_config = config.voice.clone();
         let chat_config_snapshot = config.clone(); // For multi-provider chat bridge
         let enabled_services = config.enabled_services.clone();
@@ -472,6 +476,7 @@ impl AppContext {
             terminal_split_handle: Rc::new(RefCell::new(None)),
             user_name,
             config_path,
+            llm_base_url,
             skill_registry,
             i18n: I18n::load(&I18n::detect_locale()),
             entity_graph,
