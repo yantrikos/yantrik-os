@@ -178,7 +178,7 @@ impl Tool for CreateScheduleTool {
         let action = args.get("action").and_then(|v| v.as_str());
 
         let task_id = Scheduler::create(
-            ctx.db.conn(),
+            &ctx.db.conn(),
             label,
             description,
             schedule_type,
@@ -227,7 +227,7 @@ impl Tool for ListSchedulesTool {
 
     fn execute(&self, ctx: &ToolContext, args: &serde_json::Value) -> String {
         let status = args.get("status").and_then(|v| v.as_str()).unwrap_or("active");
-        let tasks = Scheduler::list(ctx.db.conn(), Some(status));
+        let tasks = Scheduler::list(&ctx.db.conn(), Some(status));
 
         if tasks.is_empty() {
             return format!("No {} scheduled tasks.", status);
@@ -303,7 +303,7 @@ impl Tool for UpdateScheduleTool {
         }
 
         // Check task exists
-        if Scheduler::get(ctx.db.conn(), task_id).is_none() {
+        if Scheduler::get(&ctx.db.conn(), task_id).is_none() {
             return format!("Error: no task found with ID '{}'", task_id);
         }
 
@@ -321,7 +321,7 @@ impl Tool for UpdateScheduleTool {
             }
         }
 
-        Scheduler::update(ctx.db.conn(), task_id, &updates);
+        Scheduler::update(&ctx.db.conn(), task_id, &updates);
         format!("Schedule '{}' updated.", task_id)
     }
 }
@@ -361,7 +361,7 @@ impl Tool for CancelScheduleTool {
             return "Error: task_id is required".to_string();
         }
 
-        if Scheduler::cancel(ctx.db.conn(), task_id) {
+        if Scheduler::cancel(&ctx.db.conn(), task_id) {
             format!("Schedule '{}' cancelled.", task_id)
         } else {
             format!("No active/paused task found with ID '{}'", task_id)

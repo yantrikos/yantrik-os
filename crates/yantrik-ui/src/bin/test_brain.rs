@@ -14,6 +14,7 @@ use yantrikdb_core::YantrikDB;
 use yantrik_ml::{CandleEmbedder, CandleLLM, LLMBackend};
 use yantrik_ml::ApiLLM;
 
+
 fn main() {
     // Init tracing
     tracing_subscriber::fmt()
@@ -88,7 +89,7 @@ fn main() {
     }
     let mut db = YantrikDB::new(test_db_path, config.yantrikdb.embedding_dim)
         .expect("failed to create YantrikDB");
-    db.set_embedder(Box::new(embedder));
+    db.set_embedder(Box::new(yantrik_companion::embedder_bridge::EmbedderBridge::new(embedder)));
 
     let mem_count = db.stats(None).map(|s| s.active_memories).unwrap_or(0);
     println!("  memories in DB: {}", mem_count);

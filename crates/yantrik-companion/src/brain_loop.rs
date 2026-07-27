@@ -12,13 +12,13 @@
 //! (instinct evaluation → urge push) with signal-aware scoring and homeostatic
 //! drive modulation.
 
-use yantrikdb_core::cognition::brain::{
+use yantrik_brain::brain::{
     self, BrainCandidate, BrainState, BrainTickResult, CandidateSource,
     OrientationInput, SignalType,
 };
-use yantrikdb_core::cognition::brain_consolidation;
-use yantrikdb_core::cognition::curiosity;
-use yantrikdb_core::cognition::detectors;
+use yantrik_brain::brain_consolidation;
+use yantrik_brain::curiosity;
+use yantrik_brain::detectors;
 
 use crate::companion::CompanionService;
 use crate::types::UrgeSpec;
@@ -125,7 +125,7 @@ pub struct BrainLoopResult {
 /// with a signal-aware, homeostasis-modulated pipeline.
 pub fn run_brain_loop(service: &CompanionService) -> BrainLoopResult {
     let now = now_ts();
-    let conn = service.db.conn();
+    let conn = &service.db.conn();
 
     // 1. Load persisted brain state
     let mut brain_state = load_brain_state(conn);

@@ -56,7 +56,7 @@ impl Tool for QueueTaskTool {
         let description = args.get("description").and_then(|v| v.as_str()).unwrap_or("");
         let priority = args.get("priority").and_then(|v| v.as_i64()).unwrap_or(2) as i32;
 
-        match TaskQueue::enqueue(ctx.db.conn(), title, description, priority, "user") {
+        match TaskQueue::enqueue(&ctx.db.conn(), title, description, priority, "user") {
             Ok(id) => format!("Task queued: [{}] {} (priority {}). Will work on it during idle time.", id, title, priority),
             Err(e) => format!("Failed to queue task: {}", e),
         }
@@ -93,7 +93,7 @@ impl Tool for ListTasksTool {
 
     fn execute(&self, ctx: &ToolContext, args: &serde_json::Value) -> String {
         let status = args.get("status").and_then(|v| v.as_str());
-        let tasks = TaskQueue::list(ctx.db.conn(), status, 15);
+        let tasks = TaskQueue::list(&ctx.db.conn(), status, 15);
 
         if tasks.is_empty() {
             return match status {
@@ -170,7 +170,7 @@ impl Tool for UpdateTaskTool {
         let progress = args.get("progress").and_then(|v| v.as_str()).unwrap_or("");
         let steps = args.get("steps_completed").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
 
-        TaskQueue::update_progress(ctx.db.conn(), task_id, progress, steps);
+        TaskQueue::update_progress(&ctx.db.conn(), task_id, progress, steps);
         format!("Task {} updated. Steps: {}. Progress: {}", task_id, steps, progress)
     }
 }
@@ -215,7 +215,7 @@ impl Tool for CompleteTaskTool {
         };
         let result = args.get("result").and_then(|v| v.as_str()).unwrap_or("Completed.");
 
-        TaskQueue::complete(ctx.db.conn(), task_id, result);
+        TaskQueue::complete(&ctx.db.conn(), task_id, result);
         format!("Task {} marked as completed.", task_id)
     }
 }
@@ -255,7 +255,7 @@ impl Tool for CancelTaskTool {
             None => return "Missing required parameter: task_id".to_string(),
         };
 
-        TaskQueue::cancel(ctx.db.conn(), task_id);
+        TaskQueue::cancel(&ctx.db.conn(), task_id);
         format!("Task {} cancelled.", task_id)
     }
 }

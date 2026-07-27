@@ -23,17 +23,17 @@ const MAX_RESULT_SIZE: usize = 4000;
 /// Returns the number of steps executed across all recipes.
 pub fn tick(service: &mut CompanionService) -> usize {
     // 1. Resume waiting recipes whose conditions are met
-    let expired = RecipeStore::get_expired_waiting(service.db.conn());
+    let expired = RecipeStore::get_expired_waiting(&service.db.conn());
     for recipe_id in &expired {
-        let step = RecipeStore::get(service.db.conn(), recipe_id)
+        let step = RecipeStore::get(&service.db.conn(), recipe_id)
             .map(|r| r.current_step)
             .unwrap_or(0);
-        RecipeStore::update_status(service.db.conn(), recipe_id, &RecipeStatus::Running, step);
+        RecipeStore::update_status(&service.db.conn(), recipe_id, &RecipeStatus::Running, step);
         tracing::info!(recipe_id = recipe_id.as_str(), "Recipe resumed from waiting");
     }
 
     // 2. Get all resumable recipes
-    let resumable = RecipeStore::get_resumable(service.db.conn());
+    let resumable = RecipeStore::get_resumable(&service.db.conn());
     if resumable.is_empty() {
         return 0;
     }
@@ -56,7 +56,7 @@ pub fn tick(service: &mut CompanionService) -> usize {
 fn execute_recipe_steps(service: &mut CompanionService, recipe_id: &str) -> usize {
     // Load recipe state upfront (immutable borrows of service.db end here)
     let (recipe, stored_steps, initial_vars) = {
-        let conn = service.db.conn();
+        let conn = &service.db.conn();
         let recipe = match RecipeStore::get(conn, recipe_id) {
             Some(r) => r,
             None => return 0,
@@ -100,50 +100,50 @@ fn execute_recipe_steps(service: &mut CompanionService, recipe_id: &str) -> usiz
 
         match result {
             StepResult::Continue => {
-                RecipeStore::complete_step(service.db.conn(), recipe_id, current_step, "ok");
+                RecipeStore::complete_step(&service.db.conn(), recipe_id, current_step, "ok");
                 current_step += 1;
-                RecipeStore::update_status(service.db.conn(), recipe_id, &RecipeStatus::Running, current_step);
+                RecipeStore::update_status(&service.db.conn(), recipe_id, &RecipeStatus::Running, current_step);
             }
             StepResult::JumpTo(target) => {
-                RecipeStore::complete_step(service.db.conn(), recipe_id, current_step, &format!("jump:{}", target));
+                RecipeStore::complete_step(&service.db.conn(), recipe_id, current_step, &format!("jump:{}", target));
                 current_step = target;
-                RecipeStore::update_status(service.db.conn(), recipe_id, &RecipeStatus::Running, current_step);
+                RecipeStore::update_status(&service.db.conn(), recipe_id, &RecipeStatus::Running, current_step);
             }
             StepResult::Waiting => {
-                RecipeStore::complete_step(service.db.conn(), recipe_id, current_step, "waiting");
+                RecipeStore::complete_step(&service.db.conn(), recipe_id, current_step, "waiting");
                 current_step += 1;
-                RecipeStore::update_status(service.db.conn(), recipe_id, &RecipeStatus::Waiting, current_step);
+                RecipeStore::update_status(&service.db.conn(), recipe_id, &RecipeStatus::Waiting, current_step);
                 break;
             }
             StepResult::Done => {
-                RecipeStore::complete_step(service.db.conn(), recipe_id, current_step, "done");
+                RecipeStore::complete_step(&service.db.conn(), recipe_id, current_step, "done");
                 current_step = total_steps;
             }
             StepResult::Notify(msg) => {
-                RecipeStore::complete_step(service.db.conn(), recipe_id, current_step, &truncate(&msg));
+                RecipeStore::complete_step(&service.db.conn(), recipe_id, current_step, &truncate(&msg));
                 deliver_notification(service, recipe_id, &msg);
                 current_step += 1;
-                RecipeStore::update_status(service.db.conn(), recipe_id, &RecipeStatus::Running, current_step);
+                RecipeStore::update_status(&service.db.conn(), recipe_id, &RecipeStatus::Running, current_step);
             }
             StepResult::Failed(err) => {
                 match handle_error(service, recipe_id, current_step, &err, &on_error, &vars) {
                     ErrorResolution::Continue => {
-                        RecipeStore::skip_step(service.db.conn(), recipe_id, current_step);
+                        RecipeStore::skip_step(&service.db.conn(), recipe_id, current_step);
                         current_step += 1;
-                        RecipeStore::update_status(service.db.conn(), recipe_id, &RecipeStatus::Running, current_step);
+                        RecipeStore::update_status(&service.db.conn(), recipe_id, &RecipeStatus::Running, current_step);
                     }
                     ErrorResolution::JumpTo(target) => {
-                        RecipeStore::fail_step(service.db.conn(), recipe_id, current_step, &err);
+                        RecipeStore::fail_step(&service.db.conn(), recipe_id, current_step, &err);
                         current_step = target;
-                        RecipeStore::update_status(service.db.conn(), recipe_id, &RecipeStatus::Running, current_step);
+                        RecipeStore::update_status(&service.db.conn(), recipe_id, &RecipeStatus::Running, current_step);
                     }
                     ErrorResolution::Retry => {
-                        RecipeStore::update_status(service.db.conn(), recipe_id, &RecipeStatus::Running, current_step);
+                        RecipeStore::update_status(&service.db.conn(), recipe_id, &RecipeStatus::Running, current_step);
                         break;
                     }
                     ErrorResolution::Abort => {
-                        RecipeStore::fail_step(service.db.conn(), recipe_id, current_step, &err);
-                        RecipeStore::set_error(service.db.conn(), recipe_id, &err);
+                        RecipeStore::fail_step(&service.db.conn(), recipe_id, current_step, &err);
+                        RecipeStore::set_error(&service.db.conn(), recipe_id, &err);
                         tracing::warn!(recipe_id, step = current_step, error = %err, "Recipe failed");
                         break;
                     }
@@ -152,12 +152,12 @@ fn execute_recipe_steps(service: &mut CompanionService, recipe_id: &str) -> usiz
         }
 
         // Reload vars after each step (step may have added new ones)
-        vars = RecipeStore::get_vars(service.db.conn(), recipe_id);
+        vars = RecipeStore::get_vars(&service.db.conn(), recipe_id);
     }
 
     // Check if recipe completed
     if current_step >= total_steps {
-        RecipeStore::update_status(service.db.conn(), recipe_id, &RecipeStatus::Done, current_step);
+        RecipeStore::update_status(&service.db.conn(), recipe_id, &RecipeStatus::Done, current_step);
         tracing::info!(recipe_id, steps = total_steps, "Recipe completed");
     }
 
@@ -191,7 +191,7 @@ fn execute_step(
 
             // Store result as variable
             let val = serde_json::Value::String(truncated.clone());
-            RecipeStore::set_var(service.db.conn(), recipe_id, store_as, &val);
+            RecipeStore::set_var(&service.db.conn(), recipe_id, store_as, &val);
 
             StepResult::Continue
         }
@@ -220,7 +220,7 @@ fn execute_step(
                     let text = strip_think_tags(&r.text);
                     let truncated = truncate(&text);
                     let val = serde_json::Value::String(truncated);
-                    RecipeStore::set_var(service.db.conn(), recipe_id, store_as, &val);
+                    RecipeStore::set_var(&service.db.conn(), recipe_id, store_as, &val);
                     StepResult::Continue
                 }
                 Err(e) => {
@@ -228,7 +228,7 @@ fn execute_step(
                     if let Some(tmpl) = fallback_template {
                         let resolved = resolve_vars(tmpl, vars);
                         let val = serde_json::Value::String(truncate(&resolved));
-                        RecipeStore::set_var(service.db.conn(), recipe_id, store_as, &val);
+                        RecipeStore::set_var(&service.db.conn(), recipe_id, store_as, &val);
                         tracing::info!(recipe_id, "Think step used fallback template (LLM unavailable)");
                         StepResult::Continue
                     } else {
@@ -320,7 +320,7 @@ fn execute_step(
         } => {
             let resolved = resolve_vars(template, vars);
             let val = serde_json::Value::String(truncate(&resolved));
-            RecipeStore::set_var(service.db.conn(), recipe_id, store_as, &val);
+            RecipeStore::set_var(&service.db.conn(), recipe_id, store_as, &val);
             StepResult::Continue
         }
 
@@ -457,7 +457,7 @@ fn execute_think_cited(
             };
 
             let val = serde_json::to_value(&cited_output).unwrap_or_default();
-            RecipeStore::set_var(service.db.conn(), recipe_id, store_as, &val);
+            RecipeStore::set_var(&service.db.conn(), recipe_id, store_as, &val);
             StepResult::Continue
         }
         Err(e) => StepResult::Failed(format!("LLM error in ThinkCited: {}", e)),
@@ -563,11 +563,11 @@ fn execute_validate(
         "evidence_status": format!("{:?}", output.evidence_status),
     });
     let report_key = format!("{}_report", store_as);
-    RecipeStore::set_var(service.db.conn(), recipe_id, &report_key, &report);
+    RecipeStore::set_var(&service.db.conn(), recipe_id, &report_key, &report);
 
     // Store cleaned output
     let val = serde_json::to_value(&output).unwrap_or_default();
-    RecipeStore::set_var(service.db.conn(), recipe_id, store_as, &val);
+    RecipeStore::set_var(&service.db.conn(), recipe_id, store_as, &val);
 
     tracing::debug!(
         recipe_id,
@@ -607,7 +607,7 @@ fn execute_render(
     };
 
     let val = serde_json::Value::String(rendered);
-    RecipeStore::set_var(service.db.conn(), recipe_id, store_as, &val);
+    RecipeStore::set_var(&service.db.conn(), recipe_id, store_as, &val);
     StepResult::Continue
 }
 
@@ -744,7 +744,7 @@ fn execute_filter(
 
     let result = serde_json::to_string(&filtered).unwrap_or_else(|_| "[]".to_string());
     let val = serde_json::Value::String(truncate(&result));
-    RecipeStore::set_var(service.db.conn(), recipe_id, store_as, &val);
+    RecipeStore::set_var(&service.db.conn(), recipe_id, store_as, &val);
     StepResult::Continue
 }
 
@@ -778,7 +778,7 @@ fn execute_sort(
 
     let result = serde_json::to_string(&arr).unwrap_or_else(|_| "[]".to_string());
     let val = serde_json::Value::String(truncate(&result));
-    RecipeStore::set_var(service.db.conn(), recipe_id, store_as, &val);
+    RecipeStore::set_var(&service.db.conn(), recipe_id, store_as, &val);
     StepResult::Continue
 }
 
@@ -836,7 +836,7 @@ fn execute_aggregate(
     };
 
     let val = serde_json::Value::String(result_str);
-    RecipeStore::set_var(service.db.conn(), recipe_id, store_as, &val);
+    RecipeStore::set_var(&service.db.conn(), recipe_id, store_as, &val);
     StepResult::Continue
 }
 
@@ -869,7 +869,7 @@ fn execute_extract(
                     .map(|m| m.as_str().to_string())
                     .unwrap_or_default();
                 let val = serde_json::Value::String(extracted);
-                RecipeStore::set_var(service.db.conn(), recipe_id, store_as, &val);
+                RecipeStore::set_var(&service.db.conn(), recipe_id, store_as, &val);
                 StepResult::Continue
             }
             Err(e) => StepResult::Failed(format!("Extract: invalid regex '{}': {}", regex_str, e)),
@@ -890,7 +890,7 @@ fn execute_extract(
                     Some(v) => v,
                     None => {
                         let val = serde_json::Value::String(String::new());
-                        RecipeStore::set_var(service.db.conn(), recipe_id, store_as, &val);
+                        RecipeStore::set_var(&service.db.conn(), recipe_id, store_as, &val);
                         return StepResult::Continue;
                     }
                 }
@@ -899,7 +899,7 @@ fn execute_extract(
                     Some(v) => v,
                     None => {
                         let val = serde_json::Value::String(String::new());
-                        RecipeStore::set_var(service.db.conn(), recipe_id, store_as, &val);
+                        RecipeStore::set_var(&service.db.conn(), recipe_id, store_as, &val);
                         return StepResult::Continue;
                     }
                 }
@@ -911,7 +911,7 @@ fn execute_extract(
             other => serde_json::to_string(other).unwrap_or_default(),
         };
         let val = serde_json::Value::String(truncate(&result));
-        RecipeStore::set_var(service.db.conn(), recipe_id, store_as, &val);
+        RecipeStore::set_var(&service.db.conn(), recipe_id, store_as, &val);
         StepResult::Continue
     }
 }
@@ -953,7 +953,7 @@ fn execute_branch(
                     deliver_notification(service, recipe_id, msg);
                 }
                 // Reload vars after each sub-step
-                current_vars = RecipeStore::get_vars(service.db.conn(), recipe_id);
+                current_vars = RecipeStore::get_vars(&service.db.conn(), recipe_id);
             }
             StepResult::Failed(err) => return StepResult::Failed(err),
             StepResult::Waiting => return StepResult::Waiting,
@@ -1076,7 +1076,7 @@ fn handle_error(
 
             if current < *max as u64 {
                 let new_count = serde_json::Value::Number((current + 1).into());
-                RecipeStore::set_var(service.db.conn(), recipe_id, &retry_key, &new_count);
+                RecipeStore::set_var(&service.db.conn(), recipe_id, &retry_key, &new_count);
                 tracing::info!(
                     recipe_id, step = step_index,
                     retry = current + 1, max = *max,
@@ -1109,7 +1109,7 @@ fn replan(
     step_index: usize,
     error: &str,
 ) -> bool {
-    let steps = RecipeStore::get_steps(service.db.conn(), recipe_id);
+    let steps = RecipeStore::get_steps(&service.db.conn(), recipe_id);
     let remaining: Vec<String> = steps
         .iter()
         .skip(step_index)
@@ -1150,7 +1150,7 @@ fn replan(
             match serde_json::from_str::<Vec<RecipeStep>>(&json_text) {
                 Ok(new_steps) if !new_steps.is_empty() => {
                     RecipeStore::replace_remaining_steps(
-                        service.db.conn(),
+                        &service.db.conn(),
                         recipe_id,
                         step_index,
                         &new_steps,
@@ -1168,7 +1168,7 @@ fn replan(
                         .unwrap_or_default();
 
                     RecipeStore::record_failure_learning(
-                        service.db.conn(),
+                        &service.db.conn(),
                         recipe_id,
                         step_index,
                         &step_info,

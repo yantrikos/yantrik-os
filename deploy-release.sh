@@ -91,7 +91,8 @@ read_cargo_version() {
 }
 
 COMP_ML_VER=$(read_cargo_version crates/yantrik-ml/Cargo.toml)
-COMP_DB_VER=$(read_cargo_version crates/yantrikdb-core/Cargo.toml)
+# yantrikdb is an upstream dependency now; report the version we build against.
+COMP_DB_VER=$(read_cargo_version ../yantrikdb/crates/yantrikdb-core/Cargo.toml)
 COMP_COMPANION_VER=$(read_cargo_version crates/yantrik-companion/Cargo.toml)
 COMP_OS_VER=$(read_cargo_version crates/yantrik-os/Cargo.toml)
 COMP_UI_VER=$(read_cargo_version crates/yantrik-ui/Cargo.toml)

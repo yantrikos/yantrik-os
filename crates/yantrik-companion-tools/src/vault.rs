@@ -64,12 +64,12 @@ impl Tool for VaultStoreTool {
             return "Error: service, username, and password are required".to_string();
         }
 
-        let enc = match yantrikdb_core::vault::vault_encryption(ctx.db.conn()) {
+        let enc = match yantrikdb_core::vault::vault_encryption(&ctx.db.conn()) {
             Ok(e) => e,
             Err(e) => return format!("Error: {e}"),
         };
 
-        match yantrikdb_core::vault::store(ctx.db.conn(), &enc, service, username, password, url, notes, category) {
+        match yantrikdb_core::vault::store(&ctx.db.conn(), &enc, service, username, password, url, notes, category) {
             Ok(_) => format!("Credential stored securely for '{service}'"),
             Err(e) => format!("Error storing credential: {e}"),
         }
@@ -108,18 +108,18 @@ impl Tool for VaultGetTool {
         let search = args.get("search").and_then(|v| v.as_str());
         let pin = args.get("pin").and_then(|v| v.as_str());
 
-        let enc = match yantrikdb_core::vault::vault_encryption(ctx.db.conn()) {
+        let enc = match yantrikdb_core::vault::vault_encryption(&ctx.db.conn()) {
             Ok(e) => e,
             Err(e) => return format!("Error: {e}"),
         };
 
         // PIN verification
-        if yantrikdb_core::vault::has_pin(ctx.db.conn()) {
+        if yantrikdb_core::vault::has_pin(&ctx.db.conn()) {
             match pin {
                 None => return "VAULT_PIN_REQUIRED: A security PIN is required to access credentials. \
                     Please ask the user to provide their vault PIN.".to_string(),
                 Some(p) => {
-                    if !yantrikdb_core::vault::verify_pin(ctx.db.conn(), p) {
+                    if !yantrikdb_core::vault::verify_pin(&ctx.db.conn(), p) {
                         return "VAULT_PIN_INVALID: Incorrect PIN. Access denied.".to_string();
                     }
                 }
@@ -127,12 +127,12 @@ impl Tool for VaultGetTool {
         }
 
         let entries = if let Some(svc) = service {
-            match yantrikdb_core::vault::get(ctx.db.conn(), &enc, svc) {
+            match yantrikdb_core::vault::get(&ctx.db.conn(), &enc, svc) {
                 Ok(e) => e,
                 Err(e) => return format!("Error: {e}"),
             }
         } else if let Some(q) = search {
-            match yantrikdb_core::vault::search(ctx.db.conn(), &enc, q) {
+            match yantrikdb_core::vault::search(&ctx.db.conn(), &enc, q) {
                 Ok(e) => e,
                 Err(e) => return format!("Error: {e}"),
             }
@@ -187,10 +187,10 @@ impl Tool for VaultListTool {
     }
 
     fn execute(&self, ctx: &ToolContext, _args: &serde_json::Value) -> String {
-        match yantrikdb_core::vault::list(ctx.db.conn()) {
+        match yantrikdb_core::vault::list(&ctx.db.conn()) {
             Ok(entries) if entries.is_empty() => "Vault is empty. No credentials stored yet.".to_string(),
             Ok(entries) => {
-                let pin_status = if yantrikdb_core::vault::has_pin(ctx.db.conn()) {
+                let pin_status = if yantrikdb_core::vault::has_pin(&ctx.db.conn()) {
                     "PIN protection: ENABLED"
                 } else {
                     "PIN protection: DISABLED (set one with vault_set_pin for security)"
@@ -246,17 +246,17 @@ impl Tool for VaultDeleteTool {
         }
 
         // PIN verification for destructive vault operations
-        if yantrikdb_core::vault::has_pin(ctx.db.conn()) {
+        if yantrikdb_core::vault::has_pin(&ctx.db.conn()) {
             match pin {
                 None => return "VAULT_PIN_REQUIRED: PIN required to delete vault entries. Ask the user for their vault PIN.".to_string(),
-                Some(p) if !yantrikdb_core::vault::verify_pin(ctx.db.conn(), p) => {
+                Some(p) if !yantrikdb_core::vault::verify_pin(&ctx.db.conn(), p) => {
                     return "VAULT_PIN_INVALID: Incorrect PIN. Access denied.".to_string();
                 }
                 _ => {}
             }
         }
 
-        match yantrikdb_core::vault::delete_by_service(ctx.db.conn(), service) {
+        match yantrikdb_core::vault::delete_by_service(&ctx.db.conn(), service) {
             Ok(0) => format!("No credentials found for '{service}'"),
             Ok(n) => format!("Deleted {n} credential(s) for '{service}'"),
             Err(e) => format!("Error: {e}"),
@@ -331,7 +331,7 @@ impl Tool for VaultSetPinTool {
         let action = args.get("action").and_then(|v| v.as_str()).unwrap_or("set");
         let current_pin = args.get("current_pin").and_then(|v| v.as_str());
         let new_pin = args.get("new_pin").and_then(|v| v.as_str());
-        let has_pin = yantrikdb_core::vault::has_pin(ctx.db.conn());
+        let has_pin = yantrikdb_core::vault::has_pin(&ctx.db.conn());
 
         match action {
             "set" => {
@@ -343,7 +343,7 @@ impl Tool for VaultSetPinTool {
                     Some(_) => return "Error: PIN must be at least 4 characters".to_string(),
                     None => return "Error: new_pin is required".to_string(),
                 };
-                match yantrikdb_core::vault::set_pin(ctx.db.conn(), pin) {
+                match yantrikdb_core::vault::set_pin(&ctx.db.conn(), pin) {
                     Ok(()) => "Vault PIN set successfully. vault_get and vault_delete now require this PIN.".to_string(),
                     Err(e) => format!("Error: {e}"),
                 }
@@ -354,7 +354,7 @@ impl Tool for VaultSetPinTool {
                 }
                 match current_pin {
                     None => return "Error: current_pin is required to change PIN".to_string(),
-                    Some(p) if !yantrikdb_core::vault::verify_pin(ctx.db.conn(), p) => {
+                    Some(p) if !yantrikdb_core::vault::verify_pin(&ctx.db.conn(), p) => {
                         return "VAULT_PIN_INVALID: Current PIN is incorrect.".to_string();
                     }
                     _ => {}
@@ -364,7 +364,7 @@ impl Tool for VaultSetPinTool {
                     Some(_) => return "Error: new PIN must be at least 4 characters".to_string(),
                     None => return "Error: new_pin is required".to_string(),
                 };
-                match yantrikdb_core::vault::set_pin(ctx.db.conn(), pin) {
+                match yantrikdb_core::vault::set_pin(&ctx.db.conn(), pin) {
                     Ok(()) => "Vault PIN changed successfully.".to_string(),
                     Err(e) => format!("Error: {e}"),
                 }
@@ -375,12 +375,12 @@ impl Tool for VaultSetPinTool {
                 }
                 match current_pin {
                     None => return "Error: current_pin is required to remove PIN".to_string(),
-                    Some(p) if !yantrikdb_core::vault::verify_pin(ctx.db.conn(), p) => {
+                    Some(p) if !yantrikdb_core::vault::verify_pin(&ctx.db.conn(), p) => {
                         return "VAULT_PIN_INVALID: Current PIN is incorrect.".to_string();
                     }
                     _ => {}
                 }
-                match yantrikdb_core::vault::remove_pin(ctx.db.conn()) {
+                match yantrikdb_core::vault::remove_pin(&ctx.db.conn()) {
                     Ok(()) => "Vault PIN removed. Credentials are now accessible without PIN verification.".to_string(),
                     Err(e) => format!("Error: {e}"),
                 }

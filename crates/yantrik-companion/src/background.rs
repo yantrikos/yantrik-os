@@ -67,7 +67,7 @@ pub fn run_think_cycle(service: &mut CompanionService) {
     // 4. Count open conflicts
     let conflicts_count = service
         .db
-        .get_conflicts(Some("open"), None, None, None, 100)
+        .get_conflicts(Some("open"), None, None, None, None, 100)
         .map(|c| c.len())
         .unwrap_or(0);
 
@@ -87,7 +87,7 @@ pub fn run_think_cycle(service: &mut CompanionService) {
     let events = service.drain_events();
     let mut automation_triggers: Vec<serde_json::Value> = Vec::new();
     for (event_type, event_data) in &events {
-        let automations = AutomationStore::get_event_automations(service.db.conn(), event_type);
+        let automations = AutomationStore::get_event_automations(&service.db.conn(), event_type);
         for automation in automations {
             if !AutomationStore::event_matches(&automation.trigger_config, event_data) {
                 continue;
@@ -97,7 +97,7 @@ pub fn run_think_cycle(service: &mut CompanionService) {
                 event = %event_type,
                 "Event automation triggered"
             );
-            AutomationStore::record_run(service.db.conn(), &automation.automation_id);
+            AutomationStore::record_run(&service.db.conn(), &automation.automation_id);
             automation_triggers.push(serde_json::json!({
                 "trigger_type": "automation",
                 "automation_id": automation.automation_id,
@@ -114,9 +114,9 @@ pub fn run_think_cycle(service: &mut CompanionService) {
         if trigger.get("trigger_type").and_then(|v| v.as_str()) == Some("scheduled_task") {
             if let Some(action) = trigger.get("action").and_then(|v| v.as_str()) {
                 if let Some(auto_id) = action.strip_prefix("automation:") {
-                    if let Some(automation) = AutomationStore::get(service.db.conn(), auto_id) {
+                    if let Some(automation) = AutomationStore::get(&service.db.conn(), auto_id) {
                         if automation.enabled {
-                            AutomationStore::record_run(service.db.conn(), auto_id);
+                            AutomationStore::record_run(&service.db.conn(), auto_id);
                             automation_triggers.push(serde_json::json!({
                                 "trigger_type": "automation",
                                 "automation_id": automation.automation_id,
@@ -152,7 +152,7 @@ pub fn run_think_cycle(service: &mut CompanionService) {
         if spec.guaranteed || spec.urgency >= proactive_threshold {
             high_urgency_urges.push(spec.clone());
         }
-        service.urge_queue.push(service.db.conn(), spec);
+        service.urge_queue.push(&service.db.conn(), spec);
     }
 
     // Brain-driven external fetch (if info-hungry and nothing interesting found)
@@ -172,7 +172,7 @@ pub fn run_think_cycle(service: &mut CompanionService) {
     // 8. Background narrative update (if needed and bond is enabled)
     if service.config.bond.enabled {
         let needs_narrative = Narrative::tick_interaction(
-            service.db.conn(),
+            &service.db.conn(),
             service.config.narrative.update_interval_interactions,
         );
         if needs_narrative {
@@ -180,9 +180,9 @@ pub fn run_think_cycle(service: &mut CompanionService) {
         }
 
         // Tick evolution (formality shift) based on current bond level
-        let bond_state = BondTracker::get_state(service.db.conn());
+        let bond_state = BondTracker::get_state(&service.db.conn());
         Evolution::tick(
-            service.db.conn(),
+            &service.db.conn(),
             bond_state.bond_level,
             service.config.evolution.formality_alpha,
         );
@@ -191,7 +191,7 @@ pub fn run_think_cycle(service: &mut CompanionService) {
     // 9. Memory evolution — background maintenance (V23)
     {
         use crate::memory_evolution;
-        let conn = service.db.conn();
+        let conn = &service.db.conn();
         let cfg = &service.config.memory_evolution;
 
         // Gap 3: Semantic drift correction
@@ -228,7 +228,7 @@ pub fn run_think_cycle(service: &mut CompanionService) {
         use crate::memory_lifecycle::MemoryLifecycle;
 
         // Check for unresolved contradictions and surface to user
-        let contradictions = MemoryLifecycle::unresolved_contradictions(service.db.conn());
+        let contradictions = MemoryLifecycle::unresolved_contradictions(&service.db.conn());
         if !contradictions.is_empty() {
             // Build a message showing the first unresolved contradiction
             let c = &contradictions[0];
@@ -278,7 +278,7 @@ pub fn run_think_cycle(service: &mut CompanionService) {
             )
             .unwrap_or(0.0);
         if now - last_consolidation > 86400.0 {
-            let report = MemoryLifecycle::consolidate(service.db.conn());
+            let report = MemoryLifecycle::consolidate(&service.db.conn());
             if report.promoted > 0 || report.staled > 0 || report.archived > 0 {
                 tracing::info!(
                     promoted = report.promoted,
@@ -312,7 +312,7 @@ pub fn run_think_cycle(service: &mut CompanionService) {
             if spec.urgency >= proactive_threshold {
                 ck5_high.push(spec.clone());
             }
-            service.urge_queue.push(service.db.conn(), spec);
+            service.urge_queue.push(&service.db.conn(), spec);
         }
 
         // Generate proactive message from CK-5 if instincts didn't already
@@ -346,7 +346,7 @@ pub fn run_think_cycle(service: &mut CompanionService) {
 
 /// Run urge expiry (call periodically, e.g., every hour).
 pub fn expire_urges(service: &mut CompanionService) {
-    let expired = service.urge_queue.expire_old(service.db.conn());
+    let expired = service.urge_queue.expire_old(&service.db.conn());
     if expired > 0 {
         tracing::debug!(expired, "Expired old urges");
     }
@@ -487,10 +487,10 @@ fn update_narrative_background(service: &mut CompanionService) {
         .map(|r| r.text)
         .collect::<Vec<_>>();
 
-    let bond_state = BondTracker::get_state(service.db.conn());
+    let bond_state = BondTracker::get_state(&service.db.conn());
 
     Narrative::update(
-        service.db.conn(),
+        &service.db.conn(),
         &*service.llm,
         &service.config.user_name,
         bond_state.bond_level,

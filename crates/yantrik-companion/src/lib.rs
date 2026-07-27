@@ -16,6 +16,7 @@
 
 pub mod agent_loop;
 pub mod audio_convert;
+pub mod embedder_bridge;
 pub mod automation;
 pub mod background;
 pub mod brain_loop;

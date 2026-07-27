@@ -148,11 +148,11 @@ impl Tool for EmailCheckTool {
         };
 
         // Ensure DB tables exist
-        db::init_tables(ctx.db.conn());
+        db::init_tables(&ctx.db.conn());
 
         // Ensure account record exists
-        let account_id = db::ensure_account(ctx.db.conn(), &account.name, &account.email, &account.provider);
-        let since_uid = db::get_last_sync_uid(ctx.db.conn(), account_id);
+        let account_id = db::ensure_account(&ctx.db.conn(), &account.name, &account.email, &account.provider);
+        let since_uid = db::get_last_sync_uid(&ctx.db.conn(), account_id);
 
         // Connect and fetch headers
         let mut session = match imap_client::connect(&account) {
@@ -177,7 +177,7 @@ impl Tool for EmailCheckTool {
                 hdr.subject.clone()
             };
             db::upsert_email(
-                ctx.db.conn(), account_id, hdr.uid, folder,
+                &ctx.db.conn(), account_id, hdr.uid, folder,
                 &hdr.from_addr, &hdr.from_name, &hdr.to_addr, &hdr.subject,
                 hdr.date_ts, &preview, hdr.is_read, &hdr.message_id, &hdr.in_reply_to,
             );
@@ -188,12 +188,12 @@ impl Tool for EmailCheckTool {
         }
 
         if max_uid > since_uid {
-            db::update_last_sync_uid(ctx.db.conn(), account_id, max_uid);
+            db::update_last_sync_uid(&ctx.db.conn(), account_id, max_uid);
         }
 
         // Build response
-        let unread = db::count_unread(ctx.db.conn(), account_id, folder);
-        let recent = db::list_emails(ctx.db.conn(), account_id, folder, 10);
+        let unread = db::count_unread(&ctx.db.conn(), account_id, folder);
+        let recent = db::list_emails(&ctx.db.conn(), account_id, folder, 10);
 
         let mut result = format!(
             "Synced {} new emails for {} ({}). {} unread in {}.\n\nRecent:\n",
@@ -256,10 +256,10 @@ impl Tool for EmailListTool {
             Err(e) => return e,
         };
 
-        db::init_tables(ctx.db.conn());
-        let account_id = db::ensure_account(ctx.db.conn(), &account.name, &account.email, &account.provider);
-        let unread = db::count_unread(ctx.db.conn(), account_id, folder);
-        let emails = db::list_emails(ctx.db.conn(), account_id, folder, limit);
+        db::init_tables(&ctx.db.conn());
+        let account_id = db::ensure_account(&ctx.db.conn(), &account.name, &account.email, &account.provider);
+        let unread = db::count_unread(&ctx.db.conn(), account_id, folder);
+        let emails = db::list_emails(&ctx.db.conn(), account_id, folder, limit);
 
         if emails.is_empty() {
             return format!("No emails in {} for {}. Try email_check to sync first.", folder, account.name);
@@ -312,9 +312,9 @@ impl Tool for EmailReadTool {
             None => return "Error: 'id' is required (integer)".to_string(),
         };
 
-        db::init_tables(ctx.db.conn());
+        db::init_tables(&ctx.db.conn());
 
-        let cached = match db::get_email(ctx.db.conn(), email_id) {
+        let cached = match db::get_email(&ctx.db.conn(), email_id) {
             Some(e) => e,
             None => return format!("Email ID {} not found in cache. Use email_check to sync first.", email_id),
         };
@@ -326,7 +326,7 @@ impl Tool for EmailReadTool {
 
         // Need to fetch from IMAP — find and refresh the account's OAuth token
         let mut account = match self.accounts.iter().find(|a| {
-            db::ensure_account(ctx.db.conn(), &a.name, &a.email, &a.provider) == cached.account_id
+            db::ensure_account(&ctx.db.conn(), &a.name, &a.email, &a.provider) == cached.account_id
         }) {
             Some(a) => a.clone(),
             None => return format!("Account for email ID {} not found in config.", email_id),
@@ -360,7 +360,7 @@ impl Tool for EmailReadTool {
         let _ = session.logout();
 
         // Cache the body
-        db::update_email_body(ctx.db.conn(), email_id, &body);
+        db::update_email_body(&ctx.db.conn(), email_id, &body);
 
         let mut updated = cached;
         updated.body_full = body;
@@ -490,16 +490,16 @@ impl Tool for EmailReplyTool {
             _ => return "Error: 'body' is required".to_string(),
         };
 
-        db::init_tables(ctx.db.conn());
+        db::init_tables(&ctx.db.conn());
 
-        let cached = match db::get_email(ctx.db.conn(), email_id) {
+        let cached = match db::get_email(&ctx.db.conn(), email_id) {
             Some(e) => e,
             None => return format!("Email ID {} not found. Use email_check to sync.", email_id),
         };
 
         // Find the account that owns this email and refresh token
         let mut account = match self.accounts.iter().find(|a| {
-            db::ensure_account(ctx.db.conn(), &a.name, &a.email, &a.provider) == cached.account_id
+            db::ensure_account(&ctx.db.conn(), &a.name, &a.email, &a.provider) == cached.account_id
         }) {
             Some(a) => a.clone(),
             None => return "Account not found for this email".to_string(),
@@ -581,9 +581,9 @@ impl Tool for EmailSearchTool {
             Err(e) => return e,
         };
 
-        db::init_tables(ctx.db.conn());
-        let account_id = db::ensure_account(ctx.db.conn(), &account.name, &account.email, &account.provider);
-        let results = db::search_emails(ctx.db.conn(), account_id, query, limit);
+        db::init_tables(&ctx.db.conn());
+        let account_id = db::ensure_account(&ctx.db.conn(), &account.name, &account.email, &account.provider);
+        let results = db::search_emails(&ctx.db.conn(), account_id, query, limit);
 
         if results.is_empty() {
             return format!("No emails matching '{}' in {} cache.", query, account.name);
@@ -607,12 +607,12 @@ fn connect_for_email(
     accounts: &[EmailAccountConfig],
     email_id: i64,
 ) -> Result<(db::CachedEmail, EmailAccountConfig, imap::Session<native_tls::TlsStream<std::net::TcpStream>>), String> {
-    db::init_tables(ctx.db.conn());
-    let cached = db::get_email(ctx.db.conn(), email_id)
+    db::init_tables(&ctx.db.conn());
+    let cached = db::get_email(&ctx.db.conn(), email_id)
         .ok_or_else(|| format!("Email ID {} not found. Use email_check to sync.", email_id))?;
 
     let mut account = accounts.iter()
-        .find(|a| db::ensure_account(ctx.db.conn(), &a.name, &a.email, &a.provider) == cached.account_id)
+        .find(|a| db::ensure_account(&ctx.db.conn(), &a.name, &a.email, &a.provider) == cached.account_id)
         .cloned()
         .ok_or_else(|| format!("Account for email ID {} not found in config.", email_id))?;
 
@@ -685,9 +685,9 @@ impl Tool for EmailMarkReadTool {
                 Err(e) => return e,
             };
 
-            db::init_tables(ctx.db.conn());
-            let account_id = db::ensure_account(ctx.db.conn(), &account.name, &account.email, &account.provider);
-            let uids = db::get_unread_uids(ctx.db.conn(), account_id, folder);
+            db::init_tables(&ctx.db.conn());
+            let account_id = db::ensure_account(&ctx.db.conn(), &account.name, &account.email, &account.provider);
+            let uids = db::get_unread_uids(&ctx.db.conn(), account_id, folder);
 
             if uids.is_empty() {
                 return format!("No unread emails in {} for {}.", folder, account.name);
@@ -702,7 +702,7 @@ impl Tool for EmailMarkReadTool {
                 Ok(count) => {
                     let _ = session.logout();
                     // Update local cache
-                    db::mark_all_read(ctx.db.conn(), account_id, folder);
+                    db::mark_all_read(&ctx.db.conn(), account_id, folder);
                     format!("Marked {} emails as read in {} for {}.", count, folder, account.name)
                 }
                 Err(e) => {
@@ -725,7 +725,7 @@ impl Tool for EmailMarkReadTool {
             match imap_client::mark_read(&mut session, &cached.folder, cached.uid) {
                 Ok(()) => {
                     let _ = session.logout();
-                    db::mark_read(ctx.db.conn(), email_id);
+                    db::mark_read(&ctx.db.conn(), email_id);
                     format!("Marked email [{}] \"{}\" as read.", email_id, cached.subject)
                 }
                 Err(e) => {
@@ -782,7 +782,7 @@ impl Tool for EmailMarkUnreadTool {
         match imap_client::mark_unread(&mut session, &cached.folder, cached.uid) {
             Ok(()) => {
                 let _ = session.logout();
-                db::mark_unread(ctx.db.conn(), email_id);
+                db::mark_unread(&ctx.db.conn(), email_id);
                 format!("Marked email [{}] \"{}\" as unread.", email_id, cached.subject)
             }
             Err(e) => {
@@ -838,7 +838,7 @@ impl Tool for EmailFlagTool {
         match imap_client::mark_flagged(&mut session, &cached.folder, cached.uid) {
             Ok(()) => {
                 let _ = session.logout();
-                db::set_flagged(ctx.db.conn(), email_id, true);
+                db::set_flagged(&ctx.db.conn(), email_id, true);
                 format!("Flagged email [{}] \"{}\".", email_id, cached.subject)
             }
             Err(e) => {
@@ -894,7 +894,7 @@ impl Tool for EmailUnflagTool {
         match imap_client::unflag(&mut session, &cached.folder, cached.uid) {
             Ok(()) => {
                 let _ = session.logout();
-                db::set_flagged(ctx.db.conn(), email_id, false);
+                db::set_flagged(&ctx.db.conn(), email_id, false);
                 format!("Unflagged email [{}] \"{}\".", email_id, cached.subject)
             }
             Err(e) => {
@@ -950,7 +950,7 @@ impl Tool for EmailDeleteTool {
         match imap_client::delete_message(&mut session, &cached.folder, cached.uid) {
             Ok(()) => {
                 let _ = session.logout();
-                db::delete_email(ctx.db.conn(), email_id);
+                db::delete_email(&ctx.db.conn(), email_id);
                 format!("Deleted email [{}] \"{}\" from {}.", email_id, cached.subject, cached.folder)
             }
             Err(e) => {
@@ -1006,14 +1006,14 @@ impl Tool for EmailReplyAllTool {
             _ => return "Error: 'body' is required.".to_string(),
         };
 
-        db::init_tables(ctx.db.conn());
-        let cached = match db::get_email(ctx.db.conn(), email_id) {
+        db::init_tables(&ctx.db.conn());
+        let cached = match db::get_email(&ctx.db.conn(), email_id) {
             Some(e) => e,
             None => return format!("Email ID {} not found.", email_id),
         };
 
         let mut account = match self.accounts.iter().find(|a| {
-            db::ensure_account(ctx.db.conn(), &a.name, &a.email, &a.provider) == cached.account_id
+            db::ensure_account(&ctx.db.conn(), &a.name, &a.email, &a.provider) == cached.account_id
         }) {
             Some(a) => a.clone(),
             None => return "Account not found for this email.".to_string(),
@@ -1112,14 +1112,14 @@ impl Tool for EmailForwardTool {
         };
         let comment = args.get("comment").and_then(|v| v.as_str()).unwrap_or("");
 
-        db::init_tables(ctx.db.conn());
-        let cached = match db::get_email(ctx.db.conn(), email_id) {
+        db::init_tables(&ctx.db.conn());
+        let cached = match db::get_email(&ctx.db.conn(), email_id) {
             Some(e) => e,
             None => return format!("Email ID {} not found.", email_id),
         };
 
         let mut account = match self.accounts.iter().find(|a| {
-            db::ensure_account(ctx.db.conn(), &a.name, &a.email, &a.provider) == cached.account_id
+            db::ensure_account(&ctx.db.conn(), &a.name, &a.email, &a.provider) == cached.account_id
         }) {
             Some(a) => a.clone(),
             None => return "Account not found for this email.".to_string(),
@@ -1225,7 +1225,7 @@ impl Tool for EmailMoveTool {
         match imap_client::move_message(&mut session, &cached.folder, cached.uid, dest_folder) {
             Ok(()) => {
                 let _ = session.logout();
-                db::delete_email(ctx.db.conn(), email_id);
+                db::delete_email(&ctx.db.conn(), email_id);
                 format!("Moved email [{}] \"{}\" from {} to {}.", email_id, cached.subject, cached.folder, dest_folder)
             }
             Err(e) => {
@@ -1288,7 +1288,7 @@ impl Tool for EmailArchiveTool {
         match imap_client::move_message(&mut session, &cached.folder, cached.uid, archive_folder) {
             Ok(()) => {
                 let _ = session.logout();
-                db::delete_email(ctx.db.conn(), email_id);
+                db::delete_email(&ctx.db.conn(), email_id);
                 format!("Archived email [{}] \"{}\" → {}.", email_id, cached.subject, archive_folder)
             }
             Err(e) => {

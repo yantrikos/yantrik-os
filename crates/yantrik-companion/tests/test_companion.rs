@@ -86,19 +86,19 @@ fn test_urge_queue() {
     // Push a test urge
     let spec = yantrik_companion::UrgeSpec::new("test", "Test urge reason", 0.5)
         .with_cooldown("test:1");
-    companion.urge_queue.push(companion.db.conn(), &spec);
+    companion.urge_queue.push(&companion.db.conn(), &spec);
 
     // Verify pending count
-    let count = companion.urge_queue.count_pending(companion.db.conn());
+    let count = companion.urge_queue.count_pending(&companion.db.conn());
     assert_eq!(count, 1);
 
     // Pop and verify
-    let urges = companion.urge_queue.pop_for_interaction(companion.db.conn(), 5);
+    let urges = companion.urge_queue.pop_for_interaction(&companion.db.conn(), 5);
     assert_eq!(urges.len(), 1);
     assert_eq!(urges[0].reason, "Test urge reason");
 
     // Should be empty now (delivered)
-    let count = companion.urge_queue.count_pending(companion.db.conn());
+    let count = companion.urge_queue.count_pending(&companion.db.conn());
     assert_eq!(count, 0);
 }
 

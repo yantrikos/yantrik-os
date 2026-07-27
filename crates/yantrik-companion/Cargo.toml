@@ -11,6 +11,7 @@ yantrik-companion-cortex = { workspace = true }
 yantrik-companion-tools = { workspace = true }
 yantrik-chat = { workspace = true }
 yantrikdb-core = { workspace = true }
+yantrik-brain = { workspace = true }
 yantrik-ml = { workspace = true, features = ["api-llm", "claude-cli"] }
 yantrik-os = { workspace = true }
 rusqlite = { workspace = true }

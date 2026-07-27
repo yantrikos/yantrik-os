@@ -30,54 +30,31 @@ pub fn wire(ui: &App, ctx: &AppContext) {
         tracing::info!(mode = %mode, "Onboarding: AI mode selected");
     });
 
-    // Provider selected during onboarding — prefill the endpoint we will test.
+    // Provider selected — persist it immediately. A local runtime has no API
+    // key step, so `on_onboard_ai_api_key_submitted` never fires for it; if
+    // selection did not save, "Test Connection" would find no provider and the
+    // user's choice would be lost on the way to the desktop.
     let ui_weak = ui.as_weak();
+    let configured_for_select = ctx.llm_base_url.clone();
     ui.on_onboard_ai_provider_selected(move |provider| {
         let Some(ui) = ui_weak.upgrade() else { return };
         let id = provider.to_string();
-        let (name, url) = provider_preset(&id);
-        tracing::info!(provider = %id, name, url, "Onboarding: AI provider selected");
+        save_primary(&id, None, configured_for_select.as_deref());
         ui.set_onboard_ai_test_status("".into());
         ui.set_onboard_ai_test_model("".into());
     });
 
-    // API key submitted — persist it, so the choice survives to first use.
+    // API key submitted — re-save the same provider, now carrying the key.
     let ui_weak = ui.as_weak();
+    let configured_for_save = ctx.llm_base_url.clone();
     ui.on_onboard_ai_api_key_submitted(move |provider, key| {
         let Some(ui) = ui_weak.upgrade() else { return };
         let id = provider.to_string();
         let key_str = key.to_string();
-        let (name, url) = provider_preset(&id);
-
-        if url.is_empty() {
-            tracing::warn!(provider = %id, "Onboarding: no known endpoint for provider, not saving");
+        let key_opt = if key_str.is_empty() { None } else { Some(key_str) };
+        if !save_primary(&id, key_opt, configured_for_save.as_deref()) {
             ui.set_onboard_ai_test_status("error".into());
-            return;
         }
-
-        let entry = ProviderStoreEntry {
-            id: format!("{}-onboarding", id),
-            name: name.to_string(),
-            provider_type: id.clone(),
-            base_url: url.to_string(),
-            api_key: if key_str.is_empty() { None } else { Some(key_str) },
-            auth_type: auth_type_for(&id).to_string(),
-            is_primary: true,
-            is_fallback: false,
-        };
-
-        let mut store = ProviderStore::load();
-        store.entries.retain(|e| !e.is_primary);
-        store.entries.push(entry);
-        store.save();
-
-        // Log presence, never the key itself.
-        tracing::info!(
-            provider = %id,
-            endpoint = url,
-            has_key = !key.is_empty(),
-            "Onboarding: provider saved as primary"
-        );
     });
 
     // Test AI connection — actually contact the provider.
@@ -292,9 +269,59 @@ fn probe_runtime(configured: Option<&str>) -> bool {
 fn auth_type_for(provider: &str) -> &'static str {
     match provider {
         "anthropic" => "x-api-key",
-        "ollama" | "llamacpp" | "lmstudio" | "vllm" => "none",
+        _ if is_local_runtime(provider) => "none",
         _ => "bearer",
     }
+}
+
+/// Providers served by a runtime the user hosts, whose preset endpoint is a
+/// localhost guess rather than a fixed vendor URL.
+fn is_local_runtime(provider: &str) -> bool {
+    matches!(provider, "ollama" | "llamacpp" | "lmstudio" | "vllm")
+}
+
+/// Persist `provider` as the primary, replacing any existing primary.
+/// Returns false when there is no endpoint to save.
+///
+/// Called both on selection (no key yet) and on key submission, so a local
+/// runtime — which never reaches the key step — is still saved.
+fn save_primary(provider: &str, api_key: Option<String>, configured: Option<&str>) -> bool {
+    let (name, preset_url) = provider_preset(provider);
+
+    // Local-runtime presets hardcode localhost. When the config points the
+    // companion elsewhere — the documented remote-Ollama setup — that is the
+    // endpoint that actually works, so prefer it. Otherwise onboarding would
+    // save an endpoint the hardware scan just proved unreachable.
+    let url: String = match (is_local_runtime(provider), configured) {
+        (true, Some(cfg)) if !cfg.is_empty() => cfg.to_string(),
+        _ => preset_url.to_string(),
+    };
+
+    if url.is_empty() {
+        tracing::warn!(provider, "Onboarding: no known endpoint for provider, not saving");
+        return false;
+    }
+
+    let has_key = api_key.is_some();
+    let entry = ProviderStoreEntry {
+        id: format!("{provider}-onboarding"),
+        name: name.to_string(),
+        provider_type: provider.to_string(),
+        base_url: url.clone(),
+        api_key,
+        auth_type: auth_type_for(provider).to_string(),
+        is_primary: true,
+        is_fallback: false,
+    };
+
+    let mut store = ProviderStore::load();
+    store.entries.retain(|e| !e.is_primary);
+    store.entries.push(entry);
+    store.save();
+
+    // Log presence, never the key itself.
+    tracing::info!(provider, endpoint = %url, has_key, "Onboarding: provider saved as primary");
+    true
 }
 
 /// Whether requests to this endpoint leave the machine.

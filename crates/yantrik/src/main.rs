@@ -231,7 +231,7 @@ fn build_companion(config: CompanionConfig) -> CompanionService {
     // Create YantrikDB
     let mut db = yantrikdb_core::YantrikDB::new(&config.yantrikdb.db_path, config.yantrikdb.embedding_dim)
         .expect("failed to create YantrikDB");
-    db.set_embedder(Box::new(embedder));
+    db.set_embedder(Box::new(yantrik_companion::embedder_bridge::EmbedderBridge::new(embedder)));
 
     tracing::info!(
         db_path = config.yantrikdb.db_path,
@@ -405,7 +405,7 @@ fn run_headless_think_cycle(
             .collect();
 
         let conflicts_count = companion.db
-            .get_conflicts(Some("open"), None, None, None, 100)
+            .get_conflicts(Some("open"), None, None, None, None, 100)
             .map(|c| c.len())
             .unwrap_or(0);
 
@@ -414,7 +414,7 @@ fn run_headless_think_cycle(
             .and_then(|t| t.get("context").and_then(|c| c.get("current_avg")).and_then(|v| v.as_f64()));
 
         // Check scheduler for due tasks
-        let due_tasks = yantrik_companion::scheduler::Scheduler::get_due(companion.db.conn());
+        let due_tasks = yantrik_companion::scheduler::Scheduler::get_due(&companion.db.conn());
         for task in &due_tasks {
             triggers.push(serde_json::json!({
                 "trigger_type": "scheduled_task",
@@ -425,7 +425,7 @@ fn run_headless_think_cycle(
                 "schedule_type": task.schedule_type,
                 "action": task.action,
             }));
-            yantrik_companion::scheduler::Scheduler::advance(companion.db.conn(), &task.task_id);
+            yantrik_companion::scheduler::Scheduler::advance(&companion.db.conn(), &task.task_id);
         }
         if !due_tasks.is_empty() {
             tracing::info!(count = due_tasks.len(), "Scheduler: advanced due tasks");
@@ -449,12 +449,12 @@ fn run_headless_think_cycle(
 
     // 3. Context Cortex
     if let Some(ref mut cortex) = companion.cortex {
-        let attention_items = cortex.think(companion.db.conn());
+        let attention_items = cortex.think(&companion.db.conn());
         let cortex_globally_cooled = now_ts - *last_cortex_fire_ts < cortex_global_cooldown_secs;
 
         if !attention_items.is_empty() && !cortex_globally_cooled {
             let focus = cortex.current_focus();
-            let briefing = cortex.build_briefing(companion.db.conn(), focus.as_ref(), &attention_items);
+            let briefing = cortex.build_briefing(&companion.db.conn(), focus.as_ref(), &attention_items);
             let mut attention_hasher = std::collections::hash_map::DefaultHasher::new();
             for item in &attention_items {
                 std::hash::Hash::hash(&item.summary, &mut attention_hasher);
@@ -466,7 +466,7 @@ fn run_headless_think_cycle(
             urge_specs.push(cortex_urge);
         }
 
-        if let Some(reflection_prompt) = cortex.maybe_deep_reflection(companion.db.conn()) {
+        if let Some(reflection_prompt) = cortex.maybe_deep_reflection(&companion.db.conn()) {
             let reasoner_urge = yantrik_companion::UrgeSpec::new("CortexReasoner", &reflection_prompt, 0.6)
                 .with_cooldown("cortex:deep_reflection");
             urge_specs.push(reasoner_urge);
@@ -513,7 +513,7 @@ fn run_headless_think_cycle(
             }
             execute_urges.push(spec.clone());
         } else {
-            companion.urge_queue.push(companion.db.conn(), spec);
+            companion.urge_queue.push(&companion.db.conn(), spec);
         }
     }
 
@@ -646,12 +646,12 @@ fn run_headless_think_cycle(
             }
         }
     } else {
-        let pending = companion.urge_queue.count_pending(companion.db.conn());
+        let pending = companion.urge_queue.count_pending(&companion.db.conn());
         tracing::debug!(pending_urges = pending, "No proactive message this cycle");
     }
 
     // 8. Save adaptive user model
-    companion.user_model.save(companion.db.conn());
+    companion.user_model.save(&companion.db.conn());
 }
 
 /// Check if an EXECUTE urge response has no actionable content.

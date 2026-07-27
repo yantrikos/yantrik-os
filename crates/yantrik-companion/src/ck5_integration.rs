@@ -592,7 +592,7 @@ fn now_ms() -> u64 {
 fn estimate_stress_level(db: &YantrikDB) -> f64 {
     // Heuristic: high conflict count + negative valence = stress
     let conflicts = db
-        .get_conflicts(Some("open"), None, None, None, 100)
+        .get_conflicts(Some("open"), None, None, None, None, 100)
         .map(|c| c.len())
         .unwrap_or(0);
 

@@ -203,7 +203,7 @@ pub fn smart_recall(
 
     // 2. Topic continuity: recall by active conversation topic
     if extra_calls < config.max_extra_recall_calls {
-        if let Some(topic) = get_active_topic(db.conn()) {
+        if let Some(topic) = get_active_topic(&db.conn()) {
             // Only if topic differs substantially from user query
             if !text_overlap(&topic, user_text) {
                 let topic_results = filter_recall_results(
@@ -217,7 +217,7 @@ pub fn smart_recall(
 
     // 3. Entity bridging: recall by recently-mentioned entities across domains
     if config.cross_domain_enabled && extra_calls < config.max_extra_recall_calls {
-        let entities = get_active_entities(db.conn(), 2);
+        let entities = get_active_entities(&db.conn(), 2);
         for entity in &entities {
             if extra_calls >= config.max_extra_recall_calls {
                 break;
@@ -381,7 +381,7 @@ pub fn run_consolidation(
     config: &MemoryEvolutionConfig,
 ) {
     tracing::info!("Starting memory consolidation cycle");
-    let conn = db.conn();
+    let conn = &db.conn();
 
     // Find recent semantic memories (last 24h, up to 30)
     let cutoff = now_ts() - 86400.0;
@@ -895,7 +895,7 @@ pub fn run_pruning(
     config: &MemoryEvolutionConfig,
 ) {
     tracing::info!("Starting memory pruning cycle");
-    let conn = db.conn();
+    let conn = &db.conn();
     let cutoff = now_ts() - 30.0 * 86400.0; // 30 days ago
 
     // Find stale low-importance memories
@@ -1091,7 +1091,7 @@ pub fn run_weaving_cycle(
     config: &MemoryEvolutionConfig,
 ) {
     tracing::info!("Starting memory weaving cycle");
-    let conn = db.conn();
+    let conn = &db.conn();
 
     // Get current offset for incremental scanning
     let offset: i64 = conn

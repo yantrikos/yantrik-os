@@ -152,8 +152,8 @@ impl Tool for CalendarTodayTool {
         let time_max = format!("{}T23:59:59Z", today);
 
         // Always check local events first
-        let local = calendar::get_cached_events(ctx.db.conn(), &time_min, &time_max);
-        let cache_fresh = calendar::cache_age_secs(ctx.db.conn()) < 1800.0;
+        let local = calendar::get_cached_events(&ctx.db.conn(), &time_min, &time_max);
+        let cache_fresh = calendar::cache_age_secs(&ctx.db.conn()) < 1800.0;
 
         if !local.is_empty() && cache_fresh {
             return format_event_list(&local, &format!("Today's events ({}) — {} events:", today, local.len()));
@@ -162,9 +162,9 @@ impl Tool for CalendarTodayTool {
         // Try API to get fresh data + merge with local
         if let Ok(token) = get_token(&self.accounts) {
             if let Ok(api_events) = calendar::list_events(&token, None, Some(&time_min), Some(&time_max), 20, None) {
-                calendar::cache_events(ctx.db.conn(), &api_events, &time_min, &time_max);
+                calendar::cache_events(&ctx.db.conn(), &api_events, &time_min, &time_max);
                 // Re-read to include both API + local events
-                let all = calendar::get_cached_events(ctx.db.conn(), &time_min, &time_max);
+                let all = calendar::get_cached_events(&ctx.db.conn(), &time_min, &time_max);
                 return format_event_list(&all, &format!("Today's events ({}) — {} events:", today, all.len()));
             }
         }
@@ -239,8 +239,8 @@ impl Tool for CalendarListEventsTool {
         let time_max = format!("{}T23:59:59Z", end);
 
         // Always check local events first
-        let local = calendar::get_cached_events(ctx.db.conn(), &time_min, &time_max);
-        let cache_fresh = calendar::cache_age_secs(ctx.db.conn()) < 1800.0;
+        let local = calendar::get_cached_events(&ctx.db.conn(), &time_min, &time_max);
+        let cache_fresh = calendar::cache_age_secs(&ctx.db.conn()) < 1800.0;
 
         // For non-query requests with fresh cache, return immediately
         if query.is_none() && !local.is_empty() && cache_fresh {
@@ -252,9 +252,9 @@ impl Tool for CalendarListEventsTool {
         if let Ok(token) = get_token(&self.accounts) {
             if let Ok(api_events) = calendar::list_events(&token, None, Some(&time_min), Some(&time_max), max, query) {
                 if query.is_none() {
-                    calendar::cache_events(ctx.db.conn(), &api_events, &time_min, &time_max);
+                    calendar::cache_events(&ctx.db.conn(), &api_events, &time_min, &time_max);
                     // Re-read to include both API + local events
-                    let all = calendar::get_cached_events(ctx.db.conn(), &time_min, &time_max);
+                    let all = calendar::get_cached_events(&ctx.db.conn(), &time_min, &time_max);
                     let events: Vec<_> = all.into_iter().take(max).collect();
                     return format_event_list_detailed(&events, &format!("Events from {} to {} — {} found:", start, end, events.len()));
                 } else {
@@ -346,7 +346,7 @@ impl Tool for CalendarCreateEventTool {
         if let Ok(token) = get_token(&self.accounts) {
             if let Ok(event) = calendar::create_event(&token, None, summary, start, end, description, location, all_day) {
                 // Also cache locally
-                calendar::cache_events(ctx.db.conn(), &[event.clone()], start, end);
+                calendar::cache_events(&ctx.db.conn(), &[event.clone()], start, end);
                 let mut result = format!("Event created: {}\n", event.summary);
                 result.push_str(&format!("ID: {}\n", event.id));
                 result.push_str(&format!("When: {} - {}\n", event.start, event.end));
@@ -361,7 +361,7 @@ impl Tool for CalendarCreateEventTool {
         }
 
         // Google unavailable — save locally
-        let event = calendar::create_local_event(ctx.db.conn(), summary, start, end, description, location, all_day);
+        let event = calendar::create_local_event(&ctx.db.conn(), summary, start, end, description, location, all_day);
         let mut result = format!("Event created (local): {}\n", event.summary);
         result.push_str(&format!("ID: {}\n", event.id));
         result.push_str(&format!("When: {} - {}\n", event.start, event.end));
@@ -412,7 +412,7 @@ impl Tool for CalendarDeleteEventTool {
 
         // Local events (local_*) — delete from SQLite only
         if event_id.starts_with("local_") {
-            return match calendar::delete_local_event(ctx.db.conn(), event_id) {
+            return match calendar::delete_local_event(&ctx.db.conn(), event_id) {
                 Ok(()) => format!("Event {} deleted successfully.", event_id),
                 Err(e) => format!("Failed to delete event: {}", e),
             };
@@ -422,13 +422,13 @@ impl Tool for CalendarDeleteEventTool {
         if let Ok(token) = get_token(&self.accounts) {
             if let Ok(()) = calendar::delete_event(&token, None, event_id) {
                 // Also remove from local cache
-                calendar::delete_local_event(ctx.db.conn(), event_id).ok();
+                calendar::delete_local_event(&ctx.db.conn(), event_id).ok();
                 return format!("Event {} deleted successfully.", event_id);
             }
         }
 
         // API unavailable — mark deleted locally
-        match calendar::delete_local_event(ctx.db.conn(), event_id) {
+        match calendar::delete_local_event(&ctx.db.conn(), event_id) {
             Ok(()) => format!("Event {} deleted locally. Will sync to Google when connection is restored.", event_id),
             Err(e) => format!("Failed to delete event: {}", e),
         }
@@ -500,7 +500,7 @@ impl Tool for CalendarUpdateEventTool {
 
         // Local events — update SQLite only
         if event_id.starts_with("local_") {
-            return match calendar::update_local_event(ctx.db.conn(), event_id, summary, start, end, description, location) {
+            return match calendar::update_local_event(&ctx.db.conn(), event_id, summary, start, end, description, location) {
                 Ok(event) => {
                     let mut result = format!("Event updated (local): {}\n", event.summary);
                     result.push_str(&format!("When: {} - {}\n", event.start, event.end));
@@ -517,7 +517,7 @@ impl Tool for CalendarUpdateEventTool {
         if let Ok(token) = get_token(&self.accounts) {
             if let Ok(event) = calendar::update_event(&token, None, event_id, summary, start, end, description, location, None) {
                 // Update local cache too
-                calendar::cache_events(ctx.db.conn(), &[event.clone()], &event.start, &event.end);
+                calendar::cache_events(&ctx.db.conn(), &[event.clone()], &event.start, &event.end);
                 let mut result = format!("Event updated: {}\n", event.summary);
                 result.push_str(&format!("When: {} - {}\n", event.start, event.end));
                 if let Some(ref loc) = event.location {
@@ -528,7 +528,7 @@ impl Tool for CalendarUpdateEventTool {
         }
 
         // API unavailable — update locally
-        match calendar::update_local_event(ctx.db.conn(), event_id, summary, start, end, description, location) {
+        match calendar::update_local_event(&ctx.db.conn(), event_id, summary, start, end, description, location) {
             Ok(event) => {
                 let mut result = format!("Event updated (local): {}\n", event.summary);
                 result.push_str(&format!("When: {} - {}\n", event.start, event.end));

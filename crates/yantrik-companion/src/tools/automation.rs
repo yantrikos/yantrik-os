@@ -119,7 +119,7 @@ impl Tool for CreateAutomationTool {
 
                 // Create the scheduled task — action will point to this automation
                 let task_id = Scheduler::create(
-                    ctx.db.conn(),
+                    &ctx.db.conn(),
                     name,
                     description,
                     schedule_type,
@@ -152,7 +152,7 @@ impl Tool for CreateAutomationTool {
         };
 
         let automation_id = AutomationStore::create(
-            ctx.db.conn(),
+            &ctx.db.conn(),
             name,
             description,
             trigger_type,
@@ -166,7 +166,7 @@ impl Tool for CreateAutomationTool {
             if let Some(schedule_id) = trigger_config.get("schedule_id").and_then(|v| v.as_str()) {
                 let action = format!("automation:{}", automation_id);
                 Scheduler::update(
-                    ctx.db.conn(),
+                    &ctx.db.conn(),
                     schedule_id,
                     &serde_json::json!({"action": action}),
                 );
@@ -235,7 +235,7 @@ impl Tool for ListAutomationsTool {
         let trigger_type = args.get("trigger_type").and_then(|v| v.as_str());
         let status = args.get("status").and_then(|v| v.as_str());
 
-        let automations = AutomationStore::list(ctx.db.conn(), trigger_type, status);
+        let automations = AutomationStore::list(&ctx.db.conn(), trigger_type, status);
 
         if automations.is_empty() {
             return "No automations found.".to_string();
@@ -303,9 +303,9 @@ impl Tool for RunAutomationTool {
 
     fn execute(&self, ctx: &ToolContext, args: &serde_json::Value) -> String {
         let automation = if let Some(id) = args.get("automation_id").and_then(|v| v.as_str()) {
-            AutomationStore::get(ctx.db.conn(), id)
+            AutomationStore::get(&ctx.db.conn(), id)
         } else if let Some(name) = args.get("name").and_then(|v| v.as_str()) {
-            AutomationStore::find_by_name(ctx.db.conn(), name)
+            AutomationStore::find_by_name(&ctx.db.conn(), name)
         } else {
             return "Error: provide name or automation_id".to_string();
         };
@@ -319,7 +319,7 @@ impl Tool for RunAutomationTool {
         }
 
         // Record the run
-        AutomationStore::record_run(ctx.db.conn(), &automation.automation_id);
+        AutomationStore::record_run(&ctx.db.conn(), &automation.automation_id);
 
         // Return steps for the LLM to execute
         let condition_note = if let Some(cond) = &automation.condition {
@@ -371,7 +371,7 @@ impl Tool for DeleteAutomationTool {
         let automation_id = if let Some(id) = args.get("automation_id").and_then(|v| v.as_str()) {
             id.to_string()
         } else if let Some(name) = args.get("name").and_then(|v| v.as_str()) {
-            match AutomationStore::find_by_name(ctx.db.conn(), name) {
+            match AutomationStore::find_by_name(&ctx.db.conn(), name) {
                 Some(a) => a.automation_id,
                 None => return format!("No automation found with name '{}'", name),
             }
@@ -380,13 +380,13 @@ impl Tool for DeleteAutomationTool {
         };
 
         // Also cancel linked schedule if any
-        if let Some(a) = AutomationStore::get(ctx.db.conn(), &automation_id) {
+        if let Some(a) = AutomationStore::get(&ctx.db.conn(), &automation_id) {
             if let Some(schedule_id) = a.trigger_config.get("schedule_id").and_then(|v| v.as_str()) {
-                Scheduler::cancel(ctx.db.conn(), schedule_id);
+                Scheduler::cancel(&ctx.db.conn(), schedule_id);
             }
         }
 
-        if AutomationStore::archive(ctx.db.conn(), &automation_id) {
+        if AutomationStore::archive(&ctx.db.conn(), &automation_id) {
             format!("Automation '{}' deleted.", automation_id)
         } else {
             format!("No automation found with ID '{}'", automation_id)
@@ -435,7 +435,7 @@ impl Tool for ToggleAutomationTool {
             return "Error: automation_id is required".to_string();
         }
 
-        if AutomationStore::set_enabled(ctx.db.conn(), id, enabled) {
+        if AutomationStore::set_enabled(&ctx.db.conn(), id, enabled) {
             let state = if enabled { "enabled" } else { "disabled" };
             format!("Automation '{}' {}.", id, state)
         } else {

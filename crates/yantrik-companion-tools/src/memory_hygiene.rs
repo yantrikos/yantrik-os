@@ -47,7 +47,7 @@ impl Tool for MemoryStatsTool {
     }
 
     fn execute(&self, ctx: &ToolContext, _args: &serde_json::Value) -> String {
-        let conn = ctx.db.conn();
+        let conn = &ctx.db.conn();
 
         let mut out = String::from("=== Memory Health Report ===\n\n");
 
@@ -183,7 +183,7 @@ impl Tool for ReviewMemoriesTool {
         let per_page = 20u64;
         let offset = (page - 1) * per_page;
 
-        let conn = ctx.db.conn();
+        let conn = &ctx.db.conn();
 
         // Build dynamic query
         let mut conditions = vec![
@@ -328,7 +328,7 @@ impl Tool for ForgetMemoryTool {
             return "Error: rid is required".to_string();
         }
 
-        let conn = ctx.db.conn();
+        let conn = &ctx.db.conn();
 
         // Resolve short rid prefix to full rid
         let full_rid: Option<String> = conn.query_row(
@@ -411,7 +411,7 @@ impl Tool for UpdateMemoryTool {
             return "Error: rid is required".to_string();
         }
 
-        let conn = ctx.db.conn();
+        let conn = &ctx.db.conn();
 
         // Resolve short rid
         let full_rid: Option<String> = conn.query_row(
@@ -500,7 +500,7 @@ impl Tool for ResolveConflictsTool {
 
     fn execute(&self, ctx: &ToolContext, args: &serde_json::Value) -> String {
         let action = args.get("action").and_then(|v| v.as_str()).unwrap_or("list");
-        let conn = ctx.db.conn();
+        let conn = &ctx.db.conn();
 
         match action {
             "list" => {
@@ -630,7 +630,7 @@ impl Tool for PurgeSystemNoiseTool {
         let older_hours = args.get("older_than_hours").and_then(|v| v.as_f64()).unwrap_or(24.0);
         let dry_run = args.get("dry_run").and_then(|v| v.as_bool()).unwrap_or(true);
 
-        let conn = ctx.db.conn();
+        let conn = &ctx.db.conn();
         let cutoff_ts = now_ts() - (older_hours * 3600.0);
 
         let mut total = 0i64;

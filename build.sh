@@ -40,7 +40,8 @@ WSL_TARGET="/home/yantrik/target-yantrik"
 # Component registry: name, crate_path, cargo_package
 declare -A COMPONENTS=(
     [ml]="crates/yantrik-ml"
-    [db]="crates/yantrikdb-core"
+    # yantrikdb is consumed from the upstream repo, not vendored here.
+    [brain]="crates/yantrik-brain"
     [comp]="crates/yantrik-companion"
     [os]="crates/yantrik-os"
     [ui]="crates/yantrik-ui"

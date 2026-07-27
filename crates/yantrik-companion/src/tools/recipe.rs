@@ -98,7 +98,7 @@ impl Tool for CreateRecipeTool {
         let description = args.get("description").and_then(|v| v.as_str()).unwrap_or("");
 
         // Inject past failure learnings as warnings
-        let learnings = RecipeStore::get_failure_learnings(ctx.db.conn(), 5);
+        let learnings = RecipeStore::get_failure_learnings(&ctx.db.conn(), 5);
         if !learnings.is_empty() {
             tracing::debug!(
                 count = learnings.len(),
@@ -107,7 +107,7 @@ impl Tool for CreateRecipeTool {
         }
 
         let recipe_id = RecipeStore::create(
-            ctx.db.conn(),
+            &ctx.db.conn(),
             name,
             description,
             &steps,
@@ -158,7 +158,7 @@ impl Tool for ListRecipesTool {
 
     fn execute(&self, ctx: &ToolContext, args: &serde_json::Value) -> String {
         let status = args.get("status").and_then(|v| v.as_str());
-        let recipes = RecipeStore::list(ctx.db.conn(), status, 20);
+        let recipes = RecipeStore::list(&ctx.db.conn(), status, 20);
 
         if recipes.is_empty() {
             return match status {
@@ -176,7 +176,7 @@ impl Tool for ListRecipesTool {
                 crate::recipe::RecipeStatus::Failed => "✗",
                 crate::recipe::RecipeStatus::Pending => "○",
             };
-            let steps = RecipeStore::get_steps(ctx.db.conn(), &r.id);
+            let steps = RecipeStore::get_steps(&ctx.db.conn(), &r.id);
             let step_info = format!("{}/{} steps", r.current_step, steps.len());
             result.push_str(&format!("{} [{}] {} — {} ({})\n", icon, r.id, r.name, r.status.as_str(), step_info));
             if let Some(err) = &r.error_message {
@@ -228,8 +228,8 @@ impl Tool for RunRecipeTool {
         };
 
         // Try by ID first, then by name (case-insensitive)
-        let recipe = RecipeStore::get(ctx.db.conn(), id_or_name)
-            .or_else(|| RecipeStore::find_by_name(ctx.db.conn(), id_or_name));
+        let recipe = RecipeStore::get(&ctx.db.conn(), id_or_name)
+            .or_else(|| RecipeStore::find_by_name(&ctx.db.conn(), id_or_name));
 
         let recipe = match recipe {
             Some(r) => r,
@@ -241,12 +241,12 @@ impl Tool for RunRecipeTool {
         // Set initial variables if provided
         if let Some(vars) = args.get("variables").and_then(|v| v.as_object()) {
             for (key, value) in vars {
-                RecipeStore::set_var(ctx.db.conn(), recipe_id, key, value);
+                RecipeStore::set_var(&ctx.db.conn(), recipe_id, key, value);
             }
         }
 
         // Reset to step 0 and mark as pending (bridge will pick it up via ProcessRecipeStep)
-        RecipeStore::update_status(ctx.db.conn(), recipe_id, &crate::recipe::RecipeStatus::Pending, 0);
+        RecipeStore::update_status(&ctx.db.conn(), recipe_id, &crate::recipe::RecipeStatus::Pending, 0);
 
         // Reset all steps to pending
         ctx.db.conn().execute(

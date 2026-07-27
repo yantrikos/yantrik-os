@@ -179,7 +179,7 @@ pub fn select_tools_for_query(query: &str, db: &YantrikDB, max_extra: usize) -> 
     if selected.len() < max_extra {
         let remaining = max_extra.saturating_sub(selected.len());
         let relevant = crate::tool_cache::ToolCache::select_relevant(
-            db.conn(), db, query, remaining + 10, // fetch extra to filter dupes
+            &db.conn(), db, query, remaining + 10, // fetch extra to filter dupes
         );
         for def in &relevant {
             if selected.len() >= max_extra {
@@ -223,7 +223,7 @@ pub fn select_tools_adaptive(
     // tools surface regardless of hardcoded lists. ALWAYS_TOOLS are already in `selected`.
     let embed_limit = budget.saturating_sub(selected.len()) + 5;
     let relevant = crate::tool_cache::ToolCache::select_by_similarity(
-        db.conn(), db, query, embed_limit,
+        &db.conn(), db, query, embed_limit,
     );
     let mut embed_added = 0usize;
     for def in &relevant {
@@ -650,11 +650,11 @@ impl CompanionService {
     /// Create a new companion from pre-built YantrikDB and LLM backend.
     pub fn new(db: YantrikDB, llm: std::sync::Arc<dyn LLMBackend>, config: CompanionConfig) -> Self {
         // Ensure soul tables exist
-        BondTracker::ensure_tables(db.conn());
-        Evolution::ensure_tables(db.conn());
-        Narrative::ensure_table(db.conn());
+        BondTracker::ensure_tables(&db.conn());
+        Evolution::ensure_tables(&db.conn());
+        Narrative::ensure_table(&db.conn());
 
-        let urge_queue = UrgeQueue::new(db.conn(), config.urges.clone());
+        let urge_queue = UrgeQueue::new(&db.conn(), config.urges.clone());
         let instincts = instincts::load_instincts(&config.instincts);
         let mut registry = tools::build_registry(&config);
         let guard = SecurityGuard::new(&db);
@@ -662,56 +662,56 @@ impl CompanionService {
             ProactiveEngine::new(config.proactive.clone(), &config.user_name);
 
         // Scheduler table
-        crate::scheduler::Scheduler::ensure_table(db.conn());
+        crate::scheduler::Scheduler::ensure_table(&db.conn());
 
         // Automation table
-        crate::automation::AutomationStore::ensure_table(db.conn());
+        crate::automation::AutomationStore::ensure_table(&db.conn());
 
         // Phase 2: Proactive intelligence tables
-        ensure_workflow_table(db.conn());
-        ensure_maintenance_table(db.conn());
+        ensure_workflow_table(&db.conn());
+        ensure_maintenance_table(&db.conn());
 
         // Tool reliability metrics table
-        crate::tool_metrics::ToolMetrics::ensure_table(db.conn());
+        crate::tool_metrics::ToolMetrics::ensure_table(&db.conn());
 
         // World model tables (commitments, preferences, routines)
-        crate::world_model::WorldModel::ensure_tables(db.conn());
+        crate::world_model::WorldModel::ensure_tables(&db.conn());
 
         // Trust model tables (3-axis trust + event log)
-        crate::trust_model::TrustModel::ensure_table(db.conn());
+        crate::trust_model::TrustModel::ensure_table(&db.conn());
 
         // Silence policy tables (intervention outcomes)
-        crate::silence_policy::SilencePolicy::ensure_table(db.conn());
+        crate::silence_policy::SilencePolicy::ensure_table(&db.conn());
 
         // Offline NLP + cognitive router tables
-        crate::cognitive_router::ensure_tables(db.conn());
+        crate::cognitive_router::ensure_tables(&db.conn());
 
         // Tool trace learning table
-        ToolTraces::ensure_table(db.conn());
+        ToolTraces::ensure_table(&db.conn());
 
         // Persistent task queue for multi-cycle autonomous work
-        crate::task_queue::TaskQueue::ensure_table(db.conn());
+        crate::task_queue::TaskQueue::ensure_table(&db.conn());
         // Recipe engine tables + built-in templates
-        crate::recipe::RecipeStore::ensure_tables(db.conn());
-        crate::recipe_templates::register_all(db.conn());
+        crate::recipe::RecipeStore::ensure_tables(&db.conn());
+        crate::recipe_templates::register_all(&db.conn());
         // Calendar local cache
-        crate::calendar::ensure_table(db.conn());
+        crate::calendar::ensure_table(&db.conn());
         // Vault tables (encrypted credential storage)
-        yantrikdb_core::vault::init_tables(db.conn());
+        yantrikdb_core::vault::init_tables(&db.conn());
 
         // Memory evolution tables + backfill existing memories
-        memory_evolution::ensure_tables(db.conn());
-        memory_evolution::ensure_weaving_tables(db.conn());
-        memory_evolution::backfill_tiers(db.conn(), &config.memory_evolution);
+        memory_evolution::ensure_tables(&db.conn());
+        memory_evolution::ensure_weaving_tables(&db.conn());
+        memory_evolution::backfill_tiers(&db.conn(), &config.memory_evolution);
 
         // Memory lifecycle + repair tables (contradiction detection, scoping, exclusions)
-        crate::memory_lifecycle::MemoryLifecycle::ensure_table(db.conn());
-        crate::memory_repair::MemoryRepair::ensure_table(db.conn());
+        crate::memory_lifecycle::MemoryLifecycle::ensure_table(&db.conn());
+        crate::memory_repair::MemoryRepair::ensure_table(&db.conn());
 
         // Brain loop tables (detectors, curiosity, expectations, baselines)
-        yantrikdb_core::cognition::detectors::ensure_detector_tables(db.conn());
-        yantrikdb_core::cognition::curiosity::ensure_curiosity_tables(db.conn());
-        crate::brain_loop::seed_from_existing_data(db.conn());
+        yantrik_brain::detectors::ensure_detector_tables(&db.conn());
+        yantrik_brain::curiosity::ensure_curiosity_tables(&db.conn());
+        crate::brain_loop::seed_from_existing_data(&db.conn());
         // Curiosity sources are seeded after user_interests/location are loaded (see below)
 
         // Connector manager — OAuth flows for external services
@@ -786,19 +786,19 @@ impl CompanionService {
         };
 
         // Sync tool cache — still used by discover_tools for category metadata
-        ToolCache::ensure_table(db.conn());
+        ToolCache::ensure_table(&db.conn());
         if config.tools.enabled {
             let defs = registry.definitions(max_perm);
-            ToolCache::sync(db.conn(), &db, &defs);
+            ToolCache::sync(&db.conn(), &db, &defs);
         }
 
         // Background task manager
         let mut task_mgr = crate::task_manager::TaskManager::new();
-        crate::task_manager::TaskManager::ensure_table(db.conn());
-        task_mgr.recover_stale(db.conn());
+        crate::task_manager::TaskManager::ensure_table(&db.conn());
+        task_mgr.recover_stale(&db.conn());
 
         // Context Cortex — cross-system intelligence
-        let cortex = match crate::cortex::ContextCortex::init_with_services(db.conn(), &config.enabled_services) {
+        let cortex = match crate::cortex::ContextCortex::init_with_services(&db.conn(), &config.enabled_services) {
             Ok(c) => {
                 tracing::info!(
                     services = ?config.enabled_services,
@@ -813,31 +813,31 @@ impl CompanionService {
         };
 
         // Adaptive User Model — init tables and load saved state
-        crate::user_model::UserModel::init_db(db.conn());
-        let user_model = crate::user_model::UserModel::load(db.conn());
+        crate::user_model::UserModel::init_db(&db.conn());
+        let user_model = crate::user_model::UserModel::load(&db.conn());
 
         // Playbook Engine — deterministic anticipatory workflows
-        crate::cortex::playbook::PlaybookEngine::init_db(db.conn());
+        crate::cortex::playbook::PlaybookEngine::init_db(&db.conn());
         let mut playbook_engine = crate::cortex::playbook::PlaybookEngine::new();
         crate::cortex::playbook::register_default_playbooks(&mut playbook_engine);
-        playbook_engine.load(db.conn());
+        playbook_engine.load(&db.conn());
 
         // Load current bond state
-        let bond_state = BondTracker::get_state(db.conn());
+        let bond_state = BondTracker::get_state(&db.conn());
 
         // Load user interests and location from memory (before db moves)
-        let user_interests = load_user_interests(db.conn());
-        let user_location = load_user_location(db.conn());
+        let user_interests = load_user_interests(&db.conn());
+        let user_location = load_user_location(&db.conn());
 
         // Seed curiosity sources from user interests and location
-        yantrikdb_core::cognition::curiosity::seed_default_sources(
-            db.conn(), &user_interests, &user_location,
+        yantrik_brain::curiosity::seed_default_sources(
+            &db.conn(), &user_interests, &user_location,
         );
 
         // V25: Load trust state + silence policy history
-        let trust_state = crate::trust_model::TrustModel::get_state(db.conn());
+        let trust_state = crate::trust_model::TrustModel::get_state(&db.conn());
         let mut silence_policy = crate::silence_policy::SilencePolicy::new();
-        silence_policy.load_history(db.conn());
+        silence_policy.load_history(&db.conn());
 
         Self {
             db,
@@ -1102,6 +1102,31 @@ impl CompanionService {
         self.incognito
     }
 
+    /// Hot-swap the LLM backend (used when user updates provider in settings).
+    pub fn swap_llm(&mut self, new_llm: std::sync::Arc<dyn yantrik_ml::LLMBackend>) {
+        // Re-detect capability profile from the new model
+        let model_id = new_llm.model_id().to_string();
+        self.capability_profile = yantrik_ml::ModelCapabilityProfile::from_model_name(&model_id);
+        self.model_family = self.capability_profile.family;
+        self.llm = new_llm;
+        tracing::info!(model = %model_id, "LLM backend swapped");
+    }
+
+    /// Persist the current config to disk (config.yaml).
+    pub fn save_config(&self) {
+        let path = "/opt/yantrik/config.yaml";
+        match serde_yaml::to_string(&self.config) {
+            Ok(yaml) => {
+                if let Err(e) = std::fs::write(path, yaml) {
+                    tracing::error!(path, error = %e, "Failed to save config");
+                } else {
+                    tracing::info!(path, "Config saved");
+                }
+            }
+            Err(e) => tracing::error!(error = %e, "Failed to serialize config"),
+        }
+    }
+
     /// Buffer a system event for automation matching during think cycles.
     pub fn push_event(&mut self, event_type: &str, event_data: serde_json::Value) {
         // Keep buffer bounded (last 50 events)
@@ -1240,10 +1265,10 @@ impl CompanionService {
             learning::extract_and_learn(
                 &self.db, &*self.llm, user_text, &clean, &self.config.memory_evolution,
             );
-            memory_evolution::update_conversation_context(self.db.conn(), user_text, &memories);
+            memory_evolution::update_conversation_context(&self.db.conn(), user_text, &memories);
             if self.config.bond.enabled {
                 let (new_level, level_changed) = BondTracker::score_interaction(
-                    self.db.conn(), user_text, &final_answer, memories.len(),
+                    &self.db.conn(), user_text, &final_answer, memories.len(),
                 );
                 self.bond_level = new_level;
                 self.bond_level_changed = level_changed;
@@ -1289,7 +1314,7 @@ impl CompanionService {
                     // Still record interaction for bond tracking
                     if self.config.bond.enabled {
                         let (new_level, level_changed) = BondTracker::score_interaction(
-                            self.db.conn(), user_text, &response, 0,
+                            &self.db.conn(), user_text, &response, 0,
                         );
                         self.bond_level = new_level;
                         self.bond_level_changed = level_changed;
@@ -1428,12 +1453,12 @@ impl CompanionService {
         // Step 4: Pop urges for this interaction
         let urges = self
             .urge_queue
-            .pop_for_interaction(self.db.conn(), 2);
+            .pop_for_interaction(&self.db.conn(), 2);
         let urge_ids: Vec<String> = urges.iter().map(|u| u.urge_id.clone()).collect();
 
         // Detect humor reaction from previous exchange
         if !self.incognito {
-            learning::detect_humor_reaction(self.db.conn(), user_text);
+            learning::detect_humor_reaction(&self.db.conn(), user_text);
         }
 
         // Step 5: Evaluate instincts on interaction
@@ -1441,7 +1466,7 @@ impl CompanionService {
         for instinct in &self.instincts {
             let specs = instinct.on_interaction(&state, user_text);
             for spec in specs {
-                self.urge_queue.push(self.db.conn(), &spec);
+                self.urge_queue.push(&self.db.conn(), &spec);
             }
         }
 
@@ -1459,13 +1484,13 @@ impl CompanionService {
             let personality = self.db.get_personality().ok();
             let patterns_json: Vec<serde_json::Value> = self
                 .active_patterns.iter().cloned().collect();
-            let narrative_text = Narrative::get(self.db.conn());
-            let style = Evolution::get_style(self.db.conn());
-            let opinions = Evolution::get_opinions(self.db.conn(), 3);
+            let narrative_text = Narrative::get(&self.db.conn());
+            let style = Evolution::get_style(&self.db.conn());
+            let opinions = Evolution::get_opinions(&self.db.conn(), 3);
             let shared_refs = if self.config.memory_evolution.reference_freshness_enabled {
-                memory_evolution::get_fresh_references(self.db.conn(), 3)
+                memory_evolution::get_fresh_references(&self.db.conn(), 3)
             } else {
-                Evolution::get_shared_references(self.db.conn(), 3)
+                Evolution::get_shared_references(&self.db.conn(), 3)
             };
             // CK-5 cognitive awareness injection
             let ck5_text = if self.config.ck5.enabled {
@@ -1538,7 +1563,7 @@ impl CompanionService {
                 };
 
                 let ranked = ToolCache::select_ranked_with_scores(
-                    self.db.conn(), &self.db, user_text, 15,
+                    &self.db.conn(), &self.db, user_text, 15,
                 );
 
                 tracing::info!(
@@ -1643,10 +1668,10 @@ impl CompanionService {
                     &self.db, &*self.llm, user_text, &clean_response,
                     &self.config.memory_evolution,
                 );
-                memory_evolution::update_conversation_context(self.db.conn(), user_text, &memories);
+                memory_evolution::update_conversation_context(&self.db.conn(), user_text, &memories);
                 if self.config.bond.enabled {
                     let (new_level, level_changed) = BondTracker::score_interaction(
-                        self.db.conn(), user_text, &response_text, memories.len(),
+                        &self.db.conn(), user_text, &response_text, memories.len(),
                     );
                     self.bond_level = new_level;
                     self.bond_level_changed = level_changed;
@@ -1654,7 +1679,7 @@ impl CompanionService {
                 // Record tool trace for learning
                 let trace_chain = vec![serde_json::json!({"tool": tool_name, "status": "success"})];
                 ToolTraces::record(
-                    self.db.conn(), &self.db, user_text,
+                    &self.db.conn(), &self.db, user_text,
                     &trace_chain, "success",
                 );
             }
@@ -1718,7 +1743,7 @@ impl CompanionService {
         // Tool chain learning: inject trace hints into system prompt (skip in degraded mode)
         if !degraded && self.config.agent.trace_learning && self.config.tools.enabled {
             let hints = ToolTraces::find_similar(
-                self.db.conn(), &self.db, user_text, 3,
+                &self.db.conn(), &self.db, user_text, 3,
                 self.config.agent.trace_min_similarity,
             );
             if !hints.is_empty() {
@@ -1727,7 +1752,7 @@ impl CompanionService {
                     sys_msg.content.push_str(&hint_text);
                 }
                 for hint in &hints {
-                    ToolTraces::mark_used(self.db.conn(), &hint.trace_id);
+                    ToolTraces::mark_used(&self.db.conn(), &hint.trace_id);
                 }
             }
         }
@@ -1987,12 +2012,12 @@ impl CompanionService {
                 crate::agent_loop::LoopStatus::Running => "partial",
             };
             ToolTraces::record(
-                self.db.conn(), &self.db, user_text,
+                &self.db.conn(), &self.db, user_text,
                 &agent_loop.chain_summary(), outcome,
             );
             // Trace learning flywheel: record for motif distillation
             crate::cognitive_router::record_trace(
-                self.db.conn(), user_text, &tool_calls_made,
+                &self.db.conn(), user_text, &tool_calls_made,
                 outcome == "success",
                 agent_loop.elapsed_ms(),
             );
@@ -2089,12 +2114,12 @@ impl CompanionService {
             }
 
             // Step 8b: Update conversation context for smart recall (Gap 1)
-            memory_evolution::update_conversation_context(self.db.conn(), user_text, &memories);
+            memory_evolution::update_conversation_context(&self.db.conn(), user_text, &memories);
 
             // Step 9: Score bond + tick evolution (always runs — tracks interaction count)
             if self.config.bond.enabled {
                 let (new_level, level_changed) = BondTracker::score_interaction(
-                    self.db.conn(),
+                    &self.db.conn(),
                     user_text,
                     &response_text,
                     memories.len(),
@@ -2102,12 +2127,12 @@ impl CompanionService {
                 self.bond_level = new_level;
                 self.bond_level_changed = level_changed;
 
-                let bond_state = BondTracker::get_state(self.db.conn());
+                let bond_state = BondTracker::get_state(&self.db.conn());
                 self.bond_score = bond_state.bond_score;
 
                 // Tick personality evolution
                 Evolution::tick(
-                    self.db.conn(),
+                    &self.db.conn(),
                     new_level,
                     self.config.evolution.formality_alpha,
                 );
@@ -2115,7 +2140,7 @@ impl CompanionService {
                 // Check if narrative needs updating (skip if offline)
                 if !is_offline {
                     let needs_narrative = Narrative::tick_interaction(
-                        self.db.conn(),
+                        &self.db.conn(),
                         self.config.narrative.update_interval_interactions,
                     );
                     if needs_narrative {
@@ -2124,7 +2149,7 @@ impl CompanionService {
                             .map(|m| m.text.clone())
                             .collect();
                         Narrative::update(
-                            self.db.conn(),
+                            &self.db.conn(),
                             &*self.llm,
                             &self.config.user_name,
                             new_level,
@@ -2199,7 +2224,7 @@ impl CompanionService {
                     on_token(&response);
                     if self.config.bond.enabled {
                         let (new_level, level_changed) = BondTracker::score_interaction(
-                            self.db.conn(), user_text, &response, 0,
+                            &self.db.conn(), user_text, &response, 0,
                         );
                         self.bond_level = new_level;
                         self.bond_level_changed = level_changed;
@@ -2291,18 +2316,18 @@ impl CompanionService {
             .take(3)
             .collect::<Vec<_>>();
 
-        let urges = self.urge_queue.pop_for_interaction(self.db.conn(), 2);
+        let urges = self.urge_queue.pop_for_interaction(&self.db.conn(), 2);
         let urge_ids: Vec<String> = urges.iter().map(|u| u.urge_id.clone()).collect();
 
         if !self.incognito {
-            learning::detect_humor_reaction(self.db.conn(), user_text);
+            learning::detect_humor_reaction(&self.db.conn(), user_text);
         }
 
         let state = self.build_state();
         for instinct in &self.instincts {
             let specs = instinct.on_interaction(&state, user_text);
             for spec in specs {
-                self.urge_queue.push(self.db.conn(), &spec);
+                self.urge_queue.push(&self.db.conn(), &spec);
             }
         }
 
@@ -2320,13 +2345,13 @@ impl CompanionService {
             let personality = self.db.get_personality().ok();
             let patterns_json: Vec<serde_json::Value> =
                 self.active_patterns.iter().cloned().collect();
-            let narrative_text = Narrative::get(self.db.conn());
-            let style = Evolution::get_style(self.db.conn());
-            let opinions = Evolution::get_opinions(self.db.conn(), 3);
+            let narrative_text = Narrative::get(&self.db.conn());
+            let style = Evolution::get_style(&self.db.conn());
+            let opinions = Evolution::get_opinions(&self.db.conn(), 3);
             let shared_refs = if self.config.memory_evolution.reference_freshness_enabled {
-                memory_evolution::get_fresh_references(self.db.conn(), 3)
+                memory_evolution::get_fresh_references(&self.db.conn(), 3)
             } else {
-                Evolution::get_shared_references(self.db.conn(), 3)
+                Evolution::get_shared_references(&self.db.conn(), 3)
             };
             // CK-5 cognitive awareness injection
             let ck5_text = if self.config.ck5.enabled {
@@ -2392,7 +2417,7 @@ impl CompanionService {
             };
 
             let ranked = ToolCache::select_ranked_with_scores(
-                self.db.conn(), &self.db, user_text, 15,
+                &self.db.conn(), &self.db, user_text, 15,
             );
 
             tracing::info!(
@@ -2473,17 +2498,17 @@ impl CompanionService {
                         &self.db, &*self.llm, user_text, &clean_response,
                         &self.config.memory_evolution,
                     );
-                    memory_evolution::update_conversation_context(self.db.conn(), user_text, &memories);
+                    memory_evolution::update_conversation_context(&self.db.conn(), user_text, &memories);
                     if self.config.bond.enabled {
                         let (new_level, level_changed) = BondTracker::score_interaction(
-                            self.db.conn(), user_text, &response_text, memories.len(),
+                            &self.db.conn(), user_text, &response_text, memories.len(),
                         );
                         self.bond_level = new_level;
                         self.bond_level_changed = level_changed;
                     }
                     let trace_chain = vec![serde_json::json!({"tool": &tool_name, "status": "success"})];
                     ToolTraces::record(
-                        self.db.conn(), &self.db, user_text,
+                        &self.db.conn(), &self.db, user_text,
                         &trace_chain, "success",
                     );
                 }
@@ -2545,7 +2570,7 @@ impl CompanionService {
         // Tool chain learning: inject trace hints (skip in degraded mode)
         if !degraded && self.config.agent.trace_learning && self.config.tools.enabled {
             let hints = ToolTraces::find_similar(
-                self.db.conn(), &self.db, user_text, 3,
+                &self.db.conn(), &self.db, user_text, 3,
                 self.config.agent.trace_min_similarity,
             );
             if !hints.is_empty() {
@@ -2554,7 +2579,7 @@ impl CompanionService {
                     sys_msg.content.push_str(&hint_text);
                 }
                 for hint in &hints {
-                    ToolTraces::mark_used(self.db.conn(), &hint.trace_id);
+                    ToolTraces::mark_used(&self.db.conn(), &hint.trace_id);
                 }
             }
         }
@@ -2920,12 +2945,12 @@ impl CompanionService {
                 crate::agent_loop::LoopStatus::Running => "partial",
             };
             ToolTraces::record(
-                self.db.conn(), &self.db, user_text,
+                &self.db.conn(), &self.db, user_text,
                 &agent_loop.chain_summary(), outcome,
             );
             // Trace learning flywheel: record for motif distillation
             crate::cognitive_router::record_trace(
-                self.db.conn(), user_text, &tool_calls_made,
+                &self.db.conn(), user_text, &tool_calls_made,
                 outcome == "success",
                 agent_loop.elapsed_ms(),
             );
@@ -3000,12 +3025,12 @@ impl CompanionService {
             }
 
             // Step 8b: Update conversation context for smart recall (Gap 1)
-            memory_evolution::update_conversation_context(self.db.conn(), user_text, &memories);
+            memory_evolution::update_conversation_context(&self.db.conn(), user_text, &memories);
 
             // Step 9: Score bond + tick evolution (always runs — tracks interaction count)
             if self.config.bond.enabled {
                 let (new_level, level_changed) = BondTracker::score_interaction(
-                    self.db.conn(),
+                    &self.db.conn(),
                     user_text,
                     &response_text,
                     memories.len(),
@@ -3013,11 +3038,11 @@ impl CompanionService {
                 self.bond_level = new_level;
                 self.bond_level_changed = level_changed;
 
-                let bond_state = BondTracker::get_state(self.db.conn());
+                let bond_state = BondTracker::get_state(&self.db.conn());
                 self.bond_score = bond_state.bond_score;
 
                 Evolution::tick(
-                    self.db.conn(),
+                    &self.db.conn(),
                     new_level,
                     self.config.evolution.formality_alpha,
                 );
@@ -3025,7 +3050,7 @@ impl CompanionService {
                 // Check if narrative needs updating (skip if offline)
                 if !is_offline {
                     let needs_narrative = Narrative::tick_interaction(
-                        self.db.conn(),
+                        &self.db.conn(),
                         self.config.narrative.update_interval_interactions,
                     );
                     if needs_narrative {
@@ -3034,7 +3059,7 @@ impl CompanionService {
                             .map(|m| m.text.clone())
                             .collect();
                         Narrative::update(
-                            self.db.conn(),
+                            &self.db.conn(),
                             &*self.llm,
                             &self.config.user_name,
                             new_level,
@@ -3095,13 +3120,13 @@ impl CompanionService {
         let idle_seconds = now - self.last_interaction_ts;
 
         // Interaction density (last hour)
-        let interactions_last_hour = count_recent_interactions(self.db.conn(), now - 3600.0);
+        let interactions_last_hour = count_recent_interactions(&self.db.conn(), now - 3600.0);
 
         // Workflow hints for current hour
-        let workflow_hints = query_workflow_hints(self.db.conn());
+        let workflow_hints = query_workflow_hints(&self.db.conn());
 
         // Maintenance report
-        let maintenance_report = query_maintenance_log(self.db.conn());
+        let maintenance_report = query_maintenance_log(&self.db.conn());
 
         CompanionState {
             last_interaction_ts: self.last_interaction_ts,
@@ -3117,9 +3142,9 @@ impl CompanionService {
             // Soul state
             bond_level: self.bond_level,
             bond_score: self.bond_score,
-            formality: Evolution::get_style(self.db.conn()).formality,
-            opinions_count: Evolution::count_opinions(self.db.conn()),
-            shared_references_count: Evolution::count_shared_references(self.db.conn()),
+            formality: Evolution::get_style(&self.db.conn()).formality,
+            opinions_count: Evolution::count_opinions(&self.db.conn()),
+            shared_references_count: Evolution::count_shared_references(&self.db.conn()),
             bond_level_changed: self.bond_level_changed,
             // Phase 2: Proactive intelligence
             current_hour,
@@ -3143,9 +3168,9 @@ impl CompanionService {
             user_interests: self.user_interests.clone(),
             user_location: self.user_location.clone(),
             // Open Loops Guardian
-            open_loops_count: crate::world_model::count_open_threads(self.db.conn()),
-            overdue_commitment_count: crate::world_model::WorldModel::overdue_commitments(self.db.conn()).len(),
-            pending_attention_count: crate::world_model::attention_summary(self.db.conn())
+            open_loops_count: crate::world_model::count_open_threads(&self.db.conn()),
+            overdue_commitment_count: crate::world_model::WorldModel::overdue_commitments(&self.db.conn()).len(),
+            pending_attention_count: crate::world_model::attention_summary(&self.db.conn())
                 .iter().map(|(_, c)| c).sum(),
             model_tier: self.capability_profile.tier,
         }
@@ -3176,7 +3201,15 @@ impl CompanionService {
 
         // Sync bond level so templates render with personality
         self.proactive_engine.set_bond_level(self.bond_level);
-        if let Some(msg) = self.proactive_engine.check(&self.urge_queue, self.db.conn()) {
+        // Scope the connection guard so the database lock is released before
+        // re-entering `&mut self`. Since v0.10 `conn()` returns a MutexGuard,
+        // holding it across `set_proactive_message` would both fail the borrow
+        // check and risk deadlocking if that path touches the database.
+        let proactive = {
+            let conn = self.db.conn();
+            self.proactive_engine.check(&self.urge_queue, &conn)
+        };
+        if let Some(msg) = proactive {
             self.set_proactive_message(msg);
         }
     }
@@ -3185,15 +3218,15 @@ impl CompanionService {
     pub fn record_proactive_outcome(&mut self, source: &str, outcome: crate::silence_policy::InterventionOutcome) {
         let is_positive = outcome.is_positive();
         let is_negative = outcome.is_negative();
-        self.silence_policy.record_outcome(source, outcome, self.db.conn());
+        self.silence_policy.record_outcome(source, outcome, &self.db.conn());
 
         // Brain feedback: map outcome to reward for source learning
         let reward = if is_positive { 1.0 } else if is_negative { 0.0 } else { 0.5 };
         // Infer signal type from the source instinct name
-        let signal_type_str = yantrikdb_core::cognition::brain::infer_signal_type(
+        let signal_type_str = yantrik_brain::brain::infer_signal_type(
             source, "", &serde_json::json!({}),
         ).as_str();
-        crate::brain_loop::record_brain_feedback(self.db.conn(), source, signal_type_str, reward);
+        crate::brain_loop::record_brain_feedback(&self.db.conn(), source, signal_type_str, reward);
 
         // Also update taste trust
         let trust_event = if is_positive {
@@ -3203,12 +3236,12 @@ impl CompanionService {
         } else {
             return;
         };
-        self.trust_state = crate::trust_model::TrustModel::apply_event(self.db.conn(), &trust_event);
+        self.trust_state = crate::trust_model::TrustModel::apply_event(&self.db.conn(), &trust_event);
     }
 
     /// Refresh trust state from DB (call periodically).
     pub fn refresh_trust_state(&mut self) {
-        self.trust_state = crate::trust_model::TrustModel::get_state(self.db.conn());
+        self.trust_state = crate::trust_model::TrustModel::get_state(&self.db.conn());
     }
 
     /// Get silence policy dampening factor for a source.
@@ -3367,10 +3400,10 @@ impl CompanionService {
             Ok(t) => t,
             Err(_) => return Vec::new(),
         };
-        let completed = tm.poll(self.db.conn());
+        let completed = tm.poll(&self.db.conn());
         let mut notifications = Vec::new();
         for task_id in &completed {
-            if let Some(status) = tm.get_status(self.db.conn(), task_id) {
+            if let Some(status) = tm.get_status(&self.db.conn(), task_id) {
                 let output = crate::task_manager::TaskManager::read_output(task_id, 20);
                 let exit_str = status.exit_code.map(|c| c.to_string()).unwrap_or_else(|| "?".into());
                 let text = format!(
@@ -3382,7 +3415,7 @@ impl CompanionService {
                     &serde_json::json!({"task_id": task_id}),
                     "default", 0.9, "system/tasks", "system", None,
                 );
-                crate::task_manager::TaskManager::mark_recorded(self.db.conn(), task_id);
+                crate::task_manager::TaskManager::mark_recorded(&self.db.conn(), task_id);
 
                 // Build notification text
                 let outcome = if status.exit_code == Some(0) { "completed" } else { "failed" };
@@ -3403,7 +3436,7 @@ impl CompanionService {
     /// Active task summary for system context injection.
     pub fn active_tasks_summary(&self) -> String {
         match self.task_manager.lock() {
-            Ok(tm) => tm.format_active_summary(self.db.conn()),
+            Ok(tm) => tm.format_active_summary(&self.db.conn()),
             Err(_) => String::new(),
         }
     }
@@ -3494,7 +3527,7 @@ impl CompanionService {
     /// Recall high-importance identity facts (name, website, GitHub, etc.)
     /// These are always included in context regardless of query topic.
     fn recall_identity_facts(&self) -> Vec<yantrikdb_core::types::RecallResult> {
-        let conn = self.db.conn();
+        let conn = &self.db.conn();
         // Fetch identity + high-importance work facts (name, website, GitHub, etc.)
         let query = "SELECT rid, text, importance, domain FROM memories \
                      WHERE ((domain = 'identity' AND importance >= 0.7) \
@@ -3532,6 +3565,14 @@ impl CompanionService {
                 domain: row.get(3)?,
                 source: "companion".to_string(),
                 emotional_state: None,
+                // v0.10 typed temporal status. These rows are read straight
+                // from `memories` with consolidation_status = 'active', so
+                // they are current by construction and carry no chain
+                // successor, no open dispute, and no aging stamp.
+                current_status: yantrikdb_core::types::RecordStatus::Active,
+                superseded_by: None,
+                disputed_with: Vec::new(),
+                aged_last_verified: None,
             })
         })
         .ok()
@@ -3925,7 +3966,7 @@ fn execute_tool_round_tracked(
             None
         };
         crate::tool_metrics::ToolMetrics::record(
-            db.conn(), name, !is_error, tool_duration_ms,
+            &db.conn(), name, !is_error, tool_duration_ms,
             failure_reason.as_deref(),
         );
 
@@ -3941,7 +3982,7 @@ fn execute_tool_round_tracked(
                     action: name.to_string(),
                 }
             };
-            crate::trust_model::TrustModel::apply_event(db.conn(), &trust_event);
+            crate::trust_model::TrustModel::apply_event(&db.conn(), &trust_event);
         }
 
         // Record step in agent loop
@@ -3949,7 +3990,7 @@ fn execute_tool_round_tracked(
 
         // Ingest into Context Cortex pulse stream
         if let Some(ctx) = cortex.as_mut() {
-            ctx.ingest_tool_result(db.conn(), name, args, &result);
+            ctx.ingest_tool_result(&db.conn(), name, args, &result);
         }
 
         // Dynamic schema injection for discover_tools

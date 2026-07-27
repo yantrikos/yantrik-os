@@ -283,7 +283,7 @@ impl Tool for SetReminderTool {
         // This makes reminders persistent, visible in list_schedules,
         // and survivable across restarts.
         let task_id = crate::scheduler::Scheduler::create(
-            ctx.db.conn(),
+            &ctx.db.conn(),
             text,
             "",
             "once",
@@ -387,7 +387,7 @@ impl Tool for FormOpinionTool {
             return "Error: topic and stance are required".to_string();
         }
 
-        crate::evolution::Evolution::form_opinion(ctx.db.conn(), topic, stance, confidence);
+        crate::evolution::Evolution::form_opinion(&ctx.db.conn(), topic, stance, confidence);
         format!("Opinion formed on '{topic}': {stance}")
     }
 }
@@ -427,7 +427,7 @@ impl Tool for CreateInsideJokeTool {
             return "Error: reference is required".to_string();
         }
 
-        let ref_id = crate::evolution::Evolution::add_shared_reference(ctx.db.conn(), reference, context);
+        let ref_id = crate::evolution::Evolution::add_shared_reference(&ctx.db.conn(), reference, context);
         format!("Inside joke saved: {reference} (id: {ref_id})")
     }
 }
@@ -456,7 +456,7 @@ impl Tool for CheckBondTool {
     }
 
     fn execute(&self, ctx: &ToolContext, _args: &serde_json::Value) -> String {
-        let state = crate::bond::BondTracker::get_state(ctx.db.conn());
+        let state = crate::bond::BondTracker::get_state(&ctx.db.conn());
         format!(
             "Bond level: {} (score: {:.2})\nInteractions: {}\nDays together: {:.0}\nStreak: {} days\nVulnerability events: {}\nInside jokes: {}",
             state.bond_level.name(),
@@ -592,7 +592,7 @@ impl Tool for ForgetTopicTool {
             .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
             .unwrap_or_default();
 
-        let conn = ctx.db.conn();
+        let conn = &ctx.db.conn();
         let topic_lower = topic.to_lowercase();
         let like_pattern = format!("%{}%", topic_lower);
 
@@ -784,7 +784,7 @@ impl Tool for BrainStatusTool {
     }
 
     fn execute(&self, ctx: &ToolContext, args: &serde_json::Value) -> String {
-        let conn = ctx.db.conn();
+        let conn = &ctx.db.conn();
         let section = args.get("section").and_then(|v| v.as_str()).unwrap_or("all");
 
         let mut out = String::new();
@@ -849,7 +849,7 @@ impl Tool for BrainStatusTool {
         }
 
         if section == "all" || section == "curiosity" {
-            let stats = yantrikdb_core::cognition::curiosity::curiosity_stats(conn);
+            let stats = yantrik_brain::curiosity::curiosity_stats(conn);
             out.push_str("\n### Curiosity Engine\n");
             out.push_str(&format!("- Active sources: {}\n", stats["total_sources"]));
             out.push_str(&format!("- Total fetches: {}\n", stats["total_fetches"]));

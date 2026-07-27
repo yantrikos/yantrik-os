@@ -47,7 +47,7 @@ impl Tool for ShowOpenLoopsTool {
     fn execute(&self, ctx: &ToolContext, args: &serde_json::Value) -> String {
         let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
         let type_filter = args.get("type_filter").and_then(|v| v.as_str());
-        let conn = ctx.db.conn();
+        let conn = &ctx.db.conn();
 
         let threads = if let Some(filter) = type_filter {
             let tt = ThreadType::from_str(filter);
@@ -162,7 +162,7 @@ impl Tool for ResolveLoopTool {
         }
 
         let tt = ThreadType::from_str(thread_type_str);
-        let conn = ctx.db.conn();
+        let conn = &ctx.db.conn();
 
         world_model::resolve_thread(conn, &tt, entity_id, evidence);
 
@@ -217,7 +217,7 @@ impl Tool for SnoozeLoopTool {
         }
 
         let tt = ThreadType::from_str(thread_type_str);
-        let conn = ctx.db.conn();
+        let conn = &ctx.db.conn();
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs_f64())

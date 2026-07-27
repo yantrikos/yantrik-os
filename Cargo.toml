@@ -20,6 +20,7 @@ members = [
     "crates/yantrik-ui",
     "crates/yantrik-ml",
     "crates/yantrik-os",
+    "crates/yantrik-brain",
     "services/weather-service",
     "services/system-monitor-service",
     "services/notes-service",
@@ -55,7 +56,7 @@ serde_json = "1"
 serde_yaml = "0.9"
 
 # Database
-rusqlite = { version = "0.32", features = ["bundled"] }
+rusqlite = { version = "0.37", features = ["bundled"] }  # matches upstream yantrikdb 0.10.1 (one crate may link sqlite3)
 
 # Async / networking
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
@@ -115,7 +116,12 @@ yantrik-manifest = { path = "crates/yantrik-manifest" }
 yantrik-chat = { path = "crates/yantrik-chat" }
 yantrik-companion = { path = "crates/yantrik-companion" }
 yantrik-os = { path = "crates/yantrik-os" }
-yantrikdb-core = { git = "https://github.com/yantrikos/yantrikdb.git" }
+yantrik-brain = { path = "crates/yantrik-brain" }
+# Upstream yantrikdb, not a vendored fork. The crate is published as `yantrikdb`
+# (it was `yantrikdb-core` at 0.1.0), so the `package =` rename keeps every
+# existing `use yantrikdb_core::…` call site compiling unchanged — the same
+# approach yantrik-mind has been running on in production.
+yantrikdb-core = { path = "../yantrikdb/crates/yantrikdb-core", package = "yantrikdb" }
 yantrik-ml = { git = "https://github.com/yantrikos/yantrik-ml.git" }
 yantrikdb-server = { path = "crates/yantrikdb-server" }
 
@@ -131,8 +137,5 @@ opt-level = 2
 opt-level = 2
 
 # Local override: adds "thinking": false to API requests for Qwen3.5/DeepSeek
-[patch."https://github.com/yantrikos/yantrikdb.git"]
-yantrikdb-core = { path = "crates/yantrikdb-core" }
-
 [patch."https://github.com/yantrikos/yantrik-ml.git"]
 yantrik-ml = { path = "crates/yantrik-ml" }

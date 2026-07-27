@@ -87,7 +87,7 @@ impl Tool for ListConnectionsTool {
         };
 
         let available = state.manager.available();
-        let connected = connectors::list_connected(ctx.db.conn());
+        let connected = connectors::list_connected(&ctx.db.conn());
 
         let mut lines = Vec::new();
         lines.push("Available connectors:".to_string());
@@ -95,7 +95,7 @@ impl Tool for ListConnectionsTool {
         for svc in &available {
             let is_connected = connected.contains(&svc.to_string());
             let status = if is_connected {
-                let last_sync = connectors::get_tokens(ctx.db.conn(), svc)
+                let last_sync = connectors::get_tokens(&ctx.db.conn(), svc)
                     .map(|t| {
                         if t.last_sync_ts > 0.0 {
                             format_ago(t.last_sync_ts)
@@ -167,7 +167,7 @@ impl Tool for ConnectServiceTool {
         };
 
         // Check if already connected
-        if connectors::is_connected(ctx.db.conn(), service) {
+        if connectors::is_connected(&ctx.db.conn(), service) {
             return format!("{} is already connected. Use sync_service to sync or disconnect_service to remove.", service);
         }
 
@@ -368,13 +368,13 @@ impl Tool for SyncServiceTool {
         };
 
         if service == "all" {
-            let connected = connectors::list_connected(ctx.db.conn());
+            let connected = connectors::list_connected(&ctx.db.conn());
             if connected.is_empty() {
                 return "No services connected. Use connect_service first.".to_string();
             }
             let mut results = Vec::new();
             for svc in &connected {
-                match state.manager.incremental_sync(ctx.db.conn(), svc) {
+                match state.manager.incremental_sync(&ctx.db.conn(), svc) {
                     Ok(entities) => {
                         results.push(format!("{}: {} entities synced", svc, entities.len()));
                     }
@@ -386,11 +386,11 @@ impl Tool for SyncServiceTool {
             return results.join("\n");
         }
 
-        if !connectors::is_connected(ctx.db.conn(), service) {
+        if !connectors::is_connected(&ctx.db.conn(), service) {
             return format!("{} is not connected. Use connect_service first.", service);
         }
 
-        match state.manager.incremental_sync(ctx.db.conn(), service) {
+        match state.manager.incremental_sync(&ctx.db.conn(), service) {
             Ok(entities) => {
                 let summary = summarize_seed_entities(&entities);
                 format!("Synced {}: {} entities updated.\n{}", service, entities.len(), summary)
@@ -441,11 +441,11 @@ impl Tool for DisconnectServiceTool {
             None => return "Missing 'service' parameter".to_string(),
         };
 
-        if !connectors::is_connected(ctx.db.conn(), service) {
+        if !connectors::is_connected(&ctx.db.conn(), service) {
             return format!("{} is not connected.", service);
         }
 
-        connectors::disconnect(ctx.db.conn(), service);
+        connectors::disconnect(&ctx.db.conn(), service);
         format!("{} disconnected. Tokens removed.", service)
     }
 }

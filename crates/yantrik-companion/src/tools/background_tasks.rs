@@ -72,7 +72,7 @@ impl Tool for RunBackgroundTool {
             Err(_) => return "Task manager unavailable".to_string(),
         };
 
-        match tm.spawn(ctx.db.conn(), command, label) {
+        match tm.spawn(&ctx.db.conn(), command, label) {
             Ok(task_id) => format!("Task started: {task_id} — \"{label}\"\nUse check_background_task to monitor progress."),
             Err(e) => format!("Failed to start task: {e}"),
         }
@@ -124,7 +124,7 @@ impl Tool for ListBackgroundTasksTool {
             Err(_) => return "Task manager unavailable".to_string(),
         };
 
-        let tasks = tm.list(ctx.db.conn(), status_filter);
+        let tasks = tm.list(&ctx.db.conn(), status_filter);
         if tasks.is_empty() {
             return match status_filter {
                 Some(s) => format!("No {s} tasks."),
@@ -206,9 +206,9 @@ impl Tool for CheckBackgroundTaskTool {
         };
 
         // Poll first to get fresh status
-        tm.poll(ctx.db.conn());
+        tm.poll(&ctx.db.conn());
 
-        match tm.get_status(ctx.db.conn(), task_id) {
+        match tm.get_status(&ctx.db.conn(), task_id) {
             Some(info) => {
                 let mut result = format!(
                     "Task: {} ({})\nStatus: {}\nCommand: {}",
@@ -278,7 +278,7 @@ impl Tool for StopBackgroundTaskTool {
             Err(_) => return "Task manager unavailable".to_string(),
         };
 
-        match tm.stop(ctx.db.conn(), task_id) {
+        match tm.stop(&ctx.db.conn(), task_id) {
             Ok(msg) => msg,
             Err(e) => e,
         }

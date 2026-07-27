@@ -188,7 +188,7 @@ pub fn extract_and_learn(
                 tracing::debug!(rid, memory_text, "Learned from conversation");
                 // Assign importance tier + variable half-life (Gap 5)
                 crate::memory_evolution::assign_memory_tier(
-                    db.conn(), &rid, importance, memory_type, domain, evolution_config,
+                    &db.conn(), &rid, importance, memory_type, domain, evolution_config,
                 );
 
                 // Register lifecycle metadata
@@ -198,7 +198,7 @@ pub fn extract_and_learn(
                     _ => MemoryScope::Global,
                 };
                 MemoryLifecycle::register(
-                    db.conn(), &rid, MemorySource::ConversationInference, scope, importance as f64,
+                    &db.conn(), &rid, MemorySource::ConversationInference, scope, importance as f64,
                 );
 
                 // Contradiction detection for factual domains
@@ -384,7 +384,7 @@ fn detect_contradictions(db: &YantrikDB, new_id: &str, new_text: &str, domain: &
             );
 
             MemoryLifecycle::flag_contradiction(
-                db.conn(),
+                &db.conn(),
                 new_id,
                 existing_id,
                 &format!(

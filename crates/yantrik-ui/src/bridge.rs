@@ -31,6 +31,14 @@ pub enum CompanionCommand {
         text: String,
         token_tx: Sender<String>,
     },
+    /// Reload the LLM backend from a new provider config.
+    /// Used when user adds/edits a provider in settings.
+    ReloadLLM {
+        provider_type: String,
+        base_url: String,
+        api_key: Option<String>,
+        model: String,
+    },
     /// Request bond state for the bond screen.
     GetBondState {
         reply_tx: Sender<BondSnapshot>,
@@ -332,6 +340,19 @@ impl CompanionBridge {
         let _ = self.cmd_tx.send(CompanionCommand::SetIncognitoMode { enabled });
     }
 
+    /// Reload the LLM backend with a new provider config.
+    /// Called when user adds/edits a provider in settings.
+    pub fn reload_llm(&self, provider_type: String, base_url: String, api_key: Option<String>, model: String) {
+        // Mark online optimistically so UI shows correct status while reload happens
+        self.online.store(true, Ordering::Relaxed);
+        let _ = self.cmd_tx.send(CompanionCommand::ReloadLLM {
+            provider_type,
+            base_url,
+            api_key,
+            model,
+        });
+    }
+
     /// Rename the user at runtime (updates config + companion).
     pub fn rename_user(&self, name: String) {
         let _ = self.cmd_tx.send(CompanionCommand::RenameUser { name });
@@ -443,7 +464,7 @@ fn worker_loop(
 
 
     // Resume any running/waiting recipes from before shutdown
-    for rid in yantrik_companion::recipe::RecipeStore::get_resumable(companion.db.conn()) {
+    for rid in yantrik_companion::recipe::RecipeStore::get_resumable(&companion.db.conn()) {
         tracing::info!(recipe_id = %rid, "Resuming recipe from previous session");
         let _ = cmd_tx.send(CompanionCommand::ProcessRecipeStep { recipe_id: rid });
     }
@@ -510,7 +531,7 @@ fn worker_loop(
                         );
                         for c in &wm_commits {
                             yantrik_companion::world_model::WorldModel::insert_commitment(
-                                companion.db.conn(), c,
+                                &companion.db.conn(), c,
                             );
                         }
                         tracing::info!(
@@ -638,21 +659,21 @@ fn worker_loop(
                 cached_bond.store(companion.bond_level().as_u8(), Ordering::Relaxed);
 
                 // If tasks are pending (maybe user just queued one), signal the task processor
-                if yantrik_companion::task_queue::TaskQueue::active_count(companion.db.conn()) > 0 {
+                if yantrik_companion::task_queue::TaskQueue::active_count(&companion.db.conn()) > 0 {
                     let _ = cmd_tx.send(CompanionCommand::ProcessNextTask);
                 }
                 // If recipes are pending/running, signal them
-                for rid in yantrik_companion::recipe::RecipeStore::get_resumable(companion.db.conn()) {
+                for rid in yantrik_companion::recipe::RecipeStore::get_resumable(&companion.db.conn()) {
                     let _ = cmd_tx.send(CompanionCommand::ProcessRecipeStep { recipe_id: rid });
                 }
                 // Resume waiting recipes whose WaitFor condition or timeout expired
-                for rid in yantrik_companion::recipe::RecipeStore::get_expired_waiting(companion.db.conn()) {
+                for rid in yantrik_companion::recipe::RecipeStore::get_expired_waiting(&companion.db.conn()) {
                     tracing::info!(recipe_id = %rid, "Resuming expired WaitFor recipe");
                     let _ = cmd_tx.send(CompanionCommand::ProcessRecipeStep { recipe_id: rid });
                 }
             }
             Ok(CompanionCommand::GetBondState { reply_tx }) => {
-                let bond = BondTracker::get_state(companion.db.conn());
+                let bond = BondTracker::get_state(&companion.db.conn());
                 let humor_rate = if bond.humor_attempts > 0 {
                     bond.humor_successes as f64 / bond.humor_attempts as f64
                 } else {
@@ -670,9 +691,9 @@ fn worker_loop(
                 });
             }
             Ok(CompanionCommand::GetEvolution { reply_tx }) => {
-                let style = Evolution::get_style(companion.db.conn());
-                let opinions = Evolution::get_opinions(companion.db.conn(), 20);
-                let refs = Evolution::get_shared_references(companion.db.conn(), 20);
+                let style = Evolution::get_style(&companion.db.conn());
+                let opinions = Evolution::get_opinions(&companion.db.conn(), 20);
+                let refs = Evolution::get_shared_references(&companion.db.conn(), 20);
 
                 let _ = reply_tx.send(EvolutionSnapshot {
                     formality: style.formality,
@@ -723,7 +744,7 @@ fn worker_loop(
                 let _ = reply_tx.send(companion.bond_level());
             }
             Ok(CompanionCommand::GetPendingUrges { reply_tx }) => {
-                let urges = companion.urge_queue.get_pending(companion.db.conn(), 10);
+                let urges = companion.urge_queue.get_pending(&companion.db.conn(), 10);
                 let snapshots: Vec<UrgeSnapshot> = urges
                     .into_iter()
                     .map(|u| UrgeSnapshot {
@@ -740,6 +761,22 @@ fn worker_loop(
             Ok(CompanionCommand::SetIncognitoMode { enabled }) => {
                 companion.set_incognito(enabled);
                 tracing::info!(incognito = enabled, "Incognito mode toggled");
+            }
+            Ok(CompanionCommand::ReloadLLM { provider_type, base_url, api_key, model }) => {
+                tracing::info!(provider = %provider_type, model = %model, "Reloading LLM backend");
+                let new_llm: std::sync::Arc<dyn yantrik_ml::LLMBackend> = std::sync::Arc::new(
+                    yantrik_ml::ApiLLM::new(base_url.clone(), api_key.clone(), &model)
+                );
+                companion.swap_llm(new_llm);
+                // Update config in memory so it persists for next restart
+                companion.config.llm.backend = "api".into();
+                companion.config.llm.api_base_url = Some(base_url);
+                companion.config.llm.api_model = Some(model);
+                companion.config.llm.api_key = api_key;
+                // Save config to disk
+                companion.save_config();
+                online.store(true, Ordering::Relaxed);
+                tracing::info!("LLM reloaded successfully");
             }
             Ok(CompanionCommand::RecordSystemEvent { text, domain, importance }) => {
                 if companion.is_incognito() {
@@ -820,7 +857,7 @@ fn worker_loop(
                     }
                 }
                 let task_summary = companion.active_tasks_summary();
-                let sched_summary = yantrik_companion::scheduler::Scheduler::format_summary(companion.db.conn());
+                let sched_summary = yantrik_companion::scheduler::Scheduler::format_summary(&companion.db.conn());
                 let mut full_ctx = context;
                 if !task_summary.is_empty() {
                     full_ctx.push('\n');
@@ -830,24 +867,24 @@ fn worker_loop(
                     full_ctx.push('\n');
                     full_ctx.push_str(&sched_summary);
                 }
-                let auto_summary = yantrik_companion::automation::AutomationStore::format_summary(companion.db.conn());
+                let auto_summary = yantrik_companion::automation::AutomationStore::format_summary(&companion.db.conn());
                 if !auto_summary.is_empty() {
                     full_ctx.push('\n');
                     full_ctx.push_str(&auto_summary);
                 }
                 // Task queue summary — shows pending/in-progress persistent tasks
-                let tq_summary = yantrik_companion::task_queue::TaskQueue::format_active_summary(companion.db.conn());
+                let tq_summary = yantrik_companion::task_queue::TaskQueue::format_active_summary(&companion.db.conn());
                 if !tq_summary.is_empty() {
                     full_ctx.push('\n');
                     full_ctx.push_str(&tq_summary);
                 }
                 // Recipe summary — active recipes + failure learnings
-                let recipe_summary = yantrik_companion::recipe::RecipeStore::format_summary(companion.db.conn());
+                let recipe_summary = yantrik_companion::recipe::RecipeStore::format_summary(&companion.db.conn());
                 if !recipe_summary.is_empty() {
                     full_ctx.push('\n');
                     full_ctx.push_str(&recipe_summary);
                 }
-                let recipe_learnings = yantrik_companion::recipe::RecipeStore::get_failure_learnings(companion.db.conn(), 5);
+                let recipe_learnings = yantrik_companion::recipe::RecipeStore::get_failure_learnings(&companion.db.conn(), 5);
                 if !recipe_learnings.is_empty() {
                     full_ctx.push_str("\nRecipe learnings (past failures to avoid):\n");
                     for l in &recipe_learnings {
@@ -918,7 +955,7 @@ fn worker_loop(
             Ok(CompanionCommand::Think { interruptibility, window_title, process_name, idle_seconds }) => {
                 // Update Context Cortex focus from system signals
                 if let Some(ref mut cortex) = companion.cortex {
-                    cortex.update_focus(companion.db.conn(), &window_title, &process_name, idle_seconds);
+                    cortex.update_focus(&companion.db.conn(), &window_title, &process_name, idle_seconds);
                 }
 
                 let db = &companion.db;
@@ -961,7 +998,7 @@ fn worker_loop(
 
                     // Count open conflicts
                     let conflicts_count = db
-                        .get_conflicts(Some("open"), None, None, None, 100)
+                        .get_conflicts(Some("open"), None, None, None, None, 100)
                         .map(|c| c.len())
                         .unwrap_or(0);
 
@@ -979,7 +1016,7 @@ fn worker_loop(
                         });
 
                     // Check scheduler for due tasks — inject as triggers
-                    let due_tasks = yantrik_companion::scheduler::Scheduler::get_due(companion.db.conn());
+                    let due_tasks = yantrik_companion::scheduler::Scheduler::get_due(&companion.db.conn());
                     for task in &due_tasks {
                         triggers.push(serde_json::json!({
                             "trigger_type": "scheduled_task",
@@ -990,7 +1027,7 @@ fn worker_loop(
                             "schedule_type": task.schedule_type,
                             "action": task.action,
                         }));
-                        yantrik_companion::scheduler::Scheduler::advance(companion.db.conn(), &task.task_id);
+                        yantrik_companion::scheduler::Scheduler::advance(&companion.db.conn(), &task.task_id);
                     }
                     if !due_tasks.is_empty() {
                         tracing::info!(count = due_tasks.len(), "Scheduler: advanced due tasks");
@@ -1000,12 +1037,12 @@ fn worker_loop(
                     {
                         let monitor_config = yantrik_companion::open_loops_monitor::MonitorConfig::default();
                         let scan_result = yantrik_companion::open_loops_monitor::scan(
-                            companion.db.conn(),
+                            &companion.db.conn(),
                             &monitor_config,
                         );
 
                         // Inject commitment triggers for instinct evaluation
-                        let overdue = yantrik_companion::world_model::WorldModel::overdue_commitments(companion.db.conn());
+                        let overdue = yantrik_companion::world_model::WorldModel::overdue_commitments(&companion.db.conn());
                         for c in &overdue {
                             triggers.push(serde_json::json!({
                                 "trigger_type": "commitment_overdue",
@@ -1025,7 +1062,7 @@ fn worker_loop(
                             );
                         }
 
-                        let approaching = yantrik_companion::world_model::WorldModel::approaching_deadlines(companion.db.conn(), 24.0);
+                        let approaching = yantrik_companion::world_model::WorldModel::approaching_deadlines(&companion.db.conn(), 24.0);
                         for c in &approaching {
                             triggers.push(serde_json::json!({
                                 "trigger_type": "commitment_approaching",
@@ -1091,10 +1128,10 @@ fn worker_loop(
                 // V25: Refresh trust state + apply daily interaction + daily decay
                 companion.refresh_trust_state();
                 yantrik_companion::trust_model::TrustModel::apply_event(
-                    companion.db.conn(),
+                    &companion.db.conn(),
                     &yantrik_companion::trust_model::TrustEvent::DailyInteraction,
                 );
-                yantrik_companion::trust_model::TrustModel::apply_daily_decay(companion.db.conn());
+                yantrik_companion::trust_model::TrustModel::apply_daily_decay(&companion.db.conn());
 
                 let state = companion.build_state();
                 let mut urge_specs = companion.evaluate_instincts(&state);
@@ -1102,7 +1139,7 @@ fn worker_loop(
 
                 // Context Cortex think step — run rules + baselines + patterns
                 if let Some(ref mut cortex) = companion.cortex {
-                    let attention_items = cortex.think(companion.db.conn());
+                    let attention_items = cortex.think(&companion.db.conn());
                     // Global cortex cooldown: suppress ALL cortex urges within 1 hour
                     // of the last cortex message. Prevents similar-but-different patterns
                     // from spamming the user every think cycle.
@@ -1110,7 +1147,7 @@ fn worker_loop(
 
                     if !attention_items.is_empty() && !cortex_globally_cooled {
                         let focus = cortex.current_focus();
-                        let briefing = cortex.build_briefing(companion.db.conn(), focus.as_ref(), &attention_items);
+                        let briefing = cortex.build_briefing(&companion.db.conn(), focus.as_ref(), &attention_items);
                         tracing::info!(
                             attention_count = attention_items.len(),
                             "Cortex attention items fired"
@@ -1139,7 +1176,7 @@ fn worker_loop(
                     }
 
                     // LLM Reasoner — deep reflection every ~4 hours
-                    if let Some(reflection_prompt) = cortex.maybe_deep_reflection(companion.db.conn()) {
+                    if let Some(reflection_prompt) = cortex.maybe_deep_reflection(&companion.db.conn()) {
                         tracing::info!("Cortex LLM reasoner: triggering deep reflection");
                         let reasoner_urge = yantrik_companion::UrgeSpec::new(
                             "CortexReasoner",
@@ -1166,17 +1203,22 @@ fn worker_loop(
                         .unwrap_or_default();
 
                     let pb_now = state.current_ts;
-                    let pb_state = yantrik_companion::cortex::playbook::PlaybookState {
-                        attention_items: &pb_attention,
-                        current_focus: cortex_focus.as_ref(),
-                        now_ts: pb_now,
-                        user_hour: (pb_now as i64 % 86400 / 3600) as u32,
-                        conn: companion.db.conn(),
-                        bond_level: companion.bond_level() as u8,
+                    // PlaybookState borrows the connection, so evaluate inside a
+                    // scope that drops the guard before the action loop below
+                    // re-enters `&mut companion`.
+                    let pb_actions = {
+                        let conn = companion.db.conn();
+                        let pb_state = yantrik_companion::cortex::playbook::PlaybookState {
+                            attention_items: &pb_attention,
+                            current_focus: cortex_focus.as_ref(),
+                            now_ts: pb_now,
+                            user_hour: (pb_now as i64 % 86400 / 3600) as u32,
+                            conn: &conn,
+                            bond_level: companion.bond_level() as u8,
+                        };
+                        let user_receptivity = companion.user_model.engagement();
+                        companion.playbook_engine.evaluate(&pb_state, user_receptivity)
                     };
-
-                    let user_receptivity = companion.user_model.engagement();
-                    let pb_actions = companion.playbook_engine.evaluate(&pb_state, user_receptivity);
 
                     // Check timeouts for pending playbook outcomes
                     companion.playbook_engine.check_timeouts(pb_now);
@@ -1209,7 +1251,7 @@ fn worker_loop(
                                     "Playbook QueueTask action"
                                 );
                                 yantrik_companion::task_queue::TaskQueue::enqueue(
-                                    companion.db.conn(),
+                                    &companion.db.conn(),
                                     &format!("Playbook: {}", playbook_id),
                                     description,
                                     0, // normal priority
@@ -1237,7 +1279,7 @@ fn worker_loop(
 
                     // Save playbook conviction state periodically (every 10 think cycles)
                     if companion.playbook_engine.diagnostic_summary().contains("fires=") {
-                        companion.playbook_engine.save(companion.db.conn());
+                        companion.playbook_engine.save(&companion.db.conn());
                     }
                 }
 
@@ -1306,7 +1348,7 @@ fn worker_loop(
                         }
                         execute_urges.push(spec.clone());
                     } else {
-                        companion.urge_queue.push(companion.db.conn(), spec);
+                        companion.urge_queue.push(&companion.db.conn(), spec);
                     }
                 }
 
@@ -1394,7 +1436,7 @@ fn worker_loop(
                 // If no EXECUTE urges fired and there are pending tasks,
                 // signal the event-driven task processor to start working.
                 if !execute_produced_message && !over_budget {
-                    if yantrik_companion::task_queue::TaskQueue::active_count(companion.db.conn()) > 0 {
+                    if yantrik_companion::task_queue::TaskQueue::active_count(&companion.db.conn()) > 0 {
                         let _ = cmd_tx.send(CompanionCommand::ProcessNextTask);
                     }
                 }
@@ -1555,7 +1597,7 @@ fn worker_loop(
                         }
                     }
                 } else {
-                    let pending = companion.urge_queue.count_pending(companion.db.conn());
+                    let pending = companion.urge_queue.count_pending(&companion.db.conn());
                     tracing::debug!(
                         pending_urges = pending,
                         "No proactive message this cycle"
@@ -1576,7 +1618,7 @@ fn worker_loop(
                 }
 
                 // Periodic save of adaptive user model (every think cycle is fine — it's cheap)
-                companion.user_model.save(companion.db.conn());
+                companion.user_model.save(&companion.db.conn());
 
                 // Push updated urges to Home screen
                 push_urges(&companion, &ui_weak);
@@ -1595,9 +1637,21 @@ fn worker_loop(
                     .as_secs_f64();
                 let over_budget = companion.is_over_daily_budget();
 
+                // Fetch in a scoped block so the connection guard is released
+                // before the body: since v0.10 `conn()` returns a MutexGuard,
+                // and an `if let` scrutinee holds its temporary for the whole
+                // body — which calls back into `&mut companion` and touches the
+                // database again.
+                let next_task = if over_budget {
+                    None
+                } else {
+                    let conn = companion.db.conn();
+                    yantrik_companion::task_queue::TaskQueue::next_task(&conn)
+                };
+
                 if over_budget {
                     tracing::debug!("Task processing skipped — over daily budget");
-                } else if let Some(task) = yantrik_companion::task_queue::TaskQueue::next_task(companion.db.conn()) {
+                } else if let Some(task) = next_task {
                     // Guard: auto-fail tasks stuck after too many steps
                     const MAX_TASK_STEPS: i32 = 10;
                     if task.steps_completed >= MAX_TASK_STEPS {
@@ -1609,12 +1663,12 @@ fn worker_loop(
                             MAX_TASK_STEPS
                         );
                         yantrik_companion::task_queue::TaskQueue::fail(
-                            companion.db.conn(),
+                            &companion.db.conn(),
                             &task.task_id,
                             &format!("Auto-failed after {} steps without completion", MAX_TASK_STEPS),
                         );
                         // Check for more tasks
-                        if yantrik_companion::task_queue::TaskQueue::active_count(companion.db.conn()) > 0 {
+                        if yantrik_companion::task_queue::TaskQueue::active_count(&companion.db.conn()) > 0 {
                             let _ = cmd_tx.send(CompanionCommand::ProcessNextTask);
                         }
                         continue;
@@ -1656,7 +1710,7 @@ fn worker_loop(
                     // Increment step counter and mark as in_progress
                     let new_steps = task.steps_completed + 1;
                     yantrik_companion::task_queue::TaskQueue::update_progress(
-                        companion.db.conn(), &task.task_id,
+                        &companion.db.conn(), &task.task_id,
                         &if task.progress.is_empty() { "Starting...".to_string() } else { task.progress.clone() },
                         new_steps,
                     );
@@ -1692,7 +1746,7 @@ fn worker_loop(
                     // Self-signal: if there are more tasks or this one isn't done yet,
                     // continue processing. The signal goes to the back of the channel
                     // queue, so any pending user messages get processed first.
-                    if !was_completed || yantrik_companion::task_queue::TaskQueue::active_count(companion.db.conn()) > 0 {
+                    if !was_completed || yantrik_companion::task_queue::TaskQueue::active_count(&companion.db.conn()) > 0 {
                         let _ = cmd_tx.send(CompanionCommand::ProcessNextTask);
                     }
                 } else {
@@ -1702,7 +1756,7 @@ fn worker_loop(
             Ok(CompanionCommand::ProcessRecipeStep { recipe_id }) => {
                 use yantrik_companion::recipe::*;
 
-                let recipe = match RecipeStore::get(companion.db.conn(), &recipe_id) {
+                let recipe = match RecipeStore::get(&companion.db.conn(), &recipe_id) {
                     Some(r) => r,
                     None => {
                         tracing::warn!(recipe_id = %recipe_id, "Recipe not found");
@@ -1715,15 +1769,15 @@ fn worker_loop(
                     continue;
                 }
 
-                let steps = RecipeStore::get_steps(companion.db.conn(), &recipe_id);
+                let steps = RecipeStore::get_steps(&companion.db.conn(), &recipe_id);
                 let step_count = steps.len();
 
                 // Check if we've finished all steps
                 if recipe.current_step >= step_count {
-                    RecipeStore::update_status(companion.db.conn(), &recipe_id, &RecipeStatus::Done, recipe.current_step);
+                    RecipeStore::update_status(&companion.db.conn(), &recipe_id, &RecipeStatus::Done, recipe.current_step);
                     tracing::info!(recipe_id = %recipe_id, name = %recipe.name, "Recipe completed");
                     // Collect final results from last completed step
-                    let final_vars = RecipeStore::get_vars(companion.db.conn(), &recipe_id);
+                    let final_vars = RecipeStore::get_vars(&companion.db.conn(), &recipe_id);
                     let last_step_result = steps.last()
                         .and_then(|s| match &s.step {
                             RecipeStep::Think { store_as, .. }
@@ -1761,10 +1815,10 @@ fn worker_loop(
                 }
 
                 // Mark as running
-                RecipeStore::update_status(companion.db.conn(), &recipe_id, &RecipeStatus::Running, recipe.current_step);
+                RecipeStore::update_status(&companion.db.conn(), &recipe_id, &RecipeStatus::Running, recipe.current_step);
 
                 let stored_step = &steps[recipe.current_step];
-                let mut vars = RecipeStore::get_vars(companion.db.conn(), &recipe_id);
+                let mut vars = RecipeStore::get_vars(&companion.db.conn(), &recipe_id);
                 let step_idx = recipe.current_step;
 
                 tracing::info!(
@@ -1793,8 +1847,8 @@ fn worker_loop(
                             );
                             match on_error {
                                 ErrorAction::Fail => {
-                                    RecipeStore::fail_step(companion.db.conn(), &recipe_id, step_idx, &result);
-                                    RecipeStore::set_error(companion.db.conn(), &recipe_id, &result);
+                                    RecipeStore::fail_step(&companion.db.conn(), &recipe_id, step_idx, &result);
+                                    RecipeStore::set_error(&companion.db.conn(), &recipe_id, &result);
                                     // Notify user of failure
                                     let msg = yantrik_companion::types::ProactiveMessage {
                                         text: format!("Recipe '{}' failed at step {}: {}", recipe.name, step_idx + 1, result),
@@ -1806,8 +1860,8 @@ fn worker_loop(
                                     continue;
                                 }
                                 ErrorAction::Skip => {
-                                    RecipeStore::skip_step(companion.db.conn(), &recipe_id, step_idx);
-                                    RecipeStore::update_status(companion.db.conn(), &recipe_id, &RecipeStatus::Running, step_idx + 1);
+                                    RecipeStore::skip_step(&companion.db.conn(), &recipe_id, step_idx);
+                                    RecipeStore::update_status(&companion.db.conn(), &recipe_id, &RecipeStatus::Running, step_idx + 1);
                                     // Self-signal to continue after skip
                                     let _ = cmd_tx.send(CompanionCommand::ProcessRecipeStep { recipe_id: recipe_id.clone() });
                                 }
@@ -1817,13 +1871,13 @@ fn worker_loop(
                                     let retries = vars.get(&retry_key)
                                         .and_then(|v| v.as_u64()).unwrap_or(0) as u8;
                                     if retries < *max {
-                                        RecipeStore::set_var(companion.db.conn(), &recipe_id, &retry_key,
+                                        RecipeStore::set_var(&companion.db.conn(), &recipe_id, &retry_key,
                                             &serde_json::Value::Number((retries + 1).into()));
                                         // Don't advance step — retry via self-signal
                                         let _ = cmd_tx.send(CompanionCommand::ProcessRecipeStep { recipe_id: recipe_id.clone() });
                                     } else {
-                                        RecipeStore::fail_step(companion.db.conn(), &recipe_id, step_idx, &result);
-                                        RecipeStore::set_error(companion.db.conn(), &recipe_id,
+                                        RecipeStore::fail_step(&companion.db.conn(), &recipe_id, step_idx, &result);
+                                        RecipeStore::set_error(&companion.db.conn(), &recipe_id,
                                             &format!("Failed after {} retries: {}", max, result));
                                         // Notify user of retry exhaustion
                                         let msg = yantrik_companion::types::ProactiveMessage {
@@ -1837,14 +1891,14 @@ fn worker_loop(
                                     }
                                 }
                                 ErrorAction::JumpTo { step } => {
-                                    RecipeStore::fail_step(companion.db.conn(), &recipe_id, step_idx, &result);
-                                    RecipeStore::update_status(companion.db.conn(), &recipe_id, &RecipeStatus::Running, *step);
+                                    RecipeStore::fail_step(&companion.db.conn(), &recipe_id, step_idx, &result);
+                                    RecipeStore::update_status(&companion.db.conn(), &recipe_id, &RecipeStatus::Running, *step);
                                     // Self-signal to continue at jump target
                                     let _ = cmd_tx.send(CompanionCommand::ProcessRecipeStep { recipe_id: recipe_id.clone() });
                                 }
                                 ErrorAction::Replan => {
                                     // Auto-heal: ask LLM to diagnose failure and generate replacement steps
-                                    RecipeStore::fail_step(companion.db.conn(), &recipe_id, step_idx, &result);
+                                    RecipeStore::fail_step(&companion.db.conn(), &recipe_id, step_idx, &result);
                                     tracing::info!(
                                         recipe_id = %recipe_id, step = step_idx,
                                         "Replanning recipe after failure"
@@ -1907,16 +1961,16 @@ fn worker_loop(
                                     if let Some(replacement_steps) = new_steps {
                                         // Record learning
                                         RecipeStore::record_failure_learning(
-                                            companion.db.conn(), &recipe_id, step_idx,
+                                            &companion.db.conn(), &recipe_id, step_idx,
                                             tool_name, &result, &replan_text,
                                         );
                                         // Replace remaining steps
                                         RecipeStore::replace_remaining_steps(
-                                            companion.db.conn(), &recipe_id,
+                                            &companion.db.conn(), &recipe_id,
                                             step_idx + 1, &replacement_steps,
                                         );
                                         RecipeStore::update_status(
-                                            companion.db.conn(), &recipe_id,
+                                            &companion.db.conn(), &recipe_id,
                                             &RecipeStatus::Running, step_idx + 1,
                                         );
                                         // Notify user of replan
@@ -1938,7 +1992,7 @@ fn worker_loop(
                                             recipe_id = %recipe_id,
                                             "Replan failed — LLM response was not valid JSON steps"
                                         );
-                                        RecipeStore::set_error(companion.db.conn(), &recipe_id,
+                                        RecipeStore::set_error(&companion.db.conn(), &recipe_id,
                                             &format!("Step {} failed and replan could not generate valid steps: {}", step_idx + 1, result));
                                         let msg = yantrik_companion::types::ProactiveMessage {
                                             text: format!("Recipe '{}' failed at step {} and could not self-heal: {}", recipe.name, step_idx + 1, result),
@@ -1954,9 +2008,9 @@ fn worker_loop(
                         } else {
                             // Success — store result and advance
                             let result_json = serde_json::Value::String(result.clone());
-                            RecipeStore::set_var(companion.db.conn(), &recipe_id, store_as, &result_json);
-                            RecipeStore::complete_step(companion.db.conn(), &recipe_id, step_idx, &result);
-                            RecipeStore::update_status(companion.db.conn(), &recipe_id, &RecipeStatus::Running, step_idx + 1);
+                            RecipeStore::set_var(&companion.db.conn(), &recipe_id, store_as, &result_json);
+                            RecipeStore::complete_step(&companion.db.conn(), &recipe_id, step_idx, &result);
+                            RecipeStore::update_status(&companion.db.conn(), &recipe_id, &RecipeStatus::Running, step_idx + 1);
 
                             // Self-signal to continue
                             let _ = cmd_tx.send(CompanionCommand::ProcessRecipeStep { recipe_id: recipe_id.clone() });
@@ -1975,14 +2029,14 @@ fn worker_loop(
                                 "Recipe Think step returned empty response — LLM may have failed"
                             );
                             // Store empty but mark step as failed, continue to next step
-                            RecipeStore::set_var(companion.db.conn(), &recipe_id, store_as, &serde_json::Value::String(String::new()));
-                            RecipeStore::fail_step(companion.db.conn(), &recipe_id, step_idx, "empty LLM response");
-                            RecipeStore::update_status(companion.db.conn(), &recipe_id, &RecipeStatus::Running, step_idx + 1);
+                            RecipeStore::set_var(&companion.db.conn(), &recipe_id, store_as, &serde_json::Value::String(String::new()));
+                            RecipeStore::fail_step(&companion.db.conn(), &recipe_id, step_idx, "empty LLM response");
+                            RecipeStore::update_status(&companion.db.conn(), &recipe_id, &RecipeStatus::Running, step_idx + 1);
                         } else {
                             let result_json = serde_json::Value::String(response_text.clone());
-                            RecipeStore::set_var(companion.db.conn(), &recipe_id, store_as, &result_json);
-                            RecipeStore::complete_step(companion.db.conn(), &recipe_id, step_idx, &response_text);
-                            RecipeStore::update_status(companion.db.conn(), &recipe_id, &RecipeStatus::Running, step_idx + 1);
+                            RecipeStore::set_var(&companion.db.conn(), &recipe_id, store_as, &result_json);
+                            RecipeStore::complete_step(&companion.db.conn(), &recipe_id, step_idx, &response_text);
+                            RecipeStore::update_status(&companion.db.conn(), &recipe_id, &RecipeStatus::Running, step_idx + 1);
                         }
 
                         // Self-signal to continue
@@ -1993,11 +2047,11 @@ fn worker_loop(
                         // Pure Rust evaluation — NO LLM
                         if condition.evaluate(&vars) {
                             tracing::info!(recipe_id = %recipe_id, step = step_idx, target = target_step, "JumpIf: jumping");
-                            RecipeStore::complete_step(companion.db.conn(), &recipe_id, step_idx, "jumped");
-                            RecipeStore::update_status(companion.db.conn(), &recipe_id, &RecipeStatus::Running, *target_step);
+                            RecipeStore::complete_step(&companion.db.conn(), &recipe_id, step_idx, "jumped");
+                            RecipeStore::update_status(&companion.db.conn(), &recipe_id, &RecipeStatus::Running, *target_step);
                         } else {
-                            RecipeStore::complete_step(companion.db.conn(), &recipe_id, step_idx, "continued");
-                            RecipeStore::update_status(companion.db.conn(), &recipe_id, &RecipeStatus::Running, step_idx + 1);
+                            RecipeStore::complete_step(&companion.db.conn(), &recipe_id, step_idx, "continued");
+                            RecipeStore::update_status(&companion.db.conn(), &recipe_id, &RecipeStatus::Running, step_idx + 1);
                         }
 
                         // Self-signal to continue
@@ -2006,8 +2060,8 @@ fn worker_loop(
 
                     RecipeStep::WaitFor { condition, timeout_secs } => {
                         // Pause recipe — will be resumed by trigger check
-                        RecipeStore::complete_step(companion.db.conn(), &recipe_id, step_idx, "waiting");
-                        RecipeStore::update_status(companion.db.conn(), &recipe_id, &RecipeStatus::Waiting, step_idx + 1);
+                        RecipeStore::complete_step(&companion.db.conn(), &recipe_id, step_idx, "waiting");
+                        RecipeStore::update_status(&companion.db.conn(), &recipe_id, &RecipeStatus::Waiting, step_idx + 1);
                         tracing::info!(recipe_id = %recipe_id, step = step_idx, "Recipe waiting");
                         // Don't self-signal — will be resumed by Think cycle trigger check
                     }
@@ -2031,8 +2085,8 @@ fn worker_loop(
                         };
                         companion.set_proactive_message(msg);
                         // Mark step done and set recipe to Waiting
-                        RecipeStore::complete_step(companion.db.conn(), &recipe_id, step_idx, "asked");
-                        RecipeStore::update_status(companion.db.conn(), &recipe_id, &RecipeStatus::Waiting, step_idx + 1);
+                        RecipeStore::complete_step(&companion.db.conn(), &recipe_id, step_idx, "asked");
+                        RecipeStore::update_status(&companion.db.conn(), &recipe_id, &RecipeStatus::Waiting, step_idx + 1);
                         // Don't self-signal — interjection handler will resume on user answer
                     }
 
@@ -2041,19 +2095,19 @@ fn worker_loop(
                         // In bridge, do a simple Think fallback
                         let resolved_prompt = resolve_vars(prompt, &vars);
                         let resp = companion.handle_message(&resolved_prompt);
-                        RecipeStore::complete_step(companion.db.conn(), &recipe_id, step_idx, &resp.message);
-                        RecipeStore::set_var(companion.db.conn(), &recipe_id, store_as,
+                        RecipeStore::complete_step(&companion.db.conn(), &recipe_id, step_idx, &resp.message);
+                        RecipeStore::set_var(&companion.db.conn(), &recipe_id, store_as,
                             &serde_json::Value::String(resp.message));
-                        RecipeStore::update_status(companion.db.conn(), &recipe_id, &RecipeStatus::Running, step_idx + 1);
+                        RecipeStore::update_status(&companion.db.conn(), &recipe_id, &RecipeStatus::Running, step_idx + 1);
                         let _ = cmd_tx.send(CompanionCommand::ProcessRecipeStep { recipe_id: recipe_id.clone() });
                     }
 
                     RecipeStep::Validate { input_var, store_as } => {
                         // Pass through — validation is best handled by recipe_executor
                         let val = vars.get(input_var).cloned().unwrap_or(serde_json::Value::Null);
-                        RecipeStore::set_var(companion.db.conn(), &recipe_id, store_as, &val);
-                        RecipeStore::complete_step(companion.db.conn(), &recipe_id, step_idx, "validated");
-                        RecipeStore::update_status(companion.db.conn(), &recipe_id, &RecipeStatus::Running, step_idx + 1);
+                        RecipeStore::set_var(&companion.db.conn(), &recipe_id, store_as, &val);
+                        RecipeStore::complete_step(&companion.db.conn(), &recipe_id, step_idx, "validated");
+                        RecipeStore::update_status(&companion.db.conn(), &recipe_id, &RecipeStatus::Running, step_idx + 1);
                         let _ = cmd_tx.send(CompanionCommand::ProcessRecipeStep { recipe_id: recipe_id.clone() });
                     }
 
@@ -2061,10 +2115,10 @@ fn worker_loop(
                         // Pass through — render is best handled by recipe_executor
                         let val = vars.get(input_var).cloned().unwrap_or(serde_json::Value::Null);
                         let rendered = val.as_str().unwrap_or("").to_string();
-                        RecipeStore::set_var(companion.db.conn(), &recipe_id, store_as,
+                        RecipeStore::set_var(&companion.db.conn(), &recipe_id, store_as,
                             &serde_json::Value::String(rendered));
-                        RecipeStore::complete_step(companion.db.conn(), &recipe_id, step_idx, "rendered");
-                        RecipeStore::update_status(companion.db.conn(), &recipe_id, &RecipeStatus::Running, step_idx + 1);
+                        RecipeStore::complete_step(&companion.db.conn(), &recipe_id, step_idx, "rendered");
+                        RecipeStore::update_status(&companion.db.conn(), &recipe_id, &RecipeStatus::Running, step_idx + 1);
                         let _ = cmd_tx.send(CompanionCommand::ProcessRecipeStep { recipe_id: recipe_id.clone() });
                     }
 
@@ -2077,8 +2131,8 @@ fn worker_loop(
                                 .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs_f64(),
                         };
                         companion.set_proactive_message(msg);
-                        RecipeStore::complete_step(companion.db.conn(), &recipe_id, step_idx, "notified");
-                        RecipeStore::update_status(companion.db.conn(), &recipe_id, &RecipeStatus::Running, step_idx + 1);
+                        RecipeStore::complete_step(&companion.db.conn(), &recipe_id, step_idx, "notified");
+                        RecipeStore::update_status(&companion.db.conn(), &recipe_id, &RecipeStatus::Running, step_idx + 1);
 
                         // Self-signal to continue
                         let _ = cmd_tx.send(CompanionCommand::ProcessRecipeStep { recipe_id: recipe_id.clone() });
@@ -2087,10 +2141,10 @@ fn worker_loop(
                     // Deterministic steps — delegate to recipe_executor for full implementation
                     RecipeStep::Format { store_as, template, .. } => {
                         let resolved = resolve_vars(template, &vars);
-                        RecipeStore::set_var(companion.db.conn(), &recipe_id, store_as,
+                        RecipeStore::set_var(&companion.db.conn(), &recipe_id, store_as,
                             &serde_json::Value::String(resolved));
-                        RecipeStore::complete_step(companion.db.conn(), &recipe_id, step_idx, "done");
-                        RecipeStore::update_status(companion.db.conn(), &recipe_id, &RecipeStatus::Running, step_idx + 1);
+                        RecipeStore::complete_step(&companion.db.conn(), &recipe_id, step_idx, "done");
+                        RecipeStore::update_status(&companion.db.conn(), &recipe_id, &RecipeStatus::Running, step_idx + 1);
                         let _ = cmd_tx.send(CompanionCommand::ProcessRecipeStep { recipe_id: recipe_id.clone() });
                     }
 
@@ -2100,9 +2154,9 @@ fn worker_loop(
                     | RecipeStep::Extract { input_var, store_as, .. } => {
                         // Pass through — full logic is in recipe_executor
                         let val = vars.get(input_var).cloned().unwrap_or(serde_json::Value::Null);
-                        RecipeStore::set_var(companion.db.conn(), &recipe_id, store_as, &val);
-                        RecipeStore::complete_step(companion.db.conn(), &recipe_id, step_idx, "done");
-                        RecipeStore::update_status(companion.db.conn(), &recipe_id, &RecipeStatus::Running, step_idx + 1);
+                        RecipeStore::set_var(&companion.db.conn(), &recipe_id, store_as, &val);
+                        RecipeStore::complete_step(&companion.db.conn(), &recipe_id, step_idx, "done");
+                        RecipeStore::update_status(&companion.db.conn(), &recipe_id, &RecipeStatus::Running, step_idx + 1);
                         let _ = cmd_tx.send(CompanionCommand::ProcessRecipeStep { recipe_id: recipe_id.clone() });
                     }
 
@@ -2117,8 +2171,8 @@ fn worker_loop(
                             })
                             .unwrap_or(false);
                         let branch_label = if cond_met { "then" } else { "else" };
-                        RecipeStore::complete_step(companion.db.conn(), &recipe_id, step_idx, branch_label);
-                        RecipeStore::update_status(companion.db.conn(), &recipe_id, &RecipeStatus::Running, step_idx + 1);
+                        RecipeStore::complete_step(&companion.db.conn(), &recipe_id, step_idx, branch_label);
+                        RecipeStore::update_status(&companion.db.conn(), &recipe_id, &RecipeStatus::Running, step_idx + 1);
                         let _ = cmd_tx.send(CompanionCommand::ProcessRecipeStep { recipe_id: recipe_id.clone() });
                     }
                 }
@@ -2222,7 +2276,7 @@ fn build_snapshot(companion: &CompanionService) -> StateSnapshot {
 
 /// Push pending urges to the Slint UI thread.
 fn push_urges(companion: &CompanionService, ui_weak: &slint::Weak<App>) {
-    let urges = companion.urge_queue.get_pending(companion.db.conn(), 10);
+    let urges = companion.urge_queue.get_pending(&companion.db.conn(), 10);
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
@@ -2303,6 +2357,14 @@ pub fn format_time_ago(seconds: f64) -> String {
 /// Build a CompanionService (same logic as crates/yantrik/src/main.rs).
 fn build_companion(config: CompanionConfig) -> CompanionService {
     // Load embedder
+    // Identity travels with the embedder so yantrikdb can distinguish a
+    // same-model reattach from a different-model-same-dim swap, which would
+    // silently corrupt an already-indexed database.
+    let embedder_identity: Option<String> = config
+        .yantrikdb
+        .embedder_model_dir
+        .as_ref()
+        .map(|d| format!("candle:dir:{d}"));
     let embedder = if let Some(ref dir) = config.yantrikdb.embedder_model_dir {
         tracing::info!(dir, "Loading embedder from directory");
         CandleEmbedder::from_dir(std::path::Path::new(dir))
@@ -2414,7 +2476,10 @@ fn build_companion(config: CompanionConfig) -> CompanionService {
     let mut db =
         yantrikdb_core::YantrikDB::new(&config.yantrikdb.db_path, config.yantrikdb.embedding_dim)
             .expect("failed to create YantrikDB");
-    db.set_embedder(Box::new(embedder));
+    db.set_embedder(match embedder_identity {
+        Some(id) => Box::new(yantrik_companion::embedder_bridge::EmbedderBridge::with_identity(embedder, id)),
+        None => Box::new(yantrik_companion::embedder_bridge::EmbedderBridge::new(embedder)),
+    });
 
     tracing::info!(
         db_path = config.yantrikdb.db_path,

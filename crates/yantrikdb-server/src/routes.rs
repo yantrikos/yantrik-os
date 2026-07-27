@@ -120,7 +120,7 @@ async fn status(State(state): State<AppStateRef>) -> Result<Json<StatusResponse>
         .map(|s| s.active_memories)
         .unwrap_or(0);
 
-    let pending_urges = service.urge_queue.count_pending(service.db.conn());
+    let pending_urges = service.urge_queue.count_pending(&service.db.conn());
     let idle = service.idle_seconds();
     let state_snapshot = service.build_state();
 
@@ -141,7 +141,7 @@ async fn get_urges(State(state): State<AppStateRef>) -> Result<Json<Vec<serde_js
         .lock()
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    let urges = service.urge_queue.get_pending(service.db.conn(), 20);
+    let urges = service.urge_queue.get_pending(&service.db.conn(), 20);
     let result: Vec<serde_json::Value> = urges
         .iter()
         .map(|u| {
@@ -169,7 +169,7 @@ async fn suppress_urge(
         .lock()
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    let success = service.urge_queue.suppress(service.db.conn(), &urge_id);
+    let success = service.urge_queue.suppress(&service.db.conn(), &urge_id);
     Ok(Json(serde_json::json!({ "suppressed": success })))
 }
 
