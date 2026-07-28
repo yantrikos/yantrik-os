@@ -6,6 +6,55 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 use crate::protocol::{RpcRequest, RpcResponse, RPC_METHOD_NOT_FOUND, RPC_PARSE_ERROR};
 
+/// Directory holding this session's service sockets.
+///
+/// Picks the first candidate we can actually create and write, rather than
+/// trusting one path. `$XDG_RUNTIME_DIR` is the correct answer on a normal
+/// desktop session, but it is routinely unset — or set to a path that does not
+/// exist — in containers, WSL without systemd, and bare `ssh` sessions. The
+/// previous hardcoded `/run/yantrik` was unwritable for a user-run service, so
+/// every service died on bind.
+///
+/// Order: `$XDG_RUNTIME_DIR/yantrik` → `/run/yantrik` (root/system service) →
+/// `/tmp/yantrik-<uid>` (last resort, always writable).
+#[cfg(unix)]
+pub fn socket_dir() -> std::path::PathBuf {
+    use std::path::PathBuf;
+
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Ok(dir) = std::env::var("XDG_RUNTIME_DIR") {
+        let dir = dir.trim();
+        if !dir.is_empty() {
+            candidates.push(PathBuf::from(dir).join("yantrik"));
+        }
+    }
+    candidates.push(PathBuf::from("/run/yantrik"));
+    // SAFETY: getuid() is always safe — it cannot fail and touches no memory.
+    let uid = unsafe { libc::getuid() };
+    let last_resort = PathBuf::from(format!("/tmp/yantrik-{uid}"));
+    candidates.push(last_resort.clone());
+
+    for dir in &candidates {
+        if std::fs::create_dir_all(dir).is_ok() && harden(dir).is_ok() {
+            return dir.clone();
+        }
+    }
+    last_resort
+}
+
+/// Restrict a socket directory to its owner.
+///
+/// Matters most for the `/tmp` fallback: `/tmp` is world-writable, and these
+/// sockets expose system-monitor, network and notification control. Without
+/// this, any local user could drive them.
+#[cfg(unix)]
+fn harden(dir: &std::path::Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let mut perms = std::fs::metadata(dir)?.permissions();
+    perms.set_mode(0o700);
+    std::fs::set_permissions(dir, perms)
+}
+
 /// Trait for service method dispatch. Implement this in each service.
 pub trait ServiceHandler: Send + Sync + 'static {
     /// Service identifier (e.g. "weather", "notes").
@@ -34,9 +83,20 @@ impl RpcServer {
     }
 
     /// Default address for a service.
+    ///
+    /// Prefers the per-user runtime directory. `/run` is root-owned, so a
+    /// desktop session running services as the logged-in user cannot create
+    /// `/run/yantrik` — every service then failed to bind with a bare ENOENT.
+    /// `$XDG_RUNTIME_DIR` is the standard location for exactly this, and is
+    /// already per-user, tmpfs-backed, and cleaned up on logout.
+    ///
+    /// Falls back to `/run/yantrik` for the system-service case (running as
+    /// root, no session, no XDG_RUNTIME_DIR).
+    ///
+    /// Client and server both call this, so they cannot disagree.
     #[cfg(unix)]
     pub fn default_address(service_id: &str) -> String {
-        format!("/run/yantrik/{}.sock", service_id)
+        format!("{}/{}.sock", socket_dir().display(), service_id)
     }
 
     #[cfg(windows)]
@@ -77,11 +137,26 @@ impl RpcServer {
         if path.exists() {
             std::fs::remove_file(path)?;
         }
+        // Do NOT swallow this. When it failed silently (`/run` is root-owned),
+        // the real cause — a permission error — surfaced later as a bare
+        // ENOENT from bind(), which reads like a missing binary and sent
+        // debugging in the wrong direction entirely.
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).ok();
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                return Err(std::io::Error::new(
+                    e.kind(),
+                    format!(
+                        "cannot create socket directory {}: {e} \
+                         (set XDG_RUNTIME_DIR to a writable per-user path)",
+                        parent.display()
+                    ),
+                ));
+            }
         }
 
-        let listener = UnixListener::bind(&self.address)?;
+        let listener = UnixListener::bind(&self.address).map_err(|e| {
+            std::io::Error::new(e.kind(), format!("cannot bind {}: {e}", self.address))
+        })?;
         tracing::info!(socket = %self.address, service = handler.service_id(), "RPC server listening (UDS)");
 
         loop {
