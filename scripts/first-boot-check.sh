@@ -112,6 +112,78 @@ if grep -q "no system snapshot within timeout" "$LOG" 2>/dev/null; then
 fi
 
 # ── Assertion 3 ────────────────────────────────────────────────────────────
+# Services must actually SERVE, not merely be reported as started.
+#
+# The service manager logs "Service started" the moment it spawns the process.
+# For a long time every service then died inside the SDK on socket bind, and
+# the only evidence was one ERROR line the desktop ignored. "Started" is a
+# statement about spawning; it says nothing about whether anything answers.
+if grep -q "Service failed" "$LOG" 2>/dev/null; then
+  fail "a service failed after start: $(grep 'Service failed' "$LOG" | head -1)"
+else
+  ok "no service reported failure"
+fi
+
+STARTED=$(grep -c "Service started" "$LOG" 2>/dev/null); STARTED=${STARTED:-0}
+LISTENING=$(grep -c "RPC server listening" "$LOG" 2>/dev/null); LISTENING=${LISTENING:-0}
+if [ "$STARTED" -gt 0 ] && [ "$LISTENING" -lt "$STARTED" ]; then
+  fail "$STARTED services started but only $LISTENING bound a socket"
+else
+  ok "$LISTENING/$STARTED started services bound a socket"
+fi
+
+# Round-trip real JSON-RPC over each socket. A socket file existing proves a
+# bind, not a server.
+#
+# The log is written with ANSI colour, so field names are wrapped in escape
+# sequences and a literal `socket=` never matches. Strip colour before
+# extracting — the first version of this check did not, found no socket
+# directory, silently skipped, and still reported PASSED. A required
+# assertion that cannot run is a FAILURE, not a pass; anything else is the
+# same silent-success bug this whole script exists to catch.
+PROBE="$(dirname "$0")/service-rpc-probe.py"
+SOCK_DIR=$(sed 's/\x1b\[[0-9;]*m//g' "$LOG" | grep -oE 'socket=[^ ]+' | head -1 \
+             | sed 's/socket=//' | xargs -r dirname)
+if [ "$LISTENING" -eq 0 ]; then
+  echo "skip: no sockets to probe (no service bound)"
+elif ! command -v python3 >/dev/null 2>&1; then
+  fail "RPC probe needs python3, which is not installed — liveness UNVERIFIED"
+elif [ ! -f "$PROBE" ]; then
+  fail "RPC probe script missing at $PROBE — liveness UNVERIFIED"
+elif [ -z "$SOCK_DIR" ]; then
+  fail "could not determine socket directory from the log — liveness UNVERIFIED"
+elif python3 "$PROBE" "$SOCK_DIR" > "$PROFILE_HOME/rpc.txt" 2>&1; then
+  ok "all services answered RPC ($(tail -1 "$PROFILE_HOME/rpc.txt"))"
+else
+  fail "not all services answered RPC"
+  sed 's/^/      /' "$PROFILE_HOME/rpc.txt" | head -8
+fi
+
+# ── Assertion 4 ────────────────────────────────────────────────────────────
+# The whole point: a first-time user can ask something and get an answer.
+# Everything above proves the shell boots. None of it proves it is useful.
+CLI="${YANTRIK_CLI_BIN:-target/release/yantrik}"
+if [ -x "$CLI" ]; then
+  ANSWER="$PROFILE_HOME/answer.txt"
+  if timeout "${ASK_TIMEOUT:-300}" "$CLI" ask --config "$CONFIG" \
+       "which processes are using the most memory right now" > "$ANSWER" 2>&1; then
+    # A tool must have run. Without one the model is guessing, and a fluent
+    # guess is exactly the failure this check exists to catch.
+    if grep -qE "tools used: *[a-z_]" "$ANSWER"; then
+      ok "answered end-to-end using $(grep -oE 'tools used: *.*' "$ANSWER" | head -1)"
+    else
+      fail "answered without invoking any tool (ungrounded response)"
+      tail -5 "$ANSWER" | sed 's/^/      /'
+    fi
+  else
+    fail "end-to-end ask failed or timed out"
+    tail -8 "$ANSWER" | sed 's/^/      /'
+  fi
+else
+  echo "skip: $CLI not built (set YANTRIK_CLI_BIN)"
+fi
+
+# ── Assertion 5 ────────────────────────────────────────────────────────────
 # Nothing should be panicking on the happy path.
 if grep -qE "panicked at|RUST_BACKTRACE" "$LOG" 2>/dev/null; then
   fail "panic during first boot"
