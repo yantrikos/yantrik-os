@@ -60,5 +60,4 @@ llamacpp-metal = ["llamacpp", "yantrik-ml/llamacpp-metal"]
 cuda = ["yantrik-ml/cuda"]
 metal = ["yantrik-ml/metal"]
 accelerate = ["yantrik-ml/accelerate"]
-kokoro-tts = ["yantrik-ml/kokoro-neural-tts"]
 
