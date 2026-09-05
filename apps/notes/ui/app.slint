@@ -56,6 +56,7 @@ export component NotesApp inherits Window {
 
     // ── Backlinks ──
     in property <[NoteBacklink]> backlinks <=> editor.backlinks;
+    in property <[NoteBacklink]> outbound-links <=> editor.outbound-links;
     in-out property <bool> backlinks-panel-open <=> editor.backlinks-panel-open;
 
     // ── Meeting mode ──

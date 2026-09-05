@@ -26,7 +26,8 @@ fn main() {
     app.global::<ThemeMode>().set_dark(theme.dark);
     app.global::<AccentPreset>().set_index(theme.accent_index);
 
-    wire(&app);
+    // Held until the window closes: a dropped Timer stops firing.
+    let _vault_watch = wire(&app);
     app.run().unwrap();
 }
 
@@ -264,38 +265,133 @@ fn title_of(content: &str, fname: &str) -> String {
         .unwrap_or_else(|| fname.trim_end_matches(".md").to_string())
 }
 
-/// Notes that link *to* `target_file`. Reads the vault each call: it is a flat directory of
-/// small files, and a stale link graph is worse than a slow one.
-fn backlinks_for(target_file: &str) -> Vec<NoteBacklink> {
+struct VaultFile {
+    filename: String,
+    title: String,
+    content: String,
+}
+
+/// Read the whole vault once. Both link directions need titles, and one of them needs bodies,
+/// so doing this per link would read every file N times.
+fn read_vault() -> Vec<VaultFile> {
     let dir = notes_dir();
-    let target_content = std::fs::read_to_string(dir.join(target_file)).unwrap_or_default();
+    let Ok(entries) = std::fs::read_dir(&dir) else { return Vec::new() };
+    entries
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.path();
+            if path.extension().map(|e| e != "md").unwrap_or(true) {
+                return None;
+            }
+            let filename = path.file_name()?.to_string_lossy().to_string();
+            let content = std::fs::read_to_string(&path).ok()?;
+            Some(VaultFile {
+                title: title_of(&content, &filename),
+                filename,
+                content,
+            })
+        })
+        .collect()
+}
+
+/// Notes that link *to* `target_file`.
+fn backlinks_in(vault: &[VaultFile], target_file: &str) -> Vec<NoteBacklink> {
+    let target = vault.iter().find(|f| f.filename == target_file);
     let keys = [
-        link_key(&title_of(&target_content, target_file)),
+        link_key(target.map(|f| f.title.as_str()).unwrap_or(target_file)),
         link_key(target_file),
     ];
 
-    let mut out: Vec<NoteBacklink> = Vec::new();
-    let Ok(entries) = std::fs::read_dir(&dir) else { return out };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.extension().map(|e| e != "md").unwrap_or(true) {
-            continue;
-        }
-        let fname = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+    let mut out: Vec<NoteBacklink> = vault
+        .iter()
         // A note linking to itself is not a backlink.
-        if fname == target_file {
-            continue;
-        }
-        let content = std::fs::read_to_string(&path).unwrap_or_default();
-        if wikilinks(&content).iter().any(|l| keys.contains(&link_key(l))) {
-            out.push(NoteBacklink {
-                title: title_of(&content, &fname).into(),
-                filename: fname.into(),
-            });
-        }
-    }
+        .filter(|f| f.filename != target_file)
+        .filter(|f| wikilinks(&f.content).iter().any(|l| keys.contains(&link_key(l))))
+        .map(|f| NoteBacklink {
+            title: f.title.clone().into(),
+            filename: f.filename.clone().into(),
+        })
+        .collect();
     out.sort_by_key(|b| b.title.to_lowercase());
     out
+}
+
+/// Where this note points. A target with no note yet is kept, with an empty `filename` — that is
+/// a dangling link, and it is the most useful thing on the panel: it is work promised and not
+/// yet done.
+fn outbound_in(vault: &[VaultFile], content: &str) -> Vec<NoteBacklink> {
+    let mut out: Vec<NoteBacklink> = Vec::new();
+    for target in wikilinks(content) {
+        let key = link_key(&target);
+        let hit = vault
+            .iter()
+            .find(|f| link_key(&f.title) == key || link_key(&f.filename) == key);
+        let entry = match hit {
+            Some(f) => NoteBacklink {
+                title: f.title.clone().into(),
+                filename: f.filename.clone().into(),
+            },
+            None => NoteBacklink {
+                title: target.clone().into(),
+                filename: "".into(),
+            },
+        };
+        if !out.iter().any(|e| e.title == entry.title && e.filename == entry.filename) {
+            out.push(entry);
+        }
+    }
+    out
+}
+
+/// Both directions for the note in front of you, from a single read of the vault.
+fn links_for(target_file: &str, content: &str) -> (Vec<NoteBacklink>, Vec<NoteBacklink>) {
+    let vault = read_vault();
+    (backlinks_in(&vault, target_file), outbound_in(&vault, content))
+}
+
+/// What a directory scan can see without opening a file. Millisecond mtimes plus size and count
+/// catch a new note, a deleted one, and an edit.
+fn vault_fingerprint() -> (usize, u64, u64) {
+    let (mut count, mut newest, mut bytes) = (0usize, 0u64, 0u64);
+    if let Ok(entries) = std::fs::read_dir(notes_dir()) {
+        for entry in entries.flatten() {
+            if entry.path().extension().map(|e| e != "md").unwrap_or(true) {
+                continue;
+            }
+            let Ok(meta) = entry.metadata() else { continue };
+            count += 1;
+            bytes += meta.len();
+            if let Ok(t) = meta.modified() {
+                if let Ok(d) = t.duration_since(std::time::UNIX_EPOCH) {
+                    newest = newest.max(d.as_millis() as u64);
+                }
+            }
+        }
+    }
+    (count, newest, bytes)
+}
+
+/// Row of `filename` in the list as it currently stands.
+fn index_of(ui: &NotesApp, filename: &str) -> Option<i32> {
+    let model = ui.get_notes_list();
+    (0..model.row_count()).find_map(|i| {
+        let entry = model.row_data(i)?;
+        (entry.filename.as_str() == filename).then_some(i as i32)
+    })
+}
+
+/// Refresh whichever side panels are open for `id`.
+fn refresh_panels(ui: &NotesApp, id: &str) {
+    if ui.get_backlinks_panel_open() {
+        let (inbound, outbound) = links_for(id, &ui.get_current_content().to_string());
+        ui.set_backlinks(ModelRc::new(VecModel::from(inbound)));
+        ui.set_outbound_links(ModelRc::new(VecModel::from(outbound)));
+    }
+    if ui.get_images_panel_open() {
+        ui.set_note_images(ModelRc::new(VecModel::from(images_for(
+            &ui.get_current_content().to_string(),
+        ))));
+    }
 }
 
 /// Load a note into the editor. Shared by the list and by following a backlink.
@@ -439,7 +535,7 @@ fn images_for(content: &str) -> Vec<NoteImage> {
         .collect()
 }
 
-fn wire(app: &NotesApp) {
+fn wire(app: &NotesApp) -> slint::Timer {
     let current_file: Rc<RefCell<String>> = Rc::new(RefCell::new(String::new()));
 
     // Initial load
@@ -579,15 +675,8 @@ fn wire(app: &NotesApp) {
             let id = entry.filename.to_string();
             *cf.borrow_mut() = id.clone();
             load_note(&ui, idx, &id);
-            if ui.get_backlinks_panel_open() {
-                ui.set_backlinks(ModelRc::new(VecModel::from(backlinks_for(&id))));
-            }
-            if ui.get_images_panel_open() {
-                ui.set_image_preview_index(0);
-                ui.set_note_images(ModelRc::new(VecModel::from(images_for(
-                    &ui.get_current_content().to_string(),
-                ))));
-            }
+            ui.set_image_preview_index(0);
+            refresh_panels(&ui, &id);
         });
     }
 
@@ -754,9 +843,15 @@ fn wire(app: &NotesApp) {
             if id.is_empty() {
                 return;
             }
-            let found = backlinks_for(&id);
-            tracing::info!(note = %id, backlinks = found.len(), "Scanned vault for backlinks");
-            ui.set_backlinks(ModelRc::new(VecModel::from(found)));
+            let (inbound, outbound) = links_for(&id, &ui.get_current_content().to_string());
+            tracing::info!(
+                note = %id,
+                links_in = inbound.len(),
+                links_out = outbound.len(),
+                "Scanned the vault for links"
+            );
+            ui.set_backlinks(ModelRc::new(VecModel::from(inbound)));
+            ui.set_outbound_links(ModelRc::new(VecModel::from(outbound)));
         });
     }
 
@@ -773,7 +868,8 @@ fn wire(app: &NotesApp) {
                 if entry.filename.as_str() == name {
                     *cf.borrow_mut() = name.clone();
                     load_note(&ui, i as i32, &name);
-                    ui.set_backlinks(ModelRc::new(VecModel::from(backlinks_for(&name))));
+                    ui.set_image_preview_index(0);
+                    refresh_panels(&ui, &name);
                     return;
                 }
             }
@@ -854,6 +950,56 @@ fn wire(app: &NotesApp) {
 
     app.on_toggle_meeting_mode(|| {});
     app.on_import_md(|| {});
+
+    // ── Watch the vault ──
+    //
+    // Something other than this app writes here: an agent, a sync tool, another editor. A poll
+    // is enough — a directory stat costs nothing next to a note that never shows up — and it
+    // keeps everything on the UI thread, with no channel to drain.
+    let watch = slint::Timer::default();
+    {
+        let weak = app.as_weak();
+        let cf = current_file.clone();
+        let seen = std::cell::RefCell::new(vault_fingerprint());
+        watch.start(
+            slint::TimerMode::Repeated,
+            std::time::Duration::from_secs(2),
+            move || {
+                let now = vault_fingerprint();
+                if *seen.borrow() == now {
+                    return;
+                }
+                *seen.borrow_mut() = now;
+
+                let Some(ui) = weak.upgrade() else { return };
+                tracing::info!("Vault changed on disk, reloading");
+                refresh_list(&ui, ui.get_active_folder());
+
+                let id = cf.borrow().clone();
+                if id.is_empty() {
+                    return;
+                }
+                match index_of(&ui, &id) {
+                    // Never overwrite an unsaved buffer: the person typing wins over the file.
+                    // Keep the selection pointing at the right row, which may have moved.
+                    Some(i) if ui.get_is_modified() => ui.set_selected_index(i),
+                    Some(i) => {
+                        load_note(&ui, i, &id);
+                        refresh_panels(&ui, &id);
+                    }
+                    None => {
+                        // The open note was deleted from under us.
+                        tracing::info!(note = %id, "Open note disappeared from the vault");
+                        cf.borrow_mut().clear();
+                        ui.set_selected_index(-1);
+                        ui.set_current_content("".into());
+                        ui.set_current_title("".into());
+                    }
+                }
+            },
+        );
+    }
+    watch
 }
 
 fn refresh_list(ui: &NotesApp, folder: i32) {

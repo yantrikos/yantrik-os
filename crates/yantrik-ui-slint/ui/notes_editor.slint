@@ -101,6 +101,9 @@ export component NotesEditor inherits Rectangle {
 
     // Backlinks
     in property <[NoteBacklink]> backlinks: [];
+    /// Where this note points. An entry with an empty `filename` is a link to a note that
+    /// does not exist yet.
+    in property <[NoteBacklink]> outbound-links: [];
     in-out property <bool> backlinks-panel-open: false;
     callback find-backlinks();
     /// Open a note by filename — how a backlink is followed.
@@ -1072,7 +1075,7 @@ export component NotesEditor inherits Rectangle {
 
                     // ── Backlinks panel (toggle) ──
                     if root.backlinks-panel-open && root.selected-index >= 0 : Rectangle {
-                        height: 140px;
+                        height: 176px;
                         background: Theme.border-subtle;
                         border-width: 1px;
                         border-color: Theme.border-subtle;
@@ -1085,7 +1088,7 @@ export component NotesEditor inherits Rectangle {
                                 spacing: 6px;
                                 Icon { commands: Icons.link; size: 13px; tint: Theme.accent; y: (parent.height - self.height) / 2; }
                                 Text {
-                                    text: "Backlinks";
+                                    text: "Links";
                                     color: Theme.accent;
                                     font-size: 12px;
                                     font-weight: 600;
@@ -1129,23 +1132,85 @@ export component NotesEditor inherits Rectangle {
                                 }
                             }
 
-                            // Backlink entries
+                            // Links, both directions
                             Flickable {
                                 vertical-stretch: 1;
-                                viewport-height: backlinks-list-layout.preferred-height;
+                                viewport-height: links-layout.preferred-height;
 
-                                backlinks-list-layout := VerticalLayout {
+                                links-layout := VerticalLayout {
                                     alignment: start;
                                     spacing: 2px;
 
-                                    if root.backlinks.length == 0 : Text {
-                                        text: "No backlinks found. Click Scan to search.";
+                                    if root.outbound-links.length == 0 && root.backlinks.length == 0 : Text {
+                                        text: "No links yet. Click Scan.";
                                         color: Theme.text-dim;
                                         font-size: 11px;
                                     }
 
+                                    if root.outbound-links.length > 0 : Text {
+                                        text: "LINKS OUT";
+                                        color: Theme.text-dim;
+                                        font-size: Theme.fs-micro;
+                                        font-weight: Theme.fw-micro;
+                                        letter-spacing: 1px;
+                                        height: 18px;
+                                        vertical-alignment: center;
+                                    }
+
+                                    for ol[oidx] in root.outbound-links : TouchArea {
+                                        height: 24px;
+                                        mouse-cursor: ol.filename != "" ? pointer : default;
+                                        clicked => {
+                                            if (ol.filename != "") { root.open-note(ol.filename); }
+                                        }
+                                        Rectangle {
+                                            height: 24px;
+                                            border-radius: 4px;
+                                            background: parent.has-hover && ol.filename != "" ? Theme.hover-fill : transparent;
+                                            HorizontalLayout {
+                                                padding-left: 8px;
+                                                padding-right: 8px;
+                                                spacing: 6px;
+                                                Icon {
+                                                    commands: ol.filename != "" ? Icons.doc : Icons.plus;
+                                                    size: 12px;
+                                                    tint: ol.filename != "" ? Theme.accent : Theme.text-dim;
+                                                    y: (parent.height - self.height) / 2;
+                                                }
+                                                Text {
+                                                    text: ol.title;
+                                                    color: ol.filename != "" ? Theme.accent : Theme.text-dim;
+                                                    font-size: 11px;
+                                                    font-weight: 500;
+                                                    vertical-alignment: center;
+                                                    overflow: elide;
+                                                    horizontal-stretch: 1;
+                                                }
+                                                // A link with nothing behind it yet is the useful
+                                                // half of the graph: it is what was promised.
+                                                if ol.filename == "" : Text {
+                                                    text: "not written yet";
+                                                    color: Theme.text-dim.transparentize(25%);
+                                                    font-size: Theme.fs-micro;
+                                                    vertical-alignment: center;
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    if root.backlinks.length > 0 : Text {
+                                        text: "LINKS IN";
+                                        color: Theme.text-dim;
+                                        font-size: Theme.fs-micro;
+                                        font-weight: Theme.fw-micro;
+                                        letter-spacing: 1px;
+                                        height: 18px;
+                                        vertical-alignment: center;
+                                    }
+
                                     for bl[idx] in root.backlinks : TouchArea {
                                         height: 24px;
+                                        mouse-cursor: pointer;
                                         clicked => { root.open-note(bl.filename); }
                                         Rectangle {
                                             height: 24px;
@@ -1154,7 +1219,12 @@ export component NotesEditor inherits Rectangle {
                                             HorizontalLayout {
                                                 padding-left: 8px;
                                                 spacing: 6px;
-                                                Icon { commands: Icons.doc; size: 12px; tint: Theme.text-secondary; y: (parent.height - self.height) / 2; }
+                                                Icon {
+                                                    commands: Icons.reply;
+                                                    size: 12px;
+                                                    tint: Theme.accent;
+                                                    y: (parent.height - self.height) / 2;
+                                                }
                                                 Text {
                                                     text: bl.title;
                                                     color: Theme.accent;
@@ -1457,7 +1527,7 @@ export component NotesEditor inherits Rectangle {
                                     y: (parent.height - self.height) / 2;
                                 }
                                 Text {
-                                    text: "Backlinks";
+                                    text: "Links";
                                     color: root.backlinks-panel-open ? Theme.accent : Theme.text-dim;
                                     font-size: 10px;
                                     font-weight: root.backlinks-panel-open ? 600 : 400;
