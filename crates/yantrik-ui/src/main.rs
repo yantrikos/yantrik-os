@@ -38,6 +38,7 @@ mod app_context;
 #[allow(dead_code)]
 mod apps;
 mod bridge;
+mod companion_rpc;
 mod cards;
 mod clipboard;
 // NOTE: #[allow(dead_code)] required to avoid rustc 1.93.1 ICE in check_mod_deathness.
@@ -125,6 +126,10 @@ fn main() {
     let service_manager = start_services();
     // The machine rail lists these; it needs the manager, which only exists from here.
     wire::services::wire(&ui, service_manager.clone());
+
+    // Publish the companion so the apps under apps/ can use it. Without this their AI actions
+    // are stubs: the model, the memory and the bond all live in this process.
+    companion_rpc::serve(ctx.bridge.handle());
 
     // Debug: navigate to specific screen on startup via env var
     if let Ok(screen_str) = std::env::var("YANTRIK_START_SCREEN") {

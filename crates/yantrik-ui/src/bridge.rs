@@ -211,7 +211,88 @@ pub struct CompanionBridge {
     event_bus: yantrik_os::EventBus,
 }
 
+/// A companion you can use from another thread.
+///
+/// `CompanionBridge` is built around the UI: it owns the worker's join handle and is held in the
+/// AppContext. This is the part that travels — a channel to the worker and the online flag —
+/// so the RPC server can answer other processes without touching the UI at all.
+#[derive(Clone)]
+pub struct CompanionHandle {
+    cmd_tx: Sender<CompanionCommand>,
+    online: Arc<AtomicBool>,
+}
+
+impl CompanionHandle {
+    /// Ask the companion something and wait for the finished answer.
+    ///
+    /// The worker streams tokens for the chat UI; a caller over RPC wants one reply, so the
+    /// stream is drained here. `__REPLACE__` means the next token supersedes everything so far,
+    /// which is how the worker reports an error mid-stream.
+    pub fn ask(&self, prompt: String, timeout: std::time::Duration) -> Result<String, String> {
+        let (token_tx, token_rx) = crossbeam_channel::unbounded();
+        self.cmd_tx
+            .send(CompanionCommand::SendMessage { text: prompt, token_tx })
+            .map_err(|_| "companion worker is not running".to_string())?;
+
+        let deadline = std::time::Instant::now() + timeout;
+        let mut answer = String::new();
+        let mut replace_next = false;
+        loop {
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            if left.is_zero() {
+                return Err("companion timed out".to_string());
+            }
+            match token_rx.recv_timeout(left) {
+                Ok(token) if token == "__DONE__" => break,
+                Ok(token) if token == "__REPLACE__" => replace_next = true,
+                Ok(token) => {
+                    if replace_next {
+                        answer = token;
+                        replace_next = false;
+                    } else {
+                        answer.push_str(&token);
+                    }
+                }
+                Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
+                    return Err("companion timed out".to_string())
+                }
+                // The sender went away: whatever arrived is all there is.
+                Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
+            }
+        }
+        Ok(answer)
+    }
+
+    /// Search the companion's memory.
+    pub fn recall(
+        &self,
+        query: String,
+        timeout: std::time::Duration,
+    ) -> Result<Vec<MemoryResult>, String> {
+        let (reply_tx, reply_rx) = crossbeam_channel::unbounded();
+        self.cmd_tx
+            .send(CompanionCommand::RecallMemories { query, reply_tx })
+            .map_err(|_| "companion worker is not running".to_string())?;
+        reply_rx
+            .recv_timeout(timeout)
+            .map_err(|_| "companion timed out".to_string())
+    }
+
+    /// Whether the LLM backend answered on the last call.
+    pub fn is_online(&self) -> bool {
+        self.online.load(Ordering::Relaxed)
+    }
+}
+
 impl CompanionBridge {
+    /// A handle that other threads can hold. See [`CompanionHandle`].
+    pub fn handle(&self) -> CompanionHandle {
+        CompanionHandle {
+            cmd_tx: self.cmd_tx.clone(),
+            online: self.online.clone(),
+        }
+    }
+
     /// Start the companion worker thread.
     pub fn start(config: CompanionConfig, ui_weak: slint::Weak<App>, event_bus: yantrik_os::EventBus) -> Self {
         let (cmd_tx, cmd_rx) = crossbeam_channel::unbounded();

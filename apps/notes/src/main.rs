@@ -535,6 +535,78 @@ fn images_for(content: &str) -> Vec<NoteImage> {
         .collect()
 }
 
+/// The two things Notes asks the companion for.
+#[derive(Clone, Copy)]
+enum AiAction {
+    Structure,
+    Summarize,
+}
+
+impl AiAction {
+    fn prompt(self, title: &str, body: &str) -> String {
+        match self {
+            AiAction::Structure => format!(
+                "Reorganise the following note into clear markdown sections with headings. \
+                 Keep every fact; do not invent anything. Reply with the note only.\n\n\
+                 # {title}\n\n{body}"
+            ),
+            AiAction::Summarize => format!(
+                "Summarise the following note in at most five bullet points. \
+                 Use only what the note says. Reply with the bullets only.\n\n\
+                 # {title}\n\n{body}"
+            ),
+        }
+    }
+}
+
+/// Ask the companion on a worker thread and hand the answer back to the UI thread.
+fn wire_ai_action(app: &NotesApp, current_file: Rc<RefCell<String>>, action: AiAction) {
+    let weak = app.as_weak();
+    let handler = move || {
+        let Some(ui) = weak.upgrade() else { return };
+        if current_file.borrow().is_empty() {
+            return;
+        }
+        let title = ui.get_current_title().to_string();
+        let body = ui.get_current_content().to_string();
+        if body.trim().is_empty() {
+            ui.set_ai_response("This note is empty.".into());
+            ui.set_ai_panel_open(true);
+            return;
+        }
+
+        ui.set_ai_is_working(true);
+        ui.set_ai_panel_open(true);
+        ui.set_ai_response("".into());
+
+        let prompt = action.prompt(&title, &body);
+        let back = ui.as_weak();
+        std::thread::spawn(move || {
+            let outcome = companion::ask(&prompt);
+            // upgrade_in_event_loop hops back to the UI thread; touching the UI from here
+            // would be a data race.
+            let _ = back.upgrade_in_event_loop(move |ui| {
+                ui.set_ai_is_working(false);
+                match outcome {
+                    Ok(text) => ui.set_ai_response(text.into()),
+                    Err(e) => {
+                        tracing::warn!(error = %e, "Companion call failed");
+                        ui.set_ai_response(
+                            format!("The companion did not answer: {e}\n\nIs the Yantrik shell running?")
+                                .into(),
+                        );
+                    }
+                }
+            });
+        });
+    };
+
+    match action {
+        AiAction::Structure => app.on_ai_structure(handler),
+        AiAction::Summarize => app.on_ai_summarize(handler),
+    }
+}
+
 fn wire(app: &NotesApp) -> slint::Timer {
     let current_file: Rc<RefCell<String>> = Rc::new(RefCell::new(String::new()));
 
@@ -827,10 +899,45 @@ fn wire(app: &NotesApp) -> slint::Timer {
     }
 
     // Stubs for AI features (need companion bridge in standalone mode)
-    app.on_ai_structure(|| { tracing::info!("AI structure requested (standalone mode)"); });
-    app.on_ai_summarize(|| { tracing::info!("AI summarize requested (standalone mode)"); });
-    app.on_ai_apply(|| {});
-    app.on_ai_dismiss(|| {});
+    // ── AI, via the companion in the shell ──
+    //
+    // These were stubs: the model, the memory and the bond live in the shell process. They are
+    // now RPC calls on the same bus the services use. The work happens on a worker thread —
+    // asking an LLM on the UI thread would freeze the window for the length of the answer.
+    wire_ai_action(app, current_file.clone(), AiAction::Structure);
+    wire_ai_action(app, current_file.clone(), AiAction::Summarize);
+
+    // Apply: drop the suggestion into the note, where the author can edit or undo it.
+    {
+        let weak = app.as_weak();
+        app.on_ai_apply(move || {
+            let Some(ui) = weak.upgrade() else { return };
+            let suggestion = ui.get_ai_response().to_string();
+            if suggestion.is_empty() {
+                return;
+            }
+            let mut content = ui.get_current_content().to_string();
+            if !content.is_empty() && !content.ends_with('\n') {
+                content.push('\n');
+            }
+            content.push_str(&format!("\n{suggestion}\n"));
+            ui.set_current_content(content.clone().into());
+            ui.set_meta_word_count(content.split_whitespace().count() as i32);
+            // Left unsaved on purpose: generated text should be looked at before it is kept.
+            ui.set_is_modified(true);
+            ui.set_ai_panel_open(false);
+            ui.set_ai_response("".into());
+        });
+    }
+
+    {
+        let weak = app.as_weak();
+        app.on_ai_dismiss(move || {
+            let Some(ui) = weak.upgrade() else { return };
+            ui.set_ai_response("".into());
+            ui.set_ai_panel_open(false);
+        });
+    }
     app.on_view_version(|_| {});
     app.on_restore_version(|_| {});
     // ── Backlinks ──

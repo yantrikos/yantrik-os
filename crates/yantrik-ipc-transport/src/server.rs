@@ -111,6 +111,7 @@ impl RpcServer {
             "notes" => 9506,
             "calendar" => 9507,
             "notifications" => 9508,
+            "companion" => 9509,
             _ => 9500,
         };
         format!("127.0.0.1:{}", port)
