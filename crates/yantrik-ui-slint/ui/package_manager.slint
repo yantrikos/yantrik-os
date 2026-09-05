@@ -4,6 +4,7 @@
 // Firelight treatment: glassmorphism, holographic glows, gradient accents.
 
 import { Theme } from "theme.slint";
+import { Icon, Icons } from "components/icon.slint";
 import { ListView, LineEdit } from "std-widgets.slint";
 
 export struct PackageData {
@@ -96,10 +97,11 @@ export component PackageManager inherits Rectangle {
                         spacing: 8px;
                         alignment: center;
 
-                        Text {
-                            text: "\u{1F50D}";
-                            font-size: 13px;
-                            vertical-alignment: center;
+                        Icon {
+                            commands: Icons.search;
+                            size: 13px;
+                            tint: Theme.text-secondary;
+                            y: (parent.height - self.height) / 2;
                         }
 
                         search-focus := LineEdit {
@@ -258,10 +260,11 @@ export component PackageManager inherits Rectangle {
                             padding-right: 10px;
                             spacing: 4px;
                             alignment: center;
-                            Text {
-                                text: root.ai-is-working ? "\u{2B50}" : "\u{2728}";
-                                font-size: 12px;
-                                vertical-alignment: center;
+                            Icon {
+                                commands: root.ai-is-working ? Icons.spark : Icons.spark;
+                                size: 12px;
+                                tint: Theme.text-secondary;
+                                y: (parent.height - self.height) / 2;
                             }
                             Text {
                                 text: root.ai-is-working ? "Analyzing..." : "AI Explain";
@@ -282,12 +285,12 @@ export component PackageManager inherits Rectangle {
                     background: refresh-ta.has-hover ? Theme.hover-fill-strong : Theme.hover-fill;
                     border-radius: Theme.radius-card;
 
-                    Text {
-                        text: "\u{21BB}";
-                        font-size: 18px;
-                        color: root.is-loading ? Theme.accent : Theme.text-secondary;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
+                    Icon {
+                        commands: Icons.refresh;
+                        size: 18px;
+                        tint: root.is-loading ? Theme.accent : Theme.text-secondary;
+                        x: (parent.width - self.width) / 2;
+                        y: (parent.height - self.height) / 2;
                     }
 
                     refresh-ta := TouchArea {
@@ -332,15 +335,17 @@ export component PackageManager inherits Rectangle {
                 viewport-height: ai-pkg-resp.preferred-height + 16px;
 
                 ai-pkg-resp := VerticalLayout {
+                    alignment: start;
                     padding: 12px;
                     spacing: 8px;
 
                     HorizontalLayout {
                         spacing: 6px;
-                        Text {
-                            text: "\u{2728}";
-                            font-size: 12px;
-                            vertical-alignment: center;
+                        Icon {
+                            commands: Icons.spark;
+                            size: 12px;
+                            tint: Theme.text-secondary;
+                            y: (parent.height - self.height) / 2;
                         }
                         Text {
                             text: "AI Analysis";
@@ -361,12 +366,12 @@ export component PackageManager inherits Rectangle {
                                 width: 24px; height: 24px;
                                 border-radius: 12px;
                                 background: parent.has-hover ? Theme.hover-fill : transparent;
-                                Text {
-                                    text: "\u{2715}";
-                                    font-size: 11px;
-                                    color: Theme.text-dim;
-                                    horizontal-alignment: center;
-                                    vertical-alignment: center;
+                                Icon {
+                                    commands: Icons.close;
+                                    size: 12px;
+                                    tint: Theme.text-dim;
+                                    x: (parent.width - self.width) / 2;
+                                    y: (parent.height - self.height) / 2;
                                 }
                             }
                         }
@@ -591,6 +596,7 @@ export component PackageManager inherits Rectangle {
                     viewport-height: detail-content.preferred-height;
 
                     detail-content := VerticalLayout {
+                        alignment: start;
                         padding: 24px;
                         spacing: 16px;
 
@@ -605,11 +611,12 @@ export component PackageManager inherits Rectangle {
                                 background: Theme.accent-glow;
                                 border-radius: Theme.radius-card;
 
-                                Text {
-                                    text: "\u{1F4E6}";
-                                    font-size: 24px;
-                                    horizontal-alignment: center;
-                                    vertical-alignment: center;
+                                Icon {
+                                    commands: Icons.packages;
+                                    size: 20px;
+                                    tint: Theme.text-secondary;
+                                    x: (parent.width - self.width) / 2;
+                                    y: (parent.height - self.height) / 2;
                                 }
                             }
 
@@ -900,6 +907,7 @@ export component PackageManager inherits Rectangle {
                     max-height: 80px;
 
                     pending-items := VerticalLayout {
+                        alignment: start;
                         spacing: 4px;
 
                         for action[idx] in root.pending-actions : HorizontalLayout {
@@ -969,12 +977,12 @@ export component PackageManager inherits Rectangle {
                     background: err-close-ta.has-hover ? Theme.hover-fill : transparent;
                     border-radius: 12px;
 
-                    Text {
-                        text: "\u{2715}";
-                        font-size: 12px;
-                        color: Theme.color-danger;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
+                    Icon {
+                        commands: Icons.close;
+                        size: 12px;
+                        tint: Theme.color-danger;
+                        x: (parent.width - self.width) / 2;
+                        y: (parent.height - self.height) / 2;
                     }
 
                     err-close-ta := TouchArea {}

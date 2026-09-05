@@ -6,6 +6,7 @@
 import { Theme } from "theme.slint";
 import { YButton, YIconButton } from "components/y_button.slint";
 import { YInput } from "components/y_input.slint";
+import { Icon, Icons } from "components/icon.slint";
 
 export struct EditorTabData {
     title: string,
@@ -172,12 +173,12 @@ export component TextEditorScreen inherits Rectangle {
                                 background: tab-close-ta.has-hover ? Theme.hover-fill-strong : transparent;
                                 animate background { duration: Theme.dur-fast; }
 
-                                Text {
-                                    text: "\u{00D7}";
-                                    color: tab-close-ta.has-hover ? Theme.text-primary : Theme.text-dim;
-                                    font-size: Theme.fs-body;
-                                    horizontal-alignment: center;
-                                    vertical-alignment: center;
+                                Icon {
+                                    commands: Icons.close;
+                                    size: 14px;
+                                    tint: tab-close-ta.has-hover ? Theme.text-primary : Theme.text-dim;
+                                    x: (parent.width - self.width) / 2;
+                                    y: (parent.height - self.height) / 2;
                                 }
                             }
                         }
@@ -214,7 +215,7 @@ export component TextEditorScreen inherits Rectangle {
 
         // ── Toolbar ──
         Rectangle {
-            height: Theme.h-prominent;
+            height: 48px;
             background: Theme.bg-surface;
 
             HorizontalLayout {
@@ -222,26 +223,44 @@ export component TextEditorScreen inherits Rectangle {
                 padding-right: Theme.sp-3;
                 alignment: space-between;
 
-                // Left: filename + status
+                // Left: app glyph, filename, state
                 HorizontalLayout {
-                    spacing: Theme.sp-2;
+                    spacing: Theme.sp-3;
                     alignment: start;
                     horizontal-stretch: 1;
+
+                    Rectangle {
+                        width: 28px;
+                        height: 28px;
+                        y: (parent.height - 28px) / 2;
+                        border-radius: Theme.r-sm;
+                        background: Theme.tint-accent;
+                        Icon {
+                            commands: Icons.editor;
+                            size: 16px;
+                            tint: Theme.accent;
+                            thickness: 1.7px;
+                            x: (parent.width - self.width) / 2;
+                            y: (parent.height - self.height) / 2;
+                        }
+                    }
 
                     Text {
                         text: root.file-name;
                         color: Theme.text-primary;
-                        font-size: Theme.fs-body;
-                        font-weight: Theme.fw-headline;
+                        font-size: Theme.fs-title-2;
+                        font-weight: Theme.fw-title-2;
+                        letter-spacing: -0.2px;
                         vertical-alignment: center;
                         overflow: elide;
                     }
 
-                    if root.is-modified : Text {
-                        text: "\u{25CF}";
-                        color: Theme.amber;
-                        font-size: 12px;
-                        vertical-alignment: center;
+                    if root.is-modified : Rectangle {
+                        width: 7px;
+                        height: 7px;
+                        y: (parent.height - 7px) / 2;
+                        border-radius: 3.5px;
+                        background: Theme.amber;
                     }
 
                     if root.is-readonly : Text {
@@ -253,9 +272,10 @@ export component TextEditorScreen inherits Rectangle {
 
                     // File type badge
                     if root.file-type != "" : Rectangle {
-                        width: ft-text.preferred-width + 12px;
+                        width: ft-text.preferred-width + 14px;
                         height: 20px;
-                        border-radius: 4px;
+                        y: (parent.height - 20px) / 2;
+                        border-radius: Theme.r-sm;
                         background: Theme.hover-fill;
 
                         ft-text := Text {
@@ -275,17 +295,18 @@ export component TextEditorScreen inherits Rectangle {
 
                     // Go-to-line button (Ctrl+G)
                     goto-btn-ta := TouchArea {
-                        width: 48px;
+                        width: 62px;
                         height: 28px;
+                        y: (parent.height - 28px) / 2;
                         clicked => {
                             root.show-goto-line = !root.show-goto-line;
                             root.goto-line-input = "";
                         }
 
                         Rectangle {
-                            width: 48px;
+                            width: 62px;
                             height: 28px;
-                            border-radius: 6px;
+                            border-radius: Theme.r-sm;
                             background: root.show-goto-line
                                 ? Theme.hover-fill-strong
                                 : (goto-btn-ta.has-hover ? Theme.hover-fill : transparent);
@@ -293,9 +314,11 @@ export component TextEditorScreen inherits Rectangle {
                             border-color: root.show-goto-line ? Theme.accent-dim : Theme.border-subtle;
 
                             Text {
-                                text: "Ln:Co";
+                                // The button jumps to a line, so it shows where you are.
+                                text: "\{root.cursor-line}:\{root.cursor-col}";
                                 color: root.show-goto-line ? Theme.accent : Theme.text-dim;
-                                font-size: 10px;
+                                font-family: Theme.font-mono;
+                                font-size: Theme.fs-micro;
                                 horizontal-alignment: center;
                                 vertical-alignment: center;
                             }
@@ -321,7 +344,7 @@ export component TextEditorScreen inherits Rectangle {
                     // AI assist button
                     YButton {
                         label: "AI";
-                        icon: "\u{2728}";
+                        icon-path: Icons.spark;
                         variant: root.show-ai-panel ? 0 : 1;
                         size: 0;
                         clicked => {
@@ -401,7 +424,7 @@ export component TextEditorScreen inherits Rectangle {
 
                 // Close
                 YIconButton {
-                    icon: "\u{00D7}";
+                    icon-path: Icons.close;
                     variant: 2;
                     clicked => { root.show-goto-line = false; }
                 }
@@ -427,12 +450,11 @@ export component TextEditorScreen inherits Rectangle {
                 HorizontalLayout {
                     spacing: Theme.sp-2;
 
-                    Text {
-                        text: "\u{26B2}";
-                        color: Theme.accent;
-                        font-size: 14px;
-                        vertical-alignment: center;
-                        width: 18px;
+                    Icon {
+                        commands: Icons.link;
+                        size: 14px;
+                        tint: Theme.accent;
+                        y: (parent.height - self.height) / 2;
                     }
 
                     Rectangle {
@@ -479,25 +501,25 @@ export component TextEditorScreen inherits Rectangle {
                     }
 
                     YIconButton {
-                        icon: "\u{25B2}";
+                        icon-path: Icons.chevron-up;
                         variant: 2;
                         clicked => { root.find-prev(); }
                     }
 
                     YIconButton {
-                        icon: "\u{25BC}";
+                        icon-path: Icons.chevron-down;
                         variant: 2;
                         clicked => { root.find-next(); }
                     }
 
                     YIconButton {
-                        icon: root.show-replace-row ? "\u{25BD}" : "\u{25B7}";
+                        icon-path: root.show-replace-row ? Icons.chevron-down : Icons.chevron-right;
                         variant: root.show-replace-row ? 0 : 2;
                         clicked => { root.show-replace-row = !root.show-replace-row; }
                     }
 
                     YIconButton {
-                        icon: "\u{00D7}";
+                        icon-path: Icons.close;
                         variant: 2;
                         clicked => {
                             root.show-find-bar = false;
@@ -572,7 +594,7 @@ export component TextEditorScreen inherits Rectangle {
                     spacing: Theme.sp-2;
 
                     Text {
-                        text: "\u{25C9} AI Assist";
+                        text: "AI Assist";
                         color: Theme.amber;
                         font-size: Theme.fs-caption;
                         font-weight: Theme.fw-headline;
@@ -596,7 +618,7 @@ export component TextEditorScreen inherits Rectangle {
                     }
 
                     YIconButton {
-                        icon: "\u{00D7}";
+                        icon-path: Icons.close;
                         variant: 2;
                         clicked => { root.ai-dismiss(); }
                     }
@@ -718,7 +740,12 @@ export component TextEditorScreen inherits Rectangle {
                         Rectangle {
                             width: 24px; height: 24px; border-radius: 6px;
                             background: saveas-close-ta.has-hover ? Theme.hover-fill-strong : transparent;
-                            Text { text: "\u{00D7}"; color: Theme.text-dim; font-size: 16px; horizontal-alignment: center; vertical-alignment: center; }
+                            Icon {
+                                commands: Icons.close;
+                                size: 14px;
+                                tint: Theme.text-secondary;
+                                y: (parent.height - self.height) / 2;
+                            }
                         }
                     }
                 }
@@ -791,11 +818,11 @@ export component TextEditorScreen inherits Rectangle {
                 spacing: 8px;
                 alignment: start;
 
-                Text {
-                    text: "\u{26A0}";
-                    color: Theme.amber;
-                    font-size: 12px;
-                    vertical-alignment: center;
+                Icon {
+                    commands: Icons.warning;
+                    size: 12px;
+                    tint: Theme.amber;
+                    y: (parent.height - self.height) / 2;
                 }
 
                 Text {
@@ -827,12 +854,12 @@ export component TextEditorScreen inherits Rectangle {
 
                     line-num-text := Text {
                         x: 0px;
-                        y: 12px;
-                        width: 42px;
+                        y: 14px;
+                        width: 40px;
                         text: root.line-numbers-text;
-                        color: Theme.text-dim;
-                        font-family: "monospace";
-                        font-size: 14px;
+                        color: Theme.text-dim.transparentize(20%);
+                        font-family: Theme.font-mono;
+                        font-size: 13px;
                         horizontal-alignment: right;
                         wrap: no-wrap;
                     }
@@ -853,6 +880,16 @@ export component TextEditorScreen inherits Rectangle {
                 background: Theme.bg-deep; clip: true;
                 horizontal-stretch: 1;
 
+                // A blank editor should say what to do with it.
+                if root.file-content == "" : Text {
+                    x: 16px;
+                    y: 14px;
+                    text: root.is-readonly ? "This file is read-only." : "Start typing, or open a file from Files.";
+                    color: Theme.text-dim.transparentize(25%);
+                    font-family: Theme.font-mono;
+                    font-size: 13px;
+                }
+
                 Flickable {
                     x: 0px;
                     y: 0px;
@@ -861,12 +898,12 @@ export component TextEditorScreen inherits Rectangle {
                     viewport-height: editor-input.preferred-height + 32px;
 
                     editor-input := TextInput {
-                        x: 12px;
-                        y: 12px;
-                        width: parent.width - 24px;
+                        x: 16px;
+                        y: 14px;
+                        width: parent.width - 32px;
                         color: Theme.text-primary;
-                        font-family: "monospace";
-                        font-size: 14px;
+                        font-family: Theme.font-mono;
+                        font-size: 13px;
                         text <=> root.file-content;
                         read-only: root.is-readonly;
                         single-line: false;

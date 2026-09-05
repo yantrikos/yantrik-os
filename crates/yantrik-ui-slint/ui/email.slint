@@ -9,6 +9,7 @@ import { YInput } from "components/y_input.slint";
 import { YEmptyState } from "components/y_empty_state.slint";
 import { YSidebar, YSidebarItem, YSidebarSection } from "components/y_sidebar.slint";
 import { YListItem } from "components/y_list_item.slint";
+import { Icon, Icons } from "components/icon.slint";
 
 // ── Data Structures ──
 
@@ -582,7 +583,7 @@ export component EmailClient inherits Rectangle {
                     // Compose button
                     YButton {
                         label: "Compose";
-                        icon: "+";
+                        icon-path: Icons.plus;
                         variant: 0;
                         size: 2;
                         clicked => { root.compose-new(); }
@@ -623,19 +624,18 @@ export component EmailClient inherits Rectangle {
                             spacing: Theme.sp-2;
 
                             // Folder icon
-                            Text {
-                                text: folder.folder-type == "inbox" ? "\u{1F4E5}"
-                                    : folder.folder-type == "starred" ? "\u{2B50}"
-                                    : folder.folder-type == "sent" ? "\u{1F4E4}"
-                                    : folder.folder-type == "drafts" ? "\u{1F4DD}"
-                                    : folder.folder-type == "archive" ? "\u{1F4E6}"
-                                    : folder.folder-type == "trash" ? "\u{1F5D1}"
-                                    : folder.folder-type == "spam" ? "\u{26A0}"
-                                    : "\u{1F4C1}";
-                                color: folder.is-selected ? Theme.accent : Theme.text-secondary;
-                                font-size: Theme.fs-body;
-                                vertical-alignment: center;
-                                width: 20px;
+                            Icon {
+                                commands: folder.folder-type == "inbox" ? Icons.inbox
+                                    : folder.folder-type == "starred" ? Icons.star
+                                    : folder.folder-type == "sent" ? Icons.send
+                                    : folder.folder-type == "drafts" ? Icons.pencil
+                                    : folder.folder-type == "archive" ? Icons.archive
+                                    : folder.folder-type == "trash" ? Icons.trash
+                                    : folder.folder-type == "spam" ? Icons.warning
+                                    : Icons.folder;
+                                size: 15px;
+                                tint: folder.is-selected ? Theme.accent : Theme.text-secondary;
+                                y: (parent.height - self.height) / 2;
                             }
 
                             Text {
@@ -673,7 +673,7 @@ export component EmailClient inherits Rectangle {
                     // Add another account
                     YButton {
                         label: "Add Account";
-                        icon: "+";
+                        icon-path: Icons.plus;
                         variant: 2;
                         size: 0;
                         clicked => { root.add-account(); }
@@ -682,7 +682,7 @@ export component EmailClient inherits Rectangle {
                     // Sync button
                     YButton {
                         label: root.is-loading ? "Syncing..." : "Sync";
-                        icon: "\u{1F504}";
+                        icon-path: Icons.refresh;
                         variant: 1;
                         size: 0;
                         loading: root.is-loading;
@@ -723,11 +723,12 @@ export component EmailClient inherits Rectangle {
                                     spacing: 6px;
 
                                     // Search icon
-                                    Text {
-                                        text: "\u{1F50D}";
-                                        font-size: 12px;
-                                        vertical-alignment: center;
-                                        width: 18px;
+                                    Icon {
+                                        commands: Icons.search;
+                                        size: 14px;
+                                        thickness: 1.7px;
+                                        tint: root.email-search-active ? Theme.accent : Theme.text-dim;
+                                        y: (parent.height - self.height) / 2;
                                     }
 
                                     search-input := TextInput {
@@ -777,14 +778,22 @@ export component EmailClient inherits Rectangle {
                                             mouse-cursor: pointer;
                                         }
 
-                                        Text {
-                                            text: "\u{2715}";
-                                            color: Theme.text-dim;
-                                            font-size: 11px;
-                                            horizontal-alignment: center;
-                                            vertical-alignment: center;
+                                        Icon {
+                                            commands: Icons.close;
+                                            size: 10px;
+                                            tint: Theme.text-dim;
+                                            x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
                                         }
                                     }
+                                }
+
+                                if root.email-search-query == "" : Text {
+                                    x: 10px + 14px + 6px;
+                                    height: 100%;
+                                    text: "Search mail";
+                                    color: Theme.text-dim;
+                                    font-size: 13px;
+                                    vertical-alignment: center;
                                 }
                             }
                         }
@@ -959,10 +968,11 @@ export component EmailClient inherits Rectangle {
                                                 alignment: end;
 
                                                 // Attachment icon
-                                                if email.has-attachment : Text {
-                                                    text: "\u{1F4CE}";
-                                                    font-size: Theme.fs-caption;
-                                                    vertical-alignment: center;
+                                                if email.has-attachment : Icon {
+                                                    commands: Icons.paperclip;
+                                                    size: 12px;
+                                                    tint: Theme.text-dim;
+                                                    y: (parent.height - self.height) / 2;
                                                 }
 
                                                 // Thread count badge
@@ -1024,12 +1034,12 @@ export component EmailClient inherits Rectangle {
                                                     mouse-cursor: pointer;
                                                 }
 
-                                                Text {
-                                                    text: email.is-flagged ? "\u{2605}" : "\u{2606}";
-                                                    color: email.is-flagged ? Theme.amber : Theme.text-dim;
-                                                    font-size: Theme.fs-body;
-                                                    horizontal-alignment: center;
-                                                    vertical-alignment: center;
+                                                Icon {
+                                                    commands: Icons.star;
+                                                    size: 13px;
+                                                    tint: email.is-flagged ? Theme.amber : Theme.text-dim;
+                                                    fill: email.is-flagged ? Theme.amber : transparent;
+                                                    x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
                                                 }
                                             }
                                         }
@@ -1039,7 +1049,7 @@ export component EmailClient inherits Rectangle {
 
                             // Empty state using YEmptyState
                             if root.email-list.length == 0 : YEmptyState {
-                                icon: root.is-loading ? "\u{1F504}" : "\u{1F4EC}";
+                                icon-path: root.is-loading ? Icons.refresh : Icons.inbox;
                                 title: root.is-loading ? "Loading emails..."
                                      : root.email-search-active ? "No matching emails"
                                      : "No emails in this folder";
@@ -1109,7 +1119,7 @@ export component EmailClient inherits Rectangle {
 
                             YButton {
                                 label: "Send";
-                                icon: "\u{1F4E8}";
+                                icon-path: Icons.send;
                                 variant: 0;
                                 clicked => {
                                     root.send-email(root.compose-to, root.compose-cc, root.compose-bcc, root.compose-subject, root.compose-body);
@@ -1221,7 +1231,7 @@ export component EmailClient inherits Rectangle {
                             Rectangle {
                                 width: 32px; height: 28px; border-radius: 6px;
                                 TouchArea { mouse-cursor: pointer; }
-                                Text { text: "\u{1F517}"; font-size: 12px; horizontal-alignment: center; vertical-alignment: center; }
+                                Icon { commands: Icons.link; size: 14px; tint: Theme.text-secondary; x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; }
                             }
 
                             Rectangle { width: 1px; height: 20px; background: Theme.border-subtle; }
@@ -1230,7 +1240,7 @@ export component EmailClient inherits Rectangle {
                             Rectangle {
                                 width: 32px; height: 28px; border-radius: 6px;
                                 TouchArea { mouse-cursor: pointer; }
-                                Text { text: "\u{1F4CE}"; font-size: 12px; horizontal-alignment: center; vertical-alignment: center; }
+                                Icon { commands: Icons.paperclip; size: 14px; tint: Theme.text-secondary; x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; }
                             }
 
                             Rectangle {} // spacer
@@ -1434,170 +1444,42 @@ export component EmailClient inherits Rectangle {
                     spacing: 0px;
 
                     // ── Actions Toolbar ──
+                    // Labelled buttons for the three things people do most, icon buttons for the
+                    // rest, and the two AI actions on the right. Fits a 600px pane.
                     Rectangle {
-                        height: 48px;
+                        height: 44px;
                         background: Theme.bg-surface;
-                        border-width: 0px;
 
-                        // Bottom border
-                        Rectangle {
-                            y: parent.height - 1px;
-                            height: 1px;
-                            background: Theme.border-subtle;
-                        }
+                        Rectangle { y: parent.height - 1px; height: 1px; background: Theme.separator; }
 
                         HorizontalLayout {
-                            padding-left: 12px;
-                            padding-right: 12px;
-                            spacing: 4px;
+                            padding-left: Theme.sp-3;
+                            padding-right: Theme.sp-3;
+                            padding-top: 8px;
+                            padding-bottom: 8px;
+                            spacing: Theme.sp-1;
                             alignment: start;
 
-                            // Reply
-                            Rectangle {
-                                width: 70px; height: 32px; border-radius: 8px;
-                                background: Theme.bg-card;
-                                border-width: 1px;
-                                border-color: Theme.border-subtle;
-                                TouchArea { clicked => { root.reply-email(); } mouse-cursor: pointer; }
-                                HorizontalLayout {
-                                    alignment: center;
-                                    spacing: 4px;
-                                    Text { text: "\u{21A9}"; font-size: 12px; vertical-alignment: center; }
-                                    Text { text: "Reply"; color: Theme.text-secondary; font-size: 12px; vertical-alignment: center; }
-                                }
+                            YButton { label: "Reply"; icon-path: Icons.reply; variant: 1; size: 0; clicked => { root.reply-email(); } }
+                            YButton { label: "Reply all"; icon-path: Icons.reply; variant: 2; size: 0; clicked => { root.reply-all-email(); } }
+                            YButton { label: "Forward"; icon-path: Icons.forward; variant: 2; size: 0; clicked => { root.forward-email(); } }
+
+                            Rectangle { width: 1px; height: 18px; y: (parent.height - 18px) / 2; background: Theme.separator; }
+
+                            YIconButton { icon-path: Icons.archive; variant: 2; clicked => { root.archive-email(root.email-detail.id); } }
+                            YIconButton { icon-path: Icons.trash; variant: 2; clicked => { root.delete-email(root.email-detail.id); } }
+                            YIconButton { icon-path: root.email-detail.is-read ? Icons.mail : Icons.mail-open; variant: 2; clicked => { root.mark-read(root.email-detail.id); } }
+                            YIconButton { icon-path: Icons.star; variant: root.email-detail.is-flagged ? 1 : 2; clicked => { root.mark-flagged(root.email-detail.id); } }
+
+                            Rectangle { horizontal-stretch: 1; }
+
+                            YButton {
+                                label: root.ai-is-working ? "Thinking" : "Summarize";
+                                icon-path: Icons.spark; variant: 1; size: 0;
+                                loading: root.ai-is-working;
+                                clicked => { root.summarize-email(); }
                             }
-
-                            // Reply All
-                            Rectangle {
-                                width: 82px; height: 32px; border-radius: 8px;
-                                background: Theme.bg-card;
-                                border-width: 1px;
-                                border-color: Theme.border-subtle;
-                                TouchArea { clicked => { root.reply-all-email(); } mouse-cursor: pointer; }
-                                HorizontalLayout {
-                                    alignment: center;
-                                    spacing: 4px;
-                                    Text { text: "\u{21A9}"; font-size: 12px; vertical-alignment: center; }
-                                    Text { text: "Reply All"; color: Theme.text-secondary; font-size: 12px; vertical-alignment: center; }
-                                }
-                            }
-
-                            // Forward
-                            Rectangle {
-                                width: 80px; height: 32px; border-radius: 8px;
-                                background: Theme.bg-card;
-                                border-width: 1px;
-                                border-color: Theme.border-subtle;
-                                TouchArea { clicked => { root.forward-email(); } mouse-cursor: pointer; }
-                                HorizontalLayout {
-                                    alignment: center;
-                                    spacing: 4px;
-                                    Text { text: "\u{21AA}"; font-size: 12px; vertical-alignment: center; }
-                                    Text { text: "Forward"; color: Theme.text-secondary; font-size: 12px; vertical-alignment: center; }
-                                }
-                            }
-
-                            Rectangle { width: 1px; height: 20px; background: Theme.border-subtle; }
-
-                            // Archive
-                            Rectangle {
-                                width: 75px; height: 32px; border-radius: 8px;
-                                background: Theme.bg-card;
-                                border-width: 1px;
-                                border-color: Theme.border-subtle;
-                                TouchArea { clicked => { root.archive-email(root.email-detail.id); } mouse-cursor: pointer; }
-                                HorizontalLayout {
-                                    alignment: center;
-                                    spacing: 4px;
-                                    Text { text: "\u{1F4E6}"; font-size: 11px; vertical-alignment: center; }
-                                    Text { text: "Archive"; color: Theme.text-secondary; font-size: 12px; vertical-alignment: center; }
-                                }
-                            }
-
-                            // Delete
-                            Rectangle {
-                                width: 70px; height: 32px; border-radius: 8px;
-                                background: Theme.bg-card;
-                                border-width: 1px;
-                                border-color: Theme.color-danger-dim;
-                                TouchArea { clicked => { root.delete-email(root.email-detail.id); } mouse-cursor: pointer; }
-                                HorizontalLayout {
-                                    alignment: center;
-                                    spacing: 4px;
-                                    Text { text: "\u{1F5D1}"; font-size: 11px; vertical-alignment: center; }
-                                    Text { text: "Delete"; color: Theme.color-danger; font-size: 12px; vertical-alignment: center; }
-                                }
-                            }
-
-                            Rectangle { width: 1px; height: 20px; background: Theme.border-subtle; }
-
-                            // Mark Read/Unread
-                            Rectangle {
-                                width: root.email-detail.is-read ? 80px : 70px;
-                                height: 32px; border-radius: 8px;
-                                background: Theme.bg-card;
-                                border-width: 1px;
-                                border-color: Theme.border-subtle;
-                                TouchArea { clicked => { root.mark-read(root.email-detail.id); } mouse-cursor: pointer; }
-                                HorizontalLayout {
-                                    alignment: center;
-                                    spacing: 4px;
-                                    Text { text: root.email-detail.is-read ? "\u{2709}" : "\u{1F4E7}"; font-size: 11px; vertical-alignment: center; }
-                                    Text { text: root.email-detail.is-read ? "Unread" : "Read"; color: Theme.text-secondary; font-size: 12px; vertical-alignment: center; }
-                                }
-                            }
-
-                            // Star/Flag
-                            Rectangle {
-                                width: 36px; height: 32px; border-radius: 8px;
-                                background: root.email-detail.is-flagged ? Theme.amber.with-alpha(0.12) : Theme.bg-card;
-                                border-width: 1px;
-                                border-color: root.email-detail.is-flagged ? Theme.amber.with-alpha(0.3) : Theme.border-subtle;
-                                TouchArea { clicked => { root.mark-flagged(root.email-detail.id); } mouse-cursor: pointer; }
-                                Text {
-                                    text: root.email-detail.is-flagged ? "\u{2605}" : "\u{2606}";
-                                    color: root.email-detail.is-flagged ? Theme.amber : Theme.text-dim;
-                                    font-size: 14px;
-                                    horizontal-alignment: center;
-                                    vertical-alignment: center;
-                                }
-                            }
-
-                            Rectangle {} // spacer
-
-                            // AI Summary
-                            Rectangle {
-                                width: 95px; height: 32px; border-radius: 8px;
-                                background: Theme.bg-card;
-                                border-width: 1px;
-                                border-color: Theme.accent.with-alpha(0.3);
-                                TouchArea { clicked => { root.summarize-email(); } mouse-cursor: pointer; }
-                                HorizontalLayout {
-                                    alignment: center;
-                                    spacing: 4px;
-                                    Text { text: "\u{2728}"; font-size: 11px; vertical-alignment: center; }
-                                    Text {
-                                        text: root.ai-is-working ? "Thinking..." : "AI Summary";
-                                        color: Theme.accent; font-size: 12px;
-                                        vertical-alignment: center;
-                                    }
-                                }
-                            }
-
-                            // AI Reply
-                            Rectangle {
-                                width: 80px; height: 32px; border-radius: 8px;
-                                background: Theme.bg-card;
-                                border-width: 1px;
-                                border-color: Theme.accent.with-alpha(0.3);
-                                TouchArea { clicked => { root.ai-reply-suggest(); } mouse-cursor: pointer; }
-                                HorizontalLayout {
-                                    alignment: center;
-                                    spacing: 4px;
-                                    Text { text: "\u{1F916}"; font-size: 11px; vertical-alignment: center; }
-                                    Text { text: "AI Reply"; color: Theme.accent; font-size: 12px; vertical-alignment: center; }
-                                }
-                            }
+                            YButton { label: "Draft reply"; icon-path: Icons.companion; variant: 0; size: 0; clicked => { root.ai-reply-suggest(); } }
                         }
                     }
 
@@ -1606,6 +1488,7 @@ export component EmailClient inherits Rectangle {
                         VerticalLayout {
                             padding: 20px;
                             spacing: 12px;
+                            alignment: start;
 
                             // Subject line
                             Text {
@@ -1728,11 +1611,11 @@ export component EmailClient inherits Rectangle {
                                             mouse-cursor: pointer;
                                         }
 
-                                        Text {
-                                            text: "\u{1F3F7}";
-                                            font-size: 12px;
-                                            horizontal-alignment: center;
-                                            vertical-alignment: center;
+                                        Icon {
+                                            commands: Icons.tag;
+                                            size: 13px;
+                                            tint: Theme.text-secondary;
+                                            x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
                                         }
                                     }
 
@@ -1758,7 +1641,7 @@ export component EmailClient inherits Rectangle {
                                     padding-right: 12px;
                                     spacing: 6px;
 
-                                    Text { text: "\u{1F4CE}"; font-size: 12px; vertical-alignment: center; }
+                                    Icon { commands: Icons.paperclip; size: 13px; tint: Theme.text-dim; y: (parent.height - self.height) / 2; }
                                     Text {
                                         text: root.email-detail.attachment-names != "" ? root.email-detail.attachment-names : "Attachments";
                                         color: Theme.text-secondary;
@@ -1784,7 +1667,7 @@ export component EmailClient inherits Rectangle {
                                     padding-bottom: 8px;
                                     spacing: 6px;
 
-                                    Text { text: "\u{1F4CE}"; font-size: 12px; vertical-alignment: center; width: 18px; }
+                                    Icon { commands: Icons.paperclip; size: 13px; tint: Theme.text-dim; y: (parent.height - self.height) / 2; }
 
                                     for att[aidx] in root.email-attachments : Rectangle {
                                         height: 32px;
@@ -1800,12 +1683,13 @@ export component EmailClient inherits Rectangle {
                                             spacing: 6px;
 
                                             // File type icon
-                                            Text {
-                                                text: att.mime-type == "application/pdf" ? "\u{1F4C4}"
-                                                    : att.mime-type == "image/png" || att.mime-type == "image/jpeg" ? "\u{1F5BC}"
-                                                    : "\u{1F4C1}";
-                                                font-size: 11px;
-                                                vertical-alignment: center;
+                                            Icon {
+                                                commands: att.mime-type == "application/pdf" ? Icons.doc
+                                                    : att.mime-type == "image/png" || att.mime-type == "image/jpeg" ? Icons.image
+                                                    : Icons.file;
+                                                size: 12px;
+                                                tint: att.is-downloaded ? Theme.accent : Theme.text-secondary;
+                                                y: (parent.height - self.height) / 2;
                                             }
 
                                             // Filename
@@ -1839,12 +1723,11 @@ export component EmailClient inherits Rectangle {
                                                     mouse-cursor: pointer;
                                                 }
 
-                                                Text {
-                                                    text: "\u{2B07}";
-                                                    font-size: 10px;
-                                                    color: Theme.accent;
-                                                    horizontal-alignment: center;
-                                                    vertical-alignment: center;
+                                                Icon {
+                                                    commands: Icons.download;
+                                                    size: 12px;
+                                                    tint: Theme.accent;
+                                                    x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
                                                 }
                                             }
 
@@ -1860,11 +1743,11 @@ export component EmailClient inherits Rectangle {
                                                     mouse-cursor: pointer;
                                                 }
 
-                                                Text {
-                                                    text: "\u{1F441}";
-                                                    font-size: 10px;
-                                                    horizontal-alignment: center;
-                                                    vertical-alignment: center;
+                                                Icon {
+                                                    commands: Icons.eye;
+                                                    size: 12px;
+                                                    tint: Theme.accent;
+                                                    x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
                                                 }
                                             }
                                         }
@@ -1886,7 +1769,7 @@ export component EmailClient inherits Rectangle {
 
                                     HorizontalLayout {
                                         spacing: 6px;
-                                        Text { text: "\u{2728}"; font-size: 12px; vertical-alignment: center; }
+                                        Icon { commands: Icons.spark; size: 13px; tint: Theme.accent; y: (parent.height - self.height) / 2; }
                                         Text {
                                             text: "Yantrik AI Summary";
                                             color: Theme.accent;
@@ -1917,10 +1800,11 @@ export component EmailClient inherits Rectangle {
                                     padding-right: 12px;
                                     spacing: 6px;
 
-                                    Text {
-                                        text: "\u{1F4AC}";
-                                        font-size: 12px;
-                                        vertical-alignment: center;
+                                    Icon {
+                                        commands: Icons.chat;
+                                        size: 13px;
+                                        tint: Theme.text-secondary;
+                                        y: (parent.height - self.height) / 2;
                                     }
                                     Text {
                                         text: root.email-detail.thread-count + " messages in this thread";
@@ -1954,12 +1838,11 @@ export component EmailClient inherits Rectangle {
                                         padding-right: 12px;
                                         spacing: 8px;
 
-                                        Text {
-                                            text: tmsg.is-collapsed ? "\u{25B6}" : "\u{25BC}";
-                                            color: Theme.text-dim;
-                                            font-size: 10px;
-                                            vertical-alignment: center;
-                                            width: 14px;
+                                        Icon {
+                                            commands: tmsg.is-collapsed ? Icons.chevron-right : Icons.chevron-down;
+                                            size: 12px;
+                                            tint: Theme.text-dim;
+                                            y: (parent.height - self.height) / 2;
                                         }
                                         Text {
                                             text: tmsg.from-name != "" ? tmsg.from-name : tmsg.from-addr;
@@ -2024,30 +1907,12 @@ export component EmailClient inherits Rectangle {
                 }
 
                 // ══ EMPTY STATE ══
-                if !root.is-composing && root.email-detail.id <= 0 : Rectangle {
-                    VerticalLayout {
-                        alignment: center;
-                        spacing: 12px;
-
-                        Text {
-                            text: "\u{1F4EC}";
-                            font-size: 40px;
-                            horizontal-alignment: center;
-                        }
-                        Text {
-                            text: "Select an email to read";
-                            color: Theme.text-secondary;
-                            font-size: 15px;
-                            font-weight: 500;
-                            horizontal-alignment: center;
-                        }
-                        Text {
-                            text: "or compose a new message with AI assistance";
-                            color: Theme.text-dim;
-                            font-size: 12px;
-                            horizontal-alignment: center;
-                        }
-                    }
+                if !root.is-composing && root.email-detail.id <= 0 : YEmptyState {
+                    icon-path: Icons.mail-open;
+                    title: "Select a message";
+                    description: "Pick a conversation on the left, or start a new one.";
+                    action-label: "Compose";
+                    action-clicked => { root.compose-new(); }
                 }
             }
         }
@@ -2074,10 +1939,11 @@ export component EmailClient inherits Rectangle {
                 HorizontalLayout {
                     spacing: 4px;
 
-                    Text {
-                        text: "\u{1F4E7}";
-                        font-size: 10px;
-                        vertical-alignment: center;
+                    Icon {
+                        commands: Icons.mail;
+                        size: 11px;
+                        tint: Theme.text-dim;
+                        y: (parent.height - self.height) / 2;
                     }
                     Text {
                         text: root.email-folder-total + " emails";
@@ -2113,10 +1979,11 @@ export component EmailClient inherits Rectangle {
                 HorizontalLayout {
                     spacing: 4px;
 
-                    Text {
-                        text: root.is-loading ? "\u{1F504}" : "\u{2713}";
-                        font-size: 10px;
-                        vertical-alignment: center;
+                    Icon {
+                        commands: root.is-loading ? Icons.refresh : Icons.check;
+                        size: 11px;
+                        tint: root.is-loading ? Theme.amber : Theme.color-success;
+                        y: (parent.height - self.height) / 2;
                     }
                     Text {
                         text: root.email-sync-status;

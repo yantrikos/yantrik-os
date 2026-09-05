@@ -1,13 +1,16 @@
-// Music Player — enterprise-grade music library, playlists, queue, and playback.
-// Screen 20. Four-panel layout: Playlists | Library | Now Playing | Queue.
-// Uses mpv as backend via IPC socket.
-
+// Music Player — library, playlists, queue and playback.
+//
+// Layout follows what a music player is actually for: the LIBRARY gets the room (it is the
+// thing you look at), the now-playing artwork sits in a fixed right column, and the transport
+// is a full-width bar pinned to the bottom so it is in the same place whatever you are doing.
+// The previous four-column split gave the library 260px and spent the centre of the window on
+// a placeholder square.
+//
+// No timers and no animated glows: this screen has to be free on the software rasteriser.
 import { Theme } from "theme.slint";
 import { YButton, YIconButton } from "components/y_button.slint";
-import { YInput } from "components/y_input.slint";
 import { YEmptyState } from "components/y_empty_state.slint";
-import { YSidebar, YSidebarItem, YSidebarSection } from "components/y_sidebar.slint";
-import { YTabs, YTabItem } from "components/y_tabs.slint";
+import { Icon, Icons } from "components/icon.slint";
 
 // Data model for a track in the library or queue
 export struct MusicTrackData {
@@ -190,1070 +193,561 @@ export component MusicPlayerScreen inherits Rectangle {
     callback ai-explain-pressed();
     callback ai-dismiss();
 
-    // ─────── Main Layout ───────
+    // Internal — the scan dialog's path field
+    property <string> new-folder-path: "";
+
+    pure function category-label(c: int) -> string {
+        c == 0 ? "Songs" : c == 1 ? "Artists" : c == 2 ? "Albums" : "Genres"
+    }
+    pure function eq-label(p: int) -> string {
+        p == 0 ? "Flat" : p == 1 ? "Bass" : p == 2 ? "Vocal" : "Treble"
+    }
+
     VerticalLayout {
         spacing: 0px;
 
-        // Top bar with scan status
-        if root.is-scanning : Rectangle {
-            height: Theme.h-compact;
-            background: Theme.tint-accent;
+        // ══════════════ Header ══════════════
+        Rectangle {
+            height: 48px;
+            background: Theme.bg-surface;
+
+            Rectangle { y: parent.height - 1px; height: 1px; width: 100%; background: Theme.separator; }
 
             HorizontalLayout {
-                padding-left: Theme.sp-3;
+                padding-left: Theme.sp-4;
                 padding-right: Theme.sp-3;
-                spacing: Theme.sp-2;
+                spacing: Theme.sp-3;
 
-                Text {
-                    text: root.scan-status != "" ? root.scan-status : "Scanning library...";
-                    color: Theme.accent;
-                    font-size: Theme.fs-caption;
-                    vertical-alignment: center;
+                // App glyph + title
+                Rectangle {
+                    width: 28px; height: 28px;
+                    y: (parent.height - 28px) / 2;
+                    border-radius: Theme.r-sm;
+                    background: Theme.tint-accent;
+                    Icon {
+                        commands: Icons.music;
+                        size: 16px; tint: Theme.accent; thickness: 1.7px;
+                        x: (parent.width - self.width) / 2;
+                        y: (parent.height - self.height) / 2;
+                    }
+                }
+
+                VerticalLayout {
+                    alignment: center;
+                    spacing: 1px;
+                    Text {
+                        text: "Music";
+                        color: Theme.text-primary;
+                        font-size: Theme.fs-title-2;
+                        font-weight: Theme.fw-title-2;
+                        letter-spacing: -0.2px;
+                    }
+                    Text {
+                        text: root.library-track-count == 1 ? "1 track" : "\{root.library-track-count} tracks";
+                        color: Theme.text-dim;
+                        font-size: Theme.fs-micro;
+                    }
+                }
+
+                Rectangle { width: Theme.sp-4; }
+
+                // Category tabs — the four ways to look at the same library
+                HorizontalLayout {
+                    spacing: 2px;
+                    alignment: center;
+
+                    for cat in [0, 1, 2, 3] : Rectangle {
+                        property <bool> active: root.browse-category == cat;
+                        width: cat-label.preferred-width + 22px;
+                        height: 28px;
+                        border-radius: Theme.r-pill;
+                        background: active ? Theme.tint-accent
+                                  : cat-ta.has-hover ? Theme.hover-fill : transparent;
+
+                        cat-ta := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => {
+                                root.browse-category = cat;
+                                root.browse-category-changed(cat);
+                            }
+                        }
+
+                        cat-label := Text {
+                            text: root.category-label(cat);
+                            color: active ? Theme.accent : Theme.text-secondary;
+                            font-size: Theme.fs-caption;
+                            font-weight: active ? 600 : Theme.fw-body;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
                 }
 
                 Rectangle { horizontal-stretch: 1; }
 
-                // Progress bar
+                // Search
                 Rectangle {
-                    width: 120px;
-                    height: 4px;
-                    y: 12px;
-                    border-radius: 2px;
-                    background: Theme.bg-elevated;
+                    width: 220px;
+                    height: Theme.h-regular;
+                    y: (parent.height - Theme.h-regular) / 2;
+                    border-radius: Theme.r-md;
+                    background: Theme.bg-input;
+                    border-width: 1px;
+                    border-color: filter-input.has-focus ? Theme.accent-dim : Theme.border-default;
+                    clip: true;
 
-                    Rectangle {
-                        width: parent.width * root.scan-progress;
+                    if root.browse-filter == "" : Text {
+                        x: 10px + 14px + 8px;
                         height: 100%;
-                        border-radius: 2px;
-                        background: Theme.accent;
+                        text: "Search library";
+                        color: Theme.text-dim;
+                        font-size: Theme.fs-caption;
+                        vertical-alignment: center;
+                    }
+
+                    HorizontalLayout {
+                        padding-left: 10px;
+                        padding-right: 8px;
+                        spacing: 8px;
+
+                        Icon {
+                            commands: Icons.search;
+                            size: 14px; thickness: 1.7px;
+                            tint: filter-input.has-focus ? Theme.accent : Theme.text-dim;
+                            y: (parent.height - self.height) / 2;
+                        }
+
+                        filter-input := TextInput {
+                            horizontal-stretch: 1;
+                            vertical-alignment: center;
+                            single-line: true;
+                            font-size: Theme.fs-caption;
+                            color: Theme.text-primary;
+                            text <=> root.browse-filter;
+                            edited => { root.browse-filter-changed(self.text); }
+                        }
+                    }
+                }
+
+                // Library folders
+                YIconButton {
+                    icon-path: Icons.folder;
+                    variant: 2;
+                    y: (parent.height - self.height) / 2;
+                    clicked => { root.show-scan-folders-dialog = !root.show-scan-folders-dialog; }
+                }
+
+                // AI
+                YButton {
+                    label: root.ai-is-working ? "Working" : "Explain";
+                    icon-path: Icons.spark;
+                    variant: 1;
+                    size: 0;
+                    loading: root.ai-is-working;
+                    y: (parent.height - self.height) / 2;
+                    clicked => {
+                        root.ai-explain-pressed();
+                        root.ai-panel-open = true;
                     }
                 }
             }
         }
 
+        // ══════════════ Scanning strip ══════════════
+        if root.is-scanning : Rectangle {
+            height: 30px;
+            background: Theme.bg-card;
+
+            Rectangle { y: parent.height - 1px; height: 1px; width: 100%; background: Theme.separator; }
+
+            HorizontalLayout {
+                padding-left: Theme.sp-4;
+                padding-right: Theme.sp-4;
+                spacing: Theme.sp-3;
+
+                Icon {
+                    commands: Icons.refresh;
+                    size: 13px; tint: Theme.amber;
+                    y: (parent.height - self.height) / 2;
+                }
+                Text {
+                    text: root.scan-status != "" ? root.scan-status : "Scanning library\{"\u{2026}"}";
+                    color: Theme.text-secondary;
+                    font-size: Theme.fs-caption;
+                    vertical-alignment: center;
+                }
+                Rectangle { horizontal-stretch: 1; }
+                Rectangle {
+                    width: 160px;
+                    height: 4px;
+                    y: (parent.height - 4px) / 2;
+                    border-radius: 2px;
+                    background: Theme.bg-input;
+                    Rectangle {
+                        x: 0;
+                        width: parent.width * root.scan-progress;
+                        height: 100%;
+                        border-radius: 2px;
+                        background: Theme.amber;
+                    }
+                }
+                Text {
+                    text: "\{round(root.scan-progress * 100)}%";
+                    color: Theme.text-dim;
+                    font-size: Theme.fs-micro;
+                    font-family: Theme.font-mono;
+                    vertical-alignment: center;
+                    width: 34px;
+                    horizontal-alignment: right;
+                }
+            }
+        }
+
+        // ══════════════ AI response ══════════════
+        if root.ai-panel-open && root.ai-response != "" : Rectangle {
+            max-height: 160px;
+            background: Theme.bg-overlay-panel;
+            border-width: 1px;
+            border-color: Theme.accent.transparentize(70%);
+
+            Flickable {
+                viewport-height: ai-col.preferred-height + 16px;
+
+                ai-col := VerticalLayout {
+                    alignment: start;
+                    padding: Theme.sp-3;
+                    spacing: Theme.sp-2;
+
+                    HorizontalLayout {
+                        spacing: 6px;
+                        Icon {
+                            commands: Icons.spark;
+                            size: 14px; tint: Theme.accent;
+                            y: (parent.height - self.height) / 2;
+                        }
+                        Text {
+                            text: "About this music";
+                            color: Theme.accent;
+                            font-size: Theme.fs-caption;
+                            font-weight: 600;
+                            vertical-alignment: center;
+                        }
+                        Rectangle { horizontal-stretch: 1; }
+                        YIconButton {
+                            icon-path: Icons.close;
+                            variant: 2;
+                            clicked => {
+                                root.ai-panel-open = false;
+                                root.ai-dismiss();
+                            }
+                        }
+                    }
+
+                    Text {
+                        text: root.ai-response;
+                        color: Theme.text-secondary;
+                        font-size: Theme.fs-caption;
+                        wrap: word-wrap;
+                    }
+                }
+            }
+        }
+
+        // ══════════════ Body ══════════════
         HorizontalLayout {
+            vertical-stretch: 1;
             spacing: 0px;
 
-            // ═══ Playlist sidebar ═══
+            // ─── Playlists rail ───
             if root.playlist-panel-open : Rectangle {
-                width: 200px;
+                width: 208px;
                 background: Theme.bg-surface;
 
-                // Right separator
-                Rectangle {
-                    x: parent.width - 1px;
-                    width: 1px;
-                    height: 100%;
-                    background: Theme.separator;
-                }
+                Rectangle { x: parent.width - 1px; width: 1px; height: 100%; background: Theme.separator; }
 
                 VerticalLayout {
-                    spacing: 0px;
+                    padding: Theme.sp-2;
+                    padding-top: Theme.sp-3;
+                    spacing: 1px;
 
-                    // Playlist header
+                    Text {
+                        x: Theme.sp-2;
+                        text: "LIBRARY";
+                        color: Theme.text-dim;
+                        font-size: Theme.fs-micro;
+                        font-weight: Theme.fw-micro;
+                        letter-spacing: 1px;
+                        height: 24px;
+                        vertical-alignment: center;
+                    }
+
+                    // All music
                     Rectangle {
-                        height: Theme.touch-target;
-                        background: Theme.bg-surface;
+                        property <bool> active: root.active-playlist-index == -1;
+                        height: 30px;
+                        border-radius: Theme.r-sm;
+                        background: active ? Theme.tint-accent
+                                  : all-ta.has-hover ? Theme.hover-fill : transparent;
 
-                        // Bottom divider
-                        Rectangle {
-                            y: parent.height - 1px;
-                            width: 100%;
-                            height: 1px;
-                            background: Theme.separator;
+                        if active : Rectangle {
+                            x: 0; width: 3px; height: 16px;
+                            y: (parent.height - 16px) / 2;
+                            border-radius: 1.5px;
+                            background: Theme.accent;
+                        }
+
+                        all-ta := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { root.playlist-select(-1); }
                         }
 
                         HorizontalLayout {
                             padding-left: Theme.sp-3;
                             padding-right: Theme.sp-2;
-                            spacing: Theme.sp-2;
+                            spacing: 9px;
 
+                            Icon {
+                                commands: Icons.music;
+                                size: 15px;
+                                tint: active ? Theme.accent : Theme.text-secondary;
+                                y: (parent.height - self.height) / 2;
+                            }
                             Text {
-                                text: "Playlists";
-                                color: Theme.text-primary;
-                                font-size: Theme.fs-headline;
-                                font-weight: Theme.fw-headline;
+                                text: "All music";
+                                color: active ? Theme.text-primary : Theme.text-secondary;
+                                font-size: Theme.font-label;
+                                font-weight: active ? 500 : Theme.fw-body;
+                                vertical-alignment: center;
+                                horizontal-stretch: 1;
+                            }
+                            Text {
+                                text: root.library-track-count;
+                                color: active ? Theme.accent : Theme.text-dim;
+                                font-size: Theme.fs-micro;
+                                font-family: Theme.font-mono;
                                 vertical-alignment: center;
                             }
+                        }
+                    }
 
-                            Rectangle { horizontal-stretch: 1; }
+                    Rectangle { height: Theme.sp-2; }
 
-                            // Add playlist button
-                            YIconButton {
-                                icon: "+";
-                                variant: 2;
-                                clicked => {
-                                    root.new-playlist-name = "";
-                                    root.show-add-playlist-dialog = true;
+                    // Playlists header + add
+                    Rectangle {
+                        height: 24px;
+                        Text {
+                            x: Theme.sp-2;
+                            text: "PLAYLISTS";
+                            color: Theme.text-dim;
+                            font-size: Theme.fs-micro;
+                            font-weight: Theme.fw-micro;
+                            letter-spacing: 1px;
+                            vertical-alignment: center;
+                        }
+                        add-pl-ta := TouchArea {
+                            x: parent.width - 26px;
+                            width: 22px; height: 22px;
+                            y: (parent.height - 22px) / 2;
+                            mouse-cursor: pointer;
+                            clicked => {
+                                root.new-playlist-name = "";
+                                root.show-add-playlist-dialog = true;
+                            }
+                            Rectangle {
+                                border-radius: Theme.r-sm;
+                                background: parent.has-hover ? Theme.hover-fill : transparent;
+                                Icon {
+                                    commands: Icons.plus;
+                                    size: 13px;
+                                    tint: parent.background == transparent ? Theme.text-dim : Theme.text-primary;
+                                    x: (parent.width - self.width) / 2;
+                                    y: (parent.height - self.height) / 2;
                                 }
                             }
+                        }
+                    }
 
-                            // Scan folders button
-                            TouchArea {
-                                width: 28px;
-                                height: 28px;
-                                clicked => { root.show-scan-folders-dialog = !root.show-scan-folders-dialog; }
+                    // Playlist rows
+                    Rectangle {
+                        vertical-stretch: 1;
+                        clip: true;
 
-                                Rectangle {
-                                    width: 28px; height: 28px;
-                                    border-radius: 14px;
-                                    background: parent.has-hover ? Theme.hover-fill-strong : transparent;
+                        Flickable {
+                            viewport-height: pl-col.preferred-height;
 
-                                    Text {
-                                        text: "F";
-                                        color: Theme.text-secondary;
-                                        font-size: 11px;
-                                        font-weight: 600;
-                                        horizontal-alignment: center;
-                                        vertical-alignment: center;
+                            pl-col := VerticalLayout {
+                                alignment: start;
+                                spacing: 1px;
+
+                                for pl[pidx] in root.playlists : Rectangle {
+                                    property <bool> active: pidx == root.active-playlist-index;
+                                    property <bool> renaming: pidx == root.rename-playlist-index;
+                                    height: 30px;
+                                    border-radius: Theme.r-sm;
+                                    background: active ? Theme.tint-accent
+                                              : pl-ta.has-hover ? Theme.hover-fill : transparent;
+
+                                    if active : Rectangle {
+                                        x: 0; width: 3px; height: 16px;
+                                        y: (parent.height - 16px) / 2;
+                                        border-radius: 1.5px;
+                                        background: Theme.accent;
                                     }
-                                }
-                            }
-                        }
-                    }
 
-                    Rectangle { height: 1px; background: Theme.separator; }
-
-                    // "All Music" item
-                    TouchArea {
-                        height: 36px;
-                        clicked => { root.playlist-select(-1); }
-
-                        Rectangle {
-                            background: root.active-playlist-index == -1 ? Theme.tint-accent : (parent.has-hover ? Theme.hover-fill : transparent);
-
-                            HorizontalLayout {
-                                padding-left: 12px;
-                                padding-right: 12px;
-                                spacing: 8px;
-
-                                Text {
-                                    text: "M";
-                                    color: root.active-playlist-index == -1 ? Theme.accent : Theme.text-dim;
-                                    font-size: 12px;
-                                    width: 18px;
-                                    vertical-alignment: center;
-                                    horizontal-alignment: center;
-                                }
-
-                                Text {
-                                    text: "All Music";
-                                    color: root.active-playlist-index == -1 ? Theme.accent : Theme.text-primary;
-                                    font-size: 12px;
-                                    font-weight: root.active-playlist-index == -1 ? 600 : 400;
-                                    vertical-alignment: center;
-                                    overflow: elide;
-                                }
-                            }
-                        }
-                    }
-
-                    Rectangle { height: 1px; background: Theme.separator; }
-
-                    // Playlist list
-                    Flickable {
-                        viewport-height: pl-col.preferred-height;
-
-                        pl-col := VerticalLayout {
-                            spacing: 0px;
-
-                            for playlist[pidx] in root.playlists :
-                            TouchArea {
-                                height: 52px;
-                                clicked => { root.playlist-select(pidx); }
-
-                                Rectangle {
-                                    background: root.active-playlist-index == pidx
-                                        ? Theme.tint-accent
-                                        : (parent.has-hover ? Theme.hover-fill : transparent);
+                                    pl-ta := TouchArea {
+                                        mouse-cursor: pointer;
+                                        clicked => { root.playlist-select(pidx); }
+                                    }
 
                                     HorizontalLayout {
-                                        padding-left: 12px;
-                                        padding-right: 8px;
-                                        spacing: 8px;
+                                        padding-left: Theme.sp-3;
+                                        padding-right: Theme.sp-2;
+                                        spacing: 9px;
 
-                                        // Playlist icon
-                                        Rectangle {
-                                            width: 24px;
-                                            height: 24px;
-                                            y: 14px;
-                                            border-radius: 4px;
-                                            background: root.active-playlist-index == pidx ? Theme.accent-dim : Theme.bg-elevated;
-
-                                            Text {
-                                                text: "L";
-                                                color: root.active-playlist-index == pidx ? Theme.text-primary : Theme.text-dim;
-                                                font-size: 11px;
-                                                horizontal-alignment: center;
-                                                vertical-alignment: center;
-                                            }
+                                        Icon {
+                                            commands: Icons.list;
+                                            size: 15px;
+                                            tint: active ? Theme.accent : Theme.text-secondary;
+                                            y: (parent.height - self.height) / 2;
                                         }
 
-                                        // Name + info
-                                        VerticalLayout {
-                                            alignment: center;
-                                            spacing: 2px;
-
-                                            // Inline rename or display
-                                            if root.rename-playlist-index == pidx : TextInput {
-                                                font-size: 12px;
-                                                color: Theme.text-primary;
-                                                text <=> root.rename-playlist-text;
-                                                accepted => {
-                                                    root.playlist-rename(pidx, root.rename-playlist-text);
-                                                    root.rename-playlist-index = -1;
-                                                }
-                                            }
-
-                                            if root.rename-playlist-index != pidx : Text {
-                                                text: playlist.name;
-                                                color: root.active-playlist-index == pidx ? Theme.accent : Theme.text-primary;
-                                                font-size: 12px;
-                                                font-weight: root.active-playlist-index == pidx ? 600 : 400;
-                                                overflow: elide;
-                                            }
-
-                                            Text {
-                                                text: playlist.track-count > 0
-                                                    ? "\{playlist.track-count} tracks \u{2022} \{playlist.total-duration}"
-                                                    : "Empty";
-                                                color: Theme.text-dim;
-                                                font-size: 10px;
-                                                overflow: elide;
-                                            }
-                                        }
-
-                                        // Action buttons (visible on active)
-                                        if root.active-playlist-index == pidx : VerticalLayout {
-                                            alignment: center;
-                                            spacing: 2px;
-
-                                            HorizontalLayout {
-                                                spacing: 2px;
-
-                                                // Rename
-                                                TouchArea {
-                                                    width: 20px;
-                                                    height: 20px;
-                                                    clicked => {
-                                                        root.rename-playlist-text = playlist.name;
-                                                        root.rename-playlist-index = pidx;
-                                                    }
-
-                                                    Rectangle {
-                                                        width: 20px; height: 20px;
-                                                        border-radius: 4px;
-                                                        background: parent.has-hover ? Theme.hover-fill-strong : transparent;
-                                                        Text {
-                                                            text: "E";
-                                                            color: Theme.text-secondary;
-                                                            font-size: 9px;
-                                                            horizontal-alignment: center;
-                                                            vertical-alignment: center;
-                                                        }
-                                                    }
-                                                }
-
-                                                // Delete
-                                                TouchArea {
-                                                    width: 20px;
-                                                    height: 20px;
-                                                    clicked => { root.playlist-delete(pidx); }
-
-                                                    Rectangle {
-                                                        width: 20px; height: 20px;
-                                                        border-radius: 4px;
-                                                        background: parent.has-hover ? Theme.color-danger-dim : transparent;
-                                                        Text {
-                                                            text: "\u{2715}";
-                                                            color: Theme.text-dim;
-                                                            font-size: 9px;
-                                                            horizontal-alignment: center;
-                                                            vertical-alignment: center;
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    // Add playlist dialog (inline)
-                    if root.show-add-playlist-dialog : Rectangle {
-                        height: 64px;
-                        background: Theme.bg-card;
-                        border-width: 1px;
-                        border-color: Theme.accent.transparentize(70%);
-
-                        VerticalLayout {
-                            padding: 8px;
-                            spacing: 6px;
-
-                            Rectangle {
-                                height: 28px;
-                                border-radius: 6px;
-                                background: Theme.bg-input; clip: true;
-
-                                pl-name-input := TextInput {
-                                    x: 8px;
-                                    width: parent.width - 16px;
-                                    font-size: 12px;
-                                    color: Theme.text-primary;
-                                    vertical-alignment: center;
-                                    text <=> root.new-playlist-name;
-                                    accepted => {
-                                        if root.new-playlist-name != "" {
-                                            root.playlist-create(root.new-playlist-name);
-                                            root.show-add-playlist-dialog = false;
-                                        }
-                                    }
-                                }
-                            }
-
-                            HorizontalLayout {
-                                spacing: 6px;
-                                alignment: end;
-
-                                TouchArea {
-                                    width: 48px;
-                                    height: 22px;
-                                    clicked => { root.show-add-playlist-dialog = false; }
-
-                                    Rectangle {
-                                        border-radius: 4px;
-                                        background: parent.has-hover ? Theme.hover-fill : transparent;
-                                        Text {
-                                            text: "Cancel";
-                                            color: Theme.text-secondary;
-                                            font-size: 10px;
-                                            horizontal-alignment: center;
+                                        if !renaming : Text {
+                                            text: pl.name;
+                                            color: active ? Theme.text-primary : Theme.text-secondary;
+                                            font-size: Theme.font-label;
+                                            font-weight: active ? 500 : Theme.fw-body;
                                             vertical-alignment: center;
+                                            horizontal-stretch: 1;
+                                            overflow: elide;
                                         }
-                                    }
-                                }
 
-                                TouchArea {
-                                    width: 48px;
-                                    height: 22px;
-                                    clicked => {
-                                        if root.new-playlist-name != "" {
-                                            root.playlist-create(root.new-playlist-name);
-                                            root.show-add-playlist-dialog = false;
-                                        }
-                                    }
-
-                                    Rectangle {
-                                        border-radius: 4px;
-                                        background: Theme.accent;
-                                        Text {
-                                            text: "Create";
-                                            color: Theme.bg-deep;
-                                            font-size: 10px;
-                                            font-weight: 600;
-                                            horizontal-alignment: center;
+                                        if renaming : TextInput {
+                                            horizontal-stretch: 1;
                                             vertical-alignment: center;
+                                            single-line: true;
+                                            font-size: Theme.font-label;
+                                            color: Theme.text-primary;
+                                            text <=> root.rename-playlist-text;
+                                            accepted => {
+                                                root.playlist-rename(pidx, self.text);
+                                                root.rename-playlist-index = -1;
+                                            }
                                         }
-                                    }
-                                }
-                            }
-                        }
-                    }
 
-                    // Scan folders dialog
-                    if root.show-scan-folders-dialog : Rectangle {
-                        background: Theme.bg-card;
-                        border-width: 1px;
-                        border-color: Theme.border-subtle;
-                        max-height: 200px;
-
-                        VerticalLayout {
-                            padding: 8px;
-                            spacing: 6px;
-
-                            HorizontalLayout {
-                                spacing: 6px;
-
-                                Text {
-                                    text: "Music Folders";
-                                    color: Theme.text-primary;
-                                    font-size: 12px;
-                                    font-weight: 600;
-                                    vertical-alignment: center;
-                                }
-
-                                Rectangle { horizontal-stretch: 1; }
-
-                                TouchArea {
-                                    width: 52px;
-                                    height: 22px;
-                                    clicked => { root.scan-rescan(); }
-
-                                    Rectangle {
-                                        border-radius: 4px;
-                                        background: Theme.accent;
-                                        Text {
-                                            text: "Rescan";
-                                            color: Theme.bg-deep;
-                                            font-size: 10px;
-                                            font-weight: 600;
-                                            horizontal-alignment: center;
-                                            vertical-alignment: center;
-                                        }
-                                    }
-                                }
-                            }
-
-                            for sfolder[sidx] in root.scan-folders :
-                            Rectangle {
-                                height: 28px;
-                                border-radius: 4px;
-                                background: Theme.bg-elevated;
-
-                                HorizontalLayout {
-                                    padding-left: 8px;
-                                    padding-right: 4px;
-                                    spacing: 6px;
-
-                                    Text {
-                                        text: sfolder.path;
-                                        color: Theme.text-primary;
-                                        font-size: 11px;
-                                        vertical-alignment: center;
-                                        overflow: elide;
-                                    }
-
-                                    Text {
-                                        text: "\{sfolder.track-count}";
-                                        color: Theme.text-dim;
-                                        font-size: 10px;
-                                        vertical-alignment: center;
-                                        width: 28px;
-                                        horizontal-alignment: right;
-                                    }
-
-                                    TouchArea {
-                                        width: 20px;
-                                        height: 20px;
-                                        clicked => { root.scan-remove-folder(sidx); }
-                                        Rectangle {
+                                        // Rename / delete appear on hover
+                                        if pl-ta.has-hover && !renaming : TouchArea {
                                             width: 20px; height: 20px;
-                                            border-radius: 4px;
-                                            background: parent.has-hover ? Theme.color-danger-dim : transparent;
-                                            Text {
-                                                text: "\u{2715}";
-                                                color: Theme.text-dim;
-                                                font-size: 9px;
-                                                horizontal-alignment: center;
-                                                vertical-alignment: center;
+                                            y: (parent.height - 20px) / 2;
+                                            mouse-cursor: pointer;
+                                            clicked => {
+                                                root.rename-playlist-text = pl.name;
+                                                root.rename-playlist-index = pidx;
+                                            }
+                                            Icon {
+                                                commands: Icons.pencil;
+                                                size: 12px; tint: Theme.text-dim;
+                                                x: (parent.width - self.width) / 2;
+                                                y: (parent.height - self.height) / 2;
                                             }
                                         }
-                                    }
-                                }
-                            }
-
-                            // Add folder input
-                            Rectangle {
-                                height: 28px;
-                                border-radius: 6px;
-                                background: Theme.bg-input; clip: true;
-
-                                scan-folder-input := TextInput {
-                                    x: 8px;
-                                    width: parent.width - 16px;
-                                    font-size: 11px;
-                                    color: Theme.text-primary;
-                                    vertical-alignment: center;
-                                    accepted => {
-                                        if self.text != "" {
-                                            root.scan-add-folder(self.text);
-                                            self.text = "";
-                                        }
-                                    }
-                                }
-                            }
-
-                            // Folder watch toggle
-                            Rectangle {
-                                height: 32px;
-                                border-radius: 4px;
-                                background: Theme.bg-elevated;
-
-                                HorizontalLayout {
-                                    padding-left: 8px;
-                                    padding-right: 8px;
-                                    spacing: 8px;
-
-                                    Text {
-                                        text: "Watch folders";
-                                        color: Theme.text-primary;
-                                        font-size: 11px;
-                                        vertical-alignment: center;
-                                    }
-
-                                    Rectangle { horizontal-stretch: 1; }
-
-                                    // Toggle switch
-                                    TouchArea {
-                                        width: 36px;
-                                        height: 20px;
-                                        clicked => { root.music-toggle-folder-watch(); }
-
-                                        Rectangle {
-                                            width: 36px; height: 18px; y: 1px;
-                                            border-radius: 9px;
-                                            background: root.music-folder-watch-active ? Theme.accent : Theme.bg-card;
-                                            border-width: 1px;
-                                            border-color: root.music-folder-watch-active ? Theme.accent : Theme.border-subtle;
-
-                                            Rectangle {
-                                                x: root.music-folder-watch-active ? 18px : 2px;
-                                                y: 2px;
-                                                width: 14px;
-                                                height: 14px;
-                                                border-radius: 7px;
-                                                background: root.music-folder-watch-active ? Theme.text-primary : Theme.text-dim;
-                                                animate x { duration: 150ms; }
+                                        if pl-ta.has-hover && !renaming : TouchArea {
+                                            width: 20px; height: 20px;
+                                            y: (parent.height - 20px) / 2;
+                                            mouse-cursor: pointer;
+                                            clicked => { root.playlist-delete(pidx); }
+                                            Icon {
+                                                commands: Icons.trash;
+                                                size: 12px; tint: Theme.color-danger;
+                                                x: (parent.width - self.width) / 2;
+                                                y: (parent.height - self.height) / 2;
                                             }
                                         }
+
+                                        if !pl-ta.has-hover && !renaming : Text {
+                                            text: pl.track-count;
+                                            color: active ? Theme.accent : Theme.text-dim;
+                                            font-size: Theme.fs-micro;
+                                            font-family: Theme.font-mono;
+                                            vertical-alignment: center;
+                                        }
                                     }
                                 }
                             }
+                        }
 
-                            // Watch status
-                            if root.music-folder-watch-status != "" : Text {
-                                text: root.music-folder-watch-status;
-                                color: Theme.text-dim;
-                                font-size: 10px;
-                                horizontal-alignment: left;
+                        if root.playlists.length == 0 : Text {
+                            x: Theme.sp-3;
+                            y: Theme.sp-2;
+                            width: parent.width - Theme.sp-5;
+                            text: "No playlists yet. Use + to make one.";
+                            color: Theme.text-dim;
+                            font-size: Theme.fs-micro;
+                            wrap: word-wrap;
+                        }
+                    }
+
+                    // Folder watch
+                    Rectangle {
+                        height: 30px;
+                        border-radius: Theme.r-sm;
+                        background: watch-ta.has-hover ? Theme.hover-fill : transparent;
+
+                        watch-ta := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { root.music-toggle-folder-watch(); }
+                        }
+
+                        HorizontalLayout {
+                            padding-left: Theme.sp-3;
+                            padding-right: Theme.sp-2;
+                            spacing: 9px;
+
+                            Icon {
+                                commands: Icons.eye;
+                                size: 14px;
+                                tint: root.music-folder-watch-active ? Theme.color-success : Theme.text-dim;
+                                y: (parent.height - self.height) / 2;
+                            }
+                            Text {
+                                text: "Watch folders";
+                                color: Theme.text-secondary;
+                                font-size: Theme.fs-caption;
+                                vertical-alignment: center;
+                                horizontal-stretch: 1;
+                            }
+                            Text {
+                                text: root.music-folder-watch-active ? "on" : "off";
+                                color: root.music-folder-watch-active ? Theme.color-success : Theme.text-dim;
+                                font-size: Theme.fs-micro;
+                                vertical-alignment: center;
                             }
                         }
                     }
                 }
             }
 
-            // Playlist panel toggle
-            TouchArea {
-                width: 14px;
-                clicked => { root.playlist-panel-open = !root.playlist-panel-open; }
-
-                Rectangle {
-                    width: 14px;
-                    background: parent.has-hover ? Theme.hover-fill : Theme.bg-surface;
-                    border-width: 0px;
-
-                    Text {
-                        text: root.playlist-panel-open ? "<" : ">";
-                        color: Theme.text-dim;
-                        font-size: 10px;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
-                    }
-                }
-            }
-
-            // Separator
-            Rectangle { width: 1px; background: Theme.separator; }
-
-            // ═══ Left panel: Library Browser ═══
+            // ─── Rail collapse handle ───
             Rectangle {
-                width: 260px;
+                width: 12px;
                 background: Theme.bg-surface;
 
-                VerticalLayout {
-                    spacing: 0px;
-
-                    // Search bar
-                    Rectangle {
-                        height: 44px;
-                        background: Theme.bg-card;
-
-                        Rectangle {
-                            x: 10px;
-                            y: 7px;
-                            width: parent.width - 20px;
-                            height: 30px;
-                            border-radius: 15px;
-                            background: Theme.bg-input;
-                            clip: true;
-
-                            HorizontalLayout {
-                                padding-left: 12px;
-                                padding-right: 8px;
-                                spacing: 8px;
-
-                                Text {
-                                    text: "Q";
-                                    color: Theme.text-dim;
-                                    font-size: 12px;
-                                    vertical-alignment: center;
-                                    width: 14px;
-                                }
-
-                                lib-search := TextInput {
-                                    font-size: 12px;
-                                    color: Theme.text-primary;
-                                    vertical-alignment: center;
-                                    text <=> root.browse-filter;
-                                    accepted => { root.browse-filter-changed(self.text); }
-                                    edited => { root.browse-filter-changed(self.text); }
-                                }
-
-                                // Clear search
-                                if root.browse-filter != "" : TouchArea {
-                                    width: 20px;
-                                    height: 20px;
-                                    clicked => {
-                                        root.browse-filter = "";
-                                        root.browse-filter-changed("");
-                                    }
-
-                                    Rectangle {
-                                        width: 20px; height: 20px;
-                                        border-radius: 10px;
-                                        background: parent.has-hover ? Theme.hover-fill-strong : transparent;
-                                        Text {
-                                            text: "\u{2715}";
-                                            color: Theme.text-dim;
-                                            font-size: 10px;
-                                            horizontal-alignment: center;
-                                            vertical-alignment: center;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    // Category tabs
-                    Rectangle {
-                        height: 34px;
-                        background: Theme.bg-card;
-
-                        HorizontalLayout {
-                            padding-left: 6px;
-                            padding-right: 6px;
-                            spacing: 3px;
-
-                            for cat-label[idx] in ["Songs", "Artists", "Albums", "Genres"]:
-                            TouchArea {
-                                height: 34px;
-                                clicked => { root.browse-category = idx; root.browse-category-changed(idx); }
-
-                                Rectangle {
-                                    height: 26px;
-                                    y: 4px;
-                                    border-radius: 13px;
-                                    background: root.browse-category == idx ? Theme.accent : transparent;
-
-                                    Text {
-                                        text: cat-label;
-                                        color: root.browse-category == idx ? Theme.bg-deep : Theme.text-secondary;
-                                        font-size: 11px;
-                                        horizontal-alignment: center;
-                                        vertical-alignment: center;
-                                        font-weight: root.browse-category == idx ? 600 : 400;
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    Rectangle { height: 1px; background: Theme.separator; }
-
-                    // Sub-header (when browsing artist/album/genre)
-                    if root.browse-sub-header != "" : Rectangle {
-                        height: 32px;
-                        background: Theme.bg-card;
-
-                        HorizontalLayout {
-                            padding-left: 12px;
-                            spacing: 8px;
-
-                            TouchArea {
-                                width: 24px;
-                                height: 32px;
-                                clicked => { root.browse-item-selected(""); }
-                                Text {
-                                    text: "<";
-                                    color: Theme.accent;
-                                    font-size: 14px;
-                                    vertical-alignment: center;
-                                    horizontal-alignment: center;
-                                }
-                            }
-
-                            Text {
-                                text: root.browse-sub-header;
-                                color: Theme.text-primary;
-                                font-size: 12px;
-                                vertical-alignment: center;
-                                overflow: elide;
-                                font-weight: 500;
-                            }
-                        }
-                    }
-
-                    // Track count
-                    Rectangle {
-                        height: 22px;
-                        background: Theme.bg-surface;
-
-                        HorizontalLayout {
-                            padding-left: 12px;
-                            padding-right: 12px;
-
-                            Text {
-                                text: root.library-track-count > 0
-                                    ? "\{root.library-track-count} tracks"
-                                    : "No tracks found";
-                                color: Theme.text-dim;
-                                font-size: 10px;
-                                vertical-alignment: center;
-                            }
-
-                            Rectangle { horizontal-stretch: 1; }
-
-                            // Add all to queue
-                            if root.library-track-count > 0 : TouchArea {
-                                width: 40px;
-                                height: 22px;
-                                clicked => { root.add-to-queue(-1); } // -1 = add all
-
-                                Text {
-                                    text: "+All";
-                                    color: parent.has-hover ? Theme.accent : Theme.text-dim;
-                                    font-size: 10px;
-                                    horizontal-alignment: right;
-                                    vertical-alignment: center;
-                                }
-                            }
-                        }
-                    }
-
-                    // Track/item list (scrollable)
-                    Flickable {
-                        viewport-height: lib-col.preferred-height;
-
-                        lib-col := VerticalLayout {
-                            spacing: 0px;
-
-                            // ── Artists list ──
-                            if root.browse-category == 1 && root.browse-sub-header == "" :
-                            VerticalLayout {
-                                spacing: 0px;
-                                for artist-item[idx] in root.library-artists :
-                                TouchArea {
-                                    height: 44px;
-                                    clicked => { root.browse-item-selected(artist-item.name); }
-
-                                    Rectangle {
-                                        background: parent.has-hover ? Theme.hover-fill : transparent;
-
-                                        HorizontalLayout {
-                                            padding-left: 12px;
-                                            padding-right: 12px;
-                                            spacing: 8px;
-
-                                            Rectangle {
-                                                width: 30px;
-                                                height: 30px;
-                                                y: 7px;
-                                                border-radius: 15px;
-                                                background: Theme.accent-dim;
-
-                                                Text {
-                                                    text: "A";
-                                                    color: Theme.text-primary;
-                                                    font-size: 12px;
-                                                    horizontal-alignment: center;
-                                                    vertical-alignment: center;
-                                                }
-                                            }
-
-                                            VerticalLayout {
-                                                alignment: center;
-                                                spacing: 2px;
-
-                                                Text {
-                                                    text: artist-item.name;
-                                                    color: Theme.text-primary;
-                                                    font-size: 12px;
-                                                    overflow: elide;
-                                                }
-
-                                                Text {
-                                                    text: artist-item.album-count > 0
-                                                        ? "\{artist-item.track-count} tracks \u{2022} \{artist-item.album-count} albums"
-                                                        : "\{artist-item.track-count} tracks";
-                                                    color: Theme.text-dim;
-                                                    font-size: 10px;
-                                                    overflow: elide;
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-
-                            // ── Albums grid ──
-                            if root.browse-category == 2 && root.browse-sub-header == "" :
-                            VerticalLayout {
-                                spacing: 0px;
-                                for album-item[idx] in root.library-albums :
-                                TouchArea {
-                                    height: 56px;
-                                    clicked => { root.browse-item-selected(album-item.name); }
-
-                                    Rectangle {
-                                        background: parent.has-hover ? Theme.hover-fill : transparent;
-
-                                        HorizontalLayout {
-                                            padding-left: 12px;
-                                            padding-right: 12px;
-                                            spacing: 10px;
-
-                                            // Album art placeholder
-                                            Rectangle {
-                                                width: 40px;
-                                                height: 40px;
-                                                y: 8px;
-                                                border-radius: 4px;
-                                                background: Theme.bg-elevated;
-                                                border-width: 1px;
-                                                border-color: Theme.border-subtle;
-
-                                                Text {
-                                                    text: "D";
-                                                    color: Theme.accent-dim;
-                                                    font-size: 16px;
-                                                    horizontal-alignment: center;
-                                                    vertical-alignment: center;
-                                                }
-                                            }
-
-                                            VerticalLayout {
-                                                alignment: center;
-                                                spacing: 2px;
-
-                                                Text {
-                                                    text: album-item.name;
-                                                    color: Theme.text-primary;
-                                                    font-size: 12px;
-                                                    overflow: elide;
-                                                    font-weight: 500;
-                                                }
-
-                                                Text {
-                                                    text: album-item.artist;
-                                                    color: Theme.text-secondary;
-                                                    font-size: 11px;
-                                                    overflow: elide;
-                                                }
-
-                                                Text {
-                                                    text: album-item.track-count > 0
-                                                        ? "\{album-item.track-count} tracks"
-                                                        : "";
-                                                    color: Theme.text-dim;
-                                                    font-size: 10px;
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-
-                            // ── Genres list ──
-                            if root.browse-category == 3 && root.browse-sub-header == "" :
-                            VerticalLayout {
-                                spacing: 0px;
-                                for genre-item[idx] in root.library-genres :
-                                TouchArea {
-                                    height: 38px;
-                                    clicked => { root.browse-item-selected(genre-item.name); }
-
-                                    Rectangle {
-                                        background: parent.has-hover ? Theme.hover-fill : transparent;
-
-                                        HorizontalLayout {
-                                            padding-left: 12px;
-                                            padding-right: 12px;
-                                            spacing: 8px;
-
-                                            Rectangle {
-                                                width: 24px;
-                                                height: 24px;
-                                                y: 7px;
-                                                border-radius: 12px;
-                                                background: Theme.bg-elevated;
-
-                                                Text {
-                                                    text: "G";
-                                                    color: Theme.accent-dim;
-                                                    font-size: 11px;
-                                                    horizontal-alignment: center;
-                                                    vertical-alignment: center;
-                                                }
-                                            }
-
-                                            Text {
-                                                text: genre-item.name;
-                                                color: Theme.text-primary;
-                                                font-size: 12px;
-                                                vertical-alignment: center;
-                                                overflow: elide;
-                                            }
-
-                                            Rectangle { horizontal-stretch: 1; }
-
-                                            // Count badge
-                                            Rectangle {
-                                                width: 32px;
-                                                height: 18px;
-                                                y: 10px;
-                                                border-radius: 9px;
-                                                background: Theme.bg-elevated;
-
-                                                Text {
-                                                    text: "\{genre-item.track-count}";
-                                                    color: Theme.text-dim;
-                                                    font-size: 10px;
-                                                    horizontal-alignment: center;
-                                                    vertical-alignment: center;
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-
-                            // ── Songs list (All Songs, or filtered by artist/album/genre) ──
-                            if root.browse-category == 0 || root.browse-sub-header != "" :
-                            VerticalLayout {
-                                spacing: 0px;
-                                for track[idx] in root.library-tracks :
-                                TouchArea {
-                                    height: 48px;
-                                    clicked => { root.play-track-index(idx); }
-
-                                    Rectangle {
-                                        background: track.is-current
-                                            ? Theme.tint-accent
-                                            : (parent.has-hover ? Theme.hover-fill : transparent);
-
-                                        HorizontalLayout {
-                                            padding-left: 10px;
-                                            padding-right: 6px;
-                                            spacing: 6px;
-
-                                            // Track number / playing indicator
-                                            Rectangle {
-                                                width: 22px;
-                                                height: 48px;
-
-                                                Text {
-                                                    text: track.is-current ? ">" : "\{idx + 1}";
-                                                    color: track.is-current ? Theme.accent : Theme.text-dim;
-                                                    font-size: 11px;
-                                                    horizontal-alignment: center;
-                                                    vertical-alignment: center;
-                                                }
-                                            }
-
-                                            // Title + artist
-                                            VerticalLayout {
-                                                alignment: center;
-                                                spacing: 2px;
-
-                                                Text {
-                                                    text: track.title;
-                                                    color: track.is-current ? Theme.accent : Theme.text-primary;
-                                                    font-size: 12px;
-                                                    overflow: elide;
-                                                    font-weight: track.is-current ? 600 : 400;
-                                                }
-                                                Text {
-                                                    text: track.artist;
-                                                    color: Theme.text-secondary;
-                                                    font-size: 10px;
-                                                    overflow: elide;
-                                                }
-                                            }
-
-                                            // Action buttons
-                                            VerticalLayout {
-                                                alignment: center;
-
-                                                HorizontalLayout {
-                                                    spacing: 2px;
-
-                                                    // Play next
-                                                    TouchArea {
-                                                        width: 20px;
-                                                        height: 20px;
-                                                        clicked => { root.play-next(idx); }
-
-                                                        Rectangle {
-                                                            width: 20px; height: 20px;
-                                                            border-radius: 4px;
-                                                            background: parent.has-hover ? Theme.hover-fill-strong : transparent;
-                                                            Text {
-                                                                text: "N";
-                                                                color: Theme.text-dim;
-                                                                font-size: 9px;
-                                                                horizontal-alignment: center;
-                                                                vertical-alignment: center;
-                                                            }
-                                                        }
-                                                    }
-
-                                                    // Add to queue
-                                                    TouchArea {
-                                                        width: 20px;
-                                                        height: 20px;
-                                                        clicked => { root.add-to-queue(idx); }
-
-                                                        Rectangle {
-                                                            width: 20px; height: 20px;
-                                                            border-radius: 4px;
-                                                            background: parent.has-hover ? Theme.hover-fill-strong : transparent;
-                                                            Text {
-                                                                text: "+";
-                                                                color: Theme.text-dim;
-                                                                font-size: 12px;
-                                                                horizontal-alignment: center;
-                                                                vertical-alignment: center;
-                                                            }
-                                                        }
-                                                    }
-                                                }
-                                            }
-
-                                            // Duration
-                                            Text {
-                                                text: track.duration-text;
-                                                color: Theme.text-dim;
-                                                font-size: 10px;
-                                                width: 34px;
-                                                horizontal-alignment: right;
-                                                vertical-alignment: center;
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
+                handle-ta := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => { root.playlist-panel-open = !root.playlist-panel-open; }
+                }
+
+                Icon {
+                    commands: root.playlist-panel-open ? Icons.chevron-left : Icons.chevron-right;
+                    size: 11px;
+                    tint: handle-ta.has-hover ? Theme.text-primary : Theme.text-dim;
+                    x: (parent.width - self.width) / 2;
+                    y: (parent.height - self.height) / 2;
                 }
             }
 
-            // Separator
             Rectangle { width: 1px; background: Theme.separator; }
 
-            // ═══ Center panel: Now Playing ═══
+            // ─── Library (the main surface) ───
             Rectangle {
                 horizontal-stretch: 1;
                 background: Theme.bg-deep;
@@ -1261,657 +755,549 @@ export component MusicPlayerScreen inherits Rectangle {
                 VerticalLayout {
                     spacing: 0px;
 
-                    // Hero area
+                    // Sub-header — what you are looking at, and how many
                     Rectangle {
-                        vertical-stretch: 1;
+                        height: 34px;
+                        background: Theme.bg-deep;
 
-                        VerticalLayout {
-                            alignment: center;
-                            spacing: 12px;
-                            padding: 24px;
+                        Rectangle { y: parent.height - 1px; height: 1px; width: 100%; background: Theme.separator; }
 
-                            // Album art placeholder
-                            Rectangle {
-                                width: 180px;
-                                height: 180px;
-                                x: (parent.width - 180px) / 2;
-                                border-radius: 12px;
-                                background: Theme.bg-card;
-                                border-width: 1px;
-                                border-color: Theme.border-subtle;
+                        HorizontalLayout {
+                            padding-left: Theme.sp-4;
+                            padding-right: Theme.sp-4;
+                            spacing: Theme.sp-2;
 
-                                // Pulsing glow when playing
-                                property <float> pulse-phase: 0;
-                                Timer {
-                                    interval: 16ms;
-                                    running: root.is-playing;
-                                    triggered => {
-                                        parent.pulse-phase = mod(parent.pulse-phase + 0.02, 1.0);
-                                    }
-                                }
-
-                                Rectangle {
-                                    width: 180px;
-                                    height: 180px;
-                                    border-radius: 12px;
-                                    background: @radial-gradient(circle,
-                                        Theme.accent-glow 0%,
-                                        transparent 70%
-                                    );
-                                    opacity: root.is-playing
-                                        ? 0.4 + 0.2 * sin(parent.pulse-phase * 6.2832 * 1rad)
-                                        : 0.1;
-                                }
-
-                                // Vinyl record icon
-                                Rectangle {
-                                    x: 40px; y: 40px;
-                                    width: 100px;
-                                    height: 100px;
-                                    border-radius: 50px;
-                                    background: Theme.bg-elevated;
-                                    border-width: 2px;
-                                    border-color: Theme.border-subtle;
-
-                                    Rectangle {
-                                        x: 30px; y: 30px;
-                                        width: 40px;
-                                        height: 40px;
-                                        border-radius: 20px;
-                                        background: Theme.accent-dim;
-
-                                        Text {
-                                            text: "M";
-                                            color: Theme.text-primary;
-                                            font-size: 18px;
-                                            horizontal-alignment: center;
-                                            vertical-alignment: center;
-                                            font-weight: 700;
-                                        }
-                                    }
-                                }
-                            }
-
-                            // Song title
                             Text {
-                                text: root.now-title != "" ? root.now-title : "No track selected";
-                                color: Theme.text-primary;
-                                font-size: 20px;
-                                font-weight: 600;
-                                horizontal-alignment: center;
-                                overflow: elide;
-                            }
-
-                            // Artist
-                            Text {
-                                text: root.now-artist;
+                                text: root.browse-sub-header != "" ? root.browse-sub-header
+                                    : root.active-playlist-index >= 0 && root.playlists.length > root.active-playlist-index
+                                        ? root.playlists[root.active-playlist-index].name
+                                        : root.category-label(root.browse-category);
                                 color: Theme.text-secondary;
-                                font-size: 14px;
-                                horizontal-alignment: center;
-                                overflow: elide;
-                            }
-
-                            // Album
-                            if root.now-album != "" : Text {
-                                text: root.now-album;
-                                color: Theme.text-dim;
-                                font-size: 12px;
-                                horizontal-alignment: center;
-                                overflow: elide;
-                            }
-
-                            // Metadata row (genre + format + bitrate)
-                            if root.now-title != "" : HorizontalLayout {
-                                alignment: center;
-                                spacing: 12px;
-
-                                if root.now-genre != "" : Rectangle {
-                                    width: genre-text.preferred-width + 12px;
-                                    height: 18px;
-                                    border-radius: 9px;
-                                    background: Theme.bg-elevated;
-
-                                    genre-text := Text {
-                                        text: root.now-genre;
-                                        color: Theme.text-dim;
-                                        font-size: 10px;
-                                        horizontal-alignment: center;
-                                        vertical-alignment: center;
-                                    }
-                                }
-
-                                if root.now-format-info != "" : Rectangle {
-                                    width: fmt-text.preferred-width + 12px;
-                                    height: 18px;
-                                    border-radius: 9px;
-                                    background: Theme.bg-elevated;
-
-                                    fmt-text := Text {
-                                        text: root.now-format-info;
-                                        color: Theme.text-dim;
-                                        font-size: 10px;
-                                        horizontal-alignment: center;
-                                        vertical-alignment: center;
-                                    }
-                                }
-
-                                if root.now-bitrate != "" : Rectangle {
-                                    width: br-text.preferred-width + 12px;
-                                    height: 18px;
-                                    border-radius: 9px;
-                                    background: Theme.bg-elevated;
-
-                                    br-text := Text {
-                                        text: root.now-bitrate;
-                                        color: Theme.text-dim;
-                                        font-size: 10px;
-                                        horizontal-alignment: center;
-                                        vertical-alignment: center;
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    // ── Progress bar ──
-                    Rectangle {
-                        height: 44px;
-
-                        HorizontalLayout {
-                            padding-left: 28px;
-                            padding-right: 28px;
-                            spacing: 10px;
-
-                            Text {
-                                text: root.time-current;
-                                color: Theme.text-dim;
-                                font-size: Theme.fs-caption;
-                                vertical-alignment: center;
-                                width: 42px;
-                            }
-
-                            // Seekable progress bar
-                            TouchArea {
-                                height: 44px;
-                                clicked => {
-                                    root.seek(self.mouse-x / self.width);
-                                }
-
-                                Rectangle {
-                                    y: 19px;
-                                    height: 6px;
-                                    border-radius: 3px;
-                                    background: Theme.bg-elevated;
-
-                                    Rectangle {
-                                        width: parent.width * root.progress;
-                                        height: 100%;
-                                        border-radius: 3px;
-                                        background: Theme.accent;
-                                    }
-
-                                    Rectangle {
-                                        x: parent.width * root.progress - 7px;
-                                        y: -4px;
-                                        width: 14px;
-                                        height: 14px;
-                                        border-radius: 7px;
-                                        background: Theme.accent-light;
-                                        drop-shadow-blur: 4px;
-                                        drop-shadow-color: Theme.accent-glow;
-                                    }
-                                }
-                            }
-
-                            Text {
-                                text: root.time-total;
-                                color: Theme.text-dim;
-                                font-size: Theme.fs-caption;
-                                vertical-alignment: center;
-                                width: 42px;
-                                horizontal-alignment: right;
-                            }
-                        }
-                    }
-
-                    // ── Transport controls ──
-                    Rectangle {
-                        height: 72px;
-
-                        HorizontalLayout {
-                            alignment: center;
-                            spacing: 16px;
-
-                            // Shuffle
-                            TouchArea {
-                                width: 36px;
-                                height: 36px;
-                                clicked => { root.toggle-shuffle(); }
-
-                                Rectangle {
-                                    width: 36px;
-                                    height: 36px;
-                                    border-radius: 18px;
-                                    background: root.shuffle-on ? Theme.tint-accent : transparent;
-
-                                    Text {
-                                        text: "S";
-                                        color: root.shuffle-on ? Theme.accent : Theme.text-dim;
-                                        font-size: 12px;
-                                        font-weight: 600;
-                                        horizontal-alignment: center;
-                                        vertical-alignment: center;
-                                    }
-                                }
-                            }
-
-                            // Previous
-                            TouchArea {
-                                width: 44px;
-                                height: 44px;
-                                clicked => { root.prev-track(); }
-
-                                Rectangle {
-                                    width: 44px;
-                                    height: 44px;
-                                    border-radius: 22px;
-                                    background: parent.has-hover ? Theme.hover-fill-strong : Theme.hover-fill;
-                                    border-width: 1px;
-                                    border-color: Theme.border-subtle;
-
-                                    Text {
-                                        text: "<<";
-                                        color: Theme.text-secondary;
-                                        font-size: 15px;
-                                        horizontal-alignment: center;
-                                        vertical-alignment: center;
-                                    }
-                                }
-                            }
-
-                            // Play/Pause
-                            TouchArea {
-                                width: 56px;
-                                height: 56px;
-                                clicked => { root.play-pause(); }
-
-                                Rectangle {
-                                    width: 56px;
-                                    height: 56px;
-                                    border-radius: 28px;
-                                    background: Theme.accent;
-                                    drop-shadow-blur: root.is-playing ? 14px : 0px;
-                                    drop-shadow-color: Theme.accent-glow-strong;
-
-                                    Text {
-                                        text: root.is-playing ? "||" : ">";
-                                        color: Theme.bg-deep;
-                                        font-size: 20px;
-                                        font-weight: 700;
-                                        horizontal-alignment: center;
-                                        vertical-alignment: center;
-                                    }
-                                }
-                            }
-
-                            // Next
-                            TouchArea {
-                                width: 44px;
-                                height: 44px;
-                                clicked => { root.next-track(); }
-
-                                Rectangle {
-                                    width: 44px;
-                                    height: 44px;
-                                    border-radius: 22px;
-                                    background: parent.has-hover ? Theme.hover-fill-strong : Theme.hover-fill;
-                                    border-width: 1px;
-                                    border-color: Theme.border-subtle;
-
-                                    Text {
-                                        text: ">>";
-                                        color: Theme.text-secondary;
-                                        font-size: 15px;
-                                        horizontal-alignment: center;
-                                        vertical-alignment: center;
-                                    }
-                                }
-                            }
-
-                            // Repeat — cycles through off / all / one
-                            TouchArea {
-                                width: 36px;
-                                height: 36px;
-                                clicked => { root.cycle-repeat(); }
-
-                                Rectangle {
-                                    width: 36px;
-                                    height: 36px;
-                                    border-radius: 18px;
-                                    background: root.repeat-mode > 0 ? Theme.tint-accent : transparent;
-
-                                    Text {
-                                        text: root.repeat-mode == 1 ? "R1" : "R";
-                                        color: root.repeat-mode > 0 ? Theme.accent : Theme.text-dim;
-                                        font-size: 12px;
-                                        font-weight: 600;
-                                        horizontal-alignment: center;
-                                        vertical-alignment: center;
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    // ── Volume + Speed row ──
-                    Rectangle {
-                        height: 38px;
-
-                        HorizontalLayout {
-                            padding-left: 28px;
-                            padding-right: 28px;
-                            spacing: 10px;
-
-                            // Mute toggle
-                            TouchArea {
-                                width: 28px;
-                                height: 38px;
-                                clicked => { root.toggle-mute(); }
-
-                                Text {
-                                    text: root.volume-muted ? "X" : (root.volume > 0.5 ? "V+" : "V");
-                                    color: root.volume-muted ? Theme.color-danger : Theme.text-dim;
-                                    font-size: 11px;
-                                    font-weight: 500;
-                                    horizontal-alignment: center;
-                                    vertical-alignment: center;
-                                }
-                            }
-
-                            // Volume slider
-                            TouchArea {
-                                height: 38px;
-                                horizontal-stretch: 1;
-                                clicked => {
-                                    root.volume-changed(self.mouse-x / self.width);
-                                }
-
-                                Rectangle {
-                                    y: 16px;
-                                    height: 6px;
-                                    border-radius: 3px;
-                                    background: Theme.bg-elevated;
-
-                                    Rectangle {
-                                        width: root.volume-muted ? 0px : parent.width * root.volume;
-                                        height: 100%;
-                                        border-radius: 3px;
-                                        background: root.volume-muted ? Theme.text-dim : Theme.accent-dim;
-                                    }
-
-                                    Rectangle {
-                                        x: (root.volume-muted ? 0 : parent.width * root.volume) - 5px;
-                                        y: -2px;
-                                        width: 10px;
-                                        height: 10px;
-                                        border-radius: 5px;
-                                        background: root.volume-muted ? Theme.text-dim : Theme.accent-light;
-                                    }
-                                }
-                            }
-
-                            // Volume percentage
-                            Text {
-                                text: root.volume-muted ? "Muted" : "\{round(root.volume * 100)}%";
-                                color: Theme.text-dim;
-                                font-size: 10px;
-                                vertical-alignment: center;
-                                width: 40px;
-                                horizontal-alignment: right;
-                            }
-
-                            // Separator
-                            Rectangle { width: 1px; height: 20px; y: 9px; background: Theme.separator; }
-
-                            // Speed control
-                            TouchArea {
-                                width: 42px;
-                                height: 38px;
-                                clicked => { root.show-speed-popup = !root.show-speed-popup; }
-
-                                Rectangle {
-                                    width: 42px; height: 24px; y: 7px;
-                                    border-radius: 6px;
-                                    background: root.playback-speed != 1.0 ? Theme.tint-accent
-                                        : (parent.has-hover ? Theme.hover-fill : transparent);
-
-                                    Text {
-                                        text: root.playback-speed == 1.0 ? "1x"
-                                            : root.playback-speed == 0.5 ? "0.5x"
-                                            : root.playback-speed == 0.75 ? ".75x"
-                                            : root.playback-speed == 1.25 ? "1.2x"
-                                            : root.playback-speed == 1.5 ? "1.5x"
-                                            : root.playback-speed == 2.0 ? "2x"
-                                            : "\{root.playback-speed}x";
-                                        color: root.playback-speed != 1.0 ? Theme.accent : Theme.text-dim;
-                                        font-size: 11px;
-                                        font-weight: 500;
-                                        horizontal-alignment: center;
-                                        vertical-alignment: center;
-                                    }
-                                }
-                            }
-
-                            // Separator
-                            Rectangle { width: 1px; height: 20px; y: 9px; background: Theme.separator; }
-
-                            // EQ button
-                            TouchArea {
-                                width: 36px;
-                                height: 38px;
-                                clicked => { root.music-show-equalizer = !root.music-show-equalizer; }
-
-                                Rectangle {
-                                    width: 36px; height: 24px; y: 7px;
-                                    border-radius: 6px;
-                                    background: root.music-equalizer-preset > 0 ? Theme.tint-accent
-                                        : (parent.has-hover ? Theme.hover-fill : transparent);
-
-                                    Text {
-                                        text: "EQ";
-                                        color: root.music-equalizer-preset > 0 ? Theme.accent : Theme.text-dim;
-                                        font-size: 11px;
-                                        font-weight: 600;
-                                        horizontal-alignment: center;
-                                        vertical-alignment: center;
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    // Speed popup
-                    if root.show-speed-popup : Rectangle {
-                        height: 36px;
-                        background: Theme.bg-card;
-                        border-width: 1px;
-                        border-color: Theme.border-subtle;
-
-                        HorizontalLayout {
-                            padding-left: 16px;
-                            padding-right: 16px;
-                            spacing: 4px;
-                            alignment: center;
-
-                            for speed-val in [0.5, 0.75, 1.0, 1.25, 1.5, 2.0] :
-                            TouchArea {
-                                width: 40px;
-                                height: 28px;
-                                clicked => {
-                                    root.set-playback-speed(speed-val);
-                                    root.show-speed-popup = false;
-                                }
-
-                                Rectangle {
-                                    width: 40px; height: 24px; y: 2px;
-                                    border-radius: 6px;
-                                    background: root.playback-speed == speed-val ? Theme.accent : (parent.has-hover ? Theme.hover-fill : transparent);
-
-                                    Text {
-                                        text: speed-val == 1.0 ? "1x"
-                                            : speed-val == 0.5 ? "0.5x"
-                                            : speed-val == 0.75 ? ".75"
-                                            : speed-val == 1.25 ? "1.25"
-                                            : speed-val == 1.5 ? "1.5x"
-                                            : "2x";
-                                        color: root.playback-speed == speed-val ? Theme.bg-deep : Theme.text-secondary;
-                                        font-size: 11px;
-                                        font-weight: root.playback-speed == speed-val ? 600 : 400;
-                                        horizontal-alignment: center;
-                                        vertical-alignment: center;
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    // Equalizer preset popup
-                    if root.music-show-equalizer : Rectangle {
-                        height: 36px;
-                        background: Theme.bg-card;
-                        border-width: 1px;
-                        border-color: Theme.border-subtle;
-
-                        HorizontalLayout {
-                            padding-left: 16px;
-                            padding-right: 16px;
-                            spacing: 4px;
-                            alignment: center;
-
-                            for eq-label[eq-idx] in ["Flat", "Bass+", "Vocal", "Treble"]:
-                            TouchArea {
-                                width: 52px;
-                                height: 28px;
-                                clicked => {
-                                    root.music-set-equalizer(eq-idx);
-                                    root.music-show-equalizer = false;
-                                }
-
-                                Rectangle {
-                                    width: 52px; height: 24px; y: 2px;
-                                    border-radius: 6px;
-                                    background: root.music-equalizer-preset == eq-idx ? Theme.accent : (parent.has-hover ? Theme.hover-fill : transparent);
-
-                                    Text {
-                                        text: eq-label;
-                                        color: root.music-equalizer-preset == eq-idx ? Theme.bg-deep : Theme.text-secondary;
-                                        font-size: 11px;
-                                        font-weight: root.music-equalizer-preset == eq-idx ? 600 : 400;
-                                        horizontal-alignment: center;
-                                        vertical-alignment: center;
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    // Bottom padding
-                    Rectangle { height: 6px; }
-                }
-            }
-
-            // Separator
-            Rectangle { width: 1px; background: Theme.separator; }
-
-            // ═══ Right panel: Queue / Up Next ═══
-            Rectangle {
-                width: 240px;
-                background: Theme.bg-surface;
-
-                VerticalLayout {
-                    spacing: 0px;
-
-                    // Queue header
-                    Rectangle {
-                        height: 44px;
-                        background: Theme.bg-card;
-
-                        HorizontalLayout {
-                            padding-left: 12px;
-                            padding-right: 10px;
-                            spacing: 6px;
-
-                            Text {
-                                text: "Up Next";
-                                color: Theme.text-primary;
-                                font-size: 13px;
-                                font-weight: 600;
+                                font-size: Theme.fs-micro;
+                                font-weight: Theme.fw-micro;
+                                letter-spacing: 1px;
                                 vertical-alignment: center;
                             }
 
                             Rectangle { horizontal-stretch: 1; }
 
                             Text {
-                                text: root.queue-tracks.length > 0
-                                    ? "\{root.queue-tracks.length} tracks"
-                                    : "";
+                                text: root.browse-category == 0 ? "\{root.library-tracks.length} shown"
+                                    : root.browse-category == 1 ? "\{root.library-artists.length} artists"
+                                    : root.browse-category == 2 ? "\{root.library-albums.length} albums"
+                                    : "\{root.library-genres.length} genres";
                                 color: Theme.text-dim;
-                                font-size: 10px;
+                                font-size: Theme.fs-micro;
+                                font-family: Theme.font-mono;
                                 vertical-alignment: center;
                             }
+                        }
+                    }
 
-                            // Clear queue
-                            if root.queue-tracks.length > 0 : TouchArea {
-                                width: 28px;
-                                height: 28px;
-                                clicked => { root.queue-clear(); }
+                    // Column header (songs only — the other views are not tabular)
+                    if root.browse-category == 0 && root.library-tracks.length > 0 : Rectangle {
+                        height: 28px;
+                        background: Theme.bg-deep;
 
-                                Rectangle {
-                                    width: 28px; height: 28px;
-                                    border-radius: 6px;
-                                    background: parent.has-hover ? Theme.color-danger-dim : transparent;
-                                    Text {
-                                        text: "C";
-                                        color: Theme.text-dim;
-                                        font-size: 11px;
-                                        font-weight: 500;
-                                        horizontal-alignment: center;
-                                        vertical-alignment: center;
+                        Rectangle { y: parent.height - 1px; height: 1px; width: 100%; background: Theme.separator; }
+
+                        HorizontalLayout {
+                            padding-left: Theme.sp-4;
+                            padding-right: Theme.sp-4;
+                            spacing: Theme.sp-3;
+
+                            Text {
+                                text: "#";
+                                width: 30px;
+                                color: Theme.text-dim;
+                                font-size: Theme.fs-micro;
+                                font-family: Theme.font-mono;
+                                horizontal-alignment: right;
+                                vertical-alignment: center;
+                            }
+                            Text {
+                                text: "TITLE";
+                                horizontal-stretch: 1;
+                                color: Theme.text-dim;
+                                font-size: Theme.fs-micro;
+                                letter-spacing: 0.8px;
+                                vertical-alignment: center;
+                            }
+                            Text {
+                                text: "ARTIST";
+                                width: 170px;
+                                color: Theme.text-dim;
+                                font-size: Theme.fs-micro;
+                                letter-spacing: 0.8px;
+                                vertical-alignment: center;
+                            }
+                            Text {
+                                text: "ALBUM";
+                                width: 150px;
+                                color: Theme.text-dim;
+                                font-size: Theme.fs-micro;
+                                letter-spacing: 0.8px;
+                                vertical-alignment: center;
+                            }
+                            Text {
+                                text: "TIME";
+                                width: 56px;
+                                color: Theme.text-dim;
+                                font-size: Theme.fs-micro;
+                                letter-spacing: 0.8px;
+                                horizontal-alignment: right;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+
+                    // The list itself
+                    Rectangle {
+                        vertical-stretch: 1;
+                        clip: true;
+
+                        // ── Songs ──
+                        if root.browse-category == 0 && root.library-tracks.length > 0 : Flickable {
+                            viewport-height: songs-col.preferred-height;
+
+                            songs-col := VerticalLayout {
+                                alignment: start;
+                                spacing: 0px;
+
+                                for tr[tidx] in root.library-tracks : Rectangle {
+                                    height: 40px;
+                                    background: tr.is-current ? Theme.tint-accent
+                                              : row-ta.has-hover ? Theme.hover-fill
+                                              : mod(tidx, 2) == 1 ? Theme.bg-surface.transparentize(60%)
+                                              : transparent;
+
+                                    if tr.is-current : Rectangle {
+                                        x: 0; width: 2px; height: 100%;
+                                        background: Theme.accent;
+                                    }
+
+                                    row-ta := TouchArea {
+                                        mouse-cursor: pointer;
+                                        clicked => { root.play-track-index(tidx); }
+                                    }
+
+                                    HorizontalLayout {
+                                        padding-left: Theme.sp-4;
+                                        padding-right: Theme.sp-4;
+                                        spacing: Theme.sp-3;
+
+                                        // Index, or a play glyph on hover, or the state when current
+                                        Rectangle {
+                                            width: 30px;
+                                            if row-ta.has-hover && !tr.is-current : Icon {
+                                                commands: Icons.play;
+                                                size: 13px;
+                                                tint: Theme.text-primary;
+                                                fill: Theme.text-primary;
+                                                x: (parent.width - self.width) / 2;
+                                                y: (parent.height - self.height) / 2;
+                                            }
+                                            if tr.is-current : Icon {
+                                                commands: root.is-playing ? Icons.volume : Icons.pause;
+                                                size: 13px;
+                                                tint: Theme.accent;
+                                                x: (parent.width - self.width) / 2;
+                                                y: (parent.height - self.height) / 2;
+                                            }
+                                            if !row-ta.has-hover && !tr.is-current : Text {
+                                                text: tidx + 1;
+                                                color: Theme.text-dim;
+                                                font-size: Theme.fs-micro;
+                                                font-family: Theme.font-mono;
+                                                width: 100%;
+                                                horizontal-alignment: right;
+                                                vertical-alignment: center;
+                                            }
+                                        }
+
+                                        Text {
+                                            text: tr.title;
+                                            horizontal-stretch: 1;
+                                            color: tr.is-current ? Theme.accent : Theme.text-primary;
+                                            font-size: Theme.fs-body;
+                                            font-weight: tr.is-current ? 500 : Theme.fw-body;
+                                            overflow: elide;
+                                            vertical-alignment: center;
+                                        }
+
+                                        Text {
+                                            text: tr.artist;
+                                            width: 170px;
+                                            color: Theme.text-secondary;
+                                            font-size: Theme.fs-caption;
+                                            overflow: elide;
+                                            vertical-alignment: center;
+                                        }
+
+                                        Text {
+                                            text: tr.album;
+                                            width: 150px;
+                                            color: Theme.text-dim;
+                                            font-size: Theme.fs-caption;
+                                            overflow: elide;
+                                            vertical-alignment: center;
+                                        }
+
+                                        // Row actions replace the duration on hover
+                                        Rectangle {
+                                            width: 56px;
+
+                                            if !row-ta.has-hover : Text {
+                                                width: 100%;
+                                                text: tr.duration-text;
+                                                color: Theme.text-dim;
+                                                font-size: Theme.fs-caption;
+                                                font-family: Theme.font-mono;
+                                                horizontal-alignment: right;
+                                                vertical-alignment: center;
+                                            }
+
+                                            if row-ta.has-hover : HorizontalLayout {
+                                                alignment: end;
+                                                spacing: 2px;
+
+                                                queue-next-ta := TouchArea {
+                                                    width: 24px; height: 24px;
+                                                    y: (parent.height - 24px) / 2;
+                                                    mouse-cursor: pointer;
+                                                    clicked => { root.play-next(tidx); }
+                                                    Icon {
+                                                        commands: Icons.skip-forward;
+                                                        size: 12px;
+                                                        tint: queue-next-ta.has-hover ? Theme.accent : Theme.text-dim;
+                                                        x: (parent.width - self.width) / 2;
+                                                        y: (parent.height - self.height) / 2;
+                                                    }
+                                                }
+                                                queue-add-ta := TouchArea {
+                                                    width: 24px; height: 24px;
+                                                    y: (parent.height - 24px) / 2;
+                                                    mouse-cursor: pointer;
+                                                    clicked => {
+                                                        if (root.active-playlist-index >= 0) {
+                                                            root.playlist-add-track(root.active-playlist-index, tidx);
+                                                        } else {
+                                                            root.add-to-queue(tidx);
+                                                        }
+                                                    }
+                                                    Icon {
+                                                        commands: Icons.plus;
+                                                        size: 13px;
+                                                        tint: queue-add-ta.has-hover ? Theme.accent : Theme.text-dim;
+                                                        x: (parent.width - self.width) / 2;
+                                                        y: (parent.height - self.height) / 2;
+                                                    }
+                                                }
+                                            }
+                                        }
                                     }
                                 }
                             }
+                        }
 
-                            // AI button
-                            if root.now-title != "" : TouchArea {
-                                width: 36px;
-                                height: 28px;
-                                clicked => {
-                                    root.ai-explain-pressed();
-                                    root.ai-panel-open = true;
-                                }
-                                Rectangle {
-                                    width: 36px; height: 28px;
-                                    border-radius: 8px;
-                                    background: root.ai-is-working ? Theme.accent
-                                        : (parent.has-hover ? Theme.hover-fill-strong : Theme.hover-fill);
-                                    border-width: root.ai-is-working ? 0px : 1px;
-                                    border-color: Theme.border-subtle;
+                        // ── Artists ──
+                        if root.browse-category == 1 && root.library-artists.length > 0 : Flickable {
+                            viewport-height: artists-col.preferred-height;
+
+                            artists-col := VerticalLayout {
+                                alignment: start;
+                                spacing: 0px;
+
+                                for ar[aidx] in root.library-artists : Rectangle {
+                                    height: 52px;
+                                    background: ar-ta.has-hover ? Theme.hover-fill : transparent;
+
+                                    Rectangle { y: parent.height - 1px; height: 1px; width: 100%; background: Theme.separator; }
+
+                                    ar-ta := TouchArea {
+                                        mouse-cursor: pointer;
+                                        clicked => { root.browse-item-selected(ar.name); }
+                                    }
+
                                     HorizontalLayout {
-                                        alignment: center;
-                                        spacing: 2px;
-                                        Text {
-                                            text: "\u{2728}";
-                                            font-size: 10px;
-                                            vertical-alignment: center;
+                                        padding-left: Theme.sp-4;
+                                        padding-right: Theme.sp-4;
+                                        spacing: Theme.sp-3;
+
+                                        Rectangle {
+                                            width: 34px; height: 34px;
+                                            y: (parent.height - 34px) / 2;
+                                            border-radius: 17px;
+                                            background: Theme.bg-elevated;
+                                            Icon {
+                                                commands: Icons.people;
+                                                size: 16px; tint: Theme.text-secondary;
+                                                x: (parent.width - self.width) / 2;
+                                                y: (parent.height - self.height) / 2;
+                                            }
                                         }
+
+                                        VerticalLayout {
+                                            alignment: center;
+                                            spacing: 2px;
+                                            horizontal-stretch: 1;
+                                            Text {
+                                                text: ar.name;
+                                                color: Theme.text-primary;
+                                                font-size: Theme.fs-body;
+                                                overflow: elide;
+                                            }
+                                            Text {
+                                                text: ar.album-count == 1
+                                                    ? "1 album \{"\u{00b7}"} \{ar.track-count} tracks"
+                                                    : "\{ar.album-count} albums \{"\u{00b7}"} \{ar.track-count} tracks";
+                                                color: Theme.text-dim;
+                                                font-size: Theme.fs-micro;
+                                            }
+                                        }
+
+                                        Icon {
+                                            commands: Icons.chevron-right;
+                                            size: 14px; tint: Theme.text-dim;
+                                            y: (parent.height - self.height) / 2;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // ── Albums ──
+                        if root.browse-category == 2 && root.library-albums.length > 0 : Flickable {
+                            viewport-height: albums-col.preferred-height;
+
+                            albums-col := VerticalLayout {
+                                alignment: start;
+                                spacing: 0px;
+
+                                for al[alidx] in root.library-albums : Rectangle {
+                                    height: 52px;
+                                    background: al-ta.has-hover ? Theme.hover-fill : transparent;
+
+                                    Rectangle { y: parent.height - 1px; height: 1px; width: 100%; background: Theme.separator; }
+
+                                    al-ta := TouchArea {
+                                        mouse-cursor: pointer;
+                                        clicked => { root.browse-item-selected(al.name); }
+                                    }
+
+                                    HorizontalLayout {
+                                        padding-left: Theme.sp-4;
+                                        padding-right: Theme.sp-4;
+                                        spacing: Theme.sp-3;
+
+                                        Rectangle {
+                                            width: 34px; height: 34px;
+                                            y: (parent.height - 34px) / 2;
+                                            border-radius: Theme.r-sm;
+                                            background: Theme.bg-elevated;
+                                            Icon {
+                                                commands: Icons.disk;
+                                                size: 16px; tint: Theme.text-secondary;
+                                                x: (parent.width - self.width) / 2;
+                                                y: (parent.height - self.height) / 2;
+                                            }
+                                        }
+
+                                        VerticalLayout {
+                                            alignment: center;
+                                            spacing: 2px;
+                                            horizontal-stretch: 1;
+                                            Text {
+                                                text: al.name;
+                                                color: Theme.text-primary;
+                                                font-size: Theme.fs-body;
+                                                overflow: elide;
+                                            }
+                                            Text {
+                                                text: al.year != "" ? "\{al.artist} \{"\u{00b7}"} \{al.year}" : al.artist;
+                                                color: Theme.text-dim;
+                                                font-size: Theme.fs-micro;
+                                                overflow: elide;
+                                            }
+                                        }
+
                                         Text {
-                                            text: root.ai-is-working ? ".." : "AI";
-                                            color: root.ai-is-working ? Theme.text-on-accent : Theme.text-secondary;
-                                            font-size: 10px;
-                                            font-weight: 500;
+                                            text: "\{al.track-count}";
+                                            width: 40px;
+                                            color: Theme.text-dim;
+                                            font-size: Theme.fs-caption;
+                                            font-family: Theme.font-mono;
+                                            horizontal-alignment: right;
                                             vertical-alignment: center;
                                         }
                                     }
+                                }
+                            }
+                        }
+
+                        // ── Genres ──
+                        if root.browse-category == 3 && root.library-genres.length > 0 : Flickable {
+                            viewport-height: genres-col.preferred-height;
+
+                            genres-col := VerticalLayout {
+                                alignment: start;
+                                spacing: 0px;
+
+                                for gn[gidx] in root.library-genres : Rectangle {
+                                    height: 44px;
+                                    background: gn-ta.has-hover ? Theme.hover-fill : transparent;
+
+                                    Rectangle { y: parent.height - 1px; height: 1px; width: 100%; background: Theme.separator; }
+
+                                    gn-ta := TouchArea {
+                                        mouse-cursor: pointer;
+                                        clicked => { root.browse-item-selected(gn.name); }
+                                    }
+
+                                    HorizontalLayout {
+                                        padding-left: Theme.sp-4;
+                                        padding-right: Theme.sp-4;
+                                        spacing: Theme.sp-3;
+
+                                        Icon {
+                                            commands: Icons.tag;
+                                            size: 15px; tint: Theme.text-secondary;
+                                            y: (parent.height - self.height) / 2;
+                                        }
+                                        Text {
+                                            text: gn.name;
+                                            horizontal-stretch: 1;
+                                            color: Theme.text-primary;
+                                            font-size: Theme.fs-body;
+                                            overflow: elide;
+                                            vertical-alignment: center;
+                                        }
+                                        Text {
+                                            text: "\{gn.track-count}";
+                                            color: Theme.text-dim;
+                                            font-size: Theme.fs-caption;
+                                            font-family: Theme.font-mono;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // ── Empty ──
+                        if (root.browse-category == 0 && root.library-tracks.length == 0)
+                            || (root.browse-category == 1 && root.library-artists.length == 0)
+                            || (root.browse-category == 2 && root.library-albums.length == 0)
+                            || (root.browse-category == 3 && root.library-genres.length == 0) : YEmptyState {
+                            icon-path: Icons.music;
+                            title: root.browse-filter != "" ? "Nothing matches that"
+                                 : root.is-scanning ? "Scanning\{"\u{2026}"}"
+                                 : "No music yet";
+                            description: root.browse-filter != "" ? "Try a shorter search."
+                                       : "Add a folder and Yantrik will index what is in it.";
+                            action-label: root.browse-filter != "" ? "" : "Add folder";
+                            action-clicked => { root.show-scan-folders-dialog = true; }
+                        }
+                    }
+                }
+            }
+
+            Rectangle { width: 1px; background: Theme.separator; }
+
+            // ─── Now playing + queue ───
+            Rectangle {
+                width: 300px;
+                background: Theme.bg-surface;
+
+                VerticalLayout {
+                    spacing: 0px;
+
+                    // Artwork
+                    Rectangle {
+                        height: 300px;
+
+                        Rectangle {
+                            x: Theme.sp-4;
+                            y: Theme.sp-4;
+                            width: parent.width - Theme.sp-4 * 2;
+                            height: parent.height - Theme.sp-4 * 2;
+                            border-radius: Theme.r-lg;
+                            background: Theme.bg-card;
+                            border-width: 1px;
+                            border-color: Theme.border-subtle;
+                            clip: true;
+
+                            Icon {
+                                commands: Icons.music;
+                                size: 72px;
+                                thickness: 1.2px;
+                                tint: root.now-title != "" ? Theme.accent.transparentize(25%) : Theme.text-dim.transparentize(30%);
+                                x: (parent.width - self.width) / 2;
+                                y: (parent.height - self.height) / 2;
+                            }
+                        }
+                    }
+
+                    // Track metadata
+                    VerticalLayout {
+                        padding-left: Theme.sp-4;
+                        padding-right: Theme.sp-4;
+                        padding-bottom: Theme.sp-3;
+                        spacing: 3px;
+
+                        Text {
+                            text: root.now-title != "" ? root.now-title : "Nothing playing";
+                            color: root.now-title != "" ? Theme.text-primary : Theme.text-dim;
+                            font-size: Theme.fs-headline;
+                            font-weight: Theme.fw-headline;
+                            overflow: elide;
+                        }
+                        Text {
+                            text: root.now-artist;
+                            color: Theme.text-secondary;
+                            font-size: Theme.fs-caption;
+                            overflow: elide;
+                        }
+                        Text {
+                            text: root.now-album != "" && root.now-genre != ""
+                                ? "\{root.now-album} \{"\u{00b7}"} \{root.now-genre}"
+                                : root.now-album != "" ? root.now-album : root.now-genre;
+                            color: Theme.text-dim;
+                            font-size: Theme.fs-micro;
+                            overflow: elide;
+                        }
+
+                        if root.now-format-info != "" || root.now-bitrate != "" : HorizontalLayout {
+                            padding-top: 4px;
+                            spacing: 5px;
+                            alignment: start;
+
+                            if root.now-format-info != "" : Rectangle {
+                                width: fmt-txt.preferred-width + 12px;
+                                height: 18px;
+                                border-radius: Theme.r-sm;
+                                background: Theme.bg-input;
+                                fmt-txt := Text {
+                                    text: root.now-format-info;
+                                    color: Theme.text-secondary;
+                                    font-size: Theme.fs-micro;
+                                    font-family: Theme.font-mono;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                            }
+                            if root.now-bitrate != "" : Rectangle {
+                                width: br-txt.preferred-width + 12px;
+                                height: 18px;
+                                border-radius: Theme.r-sm;
+                                background: Theme.bg-input;
+                                br-txt := Text {
+                                    text: root.now-bitrate;
+                                    color: Theme.text-secondary;
+                                    font-size: Theme.fs-micro;
+                                    font-family: Theme.font-mono;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
                                 }
                             }
                         }
@@ -1919,218 +1305,936 @@ export component MusicPlayerScreen inherits Rectangle {
 
                     Rectangle { height: 1px; background: Theme.separator; }
 
-                    // AI Response Panel
-                    if root.ai-panel-open && root.ai-response != "" : Rectangle {
-                        max-height: 140px;
-                        background: Theme.bg-overlay-panel;
-                        border-width: 1px;
-                        border-color: Theme.accent.transparentize(70%);
+                    // Queue header
+                    Rectangle {
+                        height: 30px;
+                        HorizontalLayout {
+                            padding-left: Theme.sp-4;
+                            padding-right: Theme.sp-3;
+                            spacing: Theme.sp-2;
 
-                        Flickable {
-                            viewport-height: ai-music-resp.preferred-height + 16px;
-
-                            ai-music-resp := VerticalLayout {
-                                padding: 10px;
-                                spacing: 6px;
-
-                                HorizontalLayout {
-                                    spacing: 6px;
-                                    Text {
-                                        text: "\u{2728}";
-                                        font-size: 11px;
-                                        vertical-alignment: center;
-                                    }
-                                    Text {
-                                        text: "AI";
-                                        color: Theme.accent;
-                                        font-size: 11px;
-                                        font-weight: 600;
-                                        vertical-alignment: center;
-                                    }
-                                    Rectangle { horizontal-stretch: 1; }
-
-                                    TouchArea {
-                                        width: 22px;
-                                        height: 22px;
-                                        clicked => {
-                                            root.ai-panel-open = false;
-                                            root.ai-dismiss();
-                                        }
-                                        Rectangle {
-                                            width: 22px; height: 22px;
-                                            border-radius: 11px;
-                                            background: parent.has-hover ? Theme.hover-fill : transparent;
-                                            Text {
-                                                text: "\u{2715}";
-                                                font-size: 10px;
-                                                color: Theme.text-dim;
-                                                horizontal-alignment: center;
-                                                vertical-alignment: center;
-                                            }
-                                        }
-                                    }
-                                }
-
+                            Text {
+                                text: "UP NEXT";
+                                color: Theme.text-dim;
+                                font-size: Theme.fs-micro;
+                                font-weight: Theme.fw-micro;
+                                letter-spacing: 1px;
+                                vertical-alignment: center;
+                            }
+                            Text {
+                                text: root.queue-tracks.length > 0 ? "\{root.queue-tracks.length}" : "";
+                                color: Theme.text-dim;
+                                font-size: Theme.fs-micro;
+                                font-family: Theme.font-mono;
+                                vertical-alignment: center;
+                            }
+                            Rectangle { horizontal-stretch: 1; }
+                            if root.queue-tracks.length > 0 : TouchArea {
+                                width: 44px; height: 22px;
+                                y: (parent.height - 22px) / 2;
+                                mouse-cursor: pointer;
+                                clicked => { root.queue-clear(); }
                                 Text {
-                                    text: root.ai-response;
-                                    color: Theme.text-primary;
-                                    font-size: 11px;
-                                    wrap: word-wrap;
+                                    text: "Clear";
+                                    color: parent.has-hover ? Theme.color-danger : Theme.text-dim;
+                                    font-size: Theme.fs-micro;
+                                    horizontal-alignment: right;
+                                    vertical-alignment: center;
                                 }
                             }
                         }
                     }
 
                     // Queue list
-                    Flickable {
-                        viewport-height: queue-col.preferred-height;
+                    Rectangle {
+                        vertical-stretch: 1;
+                        clip: true;
 
-                        queue-col := VerticalLayout {
-                            spacing: 0px;
+                        if root.queue-tracks.length > 0 : Flickable {
+                            viewport-height: queue-col.preferred-height;
 
-                            if root.queue-tracks.length == 0 : Rectangle {
-                                height: 80px;
+                            queue-col := VerticalLayout {
+                                alignment: start;
+                                spacing: 0px;
 
-                                Text {
-                                    text: "Queue is empty\nPlay a track to start";
-                                    color: Theme.text-dim;
-                                    font-size: 12px;
-                                    horizontal-alignment: center;
-                                    vertical-alignment: center;
-                                }
-                            }
+                                for qt[qidx] in root.queue-tracks : Rectangle {
+                                    property <bool> current: qidx == root.queue-current-index;
+                                    height: 42px;
+                                    background: current ? Theme.tint-accent
+                                              : q-ta.has-hover ? Theme.hover-fill : transparent;
 
-                            for qtrack[qidx] in root.queue-tracks :
-                            Rectangle {
-                                height: 52px;
-                                background: qtrack.is-current
-                                    ? Theme.tint-accent
-                                    : transparent;
-
-                                HorizontalLayout {
-                                    padding-left: 6px;
-                                    padding-right: 6px;
-                                    spacing: 4px;
-
-                                    // Reorder buttons
-                                    VerticalLayout {
-                                        width: 16px;
-                                        alignment: center;
-                                        spacing: 1px;
-
-                                        TouchArea {
-                                            width: 16px;
-                                            height: 14px;
-                                            clicked => { root.queue-move-up(qidx); }
-
-                                            Rectangle {
-                                                width: 16px; height: 14px;
-                                                border-radius: 3px;
-                                                background: parent.has-hover ? Theme.hover-fill-strong : transparent;
-                                                Text {
-                                                    text: "^";
-                                                    color: Theme.text-dim;
-                                                    font-size: 9px;
-                                                    horizontal-alignment: center;
-                                                    vertical-alignment: center;
-                                                }
-                                            }
-                                        }
-
-                                        TouchArea {
-                                            width: 16px;
-                                            height: 14px;
-                                            clicked => { root.queue-move-down(qidx); }
-
-                                            Rectangle {
-                                                width: 16px; height: 14px;
-                                                border-radius: 3px;
-                                                background: parent.has-hover ? Theme.hover-fill-strong : transparent;
-                                                Text {
-                                                    text: "v";
-                                                    color: Theme.text-dim;
-                                                    font-size: 9px;
-                                                    horizontal-alignment: center;
-                                                    vertical-alignment: center;
-                                                }
-                                            }
-                                        }
+                                    q-ta := TouchArea {
+                                        mouse-cursor: pointer;
+                                        clicked => { root.queue-play-index(qidx); }
                                     }
 
-                                    // Play this track
-                                    TouchArea {
-                                        width: 18px;
-                                        height: 52px;
-                                        clicked => { root.queue-play-index(qidx); }
-
-                                        Text {
-                                            text: qtrack.is-current ? ">" : "\{qidx + 1}";
-                                            color: qtrack.is-current ? Theme.accent : Theme.text-dim;
-                                            font-size: 10px;
-                                            horizontal-alignment: center;
-                                            vertical-alignment: center;
-                                        }
-                                    }
-
-                                    // Title + artist (clickable to play)
-                                    TouchArea {
-                                        horizontal-stretch: 1;
-                                        height: 52px;
-                                        clicked => { root.queue-play-index(qidx); }
+                                    HorizontalLayout {
+                                        padding-left: Theme.sp-4;
+                                        padding-right: Theme.sp-2;
+                                        spacing: Theme.sp-2;
 
                                         VerticalLayout {
                                             alignment: center;
-                                            spacing: 2px;
-
+                                            spacing: 1px;
+                                            horizontal-stretch: 1;
                                             Text {
-                                                text: qtrack.title;
-                                                color: qtrack.is-current ? Theme.accent : Theme.text-primary;
-                                                font-size: 11px;
+                                                text: qt.title;
+                                                color: current ? Theme.accent : Theme.text-primary;
+                                                font-size: Theme.fs-caption;
+                                                font-weight: current ? 500 : Theme.fw-body;
                                                 overflow: elide;
-                                                font-weight: qtrack.is-current ? 600 : 400;
                                             }
                                             Text {
-                                                text: qtrack.artist;
-                                                color: Theme.text-secondary;
-                                                font-size: 10px;
+                                                text: qt.artist;
+                                                color: Theme.text-dim;
+                                                font-size: Theme.fs-micro;
                                                 overflow: elide;
                                             }
                                         }
-                                    }
 
-                                    // Duration
-                                    Text {
-                                        text: qtrack.duration-text;
-                                        color: Theme.text-dim;
-                                        font-size: 10px;
-                                        width: 30px;
-                                        horizontal-alignment: right;
-                                        vertical-alignment: center;
-                                    }
+                                        if !q-ta.has-hover : Text {
+                                            text: qt.duration-text;
+                                            color: Theme.text-dim;
+                                            font-size: Theme.fs-micro;
+                                            font-family: Theme.font-mono;
+                                            vertical-alignment: center;
+                                        }
 
-                                    // Remove from queue
-                                    TouchArea {
-                                        width: 20px;
-                                        height: 20px;
-                                        clicked => { root.queue-remove(qidx); }
+                                        if q-ta.has-hover : HorizontalLayout {
+                                            spacing: 0px;
+                                            alignment: end;
 
-                                        Rectangle {
-                                            width: 20px; height: 20px;
-                                            y: 16px;
-                                            border-radius: 4px;
-                                            background: parent.has-hover ? Theme.color-danger-dim : transparent;
-                                            Text {
-                                                text: "\u{2715}";
-                                                color: Theme.text-dim;
-                                                font-size: 9px;
-                                                horizontal-alignment: center;
-                                                vertical-alignment: center;
+                                            up-ta := TouchArea {
+                                                width: 20px; height: 22px;
+                                                y: (parent.height - 22px) / 2;
+                                                mouse-cursor: pointer;
+                                                clicked => { root.queue-move-up(qidx); }
+                                                Icon {
+                                                    commands: Icons.chevron-up;
+                                                    size: 12px;
+                                                    tint: up-ta.has-hover ? Theme.text-primary : Theme.text-dim;
+                                                    x: (parent.width - self.width) / 2;
+                                                    y: (parent.height - self.height) / 2;
+                                                }
+                                            }
+                                            down-ta := TouchArea {
+                                                width: 20px; height: 22px;
+                                                y: (parent.height - 22px) / 2;
+                                                mouse-cursor: pointer;
+                                                clicked => { root.queue-move-down(qidx); }
+                                                Icon {
+                                                    commands: Icons.chevron-down;
+                                                    size: 12px;
+                                                    tint: down-ta.has-hover ? Theme.text-primary : Theme.text-dim;
+                                                    x: (parent.width - self.width) / 2;
+                                                    y: (parent.height - self.height) / 2;
+                                                }
+                                            }
+                                            rm-ta := TouchArea {
+                                                width: 22px; height: 22px;
+                                                y: (parent.height - 22px) / 2;
+                                                mouse-cursor: pointer;
+                                                clicked => {
+                                                    if (root.active-playlist-index >= 0) {
+                                                        root.playlist-remove-track(root.active-playlist-index, qidx);
+                                                    }
+                                                    root.queue-remove(qidx);
+                                                }
+                                                Icon {
+                                                    commands: Icons.close;
+                                                    size: 11px;
+                                                    tint: rm-ta.has-hover ? Theme.color-danger : Theme.text-dim;
+                                                    x: (parent.width - self.width) / 2;
+                                                    y: (parent.height - self.height) / 2;
+                                                }
                                             }
                                         }
                                     }
                                 }
                             }
                         }
+
+                        if root.queue-tracks.length == 0 : VerticalLayout {
+                            alignment: center;
+                            spacing: 4px;
+                            padding: Theme.sp-5;
+
+                            Text {
+                                text: "Queue is empty";
+                                color: Theme.text-dim;
+                                font-size: Theme.fs-caption;
+                                horizontal-alignment: center;
+                            }
+                            Text {
+                                text: "Hover a track and press + to add it.";
+                                color: Theme.text-dim.transparentize(30%);
+                                font-size: Theme.fs-micro;
+                                horizontal-alignment: center;
+                                wrap: word-wrap;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // ══════════════ Equalizer strip (toggled) ══════════════
+        if root.music-show-equalizer : Rectangle {
+            height: 38px;
+            background: Theme.bg-card;
+
+            Rectangle { y: 0; height: 1px; width: 100%; background: Theme.separator; }
+
+            HorizontalLayout {
+                padding-left: Theme.sp-4;
+                padding-right: Theme.sp-4;
+                spacing: Theme.sp-2;
+                alignment: start;
+
+                Text {
+                    text: "EQUALIZER";
+                    color: Theme.text-dim;
+                    font-size: Theme.fs-micro;
+                    font-weight: Theme.fw-micro;
+                    letter-spacing: 1px;
+                    vertical-alignment: center;
+                }
+
+                Rectangle { width: Theme.sp-2; }
+
+                for preset in [0, 1, 2, 3] : Rectangle {
+                    property <bool> active: root.music-equalizer-preset == preset;
+                    width: eq-txt.preferred-width + 22px;
+                    height: 24px;
+                    y: (parent.height - 24px) / 2;
+                    border-radius: Theme.r-pill;
+                    background: active ? Theme.tint-accent : eq-ta.has-hover ? Theme.hover-fill : transparent;
+                    border-width: 1px;
+                    border-color: active ? Theme.accent-dim : Theme.border-subtle;
+
+                    eq-ta := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.music-set-equalizer(preset); }
+                    }
+
+                    eq-txt := Text {
+                        text: root.eq-label(preset);
+                        color: active ? Theme.accent : Theme.text-secondary;
+                        font-size: Theme.fs-micro;
+                        font-weight: active ? 600 : Theme.fw-body;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+
+                Rectangle { horizontal-stretch: 1; }
+
+                if root.music-folder-watch-status != "" : Text {
+                    text: root.music-folder-watch-status;
+                    color: Theme.text-dim;
+                    font-size: Theme.fs-micro;
+                    vertical-alignment: center;
+                }
+            }
+        }
+
+        // ══════════════ Transport bar ══════════════
+        Rectangle {
+            height: 84px;
+            background: Theme.bg-surface;
+
+            Rectangle { y: 0; height: 1px; width: 100%; background: Theme.separator; }
+
+            HorizontalLayout {
+                padding-left: Theme.sp-4;
+                padding-right: Theme.sp-4;
+                spacing: Theme.sp-4;
+
+                // ── Left: what is playing ──
+                HorizontalLayout {
+                    width: 260px;
+                    spacing: Theme.sp-3;
+                    alignment: start;
+
+                    Rectangle {
+                        width: 48px; height: 48px;
+                        y: (parent.height - 48px) / 2;
+                        border-radius: Theme.r-sm;
+                        background: Theme.bg-card;
+                        border-width: 1px;
+                        border-color: Theme.border-subtle;
+                        Icon {
+                            commands: Icons.music;
+                            size: 20px;
+                            tint: root.now-title != "" ? Theme.accent : Theme.text-dim;
+                            x: (parent.width - self.width) / 2;
+                            y: (parent.height - self.height) / 2;
+                        }
+                    }
+
+                    VerticalLayout {
+                        alignment: center;
+                        spacing: 2px;
+                        horizontal-stretch: 1;
+
+                        Text {
+                            text: root.now-title != "" ? root.now-title : "Nothing playing";
+                            color: root.now-title != "" ? Theme.text-primary : Theme.text-dim;
+                            font-size: Theme.fs-caption;
+                            font-weight: 500;
+                            overflow: elide;
+                        }
+                        Text {
+                            text: root.now-artist;
+                            color: Theme.text-dim;
+                            font-size: Theme.fs-micro;
+                            overflow: elide;
+                        }
+                    }
+                }
+
+                // ── Centre: transport + seek ──
+                VerticalLayout {
+                    horizontal-stretch: 1;
+                    alignment: center;
+                    spacing: 6px;
+                    padding-top: Theme.sp-2;
+                    padding-bottom: Theme.sp-2;
+
+                    // Buttons
+                    HorizontalLayout {
+                        alignment: center;
+                        spacing: 6px;
+
+                        shuffle-ta := TouchArea {
+                            width: 30px; height: 30px;
+                            mouse-cursor: pointer;
+                            clicked => { root.toggle-shuffle(); }
+                            Rectangle {
+                                border-radius: 15px;
+                                background: root.shuffle-on ? Theme.tint-accent
+                                          : shuffle-ta.has-hover ? Theme.hover-fill : transparent;
+                                Icon {
+                                    commands: Icons.shuffle;
+                                    size: 15px;
+                                    tint: root.shuffle-on ? Theme.accent : Theme.text-dim;
+                                    x: (parent.width - self.width) / 2;
+                                    y: (parent.height - self.height) / 2;
+                                }
+                            }
+                        }
+
+                        prev-ta := TouchArea {
+                            width: 34px; height: 34px;
+                            mouse-cursor: pointer;
+                            clicked => { root.prev-track(); }
+                            Rectangle {
+                                border-radius: 17px;
+                                background: prev-ta.has-hover ? Theme.hover-fill : transparent;
+                                Icon {
+                                    commands: Icons.skip-back;
+                                    size: 17px;
+                                    tint: Theme.text-secondary;
+                                    x: (parent.width - self.width) / 2;
+                                    y: (parent.height - self.height) / 2;
+                                }
+                            }
+                        }
+
+                        play-ta := TouchArea {
+                            width: 42px; height: 42px;
+                            mouse-cursor: pointer;
+                            clicked => { root.play-pause(); }
+                            Rectangle {
+                                border-radius: 21px;
+                                background: play-ta.has-hover ? Theme.accent-light : Theme.accent;
+                                Icon {
+                                    commands: root.is-playing ? Icons.pause : Icons.play;
+                                    size: 18px;
+                                    thickness: 2px;
+                                    tint: Theme.bg-deep;
+                                    fill: root.is-playing ? transparent : Theme.bg-deep;
+                                    x: (parent.width - self.width) / 2 + (root.is-playing ? 0px : 1px);
+                                    y: (parent.height - self.height) / 2;
+                                }
+                            }
+                        }
+
+                        next-ta := TouchArea {
+                            width: 34px; height: 34px;
+                            mouse-cursor: pointer;
+                            clicked => { root.next-track(); }
+                            Rectangle {
+                                border-radius: 17px;
+                                background: next-ta.has-hover ? Theme.hover-fill : transparent;
+                                Icon {
+                                    commands: Icons.skip-forward;
+                                    size: 17px;
+                                    tint: Theme.text-secondary;
+                                    x: (parent.width - self.width) / 2;
+                                    y: (parent.height - self.height) / 2;
+                                }
+                            }
+                        }
+
+                        stop-ta := TouchArea {
+                            width: 30px; height: 30px;
+                            mouse-cursor: pointer;
+                            clicked => { root.stop(); }
+                            Rectangle {
+                                border-radius: 15px;
+                                background: stop-ta.has-hover ? Theme.hover-fill : transparent;
+                                Icon {
+                                    commands: Icons.stop;
+                                    size: 13px;
+                                    tint: Theme.text-dim;
+                                    x: (parent.width - self.width) / 2;
+                                    y: (parent.height - self.height) / 2;
+                                }
+                            }
+                        }
+
+                        repeat-ta := TouchArea {
+                            width: 30px; height: 30px;
+                            mouse-cursor: pointer;
+                            clicked => { root.cycle-repeat(); }
+                            Rectangle {
+                                border-radius: 15px;
+                                background: root.repeat-mode > 0 ? Theme.tint-accent
+                                          : repeat-ta.has-hover ? Theme.hover-fill : transparent;
+                                Icon {
+                                    commands: Icons.repeat;
+                                    size: 15px;
+                                    tint: root.repeat-mode > 0 ? Theme.accent : Theme.text-dim;
+                                    x: (parent.width - self.width) / 2;
+                                    y: (parent.height - self.height) / 2;
+                                }
+                                // "repeat one" carries a small 1
+                                if root.repeat-mode == 1 : Rectangle {
+                                    x: parent.width - 13px;
+                                    y: 3px;
+                                    width: 11px; height: 11px;
+                                    border-radius: 5.5px;
+                                    background: Theme.accent;
+                                    Text {
+                                        text: "1";
+                                        color: Theme.bg-deep;
+                                        font-size: 8px;
+                                        font-weight: 700;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Seek. No `alignment: center` here: that hands every child its preferred
+                    // size, and a TouchArea prefers zero — the bar would vanish.
+                    HorizontalLayout {
+                        spacing: Theme.sp-2;
+
+                        Text {
+                            text: root.time-current;
+                            width: 40px;
+                            color: Theme.text-dim;
+                            font-size: Theme.fs-micro;
+                            font-family: Theme.font-mono;
+                            horizontal-alignment: right;
+                            vertical-alignment: center;
+                        }
+
+                        seek-ta := TouchArea {
+                            // stretch, never `parent.width - n`: a layout child that reads its
+                            // parent's width closes a binding loop through layoutinfo.
+                            horizontal-stretch: 1;
+                            height: 16px;
+                            mouse-cursor: pointer;
+                            clicked => { root.seek(self.mouse-x / self.width); }
+
+                            Rectangle {
+                                y: (parent.height - 4px) / 2;
+                                height: 4px;
+                                width: 100%;
+                                border-radius: 2px;
+                                background: Theme.bg-input;
+
+                                Rectangle {
+                                    x: 0;
+                                    width: parent.width * clamp(root.progress, 0.0, 1.0);
+                                    height: 100%;
+                                    border-radius: 2px;
+                                    background: Theme.accent;
+                                }
+                            }
+
+                            if seek-ta.has-hover : Rectangle {
+                                x: parent.width * clamp(root.progress, 0.0, 1.0) - 5px;
+                                y: (parent.height - 10px) / 2;
+                                width: 10px; height: 10px;
+                                border-radius: 5px;
+                                background: Theme.accent;
+                            }
+                        }
+
+                        Text {
+                            text: root.time-total;
+                            width: 40px;
+                            color: Theme.text-dim;
+                            font-size: Theme.fs-micro;
+                            font-family: Theme.font-mono;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+
+                // ── Right: volume, speed, equalizer ──
+                HorizontalLayout {
+                    width: 240px;
+                    spacing: Theme.sp-2;
+                    alignment: end;
+
+                    mute-ta := TouchArea {
+                        width: 28px; height: 28px;
+                        y: (parent.height - 28px) / 2;
+                        mouse-cursor: pointer;
+                        clicked => { root.toggle-mute(); }
+                        Icon {
+                            commands: root.volume-muted ? Icons.volume-off : Icons.volume;
+                            size: 16px;
+                            tint: root.volume-muted ? Theme.color-danger
+                                : mute-ta.has-hover ? Theme.text-primary : Theme.text-dim;
+                            x: (parent.width - self.width) / 2;
+                            y: (parent.height - self.height) / 2;
+                        }
+                    }
+
+                    vol-ta := TouchArea {
+                        width: 88px;
+                        height: 16px;
+                        y: (parent.height - 16px) / 2;
+                        mouse-cursor: pointer;
+                        clicked => { root.volume-changed(clamp(self.mouse-x / self.width, 0.0, 1.0)); }
+
+                        Rectangle {
+                            y: (parent.height - 4px) / 2;
+                            height: 4px;
+                            width: 100%;
+                            border-radius: 2px;
+                            background: Theme.bg-input;
+
+                            Rectangle {
+                                x: 0;
+                                width: parent.width * (root.volume-muted ? 0.0 : clamp(root.volume, 0.0, 1.0));
+                                height: 100%;
+                                border-radius: 2px;
+                                background: Theme.text-secondary;
+                            }
+                        }
+                    }
+
+                    Text {
+                        text: "\{round((root.volume-muted ? 0.0 : root.volume) * 100)}%";
+                        width: 34px;
+                        color: Theme.text-dim;
+                        font-size: Theme.fs-micro;
+                        font-family: Theme.font-mono;
+                        horizontal-alignment: right;
+                        vertical-alignment: center;
+                    }
+
+                    // Speed
+                    speed-ta := TouchArea {
+                        width: 40px; height: 24px;
+                        y: (parent.height - 24px) / 2;
+                        mouse-cursor: pointer;
+                        clicked => { root.show-speed-popup = !root.show-speed-popup; }
+                        Rectangle {
+                            border-radius: Theme.r-sm;
+                            background: root.show-speed-popup ? Theme.tint-accent
+                                      : speed-ta.has-hover ? Theme.hover-fill : transparent;
+                            Text {
+                                text: "\{root.playback-speed}x";
+                                color: root.playback-speed != 1.0 || root.show-speed-popup ? Theme.accent : Theme.text-dim;
+                                font-size: Theme.fs-micro;
+                                font-family: Theme.font-mono;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+
+                    // Equalizer toggle
+                    eqt-ta := TouchArea {
+                        width: 30px; height: 24px;
+                        y: (parent.height - 24px) / 2;
+                        mouse-cursor: pointer;
+                        clicked => { root.music-show-equalizer = !root.music-show-equalizer; }
+                        Rectangle {
+                            border-radius: Theme.r-sm;
+                            background: root.music-show-equalizer ? Theme.tint-accent
+                                      : eqt-ta.has-hover ? Theme.hover-fill : transparent;
+                            Icon {
+                                commands: Icons.chart;
+                                size: 14px;
+                                tint: root.music-show-equalizer || root.music-equalizer-preset > 0
+                                    ? Theme.accent : Theme.text-dim;
+                                x: (parent.width - self.width) / 2;
+                                y: (parent.height - self.height) / 2;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // ══════════════ Speed popup ══════════════
+    if root.show-speed-popup : Rectangle {
+        x: parent.width - 232px;
+        y: parent.height - 84px - 52px - (root.music-show-equalizer ? 38px : 0px);
+        width: 216px;
+        height: 44px;
+        border-radius: Theme.r-md;
+        background: Theme.bg-elevated;
+        border-width: 1px;
+        border-color: Theme.border-default;
+        drop-shadow-blur: 12px;
+        drop-shadow-color: Theme.overlay-shadow;
+
+        HorizontalLayout {
+            padding: Theme.sp-2;
+            spacing: 4px;
+            alignment: center;
+
+            for sp in [0.5, 0.75, 1.0, 1.25, 1.5, 2.0] : Rectangle {
+                property <bool> active: root.playback-speed == sp;
+                width: 30px;
+                height: 26px;
+                border-radius: Theme.r-sm;
+                background: active ? Theme.accent : sp-ta.has-hover ? Theme.hover-fill : transparent;
+
+                sp-ta := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => {
+                        root.set-playback-speed(sp);
+                        root.show-speed-popup = false;
+                    }
+                }
+
+                Text {
+                    text: "\{sp}x";
+                    color: active ? Theme.bg-deep : Theme.text-secondary;
+                    font-size: Theme.fs-micro;
+                    font-family: Theme.font-mono;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+        }
+    }
+
+    // ══════════════ New playlist dialog ══════════════
+    if root.show-add-playlist-dialog : Rectangle {
+        background: Theme.overlay-backdrop;
+
+        TouchArea {
+            clicked => { root.show-add-playlist-dialog = false; }
+        }
+
+        Rectangle {
+            x: (parent.width - 380px) / 2;
+            y: (parent.height - 160px) / 2;
+            width: 380px;
+            height: 160px;
+            border-radius: Theme.r-lg;
+            background: Theme.bg-elevated;
+            border-width: 1px;
+            border-color: Theme.border-default;
+
+            TouchArea { }  // swallow clicks so the backdrop does not close it
+
+            VerticalLayout {
+                padding: Theme.sp-5;
+                spacing: Theme.sp-3;
+
+                Text {
+                    text: "New playlist";
+                    color: Theme.text-primary;
+                    font-size: Theme.fs-title-2;
+                    font-weight: Theme.fw-title-2;
+                }
+
+                Rectangle {
+                    height: Theme.h-regular;
+                    border-radius: Theme.r-md;
+                    background: Theme.bg-input;
+                    border-width: 1px;
+                    border-color: pl-name.has-focus ? Theme.accent-dim : Theme.border-default;
+                    clip: true;
+
+                    if root.new-playlist-name == "" : Text {
+                        x: 10px;
+                        height: 100%;
+                        text: "Playlist name";
+                        color: Theme.text-dim;
+                        font-size: Theme.fs-body;
+                        vertical-alignment: center;
+                    }
+
+                    pl-name := TextInput {
+                        x: 10px;
+                        width: parent.width - 20px;
+                        height: 100%;
+                        vertical-alignment: center;
+                        single-line: true;
+                        font-size: Theme.fs-body;
+                        color: Theme.text-primary;
+                        text <=> root.new-playlist-name;
+                        accepted => {
+                            if (self.text != "") {
+                                root.playlist-create(self.text);
+                                root.show-add-playlist-dialog = false;
+                            }
+                        }
+                    }
+                }
+
+                Rectangle { vertical-stretch: 1; }
+
+                HorizontalLayout {
+                    spacing: Theme.sp-2;
+                    alignment: end;
+
+                    YButton {
+                        label: "Cancel";
+                        variant: 2;
+                        size: 0;
+                        clicked => { root.show-add-playlist-dialog = false; }
+                    }
+                    YButton {
+                        label: "Create";
+                        icon-path: Icons.plus;
+                        variant: 0;
+                        size: 0;
+                        disabled: root.new-playlist-name == "";
+                        clicked => {
+                            if (root.new-playlist-name != "") {
+                                root.playlist-create(root.new-playlist-name);
+                                root.show-add-playlist-dialog = false;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // ══════════════ Library folders dialog ══════════════
+    if root.show-scan-folders-dialog : Rectangle {
+        background: Theme.overlay-backdrop;
+
+        TouchArea {
+            clicked => { root.show-scan-folders-dialog = false; }
+        }
+
+        Rectangle {
+            x: (parent.width - 520px) / 2;
+            y: (parent.height - 380px) / 2;
+            width: 520px;
+            height: 380px;
+            border-radius: Theme.r-lg;
+            background: Theme.bg-elevated;
+            border-width: 1px;
+            border-color: Theme.border-default;
+
+            TouchArea { }
+
+            VerticalLayout {
+                padding: Theme.sp-5;
+                spacing: Theme.sp-3;
+
+                HorizontalLayout {
+                    spacing: Theme.sp-2;
+                    Text {
+                        text: "Library folders";
+                        color: Theme.text-primary;
+                        font-size: Theme.fs-title-2;
+                        font-weight: Theme.fw-title-2;
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                    }
+                    YIconButton {
+                        icon-path: Icons.close;
+                        variant: 2;
+                        clicked => { root.show-scan-folders-dialog = false; }
+                    }
+                }
+
+                Text {
+                    text: "Yantrik indexes the audio it finds in these folders.";
+                    color: Theme.text-dim;
+                    font-size: Theme.fs-caption;
+                }
+
+                // Add row
+                HorizontalLayout {
+                    spacing: Theme.sp-2;
+
+                    Rectangle {
+                        horizontal-stretch: 1;
+                        height: Theme.h-regular;
+                        border-radius: Theme.r-md;
+                        background: Theme.bg-input;
+                        border-width: 1px;
+                        border-color: folder-input.has-focus ? Theme.accent-dim : Theme.border-default;
+                        clip: true;
+
+                        if root.new-folder-path == "" : Text {
+                            x: 10px;
+                            height: 100%;
+                            text: "/home/you/Music";
+                            color: Theme.text-dim;
+                            font-size: Theme.fs-caption;
+                            font-family: Theme.font-mono;
+                            vertical-alignment: center;
+                        }
+
+                        folder-input := TextInput {
+                            x: 10px;
+                            width: parent.width - 20px;
+                            height: 100%;
+                            vertical-alignment: center;
+                            single-line: true;
+                            font-size: Theme.fs-caption;
+                            font-family: Theme.font-mono;
+                            color: Theme.text-primary;
+                            text <=> root.new-folder-path;
+                            accepted => {
+                                if (self.text != "") {
+                                    root.scan-add-folder(self.text);
+                                    root.new-folder-path = "";
+                                }
+                            }
+                        }
+                    }
+
+                    YButton {
+                        label: "Add";
+                        icon-path: Icons.plus;
+                        variant: 1;
+                        size: 1;
+                        disabled: root.new-folder-path == "";
+                        clicked => {
+                            root.scan-add-folder(root.new-folder-path);
+                            root.new-folder-path = "";
+                        }
+                    }
+                }
+
+                // Folder list
+                Rectangle {
+                    vertical-stretch: 1;
+                    border-radius: Theme.r-md;
+                    background: Theme.bg-card;
+                    border-width: 1px;
+                    border-color: Theme.border-subtle;
+                    clip: true;
+
+                    if root.scan-folders.length > 0 : Flickable {
+                        viewport-height: folders-col.preferred-height;
+
+                        folders-col := VerticalLayout {
+                            alignment: start;
+                            spacing: 0px;
+
+                            for fo[fidx] in root.scan-folders : Rectangle {
+                                height: 40px;
+                                background: fo-ta.has-hover ? Theme.hover-fill : transparent;
+
+                                Rectangle { y: parent.height - 1px; height: 1px; width: 100%; background: Theme.separator; }
+
+                                fo-ta := TouchArea { }
+
+                                HorizontalLayout {
+                                    padding-left: Theme.sp-3;
+                                    padding-right: Theme.sp-2;
+                                    spacing: Theme.sp-2;
+
+                                    Icon {
+                                        commands: Icons.folder;
+                                        size: 14px;
+                                        tint: fo.is-scanning ? Theme.amber : Theme.text-secondary;
+                                        y: (parent.height - self.height) / 2;
+                                    }
+                                    Text {
+                                        text: fo.path;
+                                        horizontal-stretch: 1;
+                                        color: Theme.text-primary;
+                                        font-size: Theme.fs-caption;
+                                        font-family: Theme.font-mono;
+                                        overflow: elide;
+                                        vertical-alignment: center;
+                                    }
+                                    Text {
+                                        text: fo.is-scanning ? "scanning" : "\{fo.track-count}";
+                                        color: fo.is-scanning ? Theme.amber : Theme.text-dim;
+                                        font-size: Theme.fs-micro;
+                                        font-family: Theme.font-mono;
+                                        vertical-alignment: center;
+                                    }
+                                    fo-rm := TouchArea {
+                                        width: 24px; height: 24px;
+                                        y: (parent.height - 24px) / 2;
+                                        mouse-cursor: pointer;
+                                        clicked => { root.scan-remove-folder(fidx); }
+                                        Icon {
+                                            commands: Icons.trash;
+                                            size: 12px;
+                                            tint: fo-rm.has-hover ? Theme.color-danger : Theme.text-dim;
+                                            x: (parent.width - self.width) / 2;
+                                            y: (parent.height - self.height) / 2;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if root.scan-folders.length == 0 : Text {
+                        x: Theme.sp-3;
+                        y: Theme.sp-3;
+                        text: "No folders yet.";
+                        color: Theme.text-dim;
+                        font-size: Theme.fs-caption;
+                    }
+                }
+
+                HorizontalLayout {
+                    spacing: Theme.sp-2;
+                    alignment: end;
+
+                    if root.music-folder-watch-status != "" : Text {
+                        text: root.music-folder-watch-status;
+                        color: Theme.text-dim;
+                        font-size: Theme.fs-micro;
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                    }
+
+                    YButton {
+                        label: root.is-scanning ? "Scanning" : "Rescan";
+                        icon-path: Icons.refresh;
+                        variant: 1;
+                        size: 0;
+                        loading: root.is-scanning;
+                        clicked => { root.scan-rescan(); }
+                    }
+                    YButton {
+                        label: "Done";
+                        variant: 0;
+                        size: 0;
+                        clicked => { root.show-scan-folders-dialog = false; }
                     }
                 }
             }

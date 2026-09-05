@@ -2,6 +2,7 @@
 // Screen 16. Read-only info cards showing hardware & OS details.
 
 import { Theme } from "theme.slint";
+import { Icon, Icons } from "components/icon.slint";
 
 export struct ComponentVersionData {
     name: string,
@@ -65,12 +66,12 @@ export component AboutScreen inherits Rectangle {
                         clicked => { root.back-pressed(); }
                     }
 
-                    Text {
-                        text: "\u{2190}";
-                        color: Theme.text-primary;
-                        font-size: 20px;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
+                    Icon {
+                        commands: Icons.arrow-left;
+                        size: 20px;
+                        tint: Theme.text-primary;
+                        x: (parent.width - self.width) / 2;
+                        y: (parent.height - self.height) / 2;
                     }
                 }
 
@@ -91,6 +92,7 @@ export component AboutScreen inherits Rectangle {
             viewport-height: content-col.preferred-height + 40px;
 
             content-col := VerticalLayout {
+                alignment: start;
                 padding: 20px;
                 spacing: 20px;
 
@@ -529,11 +531,11 @@ export component AboutScreen inherits Rectangle {
                                     horizontal-stretch: 1;
                                     vertical-alignment: center;
                                 }
-                                Text {
-                                    text: "\u{2192}";
-                                    color: Theme.accent-dim;
-                                    font-size: 18px;
-                                    vertical-alignment: center;
+                                Icon {
+                                    commands: Icons.arrow-right;
+                                    size: 18px;
+                                    tint: Theme.accent-dim;
+                                    y: (parent.height - self.height) / 2;
                                 }
                             }
                         }

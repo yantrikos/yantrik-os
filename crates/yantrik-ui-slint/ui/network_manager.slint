@@ -7,6 +7,7 @@ import { YInput } from "components/y_input.slint";
 import { YTabs, YTabItem } from "components/y_tabs.slint";
 import { YEmptyState } from "components/y_empty_state.slint";
 import { YListItem } from "components/y_list_item.slint";
+import { Icon, Icons } from "components/icon.slint";
 
 // ── Data structs ──
 
@@ -168,6 +169,7 @@ component TabButton inherits TouchArea {
     in property <string> label;
     in property <bool> active;
     in property <string> icon;
+    in property <string> icon-path;
     height: 44px;
 
     Rectangle {
@@ -179,7 +181,13 @@ component TabButton inherits TouchArea {
             padding-right: Theme.sp-4;
             alignment: center;
 
-            Text {
+            if root.icon-path != "" : Icon {
+                commands: root.icon-path;
+                size: 14px;
+                tint: root.active ? Theme.accent : Theme.text-secondary;
+                y: (parent.height - self.height) / 2;
+            }
+            if root.icon-path == "" : Text {
                 text: icon;
                 color: active ? Theme.accent : Theme.text-secondary;
                 font-size: Theme.fs-headline;
@@ -350,127 +358,107 @@ export component NetworkManager inherits Rectangle {
     callback ai-explain-pressed();
     callback ai-dismiss();
 
-    // Background nebula
-    Rectangle {
-        x: parent.width * 0.6;
-        y: -parent.height * 0.1;
-        width: 500px;
-        height: 400px;
-        background: @radial-gradient(circle,
-            Theme.accent.transparentize(60%) 0%,
-            transparent 60%
-        );
-    }
-
     VerticalLayout {
         spacing: 0px;
 
-        // ── Tab bar ──
+        // ══════════════ The answer, before anything else ══════════════
+        //
+        // Whatever section you are in, the top line says what the machine is actually using
+        // right now. That used to be a 32px strip at the bottom edge of the window.
         Rectangle {
-            height: 46px;
-            background: @linear-gradient(180deg,
-                Theme.bg-surface.transparentize(40%) 0%,
-                Theme.bg-deep.transparentize(50%) 100%
-            );
+            height: 56px;
+            background: Theme.bg-surface;
 
-            // Bottom glow
-            Rectangle {
-                y: parent.height - 1px;
-                width: 100%;
-                height: 1px;
-                background: @linear-gradient(90deg,
-                    transparent 10%,
-                    Theme.accent-glow 50%,
-                    transparent 90%
-                );
-                opacity: 0.3;
-            }
+            Rectangle { y: parent.height - 1px; height: 1px; width: 100%; background: Theme.separator; }
 
             HorizontalLayout {
-                spacing: 0px;
+                padding-left: Theme.sp-4;
+                padding-right: Theme.sp-3;
+                spacing: Theme.sp-3;
 
-                TabButton {
-                    icon: "\u{25CE}";  // WiFi icon
-                    label: "WiFi";
-                    active: root.active-tab == 0;
-                    clicked => { root.active-tab = 0; }
-                }
-                TabButton {
-                    icon: "\u{2550}";  // Ethernet
-                    label: "Ethernet";
-                    active: root.active-tab == 1;
-                    clicked => { root.active-tab = 1; }
-                }
-                TabButton {
-                    icon: "\u{2630}";  // Bluetooth
-                    label: "Bluetooth";
-                    active: root.active-tab == 2;
-                    clicked => { root.active-tab = 2; }
-                }
-                TabButton {
-                    icon: "\u{229B}";  // VPN
-                    label: "VPN";
-                    active: root.active-tab == 3;
-                    clicked => { root.active-tab = 3; }
-                }
-                TabButton {
-                    icon: "\u{2AF5}";  // Firewall
-                    label: "Firewall";
-                    active: root.active-tab == 4;
-                    clicked => { root.active-tab = 4; }
-                }
-                TabButton {
-                    icon: "\u{2699}";  // Diagnostics
-                    label: "Diagnostics";
-                    active: root.active-tab == 5;
-                    clicked => { root.active-tab = 5; }
+                Rectangle {
+                    width: 32px;
+                    height: 32px;
+                    y: (parent.height - 32px) / 2;
+                    border-radius: Theme.r-sm;
+                    background: root.status-state == "connected" ? Theme.color-success-dim
+                              : root.status-state == "connecting" ? Theme.amber-dim
+                              : Theme.hover-fill;
+                    Icon {
+                        commands: root.status-connection-type == "WiFi" ? Icons.wifi
+                                : root.status-connection-type == "Ethernet" ? Icons.network
+                                : Icons.globe;
+                        size: 17px;
+                        thickness: 1.7px;
+                        tint: root.status-state == "connected" ? Theme.color-success
+                            : root.status-state == "connecting" ? Theme.amber
+                            : Theme.text-dim;
+                        x: (parent.width - self.width) / 2;
+                        y: (parent.height - self.height) / 2;
+                    }
                 }
 
-                // Spacer
+                VerticalLayout {
+                    alignment: center;
+                    spacing: 2px;
+
+                    Text {
+                        text: root.status-state == "connected"
+                                ? (root.status-connection-type == "WiFi" && root.wifi-current-ssid != ""
+                                    ? root.wifi-current-ssid
+                                    : root.status-connection-type != "" ? root.status-connection-type : "Connected")
+                            : root.status-state == "connecting" ? "Connecting\{"\u{2026}"}"
+                            : "Not connected";
+                        color: Theme.text-primary;
+                        font-size: Theme.fs-title-2;
+                        font-weight: Theme.fw-title-2;
+                        letter-spacing: -0.2px;
+                        overflow: elide;
+                    }
+
+                    HorizontalLayout {
+                        spacing: Theme.sp-2;
+                        alignment: start;
+
+                        if root.status-ip-address != "" : Text {
+                            text: root.status-ip-address;
+                            color: Theme.text-dim;
+                            font-size: Theme.fs-micro;
+                            font-family: Theme.font-mono;
+                        }
+                        if root.status-connection-type == "WiFi" && root.wifi-speed != "" : Text {
+                            text: root.wifi-speed;
+                            color: Theme.text-dim;
+                            font-size: Theme.fs-micro;
+                            font-family: Theme.font-mono;
+                        }
+                        if root.status-ip-address == "" : Text {
+                            text: "No address";
+                            color: Theme.text-dim;
+                            font-size: Theme.fs-micro;
+                        }
+                    }
+                }
+
                 Rectangle { horizontal-stretch: 1; }
 
-                // AI Explain button
-                TouchArea {
-                    width: ai-net-btn.preferred-width + 16px;
-                    height: 32px;
-                    clicked => {
-                        if root.ai-panel-open {
-                            root.ai-dismiss();
-                            root.ai-panel-open = false;
-                        } else {
-                            root.ai-explain-pressed();
-                            root.ai-panel-open = true;
-                        }
-                    }
-                    ai-net-btn := Rectangle {
-                        height: 32px;
-                        border-radius: Theme.r-pill;
-                        background: root.ai-is-working ? Theme.accent
-                            : (parent.has-hover ? Theme.hover-fill-strong : Theme.bg-card);
-                        border-width: 1px;
-                        border-color: Theme.border-subtle;
-                        HorizontalLayout {
-                            padding-left: 10px;
-                            padding-right: 10px;
-                            spacing: Theme.sp-1;
-                            alignment: center;
-                            Text {
-                                text: root.ai-is-working ? "\u{2B50}" : "\u{2728}";
-                                font-size: Theme.fs-caption;
-                                vertical-alignment: center;
-                            }
-                            Text {
-                                text: root.ai-is-working ? "Analyzing..." : "AI Explain";
-                                color: root.ai-is-working ? Theme.text-on-accent : Theme.text-secondary;
-                                font-size: Theme.fs-micro;
-                                font-weight: 500;
-                                vertical-alignment: center;
-                            }
-                        }
-                    }
+                if root.status-connection-type == "WiFi" && root.status-state == "connected" : SignalBars {
+                    strength: root.status-signal-strength;
+                    y: (parent.height - self.height) / 2;
                 }
 
-                Rectangle { width: Theme.sp-3; }
+                YButton {
+                    label: root.ai-is-working ? "Working" : "Explain";
+                    icon-path: Icons.spark;
+                    variant: 1;
+                    size: 0;
+                    loading: root.ai-is-working;
+                    y: (parent.height - self.height) / 2;
+                    clicked => {
+                        root.ai-explain-pressed();
+                        root.ai-panel-open = true;
+                    }
+                }
             }
         }
 
@@ -485,15 +473,17 @@ export component NetworkManager inherits Rectangle {
                 viewport-height: ai-net-resp.preferred-height + 16px;
 
                 ai-net-resp := VerticalLayout {
+                    alignment: start;
                     padding: Theme.sp-3;
                     spacing: Theme.sp-2;
 
                     HorizontalLayout {
                         spacing: Theme.sp-2;
-                        Text {
-                            text: "\u{2728}";
-                            font-size: Theme.fs-caption;
-                            vertical-alignment: center;
+                        Icon {
+                            commands: Icons.spark;
+                            size: 12px;
+                            tint: Theme.text-secondary;
+                            y: (parent.height - self.height) / 2;
                         }
                         Text {
                             text: "AI Analysis";
@@ -514,12 +504,12 @@ export component NetworkManager inherits Rectangle {
                                 width: 24px; height: 24px;
                                 border-radius: Theme.r-lg;
                                 background: parent.has-hover ? Theme.hover-fill : transparent;
-                                Text {
-                                    text: "\u{2715}";
-                                    font-size: Theme.fs-micro;
-                                    color: Theme.text-dim;
-                                    horizontal-alignment: center;
-                                    vertical-alignment: center;
+                                Icon {
+                                    commands: Icons.close;
+                                    size: 12px;
+                                    tint: Theme.text-dim;
+                                    x: (parent.width - self.width) / 2;
+                                    y: (parent.height - self.height) / 2;
                                 }
                             }
                         }
@@ -535,6 +525,352 @@ export component NetworkManager inherits Rectangle {
             }
         }
 
+        // ══════════════ Rail + section ══════════════
+        HorizontalLayout {
+            vertical-stretch: 1;
+            spacing: 0px;
+
+            // ─── Section rail ───
+            Rectangle {
+                width: 208px;
+                background: Theme.bg-surface;
+
+                Rectangle { x: parent.width - 1px; width: 1px; height: 100%; background: Theme.separator; }
+
+                VerticalLayout {
+                    padding: Theme.sp-2;
+                    padding-top: Theme.sp-3;
+                    spacing: 2px;
+                    alignment: start;
+
+                    // Wi-Fi — the SSID is the state
+                    Rectangle {
+                        property <bool> active: root.active-tab == 0;
+                        height: 46px;
+                        border-radius: Theme.r-sm;
+                        background: active ? Theme.tint-accent : ta0.has-hover ? Theme.hover-fill : transparent;
+
+                        if active : Rectangle {
+                            x: 0; width: 3px; height: 22px;
+                            y: (parent.height - 22px) / 2;
+                            border-radius: 1.5px;
+                            background: Theme.accent;
+                        }
+
+                        ta0 := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { root.active-tab = 0; }
+                        }
+
+                        HorizontalLayout {
+                            padding-left: Theme.sp-3;
+                            padding-right: Theme.sp-3;
+                            spacing: 10px;
+
+                            Icon {
+                                commands: Icons.wifi;
+                                size: 16px;
+                                tint: active ? Theme.accent : Theme.text-secondary;
+                                y: (parent.height - self.height) / 2;
+                            }
+
+                            VerticalLayout {
+                                alignment: center;
+                                spacing: 1px;
+                                horizontal-stretch: 1;
+
+                                Text {
+                                    text: "Wi-Fi";
+                                    color: active ? Theme.text-primary : Theme.text-secondary;
+                                    font-size: Theme.font-label;
+                                    font-weight: active ? 500 : Theme.fw-body;
+                                    overflow: elide;
+                                }
+                                Text {
+                                    // The rail carries live state: the point of the app is to see
+                                    // all six at once, not one per tab.
+                                    text: !root.wifi-enabled ? "Off" : root.wifi-current-ssid != "" ? root.wifi-current-ssid : root.wifi-scanning ? "Scanning\{"\u{2026}"}" : "Not connected";
+                                    color: root.wifi-current-ssid != "" ? Theme.color-success : Theme.text-dim;
+                                    font-size: Theme.fs-micro;
+                                    overflow: elide;
+                                }
+                            }
+                        }
+                    }
+                    // Ethernet — link speed or nothing plugged in
+                    Rectangle {
+                        property <bool> active: root.active-tab == 1;
+                        height: 46px;
+                        border-radius: Theme.r-sm;
+                        background: active ? Theme.tint-accent : ta1.has-hover ? Theme.hover-fill : transparent;
+
+                        if active : Rectangle {
+                            x: 0; width: 3px; height: 22px;
+                            y: (parent.height - 22px) / 2;
+                            border-radius: 1.5px;
+                            background: Theme.accent;
+                        }
+
+                        ta1 := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { root.active-tab = 1; }
+                        }
+
+                        HorizontalLayout {
+                            padding-left: Theme.sp-3;
+                            padding-right: Theme.sp-3;
+                            spacing: 10px;
+
+                            Icon {
+                                commands: Icons.network;
+                                size: 16px;
+                                tint: active ? Theme.accent : Theme.text-secondary;
+                                y: (parent.height - self.height) / 2;
+                            }
+
+                            VerticalLayout {
+                                alignment: center;
+                                spacing: 1px;
+                                horizontal-stretch: 1;
+
+                                Text {
+                                    text: "Ethernet";
+                                    color: active ? Theme.text-primary : Theme.text-secondary;
+                                    font-size: Theme.font-label;
+                                    font-weight: active ? 500 : Theme.fw-body;
+                                    overflow: elide;
+                                }
+                                Text {
+                                    // The rail carries live state: the point of the app is to see
+                                    // all six at once, not one per tab.
+                                    text: root.ethernet-interfaces.length == 0 ? "No interface" : root.ethernet-interfaces[0].status == "UP" ? root.ethernet-interfaces[0].speed : "Down";
+                                    color: root.ethernet-interfaces.length > 0 && root.ethernet-interfaces[0].status == "UP" ? Theme.color-success : Theme.text-dim;
+                                    font-size: Theme.fs-micro;
+                                    overflow: elide;
+                                }
+                            }
+                        }
+                    }
+                    // Bluetooth — how many devices are actually connected
+                    Rectangle {
+                        property <bool> active: root.active-tab == 2;
+                        height: 46px;
+                        border-radius: Theme.r-sm;
+                        background: active ? Theme.tint-accent : ta2.has-hover ? Theme.hover-fill : transparent;
+
+                        if active : Rectangle {
+                            x: 0; width: 3px; height: 22px;
+                            y: (parent.height - 22px) / 2;
+                            border-radius: 1.5px;
+                            background: Theme.accent;
+                        }
+
+                        ta2 := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { root.active-tab = 2; }
+                        }
+
+                        HorizontalLayout {
+                            padding-left: Theme.sp-3;
+                            padding-right: Theme.sp-3;
+                            spacing: 10px;
+
+                            Icon {
+                                commands: Icons.keyboard;
+                                size: 16px;
+                                tint: active ? Theme.accent : Theme.text-secondary;
+                                y: (parent.height - self.height) / 2;
+                            }
+
+                            VerticalLayout {
+                                alignment: center;
+                                spacing: 1px;
+                                horizontal-stretch: 1;
+
+                                Text {
+                                    text: "Bluetooth";
+                                    color: active ? Theme.text-primary : Theme.text-secondary;
+                                    font-size: Theme.font-label;
+                                    font-weight: active ? 500 : Theme.fw-body;
+                                    overflow: elide;
+                                }
+                                Text {
+                                    // The rail carries live state: the point of the app is to see
+                                    // all six at once, not one per tab.
+                                    text: !root.bt-enabled ? "Off" : root.bt-paired-devices.length == 0 ? "No devices" : "\{root.bt-paired-devices.length} paired";
+                                    color: root.bt-enabled && root.bt-paired-devices.length > 0 ? Theme.color-success : Theme.text-dim;
+                                    font-size: Theme.fs-micro;
+                                    overflow: elide;
+                                }
+                            }
+                        }
+                    }
+                    // VPN — a tunnel is either up or it is not
+                    Rectangle {
+                        property <bool> active: root.active-tab == 3;
+                        height: 46px;
+                        border-radius: Theme.r-sm;
+                        background: active ? Theme.tint-accent : ta3.has-hover ? Theme.hover-fill : transparent;
+
+                        if active : Rectangle {
+                            x: 0; width: 3px; height: 22px;
+                            y: (parent.height - 22px) / 2;
+                            border-radius: 1.5px;
+                            background: Theme.accent;
+                        }
+
+                        ta3 := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { root.active-tab = 3; }
+                        }
+
+                        HorizontalLayout {
+                            padding-left: Theme.sp-3;
+                            padding-right: Theme.sp-3;
+                            spacing: 10px;
+
+                            Icon {
+                                commands: Icons.lock;
+                                size: 16px;
+                                tint: active ? Theme.accent : Theme.text-secondary;
+                                y: (parent.height - self.height) / 2;
+                            }
+
+                            VerticalLayout {
+                                alignment: center;
+                                spacing: 1px;
+                                horizontal-stretch: 1;
+
+                                Text {
+                                    text: "VPN";
+                                    color: active ? Theme.text-primary : Theme.text-secondary;
+                                    font-size: Theme.font-label;
+                                    font-weight: active ? 500 : Theme.fw-body;
+                                    overflow: elide;
+                                }
+                                Text {
+                                    // The rail carries live state: the point of the app is to see
+                                    // all six at once, not one per tab.
+                                    text: root.vpn-connections.length == 0 ? "None configured" : "\{root.vpn-connections.length} configured";
+                                    color: Theme.text-dim;
+                                    font-size: Theme.fs-micro;
+                                    overflow: elide;
+                                }
+                            }
+                        }
+                    }
+                    // Firewall — on/off is a security fact, keep it visible
+                    Rectangle {
+                        property <bool> active: root.active-tab == 4;
+                        height: 46px;
+                        border-radius: Theme.r-sm;
+                        background: active ? Theme.tint-accent : ta4.has-hover ? Theme.hover-fill : transparent;
+
+                        if active : Rectangle {
+                            x: 0; width: 3px; height: 22px;
+                            y: (parent.height - 22px) / 2;
+                            border-radius: 1.5px;
+                            background: Theme.accent;
+                        }
+
+                        ta4 := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { root.active-tab = 4; }
+                        }
+
+                        HorizontalLayout {
+                            padding-left: Theme.sp-3;
+                            padding-right: Theme.sp-3;
+                            spacing: 10px;
+
+                            Icon {
+                                commands: Icons.shield;
+                                size: 16px;
+                                tint: active ? Theme.accent : Theme.text-secondary;
+                                y: (parent.height - self.height) / 2;
+                            }
+
+                            VerticalLayout {
+                                alignment: center;
+                                spacing: 1px;
+                                horizontal-stretch: 1;
+
+                                Text {
+                                    text: "Firewall";
+                                    color: active ? Theme.text-primary : Theme.text-secondary;
+                                    font-size: Theme.font-label;
+                                    font-weight: active ? 500 : Theme.fw-body;
+                                    overflow: elide;
+                                }
+                                Text {
+                                    // The rail carries live state: the point of the app is to see
+                                    // all six at once, not one per tab.
+                                    text: root.firewall-enabled ? "\{root.firewall-rule-count} rules" : "Off";
+                                    color: root.firewall-enabled ? Theme.color-success : Theme.color-warning;
+                                    font-size: Theme.fs-micro;
+                                    overflow: elide;
+                                }
+                            }
+                        }
+                    }
+                    // Diagnostics — the last run, at a glance
+                    Rectangle {
+                        property <bool> active: root.active-tab == 5;
+                        height: 46px;
+                        border-radius: Theme.r-sm;
+                        background: active ? Theme.tint-accent : ta5.has-hover ? Theme.hover-fill : transparent;
+
+                        if active : Rectangle {
+                            x: 0; width: 3px; height: 22px;
+                            y: (parent.height - 22px) / 2;
+                            border-radius: 1.5px;
+                            background: Theme.accent;
+                        }
+
+                        ta5 := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { root.active-tab = 5; }
+                        }
+
+                        HorizontalLayout {
+                            padding-left: Theme.sp-3;
+                            padding-right: Theme.sp-3;
+                            spacing: 10px;
+
+                            Icon {
+                                commands: Icons.settings;
+                                size: 16px;
+                                tint: active ? Theme.accent : Theme.text-secondary;
+                                y: (parent.height - self.height) / 2;
+                            }
+
+                            VerticalLayout {
+                                alignment: center;
+                                spacing: 1px;
+                                horizontal-stretch: 1;
+
+                                Text {
+                                    text: "Diagnostics";
+                                    color: active ? Theme.text-primary : Theme.text-secondary;
+                                    font-size: Theme.font-label;
+                                    font-weight: active ? 500 : Theme.fw-body;
+                                    overflow: elide;
+                                }
+                                Text {
+                                    // The rail carries live state: the point of the app is to see
+                                    // all six at once, not one per tab.
+                                    text: root.diag-tests.length == 0 ? "Not run" : "\{root.diag-tests.length} checks";
+                                    color: Theme.text-dim;
+                                    font-size: Theme.fs-micro;
+                                    overflow: elide;
+                                }
+                            }
+                        }
+                    }
+
+                }
+            }
+
         // ── Tab content ──
         Rectangle {
             vertical-stretch: 1;
@@ -549,6 +885,7 @@ export component NetworkManager inherits Rectangle {
                 viewport-height: wifi-content.preferred-height + 40px;
 
                 wifi-content := VerticalLayout {
+                    alignment: start;
                     padding: Theme.sp-5;
                     spacing: Theme.sp-4;
 
@@ -564,6 +901,41 @@ export component NetworkManager inherits Rectangle {
                             checked: root.wifi-enabled;
                             label: "WiFi";
                             toggled => { root.toggle-wifi(); }
+                        }
+                    }
+
+                    // Wi-Fi switched off — the pane says so rather than going blank.
+                    if !root.wifi-enabled : Rectangle {
+                        height: 150px;
+                        background: Theme.bg-card;
+                        border-radius: Theme.r-lg;
+                        border-width: 1px;
+                        border-color: Theme.border-subtle;
+
+                        VerticalLayout {
+                            alignment: center;
+                            spacing: Theme.sp-2;
+
+                            HorizontalLayout {
+                                alignment: center;
+                                Icon {
+                                    commands: Icons.wifi;
+                                    size: 26px;
+                                    tint: Theme.text-dim.transparentize(30%);
+                                }
+                            }
+                            Text {
+                                text: "Wi-Fi is off";
+                                color: Theme.text-secondary;
+                                font-size: Theme.fs-body;
+                                horizontal-alignment: center;
+                            }
+                            Text {
+                                text: "Turn it on to scan for networks.";
+                                color: Theme.text-dim;
+                                font-size: Theme.fs-caption;
+                                horizontal-alignment: center;
+                            }
                         }
                     }
 
@@ -660,11 +1032,11 @@ export component NetworkManager inherits Rectangle {
 
                                     HorizontalLayout {
                                         spacing: Theme.sp-2;
-                                        Text {
-                                            text: root.wifi-details-expanded ? "\u{25BC}" : "\u{25B6}";
-                                            color: Theme.text-dim;
-                                            font-size: Theme.fs-micro;
-                                            vertical-alignment: center;
+                                        Icon {
+                                            commands: root.wifi-details-expanded ? Icons.chevron-down : Icons.play;
+                                            size: 12px;
+                                            tint: Theme.text-dim;
+                                            y: (parent.height - self.height) / 2;
                                         }
                                         Text {
                                             text: "Connection Details";
@@ -742,6 +1114,35 @@ export component NetworkManager inherits Rectangle {
                                     width: 80px;
                                     primary: true;
                                     clicked => { root.wifi-scan(); }
+                                }
+                            }
+                        }
+
+                        // Scanning and "found nothing" are different answers.
+                        if root.wifi-networks.length == 0 : Rectangle {
+                            height: 120px;
+                            background: Theme.bg-card;
+                            border-radius: Theme.r-lg;
+                            border-width: 1px;
+                            border-color: Theme.border-subtle;
+
+                            VerticalLayout {
+                                alignment: center;
+                                spacing: Theme.sp-1;
+
+                                Text {
+                                    text: root.wifi-scanning ? "Scanning\{"\u{2026}"}" : "No networks in range";
+                                    color: Theme.text-secondary;
+                                    font-size: Theme.fs-body;
+                                    horizontal-alignment: center;
+                                }
+                                Text {
+                                    text: root.wifi-scanning
+                                        ? "This takes a few seconds."
+                                        : "Press Scan to look again.";
+                                    color: Theme.text-dim;
+                                    font-size: Theme.fs-caption;
+                                    horizontal-alignment: center;
                                 }
                             }
                         }
@@ -870,6 +1271,7 @@ export component NetworkManager inherits Rectangle {
                 viewport-height: eth-content.preferred-height + 40px;
 
                 eth-content := VerticalLayout {
+                    alignment: start;
                     padding: Theme.sp-5;
                     spacing: Theme.sp-4;
 
@@ -1004,6 +1406,7 @@ export component NetworkManager inherits Rectangle {
                 viewport-height: bt-content.preferred-height + 40px;
 
                 bt-content := VerticalLayout {
+                    alignment: start;
                     padding: Theme.sp-5;
                     spacing: Theme.sp-4;
 
@@ -1065,16 +1468,16 @@ export component NetworkManager inherits Rectangle {
                                     spacing: 10px;
 
                                     // Device type icon
-                                    Text {
-                                        text: device.device-type == "headphones" ? "\u{1F3A7}"
-                                            : device.device-type == "keyboard" ? "\u{2328}"
-                                            : device.device-type == "mouse" ? "\u{1F5B1}"
-                                            : device.device-type == "phone" ? "\u{1F4F1}"
-                                            : device.device-type == "speaker" ? "\u{1F50A}"
-                                            : "\u{2630}";
-                                        color: device.is-connected ? Theme.accent : Theme.text-secondary;
-                                        font-size: Theme.fs-title-1;
-                                        vertical-alignment: center;
+                                    Icon {
+                                        commands: device.device-type == "headphones" ? Icons.music
+                                            : device.device-type == "keyboard" ? Icons.keyboard
+                                            : device.device-type == "mouse" ? Icons.mouse
+                                            : device.device-type == "phone" ? Icons.phone
+                                            : device.device-type == "speaker" ? Icons.volume
+                                            : Icons.chip;
+                                        size: 18px;
+                                        tint: device.is-connected ? Theme.accent : Theme.text-secondary;
+                                        y: (parent.height - self.height) / 2;
                                     }
 
                                     VerticalLayout {
@@ -1195,6 +1598,7 @@ export component NetworkManager inherits Rectangle {
                 viewport-height: vpn-content.preferred-height + 40px;
 
                 vpn-content := VerticalLayout {
+                    alignment: start;
                     padding: Theme.sp-5;
                     spacing: Theme.sp-4;
 
@@ -1374,6 +1778,7 @@ export component NetworkManager inherits Rectangle {
                 viewport-height: fw-content.preferred-height + 40px;
 
                 fw-content := VerticalLayout {
+                    alignment: start;
                     padding: Theme.sp-5;
                     spacing: Theme.sp-4;
 
@@ -1602,6 +2007,7 @@ export component NetworkManager inherits Rectangle {
                 viewport-height: diag-content.preferred-height + 40px;
 
                 diag-content := VerticalLayout {
+                    alignment: start;
                     padding: Theme.sp-5;
                     spacing: Theme.sp-4;
 
@@ -1658,19 +2064,16 @@ export component NetworkManager inherits Rectangle {
                                                   : test.status == "running" ? Theme.color-warning-dim
                                                   : Theme.bg-elevated;
 
-                                        Text {
-                                            text: test.status == "ok" ? "\u{2713}"
-                                                : test.status == "fail" ? "\u{2717}"
-                                                : test.status == "running" ? "\u{25CB}"
-                                                : "\u{2014}";
-                                            color: test.status == "ok" ? Theme.color-success
-                                                 : test.status == "fail" ? Theme.color-danger
-                                                 : test.status == "running" ? Theme.color-warning
-                                                 : Theme.text-dim;
-                                            font-size: Theme.fs-body;
-                                            font-weight: 700;
-                                            horizontal-alignment: center;
-                                            vertical-alignment: center;
+                                        Icon {
+                                            commands: test.status == "ok" ? Icons.check
+                                                : test.status == "fail" ? Icons.close
+                                                : test.status == "running" ? Icons.clock
+                                                : Icons.minus;
+                                            size: 13px;
+                                            tint: test.status == "ok" ? Theme.color-success
+                                                : test.status == "fail" ? Theme.color-danger
+                                                : Theme.text-dim;
+                                            x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
                                         }
                                     }
 
@@ -1718,10 +2121,11 @@ export component NetworkManager inherits Rectangle {
                             HorizontalLayout {
                                 spacing: Theme.sp-2;
 
-                                Text {
-                                    text: "\u{1F916}";
-                                    font-size: Theme.fs-headline;
-                                    vertical-alignment: center;
+                                Icon {
+                                    commands: Icons.companion;
+                                    size: 16px;
+                                    tint: Theme.text-secondary;
+                                    y: (parent.height - self.height) / 2;
                                 }
 
                                 Text {
@@ -1862,7 +2266,7 @@ export component NetworkManager inherits Rectangle {
                                     Text {
                                         text: provider.status == "testing" ? "..."
                                             : provider.status == "reachable" ? (provider.latency-ms + "ms")
-                                            : provider.status == "unreachable" ? "\u{2717}"
+                                            : provider.status == "unreachable" ? "down"
                                             : "\u{2014}";
                                         color: provider.status == "reachable" ?
                                                 (provider.latency-ms < 100 ? Theme.color-reminder
@@ -2085,74 +2489,11 @@ export component NetworkManager inherits Rectangle {
                 }
             }
         }
-
-        // ── Network Status Bar (shown on all tabs) ──
-        Rectangle {
-            height: 32px;
-            background: @linear-gradient(180deg,
-                Theme.bg-deep.transparentize(50%) 0%,
-                Theme.bg-surface.transparentize(40%) 100%
-            );
-
-            // Top border glow
-            Rectangle {
-                y: 0px;
-                width: 100%;
-                height: 1px;
-                background: Theme.border-subtle;
-                opacity: 0.5;
-            }
-
-            HorizontalLayout {
-                padding-left: Theme.sp-4;
-                padding-right: Theme.sp-4;
-                spacing: Theme.sp-4;
-                alignment: start;
-
-                // Status dot
-                Rectangle {
-                    width: 8px;
-                    height: 8px;
-                    border-radius: 4px;
-                    background: root.status-state == "connected" ? Theme.color-success
-                              : root.status-state == "connecting" ? Theme.color-warning
-                              : Theme.color-danger;
-                    y: (parent.height - self.height) / 2;
-                }
-
-                // Connection type
-                Text {
-                    text: root.status-connection-type != "" ? root.status-connection-type : "No Connection";
-                    color: Theme.text-secondary;
-                    font-size: Theme.fs-micro;
-                    font-weight: 500;
-                    vertical-alignment: center;
-                }
-
-                // IP address
-                if root.status-ip-address != "" : Text {
-                    text: root.status-ip-address;
-                    color: Theme.text-dim;
-                    font-size: Theme.fs-micro;
-                    vertical-alignment: center;
-                }
-
-                // Signal strength (WiFi only)
-                if root.status-connection-type == "WiFi" && root.status-signal-strength > 0 : HorizontalLayout {
-                    spacing: Theme.sp-1;
-                    SignalBars {
-                        strength: root.status-signal-strength;
-                    }
-                    Text {
-                        text: root.status-signal-strength + "%";
-                        color: Theme.text-dim;
-                        font-size: Theme.fs-micro;
-                        vertical-alignment: center;
-                    }
-                }
-            }
         }
+    }
 
+    // The password prompt is an overlay on the window, not a row in the column layout:
+    // as a layout child it took real space and squashed everything above it.
         // ── WiFi Password Dialog (overlay) ──
         if root.wifi-password-visible : Rectangle {
             width: 100%;
@@ -2248,5 +2589,4 @@ export component NetworkManager inherits Rectangle {
                 }
             }
         }
-    }
 }

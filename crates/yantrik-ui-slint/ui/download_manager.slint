@@ -8,6 +8,7 @@ import { YButton, YIconButton } from "components/y_button.slint";
 import { YInput } from "components/y_input.slint";
 import { YEmptyState } from "components/y_empty_state.slint";
 import { YTabs, YTabItem } from "components/y_tabs.slint";
+import { Icon, Icons } from "components/icon.slint";
 
 export struct DownloadItem {
     id: int,
@@ -134,11 +135,11 @@ export component DownloadManagerScreen inherits Rectangle {
                     spacing: 6px;
                     alignment: center;
 
-                    Text {
-                        text: "\u{2193}";
-                        font-size: 16px;
-                        color: Theme.accent;
-                        vertical-alignment: center;
+                    Icon {
+                        commands: Icons.arrow-down;
+                        size: 16px;
+                        tint: Theme.accent;
+                        y: (parent.height - self.height) / 2;
                     }
 
                     Text {
@@ -155,11 +156,11 @@ export component DownloadManagerScreen inherits Rectangle {
                     spacing: 6px;
                     alignment: center;
 
-                    Text {
-                        text: "\u{2713}";
-                        font-size: 16px;
-                        color: Theme.color-success;
-                        vertical-alignment: center;
+                    Icon {
+                        commands: Icons.check;
+                        size: 16px;
+                        tint: Theme.color-success;
+                        y: (parent.height - self.height) / 2;
                     }
 
                     Text {
@@ -184,7 +185,7 @@ export component DownloadManagerScreen inherits Rectangle {
                 // Pause All button
                 YButton {
                     label: "Pause All";
-                    icon: "\u{23F8}";
+                    icon-path: Icons.pause;
                     variant: 1;
                     size: 0;
                     clicked => { root.dl-pause-all(); }
@@ -193,7 +194,7 @@ export component DownloadManagerScreen inherits Rectangle {
                 // Resume All button
                 YButton {
                     label: "Resume All";
-                    icon: "\u{25B6}";
+                    icon-path: Icons.play;
                     variant: 1;
                     size: 0;
                     clicked => { root.dl-resume-all(); }
@@ -210,7 +211,7 @@ export component DownloadManagerScreen inherits Rectangle {
                 // AI button
                 YButton {
                     label: root.ai-is-working ? "Analyzing..." : "AI";
-                    icon: "\u{2728}";
+                    icon-path: Icons.spark;
                     variant: root.ai-is-working ? 0 : 1;
                     size: 0;
                     loading: root.ai-is-working;
@@ -227,7 +228,8 @@ export component DownloadManagerScreen inherits Rectangle {
 
                 // + Add URL button
                 YButton {
-                    label: "+ Add URL";
+                    label: "Add URL";
+                icon-path: Icons.plus;
                     variant: 0;
                     size: 1;
                     clicked => {
@@ -248,15 +250,17 @@ export component DownloadManagerScreen inherits Rectangle {
                 viewport-height: ai-dl-resp.preferred-height + 16px;
 
                 ai-dl-resp := VerticalLayout {
+                    alignment: start;
                     padding: Theme.sp-3;
                     spacing: Theme.sp-2;
 
                     HorizontalLayout {
                         spacing: 6px;
-                        Text {
-                            text: "\u{2728}";
-                            font-size: 12px;
-                            vertical-alignment: center;
+                        Icon {
+                            commands: Icons.spark;
+                            size: 12px;
+                            tint: Theme.text-secondary;
+                            y: (parent.height - self.height) / 2;
                         }
                         Text {
                             text: "AI Analysis";
@@ -267,7 +271,7 @@ export component DownloadManagerScreen inherits Rectangle {
                         }
                         Rectangle { horizontal-stretch: 1; }
                         YIconButton {
-                            icon: "\u{2715}";
+                            icon-path: Icons.close;
                             variant: 2;
                             clicked => {
                                 root.ai-panel-open = false;
@@ -353,7 +357,7 @@ export component DownloadManagerScreen inherits Rectangle {
 
                     // Cancel
                     YIconButton {
-                        icon: "\u{2715}";
+                        icon-path: Icons.close;
                         variant: 2;
                         clicked => {
                             root.add-url-open = false;
@@ -426,11 +430,11 @@ export component DownloadManagerScreen inherits Rectangle {
                             spacing: 6px;
                             alignment: center;
 
-                            Text {
-                                text: "\u{1F4C1}";
-                                font-size: 11px;
-                                color: Theme.text-dim;
-                                vertical-alignment: center;
+                            Icon {
+                                commands: Icons.folder;
+                                size: 12px;
+                                tint: Theme.text-dim;
+                                y: (parent.height - self.height) / 2;
                             }
 
                             savedir-input := TextInput {
@@ -465,7 +469,6 @@ export component DownloadManagerScreen inherits Rectangle {
                 padding-left: 20px;
                 padding-right: 20px;
                 spacing: 10px;
-                alignment: center;
 
                 // Select All checkbox
                 Rectangle {
@@ -486,12 +489,12 @@ export component DownloadManagerScreen inherits Rectangle {
                         border-width: root.dl-all-selected ? 0 : 1px;
                         border-color: Theme.text-dim;
 
-                        if root.dl-all-selected : Text {
-                            text: "\u{2713}";
-                            font-size: 10px;
-                            color: Theme.text-on-accent;
-                            horizontal-alignment: center;
-                            vertical-alignment: center;
+                        if root.dl-all-selected : Icon {
+                            commands: Icons.check;
+                            size: 12px;
+                            tint: Theme.text-on-accent;
+                            x: (parent.width - self.width) / 2;
+                            y: (parent.height - self.height) / 2;
                         }
                     }
 
@@ -513,17 +516,25 @@ export component DownloadManagerScreen inherits Rectangle {
                     border-color: search-input.has-focus ? Theme.accent : Theme.border-subtle;
                     clip: true;
 
+                    if root.dl-search-text == "" : Text {
+                        x: 12px + 12px + 6px;
+                        height: 100%;
+                        text: "Search downloads";
+                        color: Theme.text-dim;
+                        font-size: Theme.fs-caption;
+                        vertical-alignment: center;
+                    }
+
                     HorizontalLayout {
                         padding-left: 12px;
                         padding-right: 12px;
                         spacing: 6px;
-                        alignment: center;
 
-                        Text {
-                            text: "\u{1F50D}";
-                            font-size: 12px;
-                            color: Theme.text-dim;
-                            vertical-alignment: center;
+                        Icon {
+                            commands: Icons.search;
+                            size: 12px;
+                            tint: Theme.text-dim;
+                            y: (parent.height - self.height) / 2;
                         }
 
                         search-input := TextInput {
@@ -556,12 +567,12 @@ export component DownloadManagerScreen inherits Rectangle {
                                 width: 20px; height: 20px;
                                 border-radius: 10px;
                                 background: parent.has-hover ? Theme.hover-fill : transparent;
-                                Text {
-                                    text: "\u{2715}";
-                                    font-size: 10px;
-                                    color: Theme.text-dim;
-                                    horizontal-alignment: center;
-                                    vertical-alignment: center;
+                                Icon {
+                                    commands: Icons.close;
+                                    size: 12px;
+                                    tint: Theme.text-dim;
+                                    x: (parent.width - self.width) / 2;
+                                    y: (parent.height - self.height) / 2;
                                 }
                             }
                         }
@@ -583,11 +594,11 @@ export component DownloadManagerScreen inherits Rectangle {
                         spacing: 4px;
                         alignment: center;
 
-                        Text {
-                            text: "\u{2195}";
-                            font-size: 11px;
-                            color: Theme.text-dim;
-                            vertical-alignment: center;
+                        Icon {
+                            commands: Icons.sort;
+                            size: 12px;
+                            tint: Theme.text-dim;
+                            y: (parent.height - self.height) / 2;
                         }
 
                         Text {
@@ -633,11 +644,11 @@ export component DownloadManagerScreen inherits Rectangle {
                         alignment: center;
                         spacing: 12px;
 
-                        Text {
-                            text: "\u{2193}";
-                            font-size: 48px;
-                            color: Theme.text-dim;
-                            horizontal-alignment: center;
+                        Icon {
+                            commands: Icons.arrow-down;
+                            size: 20px;
+                            tint: Theme.text-dim;
+                            x: (parent.width - self.width) / 2;
                         }
 
                         Text {
@@ -685,12 +696,12 @@ export component DownloadManagerScreen inherits Rectangle {
                                     background: dl.is-selected ? Theme.accent : transparent;
                                     y: (parent.height - self.height) / 2;
 
-                                    if dl.is-selected : Text {
-                                        text: "\u{2713}";
-                                        font-size: 10px;
-                                        color: Theme.text-on-accent;
-                                        horizontal-alignment: center;
-                                        vertical-alignment: center;
+                                    if dl.is-selected : Icon {
+                                        commands: Icons.check;
+                                        size: 12px;
+                                        tint: Theme.text-on-accent;
+                                        x: (parent.width - self.width) / 2;
+                                        y: (parent.height - self.height) / 2;
                                     }
 
                                     TouchArea {
@@ -734,9 +745,9 @@ export component DownloadManagerScreen inherits Rectangle {
                                       : Theme.hover-fill-strong;
 
                                     Text {
-                                        text: dl.checksum-status == "pass" ? "\u{2713} Hash OK"
-                                            : dl.checksum-status == "fail" ? "\u{2715} Mismatch"
-                                            : "\u{231B} Verifying";
+                                        text: dl.checksum-status == "pass" ? "Hash OK"
+                                            : dl.checksum-status == "fail" ? "Mismatch"
+                                            : "Verifying";
                                         font-size: 9px;
                                         font-weight: 500;
                                         color:
@@ -843,13 +854,7 @@ export component DownloadManagerScreen inherits Rectangle {
                                     background: pause-ta.has-hover ? Theme.hover-fill-strong : Theme.hover-fill;
                                     border-radius: 14px;
 
-                                    Text {
-                                        text: dl.status == "paused" ? "\u{25B6}" : "\u{23F8}";
-                                        font-size: 12px;
-                                        color: Theme.text-secondary;
-                                        horizontal-alignment: center;
-                                        vertical-alignment: center;
-                                    }
+                                    Icon { commands: dl.status == "paused" ? Icons.play : Icons.pause; size: 12px; tint: Theme.text-secondary; x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; }
 
                                     pause-ta := TouchArea {
                                         clicked => {
@@ -869,12 +874,12 @@ export component DownloadManagerScreen inherits Rectangle {
                                     background: cancel-dl-ta.has-hover ? Theme.color-danger-dim : Theme.hover-fill;
                                     border-radius: 14px;
 
-                                    Text {
-                                        text: "\u{2715}";
-                                        font-size: 12px;
-                                        color: cancel-dl-ta.has-hover ? Theme.color-emotional : Theme.text-dim;
-                                        horizontal-alignment: center;
-                                        vertical-alignment: center;
+                                    Icon {
+                                        commands: Icons.close;
+                                        size: 12px;
+                                        tint: cancel-dl-ta.has-hover ? Theme.color-emotional : Theme.text-dim;
+                                        x: (parent.width - self.width) / 2;
+                                        y: (parent.height - self.height) / 2;
                                     }
 
                                     cancel-dl-ta := TouchArea {
@@ -889,12 +894,12 @@ export component DownloadManagerScreen inherits Rectangle {
                                     background: retry-ta.has-hover ? Theme.hover-fill-strong : Theme.hover-fill;
                                     border-radius: 14px;
 
-                                    Text {
-                                        text: "\u{21BB}";
-                                        font-size: 14px;
-                                        color: Theme.text-secondary;
-                                        horizontal-alignment: center;
-                                        vertical-alignment: center;
+                                    Icon {
+                                        commands: Icons.refresh;
+                                        size: 14px;
+                                        tint: Theme.text-secondary;
+                                        x: (parent.width - self.width) / 2;
+                                        y: (parent.height - self.height) / 2;
                                     }
 
                                     retry-ta := TouchArea {
@@ -909,11 +914,12 @@ export component DownloadManagerScreen inherits Rectangle {
                                     background: folder-ta.has-hover ? Theme.hover-fill-strong : Theme.hover-fill;
                                     border-radius: 14px;
 
-                                    Text {
-                                        text: "\u{1F4C2}";
-                                        font-size: 14px;
-                                        horizontal-alignment: center;
-                                        vertical-alignment: center;
+                                    Icon {
+                                        commands: Icons.folder;
+                                        size: 14px;
+                                        tint: Theme.text-secondary;
+                                        x: (parent.width - self.width) / 2;
+                                        y: (parent.height - self.height) / 2;
                                     }
 
                                     folder-ta := TouchArea {
@@ -928,12 +934,12 @@ export component DownloadManagerScreen inherits Rectangle {
                                     background: expand-ta.has-hover ? Theme.hover-fill-strong : transparent;
                                     border-radius: 12px;
 
-                                    Text {
-                                        text: root.dl-expanded-id == dl.id ? "\u{25B2}" : "\u{25BC}";
-                                        font-size: 10px;
-                                        color: Theme.text-dim;
-                                        horizontal-alignment: center;
-                                        vertical-alignment: center;
+                                    Icon {
+                                        commands: root.dl-expanded-id == dl.id ? Icons.chevron-up : Icons.chevron-down;
+                                        size: 12px;
+                                        tint: Theme.text-dim;
+                                        x: (parent.width - self.width) / 2;
+                                        y: (parent.height - self.height) / 2;
                                     }
 
                                     expand-ta := TouchArea {
@@ -965,11 +971,11 @@ export component DownloadManagerScreen inherits Rectangle {
                                 // Save directory indicator
                                 if dl.save-dir != "" : HorizontalLayout {
                                     spacing: 4px;
-                                    Text {
-                                        text: "\u{1F4C1}";
-                                        font-size: 10px;
-                                        color: Theme.text-dim;
-                                        vertical-alignment: center;
+                                    Icon {
+                                        commands: Icons.folder;
+                                        size: 12px;
+                                        tint: Theme.text-dim;
+                                        y: (parent.height - self.height) / 2;
                                     }
                                     Text {
                                         text: dl.save-dir;

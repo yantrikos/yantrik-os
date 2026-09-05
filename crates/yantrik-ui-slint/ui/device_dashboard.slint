@@ -1,6 +1,7 @@
 // Device Dashboard — hardware device overview. Screen 27.
 
 import { Theme } from "theme.slint";
+import { Icon, Icons } from "components/icon.slint";
 
 // ── Data structs ──
 
@@ -50,6 +51,7 @@ component DevTabButton inherits TouchArea {
     in property <string> label;
     in property <bool> active;
     in property <string> icon;
+    in property <string> icon-path;
     height: 44px;
 
     Rectangle {
@@ -61,7 +63,13 @@ component DevTabButton inherits TouchArea {
             padding-right: Theme.sp-4;
             alignment: center;
 
-            Text {
+            if root.icon-path != "" : Icon {
+                commands: root.icon-path;
+                size: 14px;
+                tint: root.active ? Theme.accent : Theme.text-secondary;
+                y: (parent.height - self.height) / 2;
+            }
+            if root.icon-path == "" : Text {
                 text: icon;
                 color: active ? Theme.accent : Theme.text-secondary;
                 font-size: Theme.fs-title-2;
@@ -104,11 +112,11 @@ component RefreshButton inherits TouchArea {
             alignment: center;
             spacing: Theme.r-sm;
 
-            Text {
-                text: "\u{21BB}";
-                color: Theme.accent;
-                font-size: Theme.fs-title-2;
-                vertical-alignment: center;
+            Icon {
+                commands: Icons.refresh;
+                size: 16px;
+                tint: Theme.accent;
+                y: (parent.height - self.height) / 2;
             }
             Text {
                 text: "Refresh";
@@ -139,10 +147,11 @@ component ExportButton inherits TouchArea {
             alignment: center;
             spacing: Theme.r-sm;
 
-            Text {
-                text: "\u{1F4E5}";
-                font-size: Theme.fs-body;
-                vertical-alignment: center;
+            Icon {
+                commands: Icons.inbox;
+                size: 14px;
+                tint: Theme.text-secondary;
+                y: (parent.height - self.height) / 2;
             }
             Text {
                 text: "Export";
@@ -258,7 +267,7 @@ component UsbDeviceRow inherits TouchArea {
                 text: data.vendor-product;
                 color: Theme.accent;
                 font-size: Theme.fs-caption;
-                font-family: "monospace";
+                font-family: Theme.font-mono;
                 vertical-alignment: center;
                 width: 100px;
             }
@@ -309,7 +318,7 @@ component PciDeviceRow inherits TouchArea {
                 text: data.slot;
                 color: Theme.text-dim;
                 font-size: Theme.fs-caption;
-                font-family: "monospace";
+                font-family: Theme.font-mono;
                 vertical-alignment: center;
                 width: 80px;
             }
@@ -367,18 +376,18 @@ component InputDeviceRow inherits Rectangle {
                       : data.device-type == "touchpad" ? Theme.color-pattern.with-alpha(0.12)
                       : Theme.text-dim.with-alpha(0.12);
 
-            Text {
-                text: data.device-type == "keyboard" ? "\u{2328}"
-                    : data.device-type == "mouse" ? "\u{1F5B1}"
-                    : data.device-type == "touchpad" ? "\u{261F}"
-                    : "\u{2699}";
-                font-size: Theme.fs-title-1;
-                color: data.device-type == "keyboard" ? Theme.holo-blue
+            Icon {
+                commands: data.device-type == "keyboard" ? Icons.keyboard
+                    : data.device-type == "mouse" ? Icons.mouse
+                    : data.device-type == "touchpad" ? Icons.mouse
+                    : Icons.settings;
+                size: 16px;
+                tint: data.device-type == "keyboard" ? Theme.holo-blue
                      : data.device-type == "mouse" ? Theme.accent
                      : data.device-type == "touchpad" ? Theme.color-pattern
                      : Theme.text-dim;
-                vertical-alignment: center;
-                horizontal-alignment: center;
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
             }
         }
 
@@ -417,7 +426,7 @@ component InputDeviceRow inherits Rectangle {
             text: data.phys;
             color: Theme.text-dim;
             font-size: Theme.fs-caption;
-            font-family: "monospace";
+            font-family: Theme.font-mono;
             vertical-alignment: center;
             width: 140px;
             horizontal-alignment: right;
@@ -449,14 +458,14 @@ component StorageDeviceRow inherits Rectangle {
                       : data.device-type == "lvm" ? Theme.color-pattern.with-alpha(0.12)
                       : Theme.text-dim.with-alpha(0.12);
 
-            Text {
-                text: data.device-type == "disk" ? "\u{1F4BD}"
-                    : data.device-type == "rom" ? "\u{1F4BF}"
-                    : "\u{1F4C1}";
-                font-size: Theme.fs-title-1;
-                color: Theme.text-primary;
-                vertical-alignment: center;
-                horizontal-alignment: center;
+            Icon {
+                commands: data.device-type == "disk" ? Icons.disk
+                    : data.device-type == "rom" ? Icons.disk
+                    : Icons.folder;
+                size: 16px;
+                tint: Theme.text-primary;
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
             }
         }
 
@@ -584,7 +593,7 @@ component DisplayDeviceRow inherits Rectangle {
             text: data.resolution;
             color: data.resolution != "" ? Theme.holo-blue : Theme.text-dim;
             font-size: Theme.fs-body;
-            font-family: "monospace";
+            font-family: Theme.font-mono;
             vertical-alignment: center;
             width: 140px;
             horizontal-alignment: right;
@@ -697,12 +706,12 @@ component DeviceDetailPanel inherits Rectangle {
                     width: Theme.sp-6; height: Theme.sp-6;
                     border-radius: Theme.r-lg;
                     background: parent.has-hover ? Theme.hover-fill : transparent;
-                    Text {
-                        text: "\u{2715}";
-                        font-size: Theme.fs-micro;
-                        color: Theme.text-dim;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
+                    Icon {
+                        commands: Icons.close;
+                        size: 12px;
+                        tint: Theme.text-dim;
+                        x: (parent.width - self.width) / 2;
+                        y: (parent.height - self.height) / 2;
                     }
                 }
             }
@@ -721,7 +730,7 @@ component DeviceDetailPanel inherits Rectangle {
                 text: detail-info;
                 color: Theme.text-secondary;
                 font-size: Theme.fs-caption;
-                font-family: "monospace";
+                font-family: Theme.font-mono;
                 wrap: word-wrap;
                 vertical-alignment: top;
             }
@@ -746,12 +755,11 @@ component SearchBar inherits Rectangle {
         padding-right: Theme.sp-3;
         spacing: Theme.sp-2;
 
-        Text {
-            text: "\u{1F50D}";
-            font-size: Theme.fs-body;
-            color: Theme.text-dim;
-            vertical-alignment: center;
-            width: 20px;
+        Icon {
+            commands: Icons.search;
+            size: 14px;
+            tint: Theme.text-dim;
+            y: (parent.height - self.height) / 2;
         }
 
         search-input := TextInput {
@@ -775,12 +783,12 @@ component SearchBar inherits Rectangle {
                 width: Theme.sp-6; height: Theme.sp-6;
                 border-radius: Theme.r-lg;
                 background: parent.has-hover ? Theme.hover-fill : transparent;
-                Text {
-                    text: "\u{2715}";
-                    font-size: Theme.fs-micro;
-                    color: Theme.text-dim;
-                    horizontal-alignment: center;
-                    vertical-alignment: center;
+                Icon {
+                    commands: Icons.close;
+                    size: 12px;
+                    tint: Theme.text-dim;
+                    x: (parent.width - self.width) / 2;
+                    y: (parent.height - self.height) / 2;
                 }
             }
         }
@@ -899,35 +907,35 @@ export component DeviceDashboardScreen inherits Rectangle {
 
                 DevTabButton {
                     label: "USB";
-                    icon: "\u{1F50C}";
+                    icon-path: Icons.plug;
                     active: active-tab == 0;
                     width: 120px;
                     clicked => { root.active-tab = 0; root.dev-tab(0); }
                 }
                 DevTabButton {
                     label: "PCI";
-                    icon: "\u{1F4E6}";
+                    icon-path: Icons.packages;
                     active: active-tab == 1;
                     width: 120px;
                     clicked => { root.active-tab = 1; root.dev-tab(1); }
                 }
                 DevTabButton {
                     label: "Input";
-                    icon: "\u{2328}";
+                    icon-path: Icons.keyboard;
                     active: active-tab == 2;
                     width: 120px;
                     clicked => { root.active-tab = 2; root.dev-tab(2); }
                 }
                 DevTabButton {
                     label: "Storage";
-                    icon: "\u{1F4BD}";
+                    icon-path: Icons.disk;
                     active: active-tab == 3;
                     width: 120px;
                     clicked => { root.active-tab = 3; root.dev-tab(3); }
                 }
                 DevTabButton {
                     label: "Display";
-                    icon: "\u{1F5B5}";
+                    icon-path: Icons.monitor;
                     active: active-tab == 4;
                     width: 120px;
                     clicked => { root.active-tab = 4; root.dev-tab(4); }
@@ -961,10 +969,11 @@ export component DeviceDashboardScreen inherits Rectangle {
                             padding-right: 10px;
                             spacing: Theme.sp-1;
                             alignment: center;
-                            Text {
-                                text: root.ai-is-working ? "\u{2B50}" : "\u{2728}";
-                                font-size: Theme.fs-caption;
-                                vertical-alignment: center;
+                            Icon {
+                                commands: root.ai-is-working ? Icons.spark : Icons.spark;
+                                size: 12px;
+                                tint: Theme.text-secondary;
+                                y: (parent.height - self.height) / 2;
                             }
                             Text {
                                 text: root.ai-is-working ? "Analyzing..." : "AI Explain";
@@ -1016,10 +1025,11 @@ export component DeviceDashboardScreen inherits Rectangle {
                 padding-right: Theme.sp-2;
                 spacing: 10px;
 
-                Text {
-                    text: "\u{1F50C}";
-                    font-size: Theme.fs-title-2;
-                    vertical-alignment: center;
+                Icon {
+                    commands: Icons.plug;
+                    size: 16px;
+                    tint: Theme.text-secondary;
+                    y: (parent.height - self.height) / 2;
                 }
 
                 Text {
@@ -1043,12 +1053,12 @@ export component DeviceDashboardScreen inherits Rectangle {
                         border-radius: 14px;
                         background: parent.has-hover ? Theme.hover-fill-strong : transparent;
 
-                        Text {
-                            text: "\u{2715}";
-                            font-size: Theme.fs-micro;
-                            color: Theme.text-dim;
-                            horizontal-alignment: center;
-                            vertical-alignment: center;
+                        Icon {
+                            commands: Icons.close;
+                            size: 12px;
+                            tint: Theme.text-dim;
+                            x: (parent.width - self.width) / 2;
+                            y: (parent.height - self.height) / 2;
                         }
                     }
                 }
@@ -1109,15 +1119,17 @@ export component DeviceDashboardScreen inherits Rectangle {
                 viewport-height: ai-dev-resp.preferred-height + Theme.sp-4;
 
                 ai-dev-resp := VerticalLayout {
+                    alignment: start;
                     padding: Theme.sp-3;
                     spacing: Theme.sp-2;
 
                     HorizontalLayout {
                         spacing: Theme.r-sm;
-                        Text {
-                            text: "\u{2728}";
-                            font-size: Theme.fs-caption;
-                            vertical-alignment: center;
+                        Icon {
+                            commands: Icons.spark;
+                            size: 12px;
+                            tint: Theme.text-secondary;
+                            y: (parent.height - self.height) / 2;
                         }
                         Text {
                             text: "AI Analysis";
@@ -1138,12 +1150,12 @@ export component DeviceDashboardScreen inherits Rectangle {
                                 width: Theme.sp-6; height: Theme.sp-6;
                                 border-radius: Theme.r-lg;
                                 background: parent.has-hover ? Theme.hover-fill : transparent;
-                                Text {
-                                    text: "\u{2715}";
-                                    font-size: Theme.fs-micro;
-                                    color: Theme.text-dim;
-                                    horizontal-alignment: center;
-                                    vertical-alignment: center;
+                                Icon {
+                                    commands: Icons.close;
+                                    size: 12px;
+                                    tint: Theme.text-dim;
+                                    x: (parent.width - self.width) / 2;
+                                    y: (parent.height - self.height) / 2;
                                 }
                             }
                         }

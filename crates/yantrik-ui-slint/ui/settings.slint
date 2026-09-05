@@ -6,6 +6,7 @@ import { Theme, ThemeMode, AccentPreset } from "theme.slint";
 import { SkillStore, SkillData } from "skill_store.slint";
 import { YButton, YIconButton } from "components/y_button.slint";
 import { YInput } from "components/y_input.slint";
+import { Icon, Icons } from "components/icon.slint";
 
 // ── Settings sidebar category item ──
 export struct SettingsCategoryItem {
@@ -186,18 +187,23 @@ export component SettingsScreen inherits Rectangle {
 
     // Sidebar categories — data-driven
     property <[SettingsCategoryItem]> all-categories: [
-        { icon: "\u{25D0}", label: "Appearance",         id: 0 },
-        { icon: "\u{25C9}", label: "AI & Intelligence",  id: 1 },
-        { icon: "\u{25A3}", label: "Desktop",            id: 2 },
-        { icon: "\u{25CE}", label: "Network",            id: 3 },
-        { icon: "\u{1F517}", label: "Accounts",          id: 4 },
-        { icon: "\u{2298}", label: "Privacy & Security", id: 5 },
-        { icon: "\u{2299}", label: "System",             id: 6 },
-        { icon: "\u{26A1}", label: "Skills",             id: 7 },
+        { icon: Icons.sun, label: "Appearance",         id: 0 },
+        { icon: Icons.spark, label: "AI & Intelligence",  id: 1 },
+        { icon: Icons.apps, label: "Desktop",            id: 2 },
+        { icon: Icons.wifi, label: "Network",            id: 3 },
+        { icon: Icons.link, label: "Accounts",          id: 4 },
+        { icon: Icons.shield, label: "Privacy & Security", id: 5 },
+        { icon: Icons.settings, label: "System",             id: 6 },
+        { icon: Icons.bolt, label: "Skills",             id: 7 },
     ];
 
     // Search-filtered categories (set from Rust callback or defaults to all)
     in-out property <[SettingsCategoryItem]> categories: root.all-categories;
+    // Category glyphs live here, keyed by id, so the Rust side never has to know icon paths.
+    pure function category-icon(id: int) -> string {
+        id == 0 ? Icons.sun : id == 1 ? Icons.spark : id == 2 ? Icons.apps : id == 3 ? Icons.wifi
+        : id == 4 ? Icons.link : id == 5 ? Icons.shield : id == 6 ? Icons.settings : Icons.bolt
+    }
     in-out property <string> search-query: "";
     callback settings-search(string);
 
@@ -209,18 +215,6 @@ export component SettingsScreen inherits Rectangle {
         triggered => {
             glow-phase = mod(glow-phase + 0.0015, 1.0);
         }
-    }
-
-    // Background nebula wash
-    Rectangle {
-        x: parent.width * 0.5;
-        y: -parent.height * 0.1;
-        width: 600px;
-        height: 500px;
-        background: @radial-gradient(circle,
-            Theme.accent-glow 0%,
-            transparent 60%
-        );
     }
 
     VerticalLayout {
@@ -246,7 +240,7 @@ export component SettingsScreen inherits Rectangle {
                 spacing: Theme.sp-3;
 
                 YIconButton {
-                    icon: "\u{2190}";
+                    icon-path: Icons.arrow-left;
                     variant: 2;
                     clicked => { root.back-pressed(); }
                 }
@@ -339,13 +333,11 @@ export component SettingsScreen inherits Rectangle {
                             spacing: Theme.sp-3;
                             alignment: start;
 
-                            Text {
-                                text: cat.icon;
-                                color: is-active ? Theme.accent : Theme.text-dim;
-                                font-size: Theme.fs-body;
-                                vertical-alignment: center;
-                                width: 24px;
-                                horizontal-alignment: center;
+                            Icon {
+                                commands: root.category-icon(cat.id);
+                                size: 15px;
+                                tint: cat.id == root.active-category ? Theme.accent : Theme.text-secondary;
+                                y: (parent.height - self.height) / 2;
                             }
                             Text {
                                 text: cat.label;
@@ -1147,11 +1139,11 @@ export component SettingsScreen inherits Rectangle {
                                     // Fallback info (shown when using fallback)
                                     if root.ai-status.using-fallback : HorizontalLayout {
                                         spacing: Theme.sp-2;
-                                        Text {
-                                            text: "\u{26A0}";
-                                            color: Theme.amber;
-                                            font-size: Theme.fs-body;
-                                            vertical-alignment: center;
+                                        Icon {
+                                            commands: Icons.warning;
+                                            size: 14px;
+                                            tint: Theme.amber;
+                                            y: (parent.height - self.height) / 2;
                                         }
                                         VerticalLayout {
                                             spacing: 2px;
@@ -1524,12 +1516,12 @@ export component SettingsScreen inherits Rectangle {
                                         background: Theme.hover-fill;
                                         border-width: 1px;
                                         border-color: Theme.border-subtle;
-                                        Text {
-                                            text: "\u{21BB}";
-                                            color: Theme.accent;
-                                            font-size: Theme.fs-body;
-                                            horizontal-alignment: center;
-                                            vertical-alignment: center;
+                                        Icon {
+                                            commands: Icons.refresh;
+                                            size: 14px;
+                                            tint: Theme.accent;
+                                            x: (parent.width - self.width) / 2;
+                                            y: (parent.height - self.height) / 2;
                                         }
                                     }
                                 }
@@ -2219,7 +2211,7 @@ export component SettingsScreen inherits Rectangle {
                                             }
                                         }
                                         if root.budget-warning : Text {
-                                            text: "\u{26A0} Approaching budget limit";
+                                            text: "Approaching budget limit";
                                             color: Theme.amber;
                                             font-size: Theme.fs-caption;
                                             font-weight: 500;
@@ -2279,11 +2271,11 @@ export component SettingsScreen inherits Rectangle {
                                                     color: Theme.text-primary;
                                                     font-size: Theme.fs-body;
                                                 }
-                                                Text {
-                                                    text: "\u{270E}";
-                                                    color: Theme.text-dim;
-                                                    font-size: Theme.fs-micro;
-                                                    vertical-alignment: center;
+                                                Icon {
+                                                    commands: Icons.pencil;
+                                                    size: 12px;
+                                                    tint: Theme.text-dim;
+                                                    y: (parent.height - self.height) / 2;
                                                 }
                                             }
                                         }
@@ -2331,11 +2323,11 @@ export component SettingsScreen inherits Rectangle {
                                                     font-size: Theme.fs-body;
                                                     font-weight: 500;
                                                 }
-                                                Text {
-                                                    text: "\u{270E}";
-                                                    color: Theme.text-dim;
-                                                    font-size: Theme.fs-micro;
-                                                    vertical-alignment: center;
+                                                Icon {
+                                                    commands: Icons.pencil;
+                                                    size: 12px;
+                                                    tint: Theme.text-dim;
+                                                    y: (parent.height - self.height) / 2;
                                                 }
                                             }
                                         }
@@ -2382,11 +2374,11 @@ export component SettingsScreen inherits Rectangle {
                                         horizontal-stretch: 1;
                                         vertical-alignment: center;
                                     }
-                                    Text {
-                                        text: "\u{2192}";
-                                        color: Theme.accent-dim;
-                                        font-size: Theme.fs-headline;
-                                        vertical-alignment: center;
+                                    Icon {
+                                        commands: Icons.arrow-right;
+                                        size: 16px;
+                                        tint: Theme.accent-dim;
+                                        y: (parent.height - self.height) / 2;
                                     }
                                 }
                             }
@@ -2408,11 +2400,11 @@ export component SettingsScreen inherits Rectangle {
                                         horizontal-stretch: 1;
                                         vertical-alignment: center;
                                     }
-                                    Text {
-                                        text: "\u{2192}";
-                                        color: Theme.accent-dim;
-                                        font-size: Theme.fs-headline;
-                                        vertical-alignment: center;
+                                    Icon {
+                                        commands: Icons.arrow-right;
+                                        size: 16px;
+                                        tint: Theme.accent-dim;
+                                        y: (parent.height - self.height) / 2;
                                     }
                                 }
                             }
@@ -2449,11 +2441,11 @@ export component SettingsScreen inherits Rectangle {
                                             vertical-alignment: center;
                                         }
                                     }
-                                    Text {
-                                        text: "  \u{2192}";
-                                        color: Theme.accent-dim;
-                                        font-size: Theme.fs-headline;
-                                        vertical-alignment: center;
+                                    Icon {
+                                        commands: Icons.arrow-right;
+                                        size: 16px;
+                                        tint: Theme.accent-dim;
+                                        y: (parent.height - self.height) / 2;
                                     }
                                 }
                             }
@@ -2783,7 +2775,7 @@ export component SettingsScreen inherits Rectangle {
                                               : root.provider-test-result == "testing" ? Theme.tint-amber
                                               : Theme.color-danger-dim;
                                     Text {
-                                        text: root.provider-test-result == "success" ? "\u{2713} Connection successful"
+                                        text: root.provider-test-result == "success" ? "Connection successful"
                                             : root.provider-test-result == "testing" ? "Testing connection..."
                                             : root.provider-test-result;
                                         color: root.provider-test-result == "success" ? Theme.color-success
@@ -3386,11 +3378,11 @@ export component SettingsScreen inherits Rectangle {
                                         vertical-alignment: center;
                                     }
                                 }
-                                Text {
-                                    text: "  \u{2192}";
-                                    color: Theme.accent-dim;
-                                    font-size: Theme.fs-headline;
-                                    vertical-alignment: center;
+                                Icon {
+                                    commands: Icons.arrow-right;
+                                    size: 16px;
+                                    tint: Theme.accent-dim;
+                                    y: (parent.height - self.height) / 2;
                                 }
                             }
                         }
@@ -3418,11 +3410,11 @@ export component SettingsScreen inherits Rectangle {
                                     horizontal-stretch: 1;
                                     vertical-alignment: center;
                                 }
-                                Text {
-                                    text: "\u{2192}";
-                                    color: Theme.accent-dim;
-                                    font-size: Theme.fs-headline;
-                                    vertical-alignment: center;
+                                Icon {
+                                    commands: Icons.arrow-right;
+                                    size: 16px;
+                                    tint: Theme.accent-dim;
+                                    y: (parent.height - self.height) / 2;
                                 }
                             }
                         }
@@ -3450,11 +3442,11 @@ export component SettingsScreen inherits Rectangle {
                                     horizontal-stretch: 1;
                                     vertical-alignment: center;
                                 }
-                                Text {
-                                    text: "\u{2192}";
-                                    color: Theme.accent-dim;
-                                    font-size: Theme.fs-headline;
-                                    vertical-alignment: center;
+                                Icon {
+                                    commands: Icons.arrow-right;
+                                    size: 16px;
+                                    tint: Theme.accent-dim;
+                                    y: (parent.height - self.height) / 2;
                                 }
                             }
                         }
@@ -3673,13 +3665,12 @@ export component SettingsScreen inherits Rectangle {
                                         border-radius: Theme.r-md;
                                         background: Theme.color-success-dim;
 
-                                        Text {
-                                            text: "\u{266B}";
-                                            color: Theme.color-success;
-                                            font-size: Theme.fs-headline;
-                                            font-weight: 700;
-                                            horizontal-alignment: center;
-                                            vertical-alignment: center;
+                                        Icon {
+                                            commands: Icons.music;
+                                            size: 16px;
+                                            tint: Theme.color-success;
+                                            x: (parent.width - self.width) / 2;
+                                            y: (parent.height - self.height) / 2;
                                         }
                                     }
 
@@ -3967,12 +3958,12 @@ export component SettingsScreen inherits Rectangle {
                                         border-radius: Theme.r-md;
                                         background: Theme.color-danger-dim;
 
-                                        Text {
-                                            text: "\u{1F4F7}";
-                                            color: Theme.color-emotional;
-                                            font-size: Theme.fs-headline;
-                                            horizontal-alignment: center;
-                                            vertical-alignment: center;
+                                        Icon {
+                                            commands: Icons.image;
+                                            size: 16px;
+                                            tint: Theme.color-emotional;
+                                            x: (parent.width - self.width) / 2;
+                                            y: (parent.height - self.height) / 2;
                                         }
                                     }
 

@@ -6,6 +6,7 @@
 // create file/folder, status bar with selection info.
 
 import { Theme } from "theme.slint";
+import { Icon, Icons } from "components/icon.slint";
 import { ListView, LineEdit } from "std-widgets.slint";
 
 export struct FileEntry {
@@ -238,12 +239,12 @@ export component FileBrowser inherits Rectangle {
                                     border-radius: 4px;
                                     background: tab-close.has-hover ? Theme.color-danger-dim : transparent;
                                     animate background { duration: Theme.dur-fast; }
-                                    Text {
-                                        text: "\u{2715}";
-                                        color: tab-close.has-hover ? Theme.color-danger : Theme.text-dim;
-                                        font-size: 9px;
-                                        horizontal-alignment: center;
-                                        vertical-alignment: center;
+                                    Icon {
+                                        commands: Icons.close;
+                                        size: 12px;
+                                        tint: tab-close.has-hover ? Theme.color-danger : Theme.text-dim;
+                                        x: (parent.width - self.width) / 2;
+                                        y: (parent.height - self.height) / 2;
                                     }
                                 }
                             }
@@ -304,13 +305,13 @@ export component FileBrowser inherits Rectangle {
                             ? Theme.hover-fill
                             : transparent;
                         animate background { duration: Theme.dur-fast; }
-                        Text {
-                            text: "\u{25c1}";
-                            color: root.can-go-back ? (back-btn.has-hover ? Theme.cyan : Theme.text-secondary) : Theme.text-dim;
-                            font-size: Theme.fs-body;
-                            horizontal-alignment: center;
-                            vertical-alignment: center;
-                            animate color { duration: Theme.dur-fast; }
+                        Icon {
+                            commands: Icons.chevron-left;
+                            size: 14px;
+                            tint: root.can-go-back ? (back-btn.has-hover ? Theme.cyan : Theme.text-secondary) : Theme.text-dim;
+                            x: (parent.width - self.width) / 2;
+                            y: (parent.height - self.height) / 2;
+                            animate tint { duration: Theme.dur-fast; }
                         }
                     }
                 }
@@ -325,13 +326,13 @@ export component FileBrowser inherits Rectangle {
                             ? Theme.hover-fill
                             : transparent;
                         animate background { duration: Theme.dur-fast; }
-                        Text {
-                            text: "\u{25b7}";
-                            color: root.can-go-forward ? (fwd-btn.has-hover ? Theme.cyan : Theme.text-secondary) : Theme.text-dim;
-                            font-size: Theme.fs-body;
-                            horizontal-alignment: center;
-                            vertical-alignment: center;
-                            animate color { duration: Theme.dur-fast; }
+                        Icon {
+                            commands: Icons.chevron-right;
+                            size: 14px;
+                            tint: root.can-go-forward ? (fwd-btn.has-hover ? Theme.cyan : Theme.text-secondary) : Theme.text-dim;
+                            x: (parent.width - self.width) / 2;
+                            y: (parent.height - self.height) / 2;
+                            animate tint { duration: Theme.dur-fast; }
                         }
                     }
                 }
@@ -346,13 +347,13 @@ export component FileBrowser inherits Rectangle {
                             ? Theme.hover-fill
                             : transparent;
                         animate background { duration: Theme.dur-fast; }
-                        Text {
-                            text: "\u{2191}";
-                            color: up-btn.has-hover ? Theme.cyan : Theme.text-secondary;
-                            font-size: Theme.fs-headline;
-                            horizontal-alignment: center;
-                            vertical-alignment: center;
-                            animate color { duration: Theme.dur-fast; }
+                        Icon {
+                            commands: Icons.arrow-up;
+                            size: 16px;
+                            tint: up-btn.has-hover ? Theme.cyan : Theme.text-secondary;
+                            x: (parent.width - self.width) / 2;
+                            y: (parent.height - self.height) / 2;
+                            animate tint { duration: Theme.dur-fast; }
                         }
                     }
                 }
@@ -367,13 +368,13 @@ export component FileBrowser inherits Rectangle {
                             ? Theme.hover-fill
                             : transparent;
                         animate background { duration: Theme.dur-fast; }
-                        Text {
-                            text: "\u{2302}";
-                            color: home-btn.has-hover ? Theme.cyan : Theme.text-secondary;
-                            font-size: Theme.fs-headline;
-                            horizontal-alignment: center;
-                            vertical-alignment: center;
-                            animate color { duration: Theme.dur-fast; }
+                        Icon {
+                            commands: Icons.home;
+                            size: 16px;
+                            tint: home-btn.has-hover ? Theme.cyan : Theme.text-secondary;
+                            x: (parent.width - self.width) / 2;
+                            y: (parent.height - self.height) / 2;
+                            animate tint { duration: Theme.dur-fast; }
                         }
                     }
                 }
@@ -460,7 +461,12 @@ export component FileBrowser inherits Rectangle {
                             border-radius: Theme.r-sm;
                             background: addr-cancel.has-hover ? Theme.color-danger-dim : transparent;
                             animate background { duration: Theme.dur-fast; }
-                            Text { text: "\u{2715}"; color: addr-cancel.has-hover ? Theme.color-danger : Theme.text-dim; font-size: Theme.fs-caption; horizontal-alignment: center; vertical-alignment: center; }
+                            Icon {
+                                commands: Icons.close;
+                                size: 14px;
+                                tint: Theme.text-secondary;
+                                y: (parent.height - self.height) / 2;
+                            }
                         }
                     }
                 }
@@ -482,7 +488,12 @@ export component FileBrowser inherits Rectangle {
                             background: search-btn.has-hover
                                 ? Theme.hover-fill : transparent;
                             animate background { duration: Theme.dur-fast; }
-                            Text { text: "\u{2315}"; color: search-btn.has-hover ? Theme.cyan : Theme.text-dim; font-size: Theme.fs-body; horizontal-alignment: center; vertical-alignment: center; }
+                            Icon {
+                                commands: Icons.search;
+                                size: 14px;
+                                tint: Theme.text-secondary;
+                                y: (parent.height - self.height) / 2;
+                            }
                         }
                     }
 
@@ -504,7 +515,12 @@ export component FileBrowser inherits Rectangle {
                                 border-radius: Theme.r-sm;
                                 background: filter-close.has-hover ? Theme.color-danger-dim : transparent;
                                 animate background { duration: Theme.dur-fast; }
-                                Text { text: "\u{2715}"; color: filter-close.has-hover ? Theme.color-danger : Theme.text-dim; font-size: Theme.fs-micro; horizontal-alignment: center; vertical-alignment: center; }
+                                Icon {
+                                    commands: Icons.close;
+                                    size: 14px;
+                                    tint: Theme.text-secondary;
+                                    y: (parent.height - self.height) / 2;
+                                }
                             }
                         }
                     }
@@ -538,13 +554,13 @@ export component FileBrowser inherits Rectangle {
                             background: newfile-btn.has-hover
                                 ? Theme.color-success-dim : transparent;
                             animate background { duration: Theme.dur-fast; }
-                            Text {
-                                text: "\u{2610}";
-                                color: newfile-btn.has-hover ? Theme.color-success : Theme.text-dim;
-                                font-size: Theme.fs-body;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
-                                animate color { duration: Theme.dur-fast; }
+                            Icon {
+                                commands: Icons.checkbox;
+                                size: 14px;
+                                tint: newfile-btn.has-hover ? Theme.color-success : Theme.text-dim;
+                                x: (parent.width - self.width) / 2;
+                                y: (parent.height - self.height) / 2;
+                                animate tint { duration: Theme.dur-fast; }
                             }
                         }
                     }
@@ -578,7 +594,12 @@ export component FileBrowser inherits Rectangle {
                             background: parent.has-hover
                                 ? Theme.hover-fill : transparent;
                             animate background { duration: Theme.dur-fast; }
-                            Text { text: "\u{1f4cb}"; font-size: Theme.fs-caption; horizontal-alignment: center; vertical-alignment: center; }
+                            Icon {
+                                commands: Icons.copy;
+                                size: 14px;
+                                tint: Theme.text-secondary;
+                                y: (parent.height - self.height) / 2;
+                            }
                         }
                     }
 
@@ -591,12 +612,12 @@ export component FileBrowser inherits Rectangle {
                             background: hidden-btn.has-hover
                                 ? Theme.hover-fill : transparent;
                             animate background { duration: Theme.dur-fast; }
-                            Text {
-                                text: root.show-hidden ? "\u{25c9}" : "\u{25ce}";
-                                color: root.show-hidden ? Theme.cyan : Theme.text-dim;
-                                font-size: Theme.fs-body;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
+                            Icon {
+                                commands: root.show-hidden ? Icons.spark : Icons.wifi;
+                                size: 14px;
+                                tint: root.show-hidden ? Theme.cyan : Theme.text-dim;
+                                x: (parent.width - self.width) / 2;
+                                y: (parent.height - self.height) / 2;
                             }
                         }
                     }
@@ -610,13 +631,13 @@ export component FileBrowser inherits Rectangle {
                             background: detail-toggle-btn.has-hover
                                 ? Theme.hover-fill : transparent;
                             animate background { duration: Theme.dur-fast; }
-                            Text {
-                                text: "\u{2261}";
-                                color: root.detail-panel-visible ? Theme.cyan : (detail-toggle-btn.has-hover ? Theme.cyan : Theme.text-dim);
-                                font-size: Theme.fs-headline;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
-                                animate color { duration: Theme.dur-fast; }
+                            Icon {
+                                commands: Icons.list;
+                                size: 16px;
+                                tint: root.detail-panel-visible ? Theme.cyan : (detail-toggle-btn.has-hover ? Theme.cyan : Theme.text-dim);
+                                x: (parent.width - self.width) / 2;
+                                y: (parent.height - self.height) / 2;
+                                animate tint { duration: Theme.dur-fast; }
                             }
                         }
                     }
@@ -630,13 +651,13 @@ export component FileBrowser inherits Rectangle {
                             background: view-toggle-btn.has-hover
                                 ? Theme.hover-fill : transparent;
                             animate background { duration: Theme.dur-fast; }
-                            Text {
-                                text: root.grid-view ? "\u{2261}" : "\u{229e}";
-                                color: view-toggle-btn.has-hover ? Theme.cyan : Theme.text-dim;
-                                font-size: Theme.fs-body;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
-                                animate color { duration: Theme.dur-fast; }
+                            Icon {
+                                commands: root.grid-view ? Icons.list : Icons.grid;
+                                size: 14px;
+                                tint: view-toggle-btn.has-hover ? Theme.cyan : Theme.text-dim;
+                                x: (parent.width - self.width) / 2;
+                                y: (parent.height - self.height) / 2;
+                                animate tint { duration: Theme.dur-fast; }
                             }
                         }
                     }
@@ -651,13 +672,13 @@ export component FileBrowser inherits Rectangle {
                                 ? Theme.color-danger-dim
                                 : (trash-toggle-btn.has-hover ? Theme.hover-fill : transparent);
                             animate background { duration: Theme.dur-fast; }
-                            Text {
-                                text: "\u{2672}";
-                                color: root.file-trash-mode ? Theme.color-danger : (trash-toggle-btn.has-hover ? Theme.cyan : Theme.text-dim);
-                                font-size: Theme.fs-body;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
-                                animate color { duration: Theme.dur-fast; }
+                            Icon {
+                                commands: Icons.trash;
+                                size: 14px;
+                                tint: root.file-trash-mode ? Theme.color-danger : (trash-toggle-btn.has-hover ? Theme.cyan : Theme.text-dim);
+                                x: (parent.width - self.width) / 2;
+                                y: (parent.height - self.height) / 2;
+                                animate tint { duration: Theme.dur-fast; }
                             }
 
                             // Badge showing trash count
@@ -780,7 +801,12 @@ export component FileBrowser inherits Rectangle {
                         border-radius: Theme.r-sm;
                         background: ms-clear-btn.has-hover ? Theme.color-danger-dim : transparent;
                         animate background { duration: Theme.dur-fast; }
-                        Text { text: "\u{2715}"; color: ms-clear-btn.has-hover ? Theme.color-danger : Theme.text-dim; font-size: Theme.fs-micro; horizontal-alignment: center; vertical-alignment: center; }
+                        Icon {
+                            commands: Icons.close;
+                            size: 14px;
+                            tint: Theme.text-secondary;
+                            y: (parent.height - self.height) / 2;
+                        }
                     }
                 }
             }
@@ -808,7 +834,7 @@ export component FileBrowser inherits Rectangle {
                     border-width: 1px; border-color: Theme.color-danger-dim;
 
                     trash-badge-txt := Text {
-                        text: "\u{2672} Trash (" + root.file-trash-count + ")";
+                        text: "Trash (" + root.file-trash-count + ")";
                         color: Theme.color-danger;
                         font-size: Theme.fs-micro; font-weight: 600;
                         horizontal-alignment: center;
@@ -850,7 +876,12 @@ export component FileBrowser inherits Rectangle {
                         border-radius: Theme.r-sm;
                         background: trash-exit-btn.has-hover ? Theme.color-danger-dim : transparent;
                         animate background { duration: Theme.dur-fast; }
-                        Text { text: "\u{2715}"; color: trash-exit-btn.has-hover ? Theme.color-danger : Theme.text-dim; font-size: Theme.fs-micro; horizontal-alignment: center; vertical-alignment: center; }
+                        Icon {
+                            commands: Icons.close;
+                            size: 14px;
+                            tint: Theme.text-secondary;
+                            y: (parent.height - self.height) / 2;
+                        }
                     }
                 }
             }
@@ -880,6 +911,7 @@ export component FileBrowser inherits Rectangle {
                     viewport-height: sidebar-col.preferred-height;
 
                     sidebar-col := VerticalLayout {
+                        alignment: start;
                         padding: 8px;
                         padding-top: 12px;
                         spacing: 2px;
@@ -914,7 +946,12 @@ export component FileBrowser inherits Rectangle {
                                         width: 20px; height: 20px; border-radius: 5px;
                                         background: #3a9ac8;
                                         border-width: 1px; border-color: #3a9ac840;
-                                        Text { text: "\u{2302}"; color: Theme.text-on-accent; font-size: Theme.fs-micro; horizontal-alignment: center; vertical-alignment: center; }
+                                        Icon {
+                                            commands: Icons.home;
+                                            size: 14px;
+                                            tint: Theme.text-secondary;
+                                            y: (parent.height - self.height) / 2;
+                                        }
                                     }
                                     Text { text: "Home"; color: sb-home.has-hover ? Theme.cyan : Theme.text-secondary; font-size: Theme.fs-caption; vertical-alignment: center; animate color { duration: Theme.dur-fast; } }
                                 }
@@ -937,7 +974,12 @@ export component FileBrowser inherits Rectangle {
                                         width: 20px; height: 20px; border-radius: 5px;
                                         background: #5a7abd;
                                         border-width: 1px; border-color: #5a7abd40;
-                                        Text { text: "\u{2261}"; color: Theme.text-on-accent; font-size: Theme.fs-micro; horizontal-alignment: center; vertical-alignment: center; }
+                                        Icon {
+                                            commands: Icons.list;
+                                            size: 14px;
+                                            tint: Theme.text-secondary;
+                                            y: (parent.height - self.height) / 2;
+                                        }
                                     }
                                     Text { text: "Documents"; color: sb-docs.has-hover ? Theme.cyan : Theme.text-secondary; font-size: Theme.fs-caption; vertical-alignment: center; animate color { duration: Theme.dur-fast; } }
                                 }
@@ -960,7 +1002,12 @@ export component FileBrowser inherits Rectangle {
                                         width: 20px; height: 20px; border-radius: 5px;
                                         background: Theme.color-success;
                                         border-width: 1px; border-color: #3aad6a40;
-                                        Text { text: "\u{2193}"; color: Theme.text-on-accent; font-size: Theme.fs-micro; horizontal-alignment: center; vertical-alignment: center; }
+                                        Icon {
+                                            commands: Icons.arrow-down;
+                                            size: 14px;
+                                            tint: Theme.text-secondary;
+                                            y: (parent.height - self.height) / 2;
+                                        }
                                     }
                                     Text { text: "Downloads"; color: sb-dl.has-hover ? Theme.cyan : Theme.text-secondary; font-size: Theme.fs-caption; vertical-alignment: center; animate color { duration: Theme.dur-fast; } }
                                 }
@@ -983,7 +1030,12 @@ export component FileBrowser inherits Rectangle {
                                         width: 20px; height: 20px; border-radius: 5px;
                                         background: #9a4a9a;
                                         border-width: 1px; border-color: #9a4a9a40;
-                                        Text { text: "\u{25a3}"; color: Theme.text-on-accent; font-size: Theme.fs-micro; horizontal-alignment: center; vertical-alignment: center; }
+                                        Icon {
+                                            commands: Icons.apps;
+                                            size: 14px;
+                                            tint: Theme.text-secondary;
+                                            y: (parent.height - self.height) / 2;
+                                        }
                                     }
                                     Text { text: "Pictures"; color: sb-pics.has-hover ? Theme.cyan : Theme.text-secondary; font-size: Theme.fs-caption; vertical-alignment: center; animate color { duration: Theme.dur-fast; } }
                                 }
@@ -1006,7 +1058,12 @@ export component FileBrowser inherits Rectangle {
                                         width: 20px; height: 20px; border-radius: 5px;
                                         background: #c89a3a;
                                         border-width: 1px; border-color: #c89a3a40;
-                                        Text { text: "\u{266a}"; color: Theme.text-on-accent; font-size: Theme.fs-micro; horizontal-alignment: center; vertical-alignment: center; }
+                                        Icon {
+                                            commands: Icons.music;
+                                            size: 14px;
+                                            tint: Theme.text-secondary;
+                                            y: (parent.height - self.height) / 2;
+                                        }
                                     }
                                     Text { text: "Music"; color: sb-music.has-hover ? Theme.cyan : Theme.text-secondary; font-size: Theme.fs-caption; vertical-alignment: center; animate color { duration: Theme.dur-fast; } }
                                 }
@@ -1042,7 +1099,12 @@ export component FileBrowser inherits Rectangle {
                                         width: 20px; height: 20px; border-radius: 5px;
                                         background: #6a6a7a;
                                         border-width: 1px; border-color: #6a6a7a40;
-                                        Text { text: "\u{25c9}"; color: Theme.text-on-accent; font-size: Theme.fs-micro; horizontal-alignment: center; vertical-alignment: center; }
+                                        Icon {
+                                            commands: Icons.spark;
+                                            size: 14px;
+                                            tint: Theme.text-secondary;
+                                            y: (parent.height - self.height) / 2;
+                                        }
                                     }
                                     Text { text: "File System"; color: sb-root.has-hover ? Theme.cyan : Theme.text-secondary; font-size: Theme.fs-caption; vertical-alignment: center; animate color { duration: Theme.dur-fast; } }
                                 }
@@ -1113,9 +1175,11 @@ export component FileBrowser inherits Rectangle {
                                     vertical-alignment: center;
                                     animate color { duration: Theme.dur-fast; }
                                 }
-                                if root.sort-field == "name" : Text {
-                                    text: root.sort-ascending ? "\u{25b2}" : "\u{25bc}";
-                                    color: Theme.cyan-dim; font-size: 9px; vertical-alignment: center;
+                                if root.sort-field == "name" : Icon {
+                                    commands: root.sort-ascending ? Icons.chevron-up : Icons.chevron-down;
+                                    size: 14px;
+                                    tint: Theme.cyan-dim;
+                                    y: (parent.height - self.height) / 2;
                                 }
                             }
                         }
@@ -1137,9 +1201,11 @@ export component FileBrowser inherits Rectangle {
                                     vertical-alignment: center;
                                     animate color { duration: Theme.dur-fast; }
                                 }
-                                if root.sort-field == "size" : Text {
-                                    text: root.sort-ascending ? "\u{25b2}" : "\u{25bc}";
-                                    color: Theme.cyan-dim; font-size: 9px; vertical-alignment: center;
+                                if root.sort-field == "size" : Icon {
+                                    commands: root.sort-ascending ? Icons.chevron-up : Icons.chevron-down;
+                                    size: 14px;
+                                    tint: Theme.cyan-dim;
+                                    y: (parent.height - self.height) / 2;
                                 }
                             }
                         }
@@ -1161,9 +1227,11 @@ export component FileBrowser inherits Rectangle {
                                     vertical-alignment: center;
                                     animate color { duration: Theme.dur-fast; }
                                 }
-                                if root.sort-field == "modified" : Text {
-                                    text: root.sort-ascending ? "\u{25b2}" : "\u{25bc}";
-                                    color: Theme.cyan-dim; font-size: 9px; vertical-alignment: center;
+                                if root.sort-field == "modified" : Icon {
+                                    commands: root.sort-ascending ? Icons.chevron-up : Icons.chevron-down;
+                                    size: 14px;
+                                    tint: Theme.cyan-dim;
+                                    y: (parent.height - self.height) / 2;
                                 }
                             }
                         }
@@ -1244,17 +1312,13 @@ export component FileBrowser inherits Rectangle {
                                     background: badge-color;
                                     border-width: 1px;
                                     border-color: badge-color;
-                                    drop-shadow-blur: grid-card-touch.has-hover ? 12px : 4px;
-                                    drop-shadow-color: badge-color;
-                                    animate drop-shadow-blur { duration: Theme.dur-fast; }
-
-                                    Text {
-                                        text: entry.icon-char;
-                                        color: Theme.text-on-accent;
-                                        font-size: Theme.fs-headline;
-                                        font-weight: 700;
-                                        horizontal-alignment: center;
-                                        vertical-alignment: center;
+                                    Icon {
+                                        commands: Icons.file-kind(entry.icon-char);
+                                        size: 20px;
+                                        thickness: 1.7px;
+                                        tint: Theme.text-on-accent;
+                                        x: (parent.width - self.width) / 2;
+                                        y: (parent.height - self.height) / 2;
                                     }
                                 }
 
@@ -1337,17 +1401,13 @@ export component FileBrowser inherits Rectangle {
                                 background: badge-color;
                                 border-width: 1px;
                                 border-color: badge-color;
-                                drop-shadow-blur: file-touch.has-hover ? 10px : 3px;
-                                drop-shadow-color: badge-color;
-                                animate drop-shadow-blur { duration: Theme.dur-fast; }
-
-                                Text {
-                                    text: entry.icon-char;
-                                    color: Theme.text-on-accent;
-                                    font-size: Theme.fs-caption;
-                                    font-weight: 700;
-                                    horizontal-alignment: center;
-                                    vertical-alignment: center;
+                                Icon {
+                                    commands: Icons.file-kind(entry.icon-char);
+                                    size: 16px;
+                                    thickness: 1.7px;
+                                    tint: Theme.text-on-accent;
+                                    x: (parent.width - self.width) / 2;
+                                    y: (parent.height - self.height) / 2;
                                 }
                             }
 
@@ -1392,12 +1452,12 @@ export component FileBrowser inherits Rectangle {
                                     border-radius: 4px;
                                     background: ctx-btn.has-hover ? Theme.border-subtle : transparent;
                                     animate background { duration: Theme.dur-fast; }
-                                    Text {
-                                        text: "\u{22ee}";
-                                        color: ctx-btn.has-hover ? Theme.text-primary : Theme.text-dim;
-                                        font-size: Theme.fs-body;
-                                        horizontal-alignment: center;
-                                        vertical-alignment: center;
+                                    Icon {
+                                        commands: Icons.more;
+                                        size: 14px;
+                                        tint: ctx-btn.has-hover ? Theme.text-primary : Theme.text-dim;
+                                        x: (parent.width - self.width) / 2;
+                                        y: (parent.height - self.height) / 2;
                                     }
                                 }
                             }
@@ -1507,7 +1567,12 @@ export component FileBrowser inherits Rectangle {
                         border-radius: 24px; border-width: 1px; border-color: Theme.cyan-dim;
                         background: Theme.accent-dim;
                         drop-shadow-blur: 8px; drop-shadow-color: Theme.cyan-glow;
-                        Text { text: "\u{2205}"; color: Theme.cyan-dim; font-size: Theme.fs-display; horizontal-alignment: center; vertical-alignment: center; }
+                        Icon {
+                            commands: Icons.minus;
+                            size: 14px;
+                            tint: Theme.text-secondary;
+                            y: (parent.height - self.height) / 2;
+                        }
                     }
                     Rectangle { height: 12px; }
                     Text { text: "Empty directory"; color: Theme.text-dim; font-size: Theme.font-body; horizontal-alignment: center; }
@@ -1542,7 +1607,14 @@ export component FileBrowser inherits Rectangle {
                         border-radius: Theme.r-sm;
                         background: detail-close.has-hover ? Theme.color-danger-dim : transparent;
                         animate background { duration: Theme.dur-fast; }
-                        Text { text: "\u{2715}"; color: detail-close.has-hover ? Theme.color-danger : Theme.text-dim; font-size: Theme.fs-body; horizontal-alignment: center; vertical-alignment: center; animate color { duration: Theme.dur-fast; } }
+                        Icon {
+                            commands: Icons.close;
+                            size: 14px;
+                            tint: detail-close.has-hover ? Theme.color-danger : Theme.text-dim;
+                            x: (parent.width - self.width) / 2;
+                            y: (parent.height - self.height) / 2;
+                            animate tint { duration: Theme.dur-fast; }
+                        }
                     }
                 }
 
@@ -1551,6 +1623,7 @@ export component FileBrowser inherits Rectangle {
                     viewport-height: detail-col.preferred-height;
 
                     detail-col := VerticalLayout {
+                        alignment: start;
                         padding: 16px; padding-top: 12px; spacing: 14px;
 
                         // Large icon badge
@@ -1571,8 +1644,7 @@ export component FileBrowser inherits Rectangle {
                                 width: 48px; height: 48px; border-radius: Theme.r-lg;
                                 background: detail-badge-color;
                                 border-width: 1px; border-color: detail-badge-color;
-                                drop-shadow-blur: 16px; drop-shadow-color: detail-badge-color;
-                                Text { text: root.file-details.icon-char; color: Theme.text-on-accent; font-size: Theme.fs-display; horizontal-alignment: center; vertical-alignment: center; }
+                                Icon { commands: Icons.file-kind(root.file-details.icon-char); size: 26px; thickness: 1.7px; tint: Theme.text-on-accent; x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; }
                             }
                             VerticalLayout {
                                 alignment: center; horizontal-stretch: 1;
@@ -1630,7 +1702,12 @@ export component FileBrowser inherits Rectangle {
                                     HorizontalLayout {
                                         spacing: 6px;
                                         alignment: center;
-                                        Text { text: "\u{2726}"; color: Theme.amber; font-size: Theme.fs-caption; vertical-alignment: center; }
+                                        Icon {
+                                            commands: Icons.spark;
+                                            size: 14px;
+                                            tint: Theme.text-secondary;
+                                            y: (parent.height - self.height) / 2;
+                                        }
                                         Text { text: "Summarize"; color: summarize-btn.has-hover ? Theme.amber : Theme.amber-dim; font-size: Theme.fs-caption; vertical-alignment: center; animate color { duration: Theme.dur-fast; } }
                                     }
                                 }
@@ -1652,7 +1729,12 @@ export component FileBrowser inherits Rectangle {
                                     HorizontalLayout {
                                         spacing: 6px;
                                         alignment: center;
-                                        Text { text: "\u{25c8}"; color: Theme.cyan; font-size: Theme.fs-caption; vertical-alignment: center; }
+                                        Icon {
+                                            commands: Icons.chip;
+                                            size: 14px;
+                                            tint: Theme.text-secondary;
+                                            y: (parent.height - self.height) / 2;
+                                        }
                                         Text { text: "Ask AI"; color: ask-ai-btn.has-hover ? Theme.cyan : Theme.cyan-dim; font-size: Theme.fs-caption; vertical-alignment: center; animate color { duration: Theme.dur-fast; } }
                                     }
                                 }
@@ -1675,7 +1757,12 @@ export component FileBrowser inherits Rectangle {
                                     animate background { duration: Theme.dur-fast; }
                                     HorizontalLayout {
                                         padding-left: 8px; spacing: 8px;
-                                        Text { text: "\u{2398}"; color: Theme.text-dim; font-size: Theme.fs-caption; vertical-alignment: center; }
+                                        Icon {
+                                            commands: Icons.copy;
+                                            size: 14px;
+                                            tint: Theme.text-secondary;
+                                            y: (parent.height - self.height) / 2;
+                                        }
                                         Text { text: "Copy Path"; color: cp-path-btn.has-hover ? Theme.text-primary : Theme.text-secondary; font-size: Theme.fs-caption; vertical-alignment: center; }
                                     }
                                 }
@@ -1725,11 +1812,11 @@ export component FileBrowser inherits Rectangle {
                     HorizontalLayout {
                         padding-left: 12px; padding-right: 12px; spacing: 8px;
 
-                        Text {
-                            text: root.file-op-queue-visible ? "\u{25bc}" : "\u{25b6}";
-                            color: Theme.text-dim;
-                            font-size: 10px;
-                            vertical-alignment: center;
+                        Icon {
+                            commands: root.file-op-queue-visible ? Icons.chevron-down : Icons.play;
+                            size: 12px;
+                            tint: Theme.text-dim;
+                            y: (parent.height - self.height) / 2;
                         }
 
                         Text {
@@ -1788,13 +1875,11 @@ export component FileBrowser inherits Rectangle {
                                 }
                             }
 
-                            Text {
-                                text: op.status == "done" ? "\u{2713}" : (op.status == "error" ? "\u{2715}" : "");
-                                color: op.status == "done" ? Theme.color-success : Theme.color-danger;
-                                font-size: Theme.fs-caption;
-                                width: 16px;
-                                vertical-alignment: center;
-                                horizontal-alignment: center;
+                            Icon {
+                                commands: op.status == "done" ? Icons.check : op.status == "error" ? Icons.close : "";
+                                size: 13px;
+                                tint: op.status == "done" ? Theme.color-success : Theme.color-danger;
+                                y: (parent.height - self.height) / 2;
                             }
                         }
                     }
@@ -2204,11 +2289,11 @@ export component FileBrowser inherits Rectangle {
                 // Header
                 HorizontalLayout {
                     spacing: 10px;
-                    Text {
-                        text: "\u{2726}";
-                        color: Theme.amber;
-                        font-size: Theme.fs-headline;
-                        vertical-alignment: center;
+                    Icon {
+                        commands: Icons.spark;
+                        size: 16px;
+                        tint: Theme.amber;
+                        y: (parent.height - self.height) / 2;
                     }
                     VerticalLayout {
                         horizontal-stretch: 1;
@@ -2232,7 +2317,12 @@ export component FileBrowser inherits Rectangle {
                             border-radius: Theme.r-sm;
                             background: summary-close.has-hover ? Theme.color-danger-dim : transparent;
                             animate background { duration: Theme.dur-fast; }
-                            Text { text: "\u{2715}"; color: summary-close.has-hover ? Theme.color-danger : Theme.text-dim; font-size: Theme.fs-body; horizontal-alignment: center; vertical-alignment: center; }
+                            Icon {
+                                commands: Icons.close;
+                                size: 14px;
+                                tint: Theme.text-secondary;
+                                y: (parent.height - self.height) / 2;
+                            }
                         }
                     }
                 }
@@ -2278,7 +2368,7 @@ export component FileBrowser inherits Rectangle {
 
                 // Status
                 if root.is-summarizing : Text {
-                    text: "\u{27f3} Generating summary...";
+                    text: "Generating summary\u{2026}";
                     color: Theme.amber-dim;
                     font-size: Theme.fs-micro;
                     horizontal-alignment: center;
@@ -2321,7 +2411,12 @@ export component FileBrowser inherits Rectangle {
                             border-radius: Theme.r-sm;
                             background: batch-close.has-hover ? Theme.color-danger-dim : transparent;
                             animate background { duration: Theme.dur-fast; }
-                            Text { text: "\u{2715}"; color: batch-close.has-hover ? Theme.color-danger : Theme.text-dim; font-size: Theme.fs-body; horizontal-alignment: center; vertical-alignment: center; }
+                            Icon {
+                                commands: Icons.close;
+                                size: 14px;
+                                tint: Theme.text-secondary;
+                                y: (parent.height - self.height) / 2;
+                            }
                         }
                     }
                 }
@@ -2391,7 +2486,12 @@ export component FileBrowser inherits Rectangle {
                 // Header
                 HorizontalLayout {
                     spacing: 10px;
-                    Text { text: "\u{25a3}"; color: Theme.cyan; font-size: Theme.fs-headline; vertical-alignment: center; }
+                    Icon {
+                        commands: Icons.apps;
+                        size: 14px;
+                        tint: Theme.text-secondary;
+                        y: (parent.height - self.height) / 2;
+                    }
                     VerticalLayout {
                         horizontal-stretch: 1;
                         Text { text: "Quick Look"; color: Theme.text-primary; font-size: Theme.fs-headline; font-weight: 600; }
@@ -2404,7 +2504,12 @@ export component FileBrowser inherits Rectangle {
                             border-radius: Theme.r-sm;
                             background: ql-close.has-hover ? Theme.color-danger-dim : transparent;
                             animate background { duration: Theme.dur-fast; }
-                            Text { text: "\u{2715}"; color: ql-close.has-hover ? Theme.color-danger : Theme.text-dim; font-size: Theme.fs-body; horizontal-alignment: center; vertical-alignment: center; }
+                            Icon {
+                                commands: Icons.close;
+                                size: 14px;
+                                tint: Theme.text-secondary;
+                                y: (parent.height - self.height) / 2;
+                            }
                         }
                     }
                 }

@@ -1,6 +1,8 @@
 // Container Manager — Docker/Podman container management. Screen 26.
 
 import { Theme } from "theme.slint";
+import { Icon, Icons } from "components/icon.slint";
+import { YEmptyState } from "components/y_empty_state.slint";
 
 // ── Data structs ──
 
@@ -35,6 +37,7 @@ component TabButton inherits TouchArea {
     in property <string> label;
     in property <bool> active;
     in property <string> icon;
+    in property <string> icon-path;
     height: 44px;
 
     Rectangle {
@@ -46,7 +49,13 @@ component TabButton inherits TouchArea {
             padding-right: Theme.sp-4;
             alignment: center;
 
-            Text {
+            if root.icon-path != "" : Icon {
+                commands: root.icon-path;
+                size: 14px;
+                tint: root.active ? Theme.accent : Theme.text-secondary;
+                y: (parent.height - self.height) / 2;
+            }
+            if root.icon-path == "" : Text {
                 text: icon;
                 color: active ? Theme.accent : Theme.text-secondary;
                 font-size: Theme.fs-body;
@@ -439,7 +448,7 @@ export component ContainerManagerScreen inherits Rectangle {
 
                 TabButton {
                     label: "Containers";
-                    icon: "\u{1F4E6}";
+                    icon-path: Icons.packages;
                     active: active-tab == 0;
                     width: 140px;
                     clicked => {
@@ -450,7 +459,7 @@ export component ContainerManagerScreen inherits Rectangle {
 
                 TabButton {
                     label: "Images";
-                    icon: "\u{1F5BC}";
+                    icon-path: Icons.image;
                     active: active-tab == 1;
                     width: 120px;
                     clicked => {
@@ -461,7 +470,7 @@ export component ContainerManagerScreen inherits Rectangle {
 
                 TabButton {
                     label: "Volumes";
-                    icon: "\u{1F4BE}";
+                    icon-path: Icons.save;
                     active: active-tab == 2;
                     width: 120px;
                     clicked => {
@@ -477,6 +486,8 @@ export component ContainerManagerScreen inherits Rectangle {
                 HorizontalLayout {
                     spacing: Theme.sp-2;
                     padding-right: Theme.sp-4;
+                    padding-top: 7px;
+                    padding-bottom: 7px;
                     alignment: center;
 
                     Text {
@@ -512,10 +523,11 @@ export component ContainerManagerScreen inherits Rectangle {
                                 padding-right: 10px;
                                 spacing: 4px;
                                 alignment: center;
-                                Text {
-                                    text: root.ai-is-working ? "\u{2B50}" : "\u{2728}";
-                                    font-size: Theme.fs-caption;
-                                    vertical-alignment: center;
+                                Icon {
+                                    commands: root.ai-is-working ? Icons.spark : Icons.spark;
+                                    size: 12px;
+                                    tint: Theme.text-secondary;
+                                    y: (parent.height - self.height) / 2;
                                 }
                                 Text {
                                     text: root.ai-is-working ? "Analyzing..." : "AI Logs";
@@ -699,15 +711,11 @@ export component ContainerManagerScreen inherits Rectangle {
                     }
 
                     // Empty state
-                    if total-count == 0 : Rectangle {
-                        height: 120px;
-                        Text {
-                            text: "No containers found";
-                            color: Theme.text-dim;
-                            font-size: Theme.font-body;
-                            horizontal-alignment: center;
-                            vertical-alignment: center;
-                        }
+                    if total-count == 0 : YEmptyState {
+                        height: 220px;
+                        icon-path: Icons.packages;
+                        title: "No containers";
+                        description: "Run an image to start one, or pull one from the Images tab.";
                     }
                 }
             }
@@ -1001,15 +1009,17 @@ export component ContainerManagerScreen inherits Rectangle {
                         viewport-height: ai-ct-resp.preferred-height + 16px;
 
                         ai-ct-resp := VerticalLayout {
+                            alignment: start;
                             padding: 12px;
                             spacing: 8px;
 
                             HorizontalLayout {
                                 spacing: Theme.sp-1;
-                                Text {
-                                    text: "\u{2728}";
-                                    font-size: Theme.fs-caption;
-                                    vertical-alignment: center;
+                                Icon {
+                                    commands: Icons.spark;
+                                    size: 12px;
+                                    tint: Theme.text-secondary;
+                                    y: (parent.height - self.height) / 2;
                                 }
                                 Text {
                                     text: "AI Log Analysis";
@@ -1030,12 +1040,12 @@ export component ContainerManagerScreen inherits Rectangle {
                                         width: 24px; height: 24px;
                                         border-radius: 12px;
                                         background: parent.has-hover ? Theme.hover-fill : transparent;
-                                        Text {
-                                            text: "\u{2715}";
-                                            font-size: Theme.fs-micro;
-                                            color: Theme.text-dim;
-                                            horizontal-alignment: center;
-                                            vertical-alignment: center;
+                                        Icon {
+                                            commands: Icons.close;
+                                            size: 12px;
+                                            tint: Theme.text-dim;
+                                            x: (parent.width - self.width) / 2;
+                                            y: (parent.height - self.height) / 2;
                                         }
                                     }
                                 }
@@ -1063,7 +1073,7 @@ export component ContainerManagerScreen inherits Rectangle {
                             text: log-text;
                             color: Theme.color-success;
                             font-size: Theme.fs-caption;
-                            font-family: "monospace";
+                            font-family: Theme.font-mono;
                             wrap: word-wrap;
                         }
                     }

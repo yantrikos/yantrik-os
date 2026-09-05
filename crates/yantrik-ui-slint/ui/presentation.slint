@@ -11,6 +11,7 @@ import { YEmptyState } from "components/y_empty_state.slint";
 import { RibbonToolButton, RibbonToolButtonWide, RibbonSeparator, RibbonTabButton,
          RibbonQuickAction, RibbonGroupLabel, RibbonDropdown,
          RibbonAccentButton } from "components/app_ribbon.slint";
+import { Icon, Icons } from "components/icon.slint";
 
 export struct SlideData {
     title: string,
@@ -432,9 +433,9 @@ export component PresentationScreen inherits Rectangle {
                     spacing: 0px;
 
                     // Quick actions
-                    RibbonQuickAction { label: "💾"; tooltip-text: "Save"; clicked => { root.save-presentation(); } }
-                    RibbonQuickAction { label: "↶"; tooltip-text: "Undo"; clicked => { root.undo(); } }
-                    RibbonQuickAction { label: "↷"; tooltip-text: "Redo"; clicked => { root.redo(); } }
+                    RibbonQuickAction { icon-path: Icons.save; tooltip-text: "Save"; clicked => { root.save-presentation(); } }
+                    RibbonQuickAction { icon-path: Icons.rotate-ccw; tooltip-text: "Undo"; clicked => { root.undo(); } }
+                    RibbonQuickAction { icon-path: Icons.rotate-cw; tooltip-text: "Redo"; clicked => { root.redo(); } }
 
                     Rectangle { width: 12px; }
 
@@ -449,7 +450,7 @@ export component PresentationScreen inherits Rectangle {
 
                     // Far-right: Search + AI + Present
                     RibbonQuickAction {
-                        label: "🔍";
+                        icon-path: Icons.search;
                         tooltip-text: "Search";
                         clicked => { root.show-search = !root.show-search; }
                     }
@@ -486,17 +487,17 @@ export component PresentationScreen inherits Rectangle {
                     alignment: start;
 
                     RibbonGroupLabel { label: "SLIDE"; }
-                    RibbonToolButtonWide { label: "+ Slide"; tooltip-text: "Add slide"; clicked => { root.add-slide(); } }
-                    RibbonToolButton { label: "⎘"; tooltip-text: "Duplicate"; clicked => { root.duplicate-slide(); } }
-                    RibbonToolButton { label: "✕"; tooltip-text: "Delete"; clicked => { root.delete-slide(); } }
-                    RibbonToolButton { label: "↑"; tooltip-text: "Move up"; clicked => { root.move-slide-up(); } }
-                    RibbonToolButton { label: "↓"; tooltip-text: "Move down"; clicked => { root.move-slide-down(); } }
+                    RibbonToolButtonWide { label: "Slide"; icon-path: Icons.plus; tooltip-text: "Add slide"; clicked => { root.add-slide(); } }
+                    RibbonToolButton { icon-path: Icons.copy; tooltip-text: "Duplicate"; clicked => { root.duplicate-slide(); } }
+                    RibbonToolButton { icon-path: Icons.trash; tooltip-text: "Delete"; clicked => { root.delete-slide(); } }
+                    RibbonToolButton { icon-path: Icons.arrow-up; tooltip-text: "Move up"; clicked => { root.move-slide-up(); } }
+                    RibbonToolButton { icon-path: Icons.arrow-down; tooltip-text: "Move down"; clicked => { root.move-slide-down(); } }
 
                     RibbonSeparator {}
 
                     RibbonGroupLabel { label: "FONT"; }
-                    RibbonToolButton { label: "B"; tooltip-text: "Bold"; clicked => { root.format-bold(); } }
-                    RibbonToolButton { label: "I"; tooltip-text: "Italic"; clicked => { root.format-italic(); } }
+                    RibbonToolButton { icon-path: Icons.bold; tooltip-text: "Bold"; clicked => { root.format-bold(); } }
+                    RibbonToolButton { icon-path: Icons.italic; tooltip-text: "Italic"; clicked => { root.format-italic(); } }
 
                     RibbonSeparator {}
 

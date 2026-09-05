@@ -5,6 +5,7 @@
 import { Theme } from "theme.slint";
 import { YButton, YIconButton } from "components/y_button.slint";
 import { YTabs, YTabItem } from "components/y_tabs.slint";
+import { Icon, Icons } from "components/icon.slint";
 
 // ── Data structs ──
 
@@ -133,7 +134,7 @@ export component SystemMonitor inherits Rectangle {
                 spacing: Theme.sp-3;
 
                 YIconButton {
-                    icon: "\u{2190}";
+                    icon-path: Icons.arrow-left;
                     variant: 2;
                     clicked => { root.back-pressed(); }
                 }
@@ -151,7 +152,7 @@ export component SystemMonitor inherits Rectangle {
                 // AI Explain button
                 YButton {
                     label: root.ai-is-working ? "Analyzing..." : "AI Explain";
-                    icon: root.ai-is-working ? "\u{2B50}" : "\u{2728}";
+                    icon-path: root.ai-is-working ? Icons.spark : Icons.spark;
                     variant: root.ai-is-working ? 0 : 1;
                     size: 0;
                     loading: root.ai-is-working;
@@ -197,10 +198,11 @@ export component SystemMonitor inherits Rectangle {
 
                 HorizontalLayout {
                     spacing: Theme.sp-2;
-                    Text {
-                        text: "\u{2728}";
-                        font-size: Theme.fs-caption;
-                        vertical-alignment: center;
+                    Icon {
+                        commands: Icons.spark;
+                        size: 12px;
+                        tint: Theme.text-secondary;
+                        y: (parent.height - self.height) / 2;
                     }
                     Text {
                         text: "AI Analysis";
@@ -211,7 +213,7 @@ export component SystemMonitor inherits Rectangle {
                     }
                     Rectangle { horizontal-stretch: 1; }
                     YIconButton {
-                        icon: "\u{2715}";
+                        icon-path: Icons.close;
                         variant: 2;
                         clicked => {
                             root.ai-dismiss();
@@ -812,11 +814,11 @@ export component SystemMonitor inherits Rectangle {
                                     // Download
                                     HorizontalLayout {
                                         spacing: 4px;
-                                        Text {
-                                            text: "\u{2193}";
-                                            color: Theme.accent;
-                                            font-size: 12px;
-                                            vertical-alignment: center;
+                                        Icon {
+                                            commands: Icons.arrow-down;
+                                            size: 12px;
+                                            tint: Theme.accent;
+                                            y: (parent.height - self.height) / 2;
                                         }
                                         Text {
                                             text: iface.rx-speed;
@@ -829,11 +831,11 @@ export component SystemMonitor inherits Rectangle {
                                     // Upload
                                     HorizontalLayout {
                                         spacing: 4px;
-                                        Text {
-                                            text: "\u{2191}";
-                                            color: Theme.amber;
-                                            font-size: 12px;
-                                            vertical-alignment: center;
+                                        Icon {
+                                            commands: Icons.arrow-up;
+                                            size: 12px;
+                                            tint: Theme.amber;
+                                            y: (parent.height - self.height) / 2;
                                         }
                                         Text {
                                             text: iface.tx-speed;
@@ -1152,11 +1154,11 @@ export component SystemMonitor inherits Rectangle {
                                 padding-right: 8px;
                                 spacing: 6px;
 
-                                Text {
-                                    text: "\u{1F50D}";
-                                    font-size: 12px;
-                                    vertical-alignment: center;
-                                    width: 18px;
+                                Icon {
+                                    commands: Icons.search;
+                                    size: 12px;
+                                    tint: Theme.text-secondary;
+                                    y: (parent.height - self.height) / 2;
                                 }
 
                                 proc-search-input := TextInput {
@@ -1215,11 +1217,11 @@ export component SystemMonitor inherits Rectangle {
                                         horizontal-alignment: right;
                                         vertical-alignment: center;
                                     }
-                                    if root.sort-column == 0 : Text {
-                                        text: "\u{25BC}";
-                                        color: Theme.accent;
-                                        font-size: 8px;
-                                        vertical-alignment: center;
+                                    if root.sort-column == 0 : Icon {
+                                        commands: Icons.chevron-down;
+                                        size: 12px;
+                                        tint: Theme.accent;
+                                        y: (parent.height - self.height) / 2;
                                     }
                                 }
                             }
@@ -1241,11 +1243,11 @@ export component SystemMonitor inherits Rectangle {
                                         horizontal-alignment: right;
                                         vertical-alignment: center;
                                     }
-                                    if root.sort-column == 1 : Text {
-                                        text: "\u{25BC}";
-                                        color: Theme.accent;
-                                        font-size: 8px;
-                                        vertical-alignment: center;
+                                    if root.sort-column == 1 : Icon {
+                                        commands: Icons.chevron-down;
+                                        size: 12px;
+                                        tint: Theme.accent;
+                                        y: (parent.height - self.height) / 2;
                                     }
                                 }
                             }

@@ -4,6 +4,7 @@
 // and dangerous command warnings.
 
 import { Theme } from "theme.slint";
+import { Icon, Icons } from "components/icon.slint";
 
 export struct TerminalTabData {
     title: string,
@@ -336,12 +337,12 @@ export component TerminalScreen inherits Rectangle {
                             border-width: 1px;
                             border-color: root.show-search ? Theme.accent-dim : Theme.border-subtle;
 
-                            Text {
-                                text: "\u{1F50D}";
-                                color: root.show-search ? Theme.accent : Theme.text-secondary;
-                                font-size: 12px;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
+                            Icon {
+                                commands: Icons.search;
+                                size: 12px;
+                                tint: root.show-search ? Theme.accent : Theme.text-secondary;
+                                x: (parent.width - self.width) / 2;
+                                y: (parent.height - self.height) / 2;
                             }
                         }
                     }
@@ -564,7 +565,7 @@ export component TerminalScreen inherits Rectangle {
                         x: 10px;
                         text: root.ai-generating ? "Generating..." : root.ai-generated-command;
                         color: root.ai-generating ? Theme.text-dim : Theme.accent;
-                        font-family: "monospace";
+                        font-family: Theme.font-mono;
                         font-size: Theme.fs-mono;
                         vertical-alignment: center;
                         overflow: elide;
@@ -778,7 +779,7 @@ export component TerminalScreen inherits Rectangle {
                             y: seg.row * root.line-height + root.term-padding;
                             text: seg.text;
                             color: seg.fg-color;
-                            font-family: "monospace";
+                            font-family: Theme.font-mono;
                             font-size: Theme.fs-mono;
                             font-weight: seg.bold ? 700 : 400;
                         }
@@ -790,7 +791,7 @@ export component TerminalScreen inherits Rectangle {
                             width: parent.width - root.term-padding * 2;
                             text: root.terminal-output;
                             color: Theme.text-primary;
-                            font-family: "monospace";
+                            font-family: Theme.font-mono;
                             font-size: Theme.fs-mono;
                             wrap: no-wrap;
                             overflow: elide;
@@ -803,7 +804,7 @@ export component TerminalScreen inherits Rectangle {
                             width: parent.width - root.term-padding * 2;
                             text: root.terminal-output;
                             color: transparent;
-                            font-family: "monospace";
+                            font-family: Theme.font-mono;
                             font-size: Theme.fs-mono;
                             wrap: no-wrap;
                         }
@@ -835,7 +836,7 @@ export component TerminalScreen inherits Rectangle {
                             y: root.ghost-row * root.line-height + root.term-padding;
                             text: root.ghost-suggestion;
                             color: Theme.text-dim;
-                            font-family: "monospace";
+                            font-family: Theme.font-mono;
                             font-size: Theme.fs-mono;
                             opacity: 0.4;
                         }
@@ -892,7 +893,7 @@ export component TerminalScreen inherits Rectangle {
                             width: parent.width - root.term-padding * 2;
                             text: root.terminal-split-output;
                             color: Theme.text-primary;
-                            font-family: "monospace";
+                            font-family: Theme.font-mono;
                             font-size: Theme.fs-mono;
                             wrap: no-wrap;
                             overflow: elide;

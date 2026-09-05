@@ -7,6 +7,7 @@
 import { Theme } from "theme.slint";
 import { Orb } from "components/orb.slint";
 import { ParticleField } from "components/particle_field.slint";
+import { Icon, Icons } from "components/icon.slint";
 
 // ── Interest chip (toggleable) ────────────────────────────────────
 
@@ -567,7 +568,7 @@ export component OnboardingScreen inherits Rectangle {
                 HorizontalLayout {
                     alignment: center;
                     PillButton {
-                        label: "Next \u{2192}";
+                        label: "Next";
                         clicked => {
                             if root.installer-mode {
                                 if root.input-username == "" {
@@ -785,12 +786,11 @@ export component OnboardingScreen inherits Rectangle {
                         // CPU
                         HorizontalLayout {
                             spacing: Theme.sp-3;
-                            Text {
-                                text: root.hw-scan-step >= 1 ? "\u{2713}" : "\u{25CB}";
-                                color: root.hw-scan-step >= 1 ? Theme.color-success : Theme.text-dim;
-                                font-size: Theme.fs-body;
-                                width: 20px;
-                                vertical-alignment: center;
+                            Icon {
+                                commands: root.hw-scan-step >= 1 ? Icons.check : Icons.clock;
+                                size: 14px;
+                                tint: root.hw-scan-step >= 1 ? Theme.color-success : Theme.text-dim;
+                                y: (parent.height - self.height) / 2;
                             }
                             Text {
                                 text: "CPU";
@@ -811,12 +811,11 @@ export component OnboardingScreen inherits Rectangle {
                         // RAM
                         HorizontalLayout {
                             spacing: Theme.sp-3;
-                            Text {
-                                text: root.hw-scan-step >= 2 ? "\u{2713}" : "\u{25CB}";
-                                color: root.hw-scan-step >= 2 ? Theme.color-success : Theme.text-dim;
-                                font-size: Theme.fs-body;
-                                width: 20px;
-                                vertical-alignment: center;
+                            Icon {
+                                commands: root.hw-scan-step >= 2 ? Icons.check : Icons.clock;
+                                size: 14px;
+                                tint: root.hw-scan-step >= 2 ? Theme.color-success : Theme.text-dim;
+                                y: (parent.height - self.height) / 2;
                             }
                             Text {
                                 text: "RAM";
@@ -837,12 +836,11 @@ export component OnboardingScreen inherits Rectangle {
                         // GPU
                         HorizontalLayout {
                             spacing: Theme.sp-3;
-                            Text {
-                                text: root.hw-scan-step >= 3 ? "\u{2713}" : "\u{25CB}";
-                                color: root.hw-scan-step >= 3 ? (root.ai-hw-gpu-ok ? Theme.color-success : Theme.amber) : Theme.text-dim;
-                                font-size: Theme.fs-body;
-                                width: 20px;
-                                vertical-alignment: center;
+                            Icon {
+                                commands: root.hw-scan-step >= 3 ? Icons.check : Icons.clock;
+                                size: 14px;
+                                tint: root.hw-scan-step >= 3 ? (root.ai-hw-gpu-ok ? Theme.color-success : Theme.amber) : Theme.text-dim;
+                                y: (parent.height - self.height) / 2;
                             }
                             Text {
                                 text: "GPU";
@@ -863,12 +861,11 @@ export component OnboardingScreen inherits Rectangle {
                         // Disk
                         HorizontalLayout {
                             spacing: Theme.sp-3;
-                            Text {
-                                text: root.hw-scan-step >= 4 ? "\u{2713}" : "\u{25CB}";
-                                color: root.hw-scan-step >= 4 ? Theme.color-success : Theme.text-dim;
-                                font-size: Theme.fs-body;
-                                width: 20px;
-                                vertical-alignment: center;
+                            Icon {
+                                commands: root.hw-scan-step >= 4 ? Icons.check : Icons.clock;
+                                size: 14px;
+                                tint: root.hw-scan-step >= 4 ? Theme.color-success : Theme.text-dim;
+                                y: (parent.height - self.height) / 2;
                             }
                             Text {
                                 text: "Disk";
@@ -889,12 +886,11 @@ export component OnboardingScreen inherits Rectangle {
                         // Network
                         HorizontalLayout {
                             spacing: Theme.sp-3;
-                            Text {
-                                text: root.hw-scan-step >= 5 ? "\u{2713}" : "\u{25CB}";
-                                color: root.hw-scan-step >= 5 ? Theme.color-success : Theme.text-dim;
-                                font-size: Theme.fs-body;
-                                width: 20px;
-                                vertical-alignment: center;
+                            Icon {
+                                commands: root.hw-scan-step >= 5 ? Icons.check : Icons.clock;
+                                size: 14px;
+                                tint: root.hw-scan-step >= 5 ? Theme.color-success : Theme.text-dim;
+                                y: (parent.height - self.height) / 2;
                             }
                             Text {
                                 text: "Network";
@@ -908,12 +904,11 @@ export component OnboardingScreen inherits Rectangle {
                         // Local Runtimes
                         HorizontalLayout {
                             spacing: Theme.sp-3;
-                            Text {
-                                text: root.hw-scan-step >= 6 ? "\u{2713}" : "\u{25CB}";
-                                color: root.hw-scan-step >= 6 ? (root.ai-hw-runtime-ok ? Theme.color-success : Theme.text-dim) : Theme.text-dim;
-                                font-size: Theme.fs-body;
-                                width: 20px;
-                                vertical-alignment: center;
+                            Icon {
+                                commands: root.hw-scan-step >= 6 ? Icons.check : Icons.clock;
+                                size: 14px;
+                                tint: root.hw-scan-step >= 6 ? (root.ai-hw-runtime-ok ? Theme.color-success : Theme.text-dim) : Theme.text-dim;
+                                y: (parent.height - self.height) / 2;
                             }
                             Text {
                                 text: "Local Runtimes";
@@ -1034,10 +1029,11 @@ export component OnboardingScreen inherits Rectangle {
                                     }
                                 }
 
-                                Text {
-                                    text: "\u{1F512}";
-                                    font-size: 28px;
-                                    horizontal-alignment: center;
+                                Icon {
+                                    commands: Icons.lock;
+                                    size: 20px;
+                                    tint: Theme.text-secondary;
+                                    x: (parent.width - self.width) / 2;
                                 }
                                 Text {
                                     text: "Local First";
@@ -1098,10 +1094,11 @@ export component OnboardingScreen inherits Rectangle {
                                     }
                                 }
 
-                                Text {
-                                    text: "\u{26A1}";
-                                    font-size: 28px;
-                                    horizontal-alignment: center;
+                                Icon {
+                                    commands: Icons.bolt;
+                                    size: 20px;
+                                    tint: Theme.text-secondary;
+                                    x: (parent.width - self.width) / 2;
                                 }
                                 Text {
                                     text: "Cloud Powered";
@@ -1142,10 +1139,11 @@ export component OnboardingScreen inherits Rectangle {
                                 spacing: Theme.sp-3;
                                 alignment: center;
 
-                                Text {
-                                    text: "\u{23F3}";
-                                    font-size: 28px;
-                                    horizontal-alignment: center;
+                                Icon {
+                                    commands: Icons.clock;
+                                    size: 20px;
+                                    tint: Theme.text-secondary;
+                                    x: (parent.width - self.width) / 2;
                                 }
                                 Text {
                                     text: "Configure Later";
@@ -1193,11 +1191,11 @@ export component OnboardingScreen inherits Rectangle {
 
                                 HorizontalLayout {
                                     spacing: Theme.sp-2;
-                                    Text {
-                                        text: root.ai-hw-runtime-ok ? "\u{2713}" : "\u{2717}";
-                                        color: root.ai-hw-runtime-ok ? Theme.color-success : Theme.amber;
-                                        font-size: Theme.fs-headline;
-                                        vertical-alignment: center;
+                                    Icon {
+                                        commands: root.ai-hw-runtime-ok ? Icons.check : Icons.close;
+                                        size: 16px;
+                                        tint: root.ai-hw-runtime-ok ? Theme.color-success : Theme.amber;
+                                        y: (parent.height - self.height) / 2;
                                     }
                                     Text {
                                         text: root.ai-hw-runtime-ok ? "Ollama detected" : "Ollama not found";
@@ -1397,14 +1395,15 @@ export component OnboardingScreen inherits Rectangle {
                                     alignment: center;
                                     spacing: Theme.sp-2;
 
-                                    Text {
-                                        text: root.ai-test-status == "success" ? "\u{2713}"
-                                            : root.ai-test-status == "testing" ? "\u{25CB}"
-                                            : "\u{2717}";
-                                        color: root.ai-test-status == "success" ? Theme.color-success
+                                    Icon {
+                                        commands: root.ai-test-status == "success" ? Icons.check
+                                            : root.ai-test-status == "testing" ? Icons.clock
+                                            : Icons.close;
+                                        size: 20px;
+                                        tint: root.ai-test-status == "success" ? Theme.color-success
                                              : root.ai-test-status == "testing" ? Theme.amber
                                              : Theme.color-emotional;
-                                        font-size: 24px;
+                                        y: (parent.height - self.height) / 2;
                                     }
 
                                     Text {
@@ -1460,7 +1459,7 @@ export component OnboardingScreen inherits Rectangle {
                                             horizontal-stretch: 1;
                                         }
                                         Text {
-                                            text: root.ai-test-privacy == "local" ? "\u{1F512} Local only" : "\u{2601} Cloud";
+                                            text: root.ai-test-privacy == "local" ? "Local only" : "Cloud";
                                             color: root.ai-test-privacy == "local" ? Theme.color-success : Theme.holo-blue;
                                             font-size: Theme.fs-caption;
                                             font-weight: 500;
@@ -1844,7 +1843,7 @@ export component OnboardingScreen inherits Rectangle {
                                 Rectangle { height: 1px; background: Theme.separator; }
 
                                 Text {
-                                    text: "\u{26A0} This will erase the selected disk.\nAll existing data will be permanently lost.";
+                                    text: "This will erase the selected disk.\nAll existing data will be permanently lost.";
                                     color: Theme.amber;
                                     font-size: Theme.fs-micro;
                                     horizontal-alignment: center;
@@ -1869,7 +1868,7 @@ export component OnboardingScreen inherits Rectangle {
                     spacing: Theme.sp-3;
 
                     PillButton {
-                        label: "\u{2190} Back";
+                        label: "Back";
                         clicked => { root.phase = 9; }
                     }
 
@@ -1945,11 +1944,11 @@ export component OnboardingScreen inherits Rectangle {
 
                         HorizontalLayout {
                             spacing: Theme.sp-3;
-                            Text {
-                                text: root.install-progress >= 10 ? "\u{2713}" : "\u{25CB}";
-                                color: root.install-progress >= 10 ? Theme.color-success : Theme.text-dim;
-                                font-size: Theme.fs-body;
-                                width: 20px;
+                            Icon {
+                                commands: root.install-progress >= 10 ? Icons.check : Icons.clock;
+                                size: 14px;
+                                tint: root.install-progress >= 10 ? Theme.color-success : Theme.text-dim;
+                                y: (parent.height - self.height) / 2;
                             }
                             Text {
                                 text: "Partitioning disk";
@@ -1960,11 +1959,11 @@ export component OnboardingScreen inherits Rectangle {
 
                         HorizontalLayout {
                             spacing: Theme.sp-3;
-                            Text {
-                                text: root.install-progress >= 25 ? "\u{2713}" : "\u{25CB}";
-                                color: root.install-progress >= 25 ? Theme.color-success : Theme.text-dim;
-                                font-size: Theme.fs-body;
-                                width: 20px;
+                            Icon {
+                                commands: root.install-progress >= 25 ? Icons.check : Icons.clock;
+                                size: 14px;
+                                tint: root.install-progress >= 25 ? Theme.color-success : Theme.text-dim;
+                                y: (parent.height - self.height) / 2;
                             }
                             Text {
                                 text: "Formatting";
@@ -1975,11 +1974,11 @@ export component OnboardingScreen inherits Rectangle {
 
                         HorizontalLayout {
                             spacing: Theme.sp-3;
-                            Text {
-                                text: root.install-progress >= 60 ? "\u{2713}" : "\u{25CB}";
-                                color: root.install-progress >= 60 ? Theme.color-success : Theme.text-dim;
-                                font-size: Theme.fs-body;
-                                width: 20px;
+                            Icon {
+                                commands: root.install-progress >= 60 ? Icons.check : Icons.clock;
+                                size: 14px;
+                                tint: root.install-progress >= 60 ? Theme.color-success : Theme.text-dim;
+                                y: (parent.height - self.height) / 2;
                             }
                             Text {
                                 text: "Copying files";
@@ -1990,11 +1989,11 @@ export component OnboardingScreen inherits Rectangle {
 
                         HorizontalLayout {
                             spacing: Theme.sp-3;
-                            Text {
-                                text: root.install-progress >= 80 ? "\u{2713}" : "\u{25CB}";
-                                color: root.install-progress >= 80 ? Theme.color-success : Theme.text-dim;
-                                font-size: Theme.fs-body;
-                                width: 20px;
+                            Icon {
+                                commands: root.install-progress >= 80 ? Icons.check : Icons.clock;
+                                size: 14px;
+                                tint: root.install-progress >= 80 ? Theme.color-success : Theme.text-dim;
+                                y: (parent.height - self.height) / 2;
                             }
                             Text {
                                 text: "Installing bootloader";
@@ -2005,11 +2004,11 @@ export component OnboardingScreen inherits Rectangle {
 
                         HorizontalLayout {
                             spacing: Theme.sp-3;
-                            Text {
-                                text: root.install-progress >= 95 ? "\u{2713}" : "\u{25CB}";
-                                color: root.install-progress >= 95 ? Theme.color-success : Theme.text-dim;
-                                font-size: Theme.fs-body;
-                                width: 20px;
+                            Icon {
+                                commands: root.install-progress >= 95 ? Icons.check : Icons.clock;
+                                size: 14px;
+                                tint: root.install-progress >= 95 ? Theme.color-success : Theme.text-dim;
+                                y: (parent.height - self.height) / 2;
                             }
                             Text {
                                 text: "Configuring system";
@@ -2020,11 +2019,11 @@ export component OnboardingScreen inherits Rectangle {
 
                         HorizontalLayout {
                             spacing: Theme.sp-3;
-                            Text {
-                                text: root.install-progress >= 100 ? "\u{2713}" : "\u{25CB}";
-                                color: root.install-progress >= 100 ? Theme.color-success : Theme.text-dim;
-                                font-size: Theme.fs-body;
-                                width: 20px;
+                            Icon {
+                                commands: root.install-progress >= 100 ? Icons.check : Icons.clock;
+                                size: 14px;
+                                tint: root.install-progress >= 100 ? Theme.color-success : Theme.text-dim;
+                                y: (parent.height - self.height) / 2;
                             }
                             Text {
                                 text: "Complete";
@@ -2066,11 +2065,11 @@ export component OnboardingScreen inherits Rectangle {
                             spacing: Theme.sp-3;
                             alignment: center;
 
-                            Text {
-                                text: "\u{2713}";
-                                color: Theme.color-success;
-                                font-size: 48px;
-                                horizontal-alignment: center;
+                            Icon {
+                                commands: Icons.check;
+                                size: 20px;
+                                tint: Theme.color-success;
+                                x: (parent.width - self.width) / 2;
                             }
 
                             Text {

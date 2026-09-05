@@ -4,6 +4,7 @@
 // Supports: play/pause, stop, seek, volume, speed, shuffle, repeat.
 
 import { Theme } from "theme.slint";
+import { Icon, Icons } from "components/icon.slint";
 
 export component MediaPlayer inherits Rectangle {
     background: Theme.bg-deep;
@@ -83,14 +84,6 @@ export component MediaPlayer inherits Rectangle {
                 height: 140px;
                 x: (parent.width - 140px) / 2;
 
-                property <float> pulse-phase: 0;
-                Timer {
-                    interval: 16ms;
-                    running: root.is-playing;
-                    triggered => {
-                        parent.pulse-phase = mod(parent.pulse-phase + 0.03, 1.0);
-                    }
-                }
 
                 // Outer glow
                 Rectangle {
@@ -101,9 +94,7 @@ export component MediaPlayer inherits Rectangle {
                         Theme.cyan-glow 0%,
                         transparent 70%
                     );
-                    opacity: root.is-playing
-                        ? 0.5 + 0.3 * sin(parent.pulse-phase * 6.2832 * 1rad)
-                        : 0.2;
+                    opacity: root.is-playing ? 0.6 : 0.2;
                 }
 
                 // Inner core
@@ -119,12 +110,12 @@ export component MediaPlayer inherits Rectangle {
                     );
                     opacity: root.is-playing ? 0.9 : 0.4;
 
-                    Text {
-                        text: root.is-video ? "\u{25B6}" : (root.is-playing ? "\u{266A}" : "\u{266B}");
-                        color: Theme.text-primary;
-                        font-size: 32px;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
+                    Icon {
+                        commands: root.is-video ? Icons.play : (root.is-playing ? Icons.music : Icons.music);
+                        size: 20px;
+                        tint: Theme.text-primary;
+                        x: (parent.width - self.width) / 2;
+                        y: (parent.height - self.height) / 2;
                     }
                 }
             }
@@ -262,12 +253,12 @@ export component MediaPlayer inherits Rectangle {
                         width: 40px; height: 40px; border-radius: 20px;
                         background: root.shuffle-on ? Theme.tint-cyan : (parent.has-hover ? Theme.hover-fill : transparent);
 
-                        Text {
-                            text: "\u{21C6}";
-                            color: root.shuffle-on ? Theme.cyan : Theme.text-dim;
-                            font-size: 16px;
-                            horizontal-alignment: center;
-                            vertical-alignment: center;
+                        Icon {
+                            commands: Icons.shuffle;
+                            size: 16px;
+                            tint: root.shuffle-on ? Theme.cyan : Theme.text-dim;
+                            x: (parent.width - self.width) / 2;
+                            y: (parent.height - self.height) / 2;
                         }
                     }
                 }
@@ -284,12 +275,12 @@ export component MediaPlayer inherits Rectangle {
                         border-width: 1px;
                         border-color: Theme.border-subtle;
 
-                        Text {
-                            text: "\u{23EE}";
-                            color: Theme.text-secondary;
-                            font-size: 18px;
-                            horizontal-alignment: center;
-                            vertical-alignment: center;
+                        Icon {
+                            commands: Icons.skip-back;
+                            size: 18px;
+                            tint: Theme.text-secondary;
+                            x: (parent.width - self.width) / 2;
+                            y: (parent.height - self.height) / 2;
                         }
                     }
                 }
@@ -306,12 +297,12 @@ export component MediaPlayer inherits Rectangle {
                         drop-shadow-blur: root.is-playing ? 14px : 0px;
                         drop-shadow-color: Theme.cyan-glow;
 
-                        Text {
-                            text: root.is-playing ? "\u{23F8}" : "\u{25B6}";
-                            color: Theme.bg-deep;
-                            font-size: 24px;
-                            horizontal-alignment: center;
-                            vertical-alignment: center;
+                        Icon {
+                            commands: root.is-playing ? Icons.pause : Icons.play;
+                            size: 20px;
+                            tint: Theme.bg-deep;
+                            x: (parent.width - self.width) / 2;
+                            y: (parent.height - self.height) / 2;
                         }
                     }
                 }
@@ -328,12 +319,12 @@ export component MediaPlayer inherits Rectangle {
                         border-width: 1px;
                         border-color: Theme.border-subtle;
 
-                        Text {
-                            text: "\u{23ED}";
-                            color: Theme.text-secondary;
-                            font-size: 18px;
-                            horizontal-alignment: center;
-                            vertical-alignment: center;
+                        Icon {
+                            commands: Icons.skip-forward;
+                            size: 18px;
+                            tint: Theme.text-secondary;
+                            x: (parent.width - self.width) / 2;
+                            y: (parent.height - self.height) / 2;
                         }
                     }
                 }
@@ -348,12 +339,12 @@ export component MediaPlayer inherits Rectangle {
                         width: 40px; height: 40px; border-radius: 20px;
                         background: root.repeat-mode > 0 ? Theme.tint-cyan : (parent.has-hover ? Theme.hover-fill : transparent);
 
-                        Text {
-                            text: root.repeat-mode == 1 ? "\u{1F502}" : "\u{1F501}";
-                            color: root.repeat-mode > 0 ? Theme.cyan : Theme.text-dim;
-                            font-size: 14px;
-                            horizontal-alignment: center;
-                            vertical-alignment: center;
+                        Icon {
+                            commands: root.repeat-mode == 1 ? Icons.repeat : Icons.repeat;
+                            size: 14px;
+                            tint: root.repeat-mode > 0 ? Theme.cyan : Theme.text-dim;
+                            x: (parent.width - self.width) / 2;
+                            y: (parent.height - self.height) / 2;
                         }
                     }
                 }
@@ -455,6 +446,7 @@ export component MediaPlayer inherits Rectangle {
                     viewport-height: sub-col.preferred-height + 8px;
 
                     sub-col := VerticalLayout {
+                        alignment: start;
                         padding: 4px;
                         spacing: 2px;
 
@@ -540,12 +532,12 @@ export component MediaPlayer inherits Rectangle {
                             width: 28px; height: 28px; border-radius: 14px;
                             background: parent.has-hover ? Theme.hover-fill : transparent;
 
-                            Text {
-                                text: root.is-muted ? "\u{1F507}" : (root.volume > 0.5 ? "\u{1F50A}" : "\u{1F509}");
-                                color: root.is-muted ? Theme.text-dim : Theme.text-secondary;
-                                font-size: 13px;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
+                            Icon {
+                                commands: root.is-muted ? Icons.volume-off : (root.volume > 0.5 ? Icons.volume : Icons.volume);
+                                size: 13px;
+                                tint: root.is-muted ? Theme.text-dim : Theme.text-secondary;
+                                x: (parent.width - self.width) / 2;
+                                y: (parent.height - self.height) / 2;
                             }
                         }
                     }
@@ -668,12 +660,18 @@ export component MediaPlayer inherits Rectangle {
                     viewport-height: ai-mp-resp.preferred-height + 12px;
 
                     ai-mp-resp := VerticalLayout {
+                        alignment: start;
                         padding: 10px;
                         spacing: 6px;
 
                         HorizontalLayout {
                             spacing: 6px;
-                            Text { text: "\u{2728}"; font-size: 11px; vertical-alignment: center; }
+                            Icon {
+                                commands: Icons.spark;
+                                size: 14px;
+                                tint: Theme.text-secondary;
+                                y: (parent.height - self.height) / 2;
+                            }
                             Text { text: "AI Analysis"; color: Theme.accent; font-size: 11px; font-weight: 600; vertical-alignment: center; }
                             Rectangle { horizontal-stretch: 1; }
                             TouchArea {
@@ -682,7 +680,12 @@ export component MediaPlayer inherits Rectangle {
                                 Rectangle {
                                     width: 20px; height: 20px; border-radius: 10px;
                                     background: parent.has-hover ? Theme.hover-fill : transparent;
-                                    Text { text: "\u{2715}"; font-size: 10px; color: Theme.text-dim; horizontal-alignment: center; vertical-alignment: center; }
+                                    Icon {
+                                        commands: Icons.close;
+                                        size: 14px;
+                                        tint: Theme.text-secondary;
+                                        y: (parent.height - self.height) / 2;
+                                    }
                                 }
                             }
                         }

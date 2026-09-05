@@ -5,9 +5,13 @@
 
 import { Theme } from "theme.slint";
 import { YButton, YIconButton } from "components/y_button.slint";
+import { Icon, Icons } from "components/icon.slint";
+import { YEmptyState } from "components/y_empty_state.slint";
 
 component ToolbarButton inherits TouchArea {
     in property <string> label;
+    in property <string> icon-path;
+    in property <bool> icon-only;
     in property <bool> active: false;
     width: Math.max(32px, txt.preferred-width + 16px);
     height: 28px;
@@ -19,6 +23,12 @@ component ToolbarButton inherits TouchArea {
         border-width: active ? 1px : 0px;
         border-color: active ? Theme.accent-dim : transparent;
 
+        if root.icon-path != "" : Icon {
+            commands: root.icon-path;
+            size: 14px;
+            tint: root.active ? Theme.accent : Theme.text-secondary;
+            y: (parent.height - self.height) / 2;
+        }
         txt := Text {
             text: root.label;
             color: active ? Theme.accent-light : Theme.text-secondary;
@@ -156,11 +166,11 @@ export component ImageViewer inherits Rectangle {
                 padding-right: 12px;
                 alignment: space-between;
 
-                // Left: filename
+                // Left: filename, or the fact that there isn't one
                 Text {
-                    text: root.file-name;
-                    color: Theme.text-primary;
-                    font-size: 14px;
+                    text: root.file-name != "" ? root.file-name : "No image open";
+                    color: root.file-name != "" ? Theme.text-primary : Theme.text-dim;
+                    font-size: Theme.fs-body;
                     font-weight: 500;
                     vertical-alignment: center;
                     overflow: elide;
@@ -174,7 +184,7 @@ export component ImageViewer inherits Rectangle {
 
                     // Zoom out button
                     ToolbarButton {
-                        label: "\u{2212}";
+                        label: ""; icon-only: true; icon-path: Icons.minus;
                         clicked => {
                             root.zoom-level = root.clamp-zoom(root.zoom-level / 1.25);
                             root.is-custom-zoom = true;
@@ -239,7 +249,7 @@ export component ImageViewer inherits Rectangle {
 
                     // ── Rotate / Flip buttons ──
                     ToolbarButton {
-                        label: "\u{21b6}";  // CCW arrow
+                        label: ""; icon-only: true; icon-path: Icons.rotate-ccw;  // CCW arrow
                         clicked => {
                             root.viewer-rotation = mod(root.viewer-rotation + 270, 360);
                             root.viewer-rotate-left();
@@ -247,7 +257,7 @@ export component ImageViewer inherits Rectangle {
                     }
 
                     ToolbarButton {
-                        label: "\u{21b7}";  // CW arrow
+                        label: ""; icon-only: true; icon-path: Icons.rotate-cw;  // CW arrow
                         clicked => {
                             root.viewer-rotation = mod(root.viewer-rotation + 90, 360);
                             root.viewer-rotate-right();
@@ -255,7 +265,7 @@ export component ImageViewer inherits Rectangle {
                     }
 
                     ToolbarButton {
-                        label: "\u{2194}";  // Flip H
+                        label: ""; icon-only: true; icon-path: Icons.flip-h;  // Flip H
                         active: root.viewer-flip-h;
                         clicked => {
                             root.viewer-flip-h = !root.viewer-flip-h;
@@ -264,7 +274,7 @@ export component ImageViewer inherits Rectangle {
                     }
 
                     ToolbarButton {
-                        label: "\u{2195}";  // Flip V
+                        label: ""; icon-only: true; icon-path: Icons.sort;  // Flip V
                         active: root.viewer-flip-v;
                         clicked => {
                             root.viewer-flip-v = !root.viewer-flip-v;
@@ -290,7 +300,7 @@ export component ImageViewer inherits Rectangle {
                     // ── Slideshow button ──
                     ToolbarButton {
                         label: root.viewer-slideshow-active
-                            ? (root.viewer-slideshow-paused ? "\u{25b6}" : "\u{23f8}")
+                            ? (root.viewer-slideshow-paused ? "Resume" : "Pause")
                             : "Slideshow";
                         active: root.viewer-slideshow-active;
                         clicked => {
@@ -308,7 +318,7 @@ export component ImageViewer inherits Rectangle {
 
                     // Slideshow stop button (only when active)
                     if root.viewer-slideshow-active : ToolbarButton {
-                        label: "\u{25a0}";
+                        label: ""; icon-only: true; icon-path: Icons.stop;
                         clicked => {
                             root.viewer-slideshow-active = false;
                             root.viewer-slideshow-paused = false;
@@ -386,12 +396,12 @@ export component ImageViewer inherits Rectangle {
                         Rectangle {
                             border-radius: 6px;
                             background: parent.has-hover ? Theme.hover-fill-strong : transparent;
-                            Text {
-                                text: root.fit-contain ? "\u{229e}" : "\u{229f}";
-                                color: Theme.text-secondary;
-                                font-size: 18px;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
+                            Icon {
+                                commands: root.fit-contain ? Icons.maximize : Icons.minimize;
+                                size: 18px;
+                                tint: Theme.text-secondary;
+                                x: (parent.width - self.width) / 2;
+                                y: (parent.height - self.height) / 2;
                             }
                         }
                     }
@@ -413,15 +423,17 @@ export component ImageViewer inherits Rectangle {
                 viewport-height: ai-img-resp.preferred-height + 16px;
 
                 ai-img-resp := VerticalLayout {
+                    alignment: start;
                     padding: 12px;
                     spacing: 8px;
 
                     HorizontalLayout {
                         spacing: 6px;
-                        Text {
-                            text: "\u{2728}";
-                            font-size: 12px;
-                            vertical-alignment: center;
+                        Icon {
+                            commands: Icons.spark;
+                            size: 12px;
+                            tint: Theme.text-secondary;
+                            y: (parent.height - self.height) / 2;
                         }
                         Text {
                             text: "AI Description";
@@ -444,12 +456,12 @@ export component ImageViewer inherits Rectangle {
                                 width: 24px; height: 24px;
                                 border-radius: 12px;
                                 background: parent.has-hover ? Theme.hover-fill : transparent;
-                                Text {
-                                    text: "\u{2715}";
-                                    font-size: 11px;
-                                    color: Theme.text-dim;
-                                    horizontal-alignment: center;
-                                    vertical-alignment: center;
+                                Icon {
+                                    commands: Icons.close;
+                                    size: 12px;
+                                    tint: Theme.text-dim;
+                                    x: (parent.width - self.width) / 2;
+                                    y: (parent.height - self.height) / 2;
                                 }
                             }
                         }
@@ -477,6 +489,12 @@ export component ImageViewer inherits Rectangle {
 
                 // Helper function: compute scale-x for flip
                 // Slint doesn't have conditional scale, so we use two Image variants
+
+                if root.file-name == "" : YEmptyState {
+                    icon-path: Icons.image;
+                    title: "No image open";
+                    description: "Open a picture from Files, or pass a path on the command line.";
+                }
 
                 if !root.is-custom-zoom : Image {
                     width: 100%;
@@ -579,12 +597,12 @@ export component ImageViewer inherits Rectangle {
                         height: 100%;
                         background: @linear-gradient(90deg, Theme.overlay-backdrop 0%, transparent 100%);
 
-                        Text {
+                        Icon {
+                            commands: Icons.chevron-left;
+                            size: 20px;
+                            tint: Theme.text-primary;
+                            y: (parent.height - self.height) / 2;
                             x: 16px;
-                            text: "\u{2039}";
-                            color: Theme.text-primary;
-                            font-size: 48px;
-                            vertical-alignment: center;
                         }
                     }
                 }
@@ -605,12 +623,12 @@ export component ImageViewer inherits Rectangle {
                         height: 100%;
                         background: @linear-gradient(270deg, Theme.overlay-backdrop 0%, transparent 100%);
 
-                        Text {
+                        Icon {
+                            commands: Icons.chevron-right;
+                            size: 20px;
+                            tint: Theme.text-primary;
+                            y: (parent.height - self.height) / 2;
                             x: parent.width - 40px;
-                            text: "\u{203a}";
-                            color: Theme.text-primary;
-                            font-size: 48px;
-                            vertical-alignment: center;
                         }
                     }
                 }
@@ -784,6 +802,7 @@ export component ImageViewer inherits Rectangle {
                     viewport-height: info-content.preferred-height + 24px;
 
                     info-content := VerticalLayout {
+                        alignment: start;
                         padding: 16px;
                         spacing: 12px;
 
@@ -806,12 +825,12 @@ export component ImageViewer inherits Rectangle {
                                 Rectangle {
                                     border-radius: 12px;
                                     background: parent.has-hover ? Theme.hover-fill : transparent;
-                                    Text {
-                                        text: "\u{2715}";
-                                        font-size: 11px;
-                                        color: Theme.text-dim;
-                                        horizontal-alignment: center;
-                                        vertical-alignment: center;
+                                    Icon {
+                                        commands: Icons.close;
+                                        size: 12px;
+                                        tint: Theme.text-dim;
+                                        x: (parent.width - self.width) / 2;
+                                        y: (parent.height - self.height) / 2;
                                     }
                                 }
                             }
@@ -979,6 +998,7 @@ export component ImageViewer inherits Rectangle {
                     viewport-height: batch-content.preferred-height + 24px;
 
                     batch-content := VerticalLayout {
+                        alignment: start;
                         padding: 16px;
                         spacing: 12px;
 
@@ -1001,12 +1021,12 @@ export component ImageViewer inherits Rectangle {
                                 Rectangle {
                                     border-radius: 12px;
                                     background: parent.has-hover ? Theme.hover-fill : transparent;
-                                    Text {
-                                        text: "\u{2715}";
-                                        font-size: 11px;
-                                        color: Theme.text-dim;
-                                        horizontal-alignment: center;
-                                        vertical-alignment: center;
+                                    Icon {
+                                        commands: Icons.close;
+                                        size: 12px;
+                                        tint: Theme.text-dim;
+                                        x: (parent.width - self.width) / 2;
+                                        y: (parent.height - self.height) / 2;
                                     }
                                 }
                             }
@@ -1126,11 +1146,10 @@ export component ImageViewer inherits Rectangle {
                                 }
                             }
 
-                            Text {
-                                text: "\u{00d7}";
-                                color: Theme.text-dim;
-                                font-size: 14px;
-                                vertical-alignment: center;
+                            Icon {
+                                commands: Icons.close;
+                                size: 14px;
+                                tint: Theme.text-dim;
                                 y: 10px;
                             }
 

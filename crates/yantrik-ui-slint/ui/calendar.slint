@@ -6,6 +6,7 @@ import { ScrollView, VerticalBox, HorizontalBox } from "std-widgets.slint";
 import { YButton, YIconButton } from "components/y_button.slint";
 import { YEmptyState } from "components/y_empty_state.slint";
 import { YTabs, YTabItem } from "components/y_tabs.slint";
+import { Icon, Icons } from "components/icon.slint";
 
 // ── Data Structures ──
 
@@ -101,10 +102,10 @@ export component CalendarScreen inherits Rectangle {
     // Event templates & attendees
     in property <[CalendarAttendee]> cal-event-attendees: [];
     in property <[CalendarTemplate]> cal-templates: [
-        { name: "1-on-1", title-template: "1:1 with ", duration-min: 30, icon: "\u{1F464}" },
-        { name: "Standup", title-template: "Daily Standup", duration-min: 15, icon: "\u{2B06}" },
-        { name: "Team Meeting", title-template: "Team Meeting", duration-min: 60, icon: "\u{1F465}" },
-        { name: "Focus Time", title-template: "Focus Block", duration-min: 120, icon: "\u{1F3AF}" },
+        { name: "1-on-1", title-template: "1:1 with ", duration-min: 30, icon: Icons.people },
+        { name: "Standup", title-template: "Daily Standup", duration-min: 15, icon: Icons.arrow-up },
+        { name: "Team Meeting", title-template: "Team Meeting", duration-min: 60, icon: Icons.people },
+        { name: "Focus Time", title-template: "Focus Block", duration-min: 120, icon: Icons.spark },
     ];
     in property <int> cal-reminder-minutes: 15;
     in property <string> cal-timezone-display: "";
@@ -218,7 +219,7 @@ export component CalendarScreen inherits Rectangle {
                         // AI Insights button
                         YButton {
                             label: root.ai-is-working ? "..." : "AI";
-                            icon: root.ai-is-working ? "\u{2B50}" : "\u{2728}";
+                            icon-path: root.ai-is-working ? Icons.spark : Icons.spark;
                             variant: root.ai-is-working ? 0 : 1;
                             size: 0;
                             loading: root.ai-is-working;
@@ -241,7 +242,7 @@ export component CalendarScreen inherits Rectangle {
 
                         // Template quick-create button
                         YIconButton {
-                            icon: "\u{2630}";
+                            icon-path: Icons.menu;
                             variant: root.cal-template-panel-open ? 0 : 1;
                             clicked => { root.cal-toggle-template-panel(); }
                         }
@@ -258,15 +259,21 @@ export component CalendarScreen inherits Rectangle {
                     Flickable {
                         viewport-height: ai-cal-resp.preferred-height + Theme.sp-4;
                         ai-cal-resp := VerticalLayout {
+                            alignment: start;
                             padding: Theme.sp-3;
                             spacing: Theme.sp-2;
                             HorizontalLayout {
                                 spacing: Theme.sp-2;
-                                Text { text: "\u{2728}"; font-size: Theme.fs-caption; vertical-alignment: center; }
+                                Icon {
+                                    commands: Icons.spark;
+                                    size: 14px;
+                                    tint: Theme.text-secondary;
+                                    y: (parent.height - self.height) / 2;
+                                }
                                 Text { text: "AI Insights"; color: Theme.accent; font-size: Theme.fs-caption; font-weight: Theme.fw-headline; vertical-alignment: center; }
                                 Rectangle { horizontal-stretch: 1; }
                                 YIconButton {
-                                    icon: "\u{2715}";
+                                    icon-path: Icons.close;
                                     variant: 2;
                                     clicked => { root.ai-panel-open = false; root.ai-dismiss(); }
                                 }
@@ -299,7 +306,7 @@ export component CalendarScreen inherits Rectangle {
                             }
                             Rectangle { horizontal-stretch: 1; }
                             YIconButton {
-                                icon: "\u{2715}";
+                                icon-path: Icons.close;
                                 variant: 2;
                                 clicked => { root.cal-template-panel-open = false; }
                             }
@@ -330,11 +337,7 @@ export component CalendarScreen inherits Rectangle {
                                     HorizontalLayout {
                                         spacing: 4px;
                                         alignment: center;
-                                        Text {
-                                            text: tpl.icon;
-                                            font-size: 14px;
-                                            vertical-alignment: center;
-                                        }
+                                        Icon { commands: tpl.icon; size: 14px; tint: Theme.accent; y: (parent.height - self.height) / 2; }
                                         Text {
                                             text: tpl.name;
                                             color: Theme.text-primary;
@@ -381,8 +384,10 @@ export component CalendarScreen inherits Rectangle {
                     }
 
                     // Calendar grid (6 rows x 7 cols = 42 cells)
+                    // Rows share the pane height; a cell never drops below 56px.
                     VerticalLayout {
                         spacing: 2px;
+                        vertical-stretch: 1;
 
                         for row in 6 : HorizontalLayout {
                             spacing: 2px;
@@ -393,57 +398,73 @@ export component CalendarScreen inherits Rectangle {
                                     ? root.days[cell-idx]
                                     : { day-number: 0, is-today: false, is-selected: false, is-current-month: false, has-events: false, event-count: 0 };
 
-                                height: 64px;
-                                border-radius: 8px;
-                                background: cell-day.is-selected ? Theme.accent.with-alpha(0.15)
-                                    : cell-day.is-today ? Theme.bg-card
+                                min-height: 56px;
+                                border-radius: Theme.r-sm;
+                                // Days of this month sit on a faint surface so the month reads as
+                                // a grid; days spilling in from the neighbouring months do not.
+                                background: cell-day.is-selected ? Theme.tint-accent
+                                    : cell-day.is-current-month ? Theme.bg-surface.transparentize(45%)
                                     : transparent;
-                                border-width: cell-day.is-today ? 1px : 0;
-                                border-color: cell-day.is-today ? Theme.accent.with-alpha(0.4) : transparent;
+                                border-width: cell-day.is-selected ? 1px : 0;
+                                border-color: cell-day.is-selected ? Theme.accent-dim : transparent;
 
-                                if cell-day.day-number > 0 : TouchArea {
+                                if cell-day.day-number > 0 : day-ta := TouchArea {
                                     clicked => { root.day-clicked(cell-day.day-number); }
                                     mouse-cursor: pointer;
                                 }
 
-                                VerticalLayout {
-                                    padding: 6px;
-                                    spacing: 4px;
+                                // The cell's contents are positioned, not laid out: a layout child
+                                // reports a preferred width upward, and that made cells with a date
+                                // shrink to their content while empty cells ate the rest of the row
+                                // — the columns stopped lining up with the weekday header.
+                                // A Rectangle does not size to its children, so the row stays even.
 
-                                    if cell-day.day-number > 0 : Text {
+                                // Date, top-left. Today is a filled disc: the day you look for
+                                // first should not have to be read.
+                                if cell-day.day-number > 0 : Rectangle {
+                                    x: 6px;
+                                    y: 6px;
+                                    width: 22px;
+                                    height: 20px;
+                                    border-radius: Theme.r-sm;
+                                    background: cell-day.is-today ? Theme.accent : transparent;
+
+                                    Text {
                                         text: cell-day.day-number;
-                                        color: cell-day.is-selected ? Theme.accent
-                                            : cell-day.is-today ? Theme.text-primary
+                                        color: cell-day.is-today ? Theme.bg-deep
+                                            : cell-day.is-selected ? Theme.accent
                                             : cell-day.is-current-month ? Theme.text-secondary
-                                            : Theme.text-dim;
-                                        font-size: 13px;
-                                        font-weight: cell-day.is-today || cell-day.is-selected ? 700 : 400;
+                                            : Theme.text-dim.transparentize(30%);
+                                        font-size: Theme.fs-caption;
+                                        font-weight: cell-day.is-today ? 700 : cell-day.is-current-month ? 500 : 400;
                                         horizontal-alignment: center;
+                                        vertical-alignment: center;
                                     }
+                                }
 
-                                    // Event indicator dots
-                                    if cell-day.has-events : HorizontalLayout {
-                                        alignment: center;
-                                        spacing: 3px;
+                                // What is on that day
+                                if cell-day.has-events : HorizontalLayout {
+                                    x: 9px;
+                                    y: 32px;
+                                    width: parent.width - 18px;
+                                    height: 6px;
+                                    alignment: start;
+                                    spacing: 3px;
 
-                                        Rectangle {
-                                            width: 5px;
-                                            height: 5px;
-                                            border-radius: 2.5px;
-                                            background: Theme.accent;
-                                        }
-                                        if cell-day.event-count > 1 : Rectangle {
-                                            width: 5px;
-                                            height: 5px;
-                                            border-radius: 2.5px;
-                                            background: Theme.amber;
-                                        }
-                                        if cell-day.event-count > 2 : Rectangle {
-                                            width: 5px;
-                                            height: 5px;
-                                            border-radius: 2.5px;
-                                            background: Theme.text-dim;
-                                        }
+                                    Rectangle {
+                                        width: 5px; height: 5px;
+                                        border-radius: 2.5px;
+                                        background: Theme.accent;
+                                    }
+                                    if cell-day.event-count > 1 : Rectangle {
+                                        width: 5px; height: 5px;
+                                        border-radius: 2.5px;
+                                        background: Theme.amber;
+                                    }
+                                    if cell-day.event-count > 2 : Rectangle {
+                                        width: 5px; height: 5px;
+                                        border-radius: 2.5px;
+                                        background: Theme.color-purple;
                                     }
                                 }
                             }
@@ -841,6 +862,7 @@ export component CalendarScreen inherits Rectangle {
 
                         ScrollView {
                             VerticalLayout {
+                                alignment: start;
                                 padding: 10px;
 
                                 TextInput {
@@ -856,7 +878,7 @@ export component CalendarScreen inherits Rectangle {
 
                 // Timezone display
                 if root.cal-timezone-display != "" : Text {
-                    text: "\u{1F310} " + root.cal-timezone-display;
+                    text: root.cal-timezone-display;
                     color: Theme.text-dim;
                     font-size: 10px;
                 }
@@ -1042,12 +1064,12 @@ export component CalendarScreen inherits Rectangle {
                                     Rectangle {
                                         width: 20px; height: 20px; border-radius: 10px;
                                         background: parent.has-hover ? Theme.hover-fill : transparent;
-                                        Text {
-                                            text: "\u{2715}";
-                                            font-size: 9px;
-                                            color: Theme.text-dim;
-                                            horizontal-alignment: center;
-                                            vertical-alignment: center;
+                                        Icon {
+                                            commands: Icons.close;
+                                            size: 12px;
+                                            tint: Theme.text-dim;
+                                            x: (parent.width - self.width) / 2;
+                                            y: (parent.height - self.height) / 2;
                                         }
                                     }
                                 }
@@ -1085,31 +1107,69 @@ export component CalendarScreen inherits Rectangle {
                 padding: 20px;
                 spacing: 12px;
 
-                Text {
-                    text: root.selected-day > 0
-                        ? "Events for " + root.selected-day
-                        : "Today's Events";
-                    color: Theme.text-primary;
-                    font-size: 16px;
-                    font-weight: 600;
+                // Agenda header: the day, and how full it is
+                HorizontalLayout {
+                    spacing: Theme.sp-2;
+
+                    VerticalLayout {
+                        spacing: 2px;
+                        horizontal-stretch: 1;
+
+                        Text {
+                            text: root.selected-day > 0 ? "DAY \{root.selected-day}" : "TODAY";
+                            color: Theme.text-dim;
+                            font-size: Theme.fs-micro;
+                            font-weight: Theme.fw-micro;
+                            letter-spacing: 1px;
+                        }
+                        Text {
+                            text: root.events-today.length == 0 ? "Nothing scheduled"
+                                : root.events-today.length == 1 ? "1 event"
+                                : "\{root.events-today.length} events";
+                            color: Theme.text-primary;
+                            font-size: Theme.fs-title-2;
+                            font-weight: Theme.fw-title-2;
+                            letter-spacing: -0.2px;
+                        }
+                    }
+
+                    YButton {
+                        label: "New";
+                        icon-path: Icons.plus;
+                        variant: 0;
+                        size: 0;
+                        y: (parent.height - self.height) / 2;
+                        clicked => { root.add-event(); }
+                    }
                 }
 
+                Rectangle { height: 1px; background: Theme.separator; }
+
                 if root.events-today.length == 0 : Rectangle {
-                    height: 100px;
+                    height: 160px;
 
                     VerticalLayout {
                         alignment: center;
+                        spacing: 8px;
 
+                        HorizontalLayout {
+                            alignment: center;
+                            Icon {
+                                commands: Icons.calendar;
+                                size: 26px;
+                                tint: Theme.text-dim.transparentize(35%);
+                            }
+                        }
                         Text {
-                            text: "No events";
-                            color: Theme.text-dim;
-                            font-size: 13px;
+                            text: "A clear day";
+                            color: Theme.text-secondary;
+                            font-size: Theme.fs-body;
                             horizontal-alignment: center;
                         }
                         Text {
-                            text: "Click + to add one";
+                            text: "Press New to put something in it.";
                             color: Theme.text-dim;
-                            font-size: 11px;
+                            font-size: Theme.fs-caption;
                             horizontal-alignment: center;
                         }
                     }
@@ -1117,6 +1177,7 @@ export component CalendarScreen inherits Rectangle {
 
                 ScrollView {
                     VerticalLayout {
+                        alignment: start;
                         spacing: 8px;
 
                         for event in root.events-today : Rectangle {
@@ -1156,25 +1217,25 @@ export component CalendarScreen inherits Rectangle {
                                 }
                             }
 
-                            // Delete button
-                            Rectangle {
+                            // Delete
+                            del-ta := TouchArea {
                                 x: parent.width - 32px;
-                                y: 4px;
-                                width: 28px;
-                                height: 28px;
-                                border-radius: 6px;
+                                y: 6px;
+                                width: 26px;
+                                height: 26px;
+                                mouse-cursor: pointer;
+                                clicked => { root.delete-event(event.id); }
 
-                                TouchArea {
-                                    clicked => { root.delete-event(event.id); }
-                                    mouse-cursor: pointer;
-                                }
-
-                                Text {
-                                    text: "x";
-                                    color: Theme.text-dim;
-                                    font-size: 11px;
-                                    horizontal-alignment: center;
-                                    vertical-alignment: center;
+                                Rectangle {
+                                    border-radius: Theme.r-sm;
+                                    background: del-ta.has-hover ? Theme.color-danger-dim : transparent;
+                                    Icon {
+                                        commands: Icons.trash;
+                                        size: 12px;
+                                        tint: del-ta.has-hover ? Theme.color-danger : Theme.text-dim;
+                                        x: (parent.width - self.width) / 2;
+                                        y: (parent.height - self.height) / 2;
+                                    }
                                 }
                             }
                         }

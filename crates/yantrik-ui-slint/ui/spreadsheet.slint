@@ -9,6 +9,7 @@ import { YButton, YIconButton } from "components/y_button.slint";
 import { RibbonToolButton, RibbonToolButtonWide, RibbonSeparator, RibbonTabButton,
          RibbonQuickAction, RibbonGroupLabel, RibbonColorButton, RibbonDropdown,
          RibbonAccentButton } from "components/app_ribbon.slint";
+import { Icon, Icons } from "components/icon.slint";
 
 export struct SpreadsheetCell {
     text: string,
@@ -307,9 +308,9 @@ export component SpreadsheetScreen inherits Rectangle {
                 spacing: 0px;
 
                 // Quick actions
-                RibbonQuickAction { label: "💾"; tooltip-text: "Save"; clicked => { root.save-sheet(); } }
-                RibbonQuickAction { label: "↶"; tooltip-text: "Undo"; clicked => { root.undo(); } }
-                RibbonQuickAction { label: "↷"; tooltip-text: "Redo"; clicked => { root.redo(); } }
+                RibbonQuickAction { icon-path: Icons.save; tooltip-text: "Save"; clicked => { root.save-sheet(); } }
+                RibbonQuickAction { icon-path: Icons.rotate-ccw; tooltip-text: "Undo"; clicked => { root.undo(); } }
+                RibbonQuickAction { icon-path: Icons.rotate-cw; tooltip-text: "Redo"; clicked => { root.redo(); } }
 
                 Rectangle { width: 12px; }
 
@@ -323,7 +324,7 @@ export component SpreadsheetScreen inherits Rectangle {
 
                 // Far-right: Find + AI
                 RibbonQuickAction {
-                    label: "🔍";
+                    icon-path: Icons.search;
                     tooltip-text: "Find & Replace";
                     clicked => { root.show-find = !root.show-find; }
                 }
@@ -351,8 +352,8 @@ export component SpreadsheetScreen inherits Rectangle {
                 alignment: start;
 
                 RibbonGroupLabel { label: "FONT"; }
-                RibbonToolButton { label: "B"; is-active: root.fmt-bold-active; tooltip-text: "Bold"; clicked => { root.format-bold(); } }
-                RibbonToolButton { label: "I"; is-active: root.fmt-italic-active; tooltip-text: "Italic"; clicked => { root.format-italic(); } }
+                RibbonToolButton { icon-path: Icons.bold; is-active: root.fmt-bold-active; tooltip-text: "Bold"; clicked => { root.format-bold(); } }
+                RibbonToolButton { icon-path: Icons.italic; is-active: root.fmt-italic-active; tooltip-text: "Italic"; clicked => { root.format-italic(); } }
 
                 RibbonColorButton {
                     label: "A";
@@ -370,9 +371,9 @@ export component SpreadsheetScreen inherits Rectangle {
                 RibbonSeparator {}
 
                 RibbonGroupLabel { label: "ALIGN"; }
-                RibbonToolButton { label: "≡←"; is-active: root.fmt-align-active == 0; tooltip-text: "Align left"; clicked => { root.format-align(0); } }
-                RibbonToolButton { label: "≡"; is-active: root.fmt-align-active == 1; tooltip-text: "Center"; clicked => { root.format-align(1); } }
-                RibbonToolButton { label: "≡→"; is-active: root.fmt-align-active == 2; tooltip-text: "Align right"; clicked => { root.format-align(2); } }
+                RibbonToolButton { icon-path: Icons.align-left; is-active: root.fmt-align-active == 0; tooltip-text: "Align left"; clicked => { root.format-align(0); } }
+                RibbonToolButton { icon-path: Icons.align-center; is-active: root.fmt-align-active == 1; tooltip-text: "Center"; clicked => { root.format-align(1); } }
+                RibbonToolButton { icon-path: Icons.align-right; is-active: root.fmt-align-active == 2; tooltip-text: "Align right"; clicked => { root.format-align(2); } }
 
                 RibbonSeparator {}
 
@@ -390,9 +391,9 @@ export component SpreadsheetScreen inherits Rectangle {
                 RibbonSeparator {}
 
                 RibbonGroupLabel { label: "CLIPBOARD"; }
-                RibbonToolButtonWide { label: "Copy"; tooltip-text: "Copy cell"; clicked => { root.copy-cell(); } }
-                RibbonToolButtonWide { label: "Paste"; tooltip-text: "Paste"; clicked => { root.paste-cell(); } }
-                RibbonToolButtonWide { label: "Cut"; tooltip-text: "Cut cell"; clicked => { root.cut-cell(); } }
+                RibbonToolButtonWide { label: "Copy"; icon-path: Icons.copy; tooltip-text: "Copy cell"; clicked => { root.copy-cell(); } }
+                RibbonToolButtonWide { label: "Paste"; icon-path: Icons.clipboard; tooltip-text: "Paste"; clicked => { root.paste-cell(); } }
+                RibbonToolButtonWide { label: "Cut"; icon-path: Icons.scissors; tooltip-text: "Cut cell"; clicked => { root.cut-cell(); } }
             }
 
             // ── DATA tab: Sort + Filter + Freeze + Import/Export ──
@@ -403,8 +404,8 @@ export component SpreadsheetScreen inherits Rectangle {
                 alignment: start;
 
                 RibbonGroupLabel { label: "SORT & FILTER"; }
-                RibbonToolButtonWide { label: "Sort ↑"; tooltip-text: "Sort ascending"; clicked => { root.sort-column(root.active-col, true); } }
-                RibbonToolButtonWide { label: "Sort ↓"; tooltip-text: "Sort descending"; clicked => { root.sort-column(root.active-col, false); } }
+                RibbonToolButtonWide { label: "Sort"; icon-path: Icons.arrow-up; tooltip-text: "Sort ascending"; clicked => { root.sort-column(root.active-col, true); } }
+                RibbonToolButtonWide { label: "Sort"; icon-path: Icons.arrow-down; tooltip-text: "Sort descending"; clicked => { root.sort-column(root.active-col, false); } }
                 RibbonToolButtonWide {
                     label: "Filter";
                     is-active: root.filter-active;
@@ -431,8 +432,8 @@ export component SpreadsheetScreen inherits Rectangle {
                 RibbonSeparator {}
 
                 RibbonGroupLabel { label: "FILE"; }
-                RibbonToolButtonWide { label: "Import"; tooltip-text: "Import CSV"; clicked => { root.import-csv(); } }
-                RibbonToolButtonWide { label: "Export"; tooltip-text: "Export CSV"; clicked => { root.export-csv(); } }
+                RibbonToolButtonWide { label: "Import"; icon-path: Icons.import; tooltip-text: "Import CSV"; clicked => { root.import-csv(); } }
+                RibbonToolButtonWide { label: "Export"; icon-path: Icons.export; tooltip-text: "Export CSV"; clicked => { root.export-csv(); } }
             }
 
             // ── INSERT tab: Rows/Cols + Chart + Comment + Merge ──
@@ -676,7 +677,7 @@ export component SpreadsheetScreen inherits Rectangle {
                                 text: hint;
                                 color: Theme.text-primary;
                                 font-size: 11px;
-                                font-family: "monospace";
+                                font-family: Theme.font-mono;
                                 vertical-alignment: center;
                             }
                         }
