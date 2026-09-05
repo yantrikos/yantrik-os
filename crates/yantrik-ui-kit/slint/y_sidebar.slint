@@ -1,10 +1,15 @@
-// YSidebar — navigation sidebar with sections, items, active indicator.
-// Collapsible groups, hover/selected states.
+// YSidebar — navigation rail with sections, items, counts.
+//
+// Items carry a stroke icon (`icon-path`) and the active one is marked by a 3px accent bar and
+// the accent tint — a shape, not just a colour change. Section titles use the same small
+// letter-spaced label the shell's rails use, so an app's sidebar reads as part of the OS.
 import { Theme } from "theme.slint";
+import { Icon } from "icon.slint";
 
 export struct YSidebarItem {
     id: string,
     icon: string,
+    icon-path: string,
     label: string,
     badge: string,
     badge-count: int,
@@ -24,9 +29,7 @@ export component YSidebar inherits Rectangle {
 
     width: root.width-px * 1px;
     background: Theme.bg-surface;
-    border-width: 0;
 
-    // Right border separator
     Rectangle {
         x: parent.width - 1px;
         width: 1px;
@@ -40,46 +43,44 @@ export component YSidebar inherits Rectangle {
 
         VerticalLayout {
             padding: Theme.sp-2;
-            spacing: Theme.sp-1;
+            padding-top: Theme.sp-3;
+            spacing: Theme.sp-2;
 
             for section[si] in root.sections : VerticalLayout {
-                spacing: 0;
+                spacing: 1px;
 
-                // Section header
                 if section.title != "" : Rectangle {
-                    height: Theme.section-header-height;
-
+                    height: 26px;
                     Text {
                         x: Theme.sp-3;
                         text: section.title;
                         color: Theme.text-dim;
-                        font-size: 10px;
-                        font-weight: 600;
+                        font-size: Theme.fs-micro;
+                        font-weight: Theme.fw-micro;
                         letter-spacing: 1px;
                         vertical-alignment: center;
                     }
                 }
 
-                // Section items
                 for item[ii] in section.items : Rectangle {
                     property <bool> is-active: item.id == root.active-id;
                     property <bool> hovered: item-ta.has-hover;
 
-                    height: 32px;
-                    border-radius: Theme.r-md;
+                    height: 30px;
+                    border-radius: Theme.r-sm;
                     background: is-active ? Theme.tint-accent
                               : hovered ? Theme.hover-fill
                               : transparent;
+                    clip: true;
 
                     animate background { duration: Theme.dur-fast; }
 
-                    // Active indicator bar
                     if is-active : Rectangle {
                         x: 0;
                         width: 3px;
-                        height: 18px;
-                        y: (parent.height - 18px) / 2;
-                        border-radius: 2px;
+                        height: 16px;
+                        y: (parent.height - 16px) / 2;
+                        border-radius: 1.5px;
                         background: Theme.accent;
                     }
 
@@ -90,49 +91,45 @@ export component YSidebar inherits Rectangle {
 
                     HorizontalLayout {
                         padding-left: Theme.sp-3;
-                        padding-right: Theme.sp-3;
-                        spacing: Theme.sp-2;
+                        padding-right: Theme.sp-2;
+                        spacing: 9px;
 
-                        Text {
+                        if item.icon-path != "" : Icon {
+                            commands: item.icon-path;
+                            size: 15px;
+                            tint: is-active ? Theme.accent : Theme.text-secondary;
+                            y: (parent.height - self.height) / 2;
+                        }
+                        if item.icon-path == "" && item.icon != "" : Text {
                             text: item.icon;
                             color: is-active ? Theme.accent : Theme.text-secondary;
                             font-size: Theme.fs-body;
                             vertical-alignment: center;
-                            width: 20px;
+                            width: 16px;
                         }
 
                         Text {
                             text: item.label;
                             color: is-active ? Theme.text-primary : Theme.text-secondary;
-                            font-size: Theme.fs-body;
-                            font-weight: is-active ? Theme.fw-body-strong : Theme.fw-body;
+                            font-size: Theme.font-label;
+                            font-weight: is-active ? 500 : Theme.fw-body;
                             vertical-alignment: center;
                             horizontal-stretch: 1;
                             overflow: elide;
                         }
 
-                        if item.badge-count > 0 : Rectangle {
-                            width: badge-ct.preferred-width + 10px;
-                            min-width: 18px;
-                            height: 18px;
-                            y: (parent.height - 18px) / 2;
-                            border-radius: 9px;
-                            background: Theme.accent;
-
-                            badge-ct := Text {
-                                text: item.badge-count < 100 ? item.badge-count : "99+";
-                                color: Theme.text-on-accent;
-                                font-size: 10px;
-                                font-weight: 700;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
-                            }
+                        if item.badge-count > 0 : Text {
+                            text: item.badge-count < 100 ? item.badge-count : "99+";
+                            color: is-active ? Theme.accent : Theme.text-dim;
+                            font-size: Theme.fs-micro;
+                            font-weight: 500;
+                            vertical-alignment: center;
                         }
 
                         if item.badge != "" && item.badge-count <= 0 : Text {
                             text: item.badge;
                             color: Theme.text-dim;
-                            font-size: Theme.fs-caption;
+                            font-size: Theme.fs-micro;
                             vertical-alignment: center;
                         }
                     }

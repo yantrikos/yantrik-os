@@ -4,10 +4,13 @@
 // Row 2 (44px): Grouped command band that swaps based on active tab
 
 import { Theme } from "theme.slint";
+import { Icon } from "icon.slint";
 
 // ── Ribbon Tool Button — standard 32x32 icon button ──
 export component RibbonToolButton inherits Rectangle {
     in property <string> label;
+    /// Stroke glyph from the Icons global. When set it replaces the label character.
+    in property <string> icon-path: "";
     in property <bool> is-active: false;
     in property <bool> is-toggle: false;
     in property <string> tooltip-text: "";
@@ -48,7 +51,16 @@ export component RibbonToolButton inherits Rectangle {
         }
     }
 
-    Text {
+    if root.icon-path != "" : Icon {
+        commands: root.icon-path;
+        size: 16px;
+        thickness: 1.7px;
+        tint: root.is-active ? Theme.accent : (ta.has-hover ? Theme.text-primary : Theme.text-secondary);
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+    }
+
+    if root.icon-path == "" : Text {
         text: root.label;
         color: root.is-active ? Theme.accent : (ta.has-hover ? Theme.text-primary : Theme.text-secondary);
         font-size: 13px;
@@ -61,6 +73,8 @@ export component RibbonToolButton inherits Rectangle {
 // ── Ribbon Tool Button Wide — for text labels like "Table", "Export" ──
 export component RibbonToolButtonWide inherits Rectangle {
     in property <string> label;
+    /// Optional leading stroke glyph, drawn before the label.
+    in property <string> icon-path: "";
     in property <bool> is-active: false;
     in property <string> tooltip-text: "";
     callback clicked();
@@ -81,7 +95,16 @@ export component RibbonToolButtonWide inherits Rectangle {
     HorizontalLayout {
         padding-left: 9px;
         padding-right: 9px;
+        spacing: 6px;
         alignment: center;
+
+        if root.icon-path != "" : Icon {
+            commands: root.icon-path;
+            size: 14px;
+            thickness: 1.7px;
+            tint: root.is-active ? Theme.accent : (ta.has-hover ? Theme.text-primary : Theme.text-secondary);
+            y: (parent.height - self.height) / 2;
+        }
 
         lbl := Text {
             text: root.label;
@@ -147,6 +170,8 @@ export component RibbonTabButton inherits Rectangle {
 // ── Quick Action Button — compact 28x28 for Save/Undo/Redo in tab row ──
 export component RibbonQuickAction inherits Rectangle {
     in property <string> label;
+    /// Stroke glyph from the Icons global. When set it replaces the label character.
+    in property <string> icon-path: "";
     in property <string> tooltip-text: "";
     callback clicked();
 
@@ -181,7 +206,16 @@ export component RibbonQuickAction inherits Rectangle {
         }
     }
 
-    Text {
+    if root.icon-path != "" : Icon {
+        commands: root.icon-path;
+        size: 15px;
+        thickness: 1.7px;
+        tint: ta.has-hover ? Theme.text-primary : Theme.text-dim;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+    }
+
+    if root.icon-path == "" : Text {
         text: root.label;
         color: ta.has-hover ? Theme.text-primary : Theme.text-dim;
         font-size: 12px;

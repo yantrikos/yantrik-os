@@ -1,0 +1,4 @@
+// Icons live in the UI kit now (crates/yantrik-ui-kit/slint/icon.slint) so every app can
+// draw the same stroke set. This file only re-exports them for the shell's existing imports.
+// The path is explicit: a bare "icon.slint" resolves to this file first and imports itself.
+export { Icon, Icons } from "../../../yantrik-ui-kit/slint/icon.slint";

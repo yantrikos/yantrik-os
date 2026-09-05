@@ -4,6 +4,16 @@
 // Community themes can override key tokens via ThemeOverrides global.
 // Accent color presets via AccentPreset global (index-based).
 
+// ─── Typefaces ────────────────────────────────────────────────────────
+// Embedded so every window — shell and apps — renders the same face on any box. Barlow for
+// UI text (three weights, normalised into one family), JetBrains Mono for anything tabular.
+// Windows opt in with `default-font-family: Theme.font-ui;`.
+import "fonts/Barlow-Regular.ttf";
+import "fonts/Barlow-Medium.ttf";
+import "fonts/Barlow-SemiBold.ttf";
+import "fonts/JetBrainsMono-Regular.ttf";
+import "fonts/JetBrainsMono-Medium.ttf";
+
 export global ThemeMode {
     in-out property <bool> dark: true;
 }
@@ -173,6 +183,10 @@ export global Theme {
     out property <color> hover-fill-strong: ThemeMode.dark ? #ffffff10 : #00000010;
     out property <color> tint-cyan:         ThemeMode.dark ? #4ecdc418 : #1a8a9a14;
     out property <color> tint-amber:        ThemeMode.dark ? #d4a57414 : #b0784014;
+
+    // ─── Typefaces ────────────────────────────────────────────────
+    out property <string> font-ui: "Barlow";
+    out property <string> font-mono: "JetBrains Mono";
 
     // ─── Typography scale ─────────────────────────────────────────
     // 6 named roles: display, heading, body, label, caption, micro

@@ -1,4 +1,5 @@
 import { Theme } from "theme.slint";
+import { Icon, Icons } from "icon.slint";
 
 export struct ToastData {
     id: int,
@@ -113,13 +114,7 @@ export component ToastBanner inherits Rectangle {
                 y: (parent.height - 24px) / 2;
                 clicked => { root.toast-dismissed(toast.id); }
 
-                Text {
-                    text: "\u{00D7}";
-                    color: Theme.text-dim;
-                    font-size: 16px;
-                    horizontal-alignment: center;
-                    vertical-alignment: center;
-                }
+                Icon { commands: Icons.close; size: 12px; tint: Theme.text-dim; x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; }
             }
         }
     }

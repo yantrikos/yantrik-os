@@ -1,15 +1,21 @@
-// YButton — unified button component.
-// Variants: primary, secondary, tertiary, danger. Sizes: compact, regular, prominent.
-// States: default, hover, pressed, focused, disabled, loading.
+// YButton — the one button.
+//
+// Variants: 0 primary (accent), 1 secondary (raised), 2 tertiary (quiet), 3 danger.
+// Sizes: 0 compact 28px, 1 regular 32px, 2 prominent 36px.
+//
+// Icons are stroke paths (`icon-path`, an SVG path on the 20×20 grid from the Icons global),
+// drawn by the shared Icon component so they scale and recolour with the label. The old
+// single-character `icon` still works for call sites that have not moved yet, but a letter in
+// a box is exactly the look this kit exists to retire — prefer the path.
 import { Theme } from "theme.slint";
+import { Icon } from "icon.slint";
 
 export component YButton inherits Rectangle {
-    // 0=primary, 1=secondary, 2=tertiary, 3=danger
     in property <int> variant: 0;
-    // 0=compact(28px), 1=regular(32px), 2=prominent(36px)
     in property <int> size: 1;
     in property <string> label: "Button";
     in property <string> icon: "";
+    in property <string> icon-path: "";
     in property <bool> disabled: false;
     in property <bool> loading: false;
     in property <bool> icon-only: false;
@@ -17,22 +23,27 @@ export component YButton inherits Rectangle {
 
     property <bool> hovered: ta.has-hover && !root.disabled;
     property <bool> pressed: ta.pressed && !root.disabled;
+    property <bool> on-accent: root.variant == 0 || root.variant == 3;
+    property <color> fg: root.on-accent ? Theme.bg-deep : Theme.text-primary;
+    property <length> glyph: root.size == 0 ? 13px : 15px;
 
-    height: size == 0 ? Theme.h-compact : size == 2 ? Theme.h-prominent : Theme.h-regular;
-    min-width: icon-only ? self.height : 64px;
+    height: root.size == 0 ? Theme.h-compact : root.size == 2 ? Theme.h-prominent : Theme.h-regular;
+    min-width: root.icon-only ? self.height : 64px;
+    // A button is as wide as its label. Rectangle stretches by default, which in a toolbar row
+    // makes one button swallow the spare space.
+    horizontal-stretch: 0;
     border-radius: Theme.r-md;
-    opacity: disabled ? 0.4 : 1.0;
+    opacity: root.disabled ? 0.4 : 1.0;
     clip: true;
 
-    // Background color by variant + state
     background:
-        variant == 3 ? (pressed ? Theme.color-danger.darker(30%) : hovered ? Theme.color-danger.brighter(10%) : Theme.color-danger)
-      : variant == 2 ? (pressed ? Theme.hover-fill-strong : hovered ? Theme.hover-fill : transparent)
-      : variant == 1 ? (pressed ? Theme.hover-fill-strong : hovered ? Theme.hover-fill : Theme.bg-elevated)
-      :                 (pressed ? Theme.accent-dim : hovered ? Theme.accent-light : Theme.accent);
+        root.variant == 3 ? (root.pressed ? Theme.color-danger.darker(30%) : root.hovered ? Theme.color-danger.brighter(10%) : Theme.color-danger)
+      : root.variant == 2 ? (root.pressed ? Theme.hover-fill-strong : root.hovered ? Theme.hover-fill : transparent)
+      : root.variant == 1 ? (root.pressed ? Theme.hover-fill-strong : root.hovered ? Theme.bg-elevated.brighter(8%) : Theme.bg-elevated)
+      :                     (root.pressed ? Theme.accent-dim : root.hovered ? Theme.accent-light : Theme.accent);
 
-    border-width: variant == 1 ? 1px : 0;
-    border-color: variant == 1 ? Theme.border-subtle : transparent;
+    border-width: root.variant == 1 ? 1px : 0;
+    border-color: root.hovered ? Theme.border-strong : Theme.border-default;
 
     animate background { duration: Theme.dur-fast; }
     animate opacity { duration: Theme.dur-fast; }
@@ -45,30 +56,38 @@ export component YButton inherits Rectangle {
 
     HorizontalLayout {
         alignment: center;
-        spacing: Theme.sp-2;
-        padding-left: root.icon-only ? 0 : Theme.sp-3;
-        padding-right: root.icon-only ? 0 : Theme.sp-3;
+        spacing: 7px;
+        padding-left: root.icon-only ? 0 : (root.size == 0 ? 10px : 12px);
+        padding-right: root.icon-only ? 0 : (root.size == 0 ? 10px : 12px);
 
-        if root.loading : Text {
-            text: "⟳";
-            color: variant == 0 || variant == 3 ? Theme.text-on-accent : Theme.text-primary;
-            font-size: root.size == 0 ? Theme.fs-caption : Theme.fs-body;
-            vertical-alignment: center;
-            horizontal-alignment: center;
+        if root.loading : Icon {
+            commands: "M10 3A7 7 0 0 1 17 10 M17 10A7 7 0 0 1 10 17";
+            size: root.glyph;
+            tint: root.fg;
+            y: (parent.height - self.height) / 2;
         }
 
-        if root.icon != "" && !root.loading : Text {
+        if root.icon-path != "" && !root.loading : Icon {
+            commands: root.icon-path;
+            size: root.glyph;
+            tint: root.fg;
+            thickness: 1.7px;
+            y: (parent.height - self.height) / 2;
+        }
+
+        if root.icon-path == "" && root.icon != "" && !root.loading : Text {
             text: root.icon;
-            color: variant == 0 || variant == 3 ? Theme.text-on-accent : Theme.text-primary;
+            color: root.fg;
             font-size: root.size == 0 ? Theme.fs-caption : Theme.fs-body;
             vertical-alignment: center;
         }
 
         if !root.icon-only && !root.loading : Text {
             text: root.label;
-            color: variant == 0 || variant == 3 ? Theme.text-on-accent : Theme.text-primary;
+            color: root.fg;
             font-size: root.size == 0 ? Theme.fs-caption : Theme.fs-body;
-            font-weight: Theme.fw-body-strong;
+            font-weight: 500;
+            letter-spacing: 0.2px;
             vertical-alignment: center;
             horizontal-alignment: center;
         }

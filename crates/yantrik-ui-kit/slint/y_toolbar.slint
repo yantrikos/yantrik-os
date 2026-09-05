@@ -1,18 +1,27 @@
-// YToolbar — app toolbar with title, leading/trailing action groups, search.
+// YToolbar — the app header.
+//
+// 48px: an app glyph in a tinted square, the title, an optional one-line subtitle in the
+// quiet colour, then whatever the app puts in the leading slot (@children), a spacer, and an
+// inline search field. Every app that uses this looks like the same product from the top
+// edge down, which is most of what "coherent" means.
 import { Theme } from "theme.slint";
+import { Icon, Icons } from "icon.slint";
 
 export component YToolbar inherits Rectangle {
     in property <string> title: "";
+    in property <string> subtitle: "";
+    /// App glyph drawn in the leading tinted square; leave empty for no glyph.
+    in property <string> icon-path: "";
     in property <bool> show-search: false;
+    in property <string> search-placeholder: "Search";
     in-out property <string> search-text: "";
     in property <bool> show-divider: true;
     callback search-edited(string);
     callback search-accepted(string);
 
-    height: Theme.h-prominent;
+    height: 48px;
     background: Theme.bg-surface;
 
-    // Bottom divider
     if root.show-divider : Rectangle {
         y: parent.height - 1px;
         height: 1px;
@@ -22,46 +31,71 @@ export component YToolbar inherits Rectangle {
 
     HorizontalLayout {
         padding-left: Theme.sp-4;
-        padding-right: Theme.sp-4;
+        padding-right: Theme.sp-3;
         spacing: Theme.sp-3;
 
-        // Leading slot
-        @children
-
-        // Title
-        if root.title != "" : Text {
-            text: root.title;
-            color: Theme.text-primary;
-            font-size: Theme.fs-headline;
-            font-weight: Theme.fw-headline;
-            vertical-alignment: center;
+        if root.icon-path != "" : Rectangle {
+            width: 28px;
+            height: 28px;
+            y: (parent.height - 28px) / 2;
+            border-radius: Theme.r-sm;
+            background: Theme.tint-accent;
+            Icon {
+                commands: root.icon-path;
+                size: 16px;
+                tint: Theme.accent;
+                thickness: 1.7px;
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+            }
         }
 
-        // Spacer
+        if root.title != "" : VerticalLayout {
+            alignment: center;
+            spacing: 1px;
+            Text {
+                text: root.title;
+                color: Theme.text-primary;
+                font-size: Theme.fs-title-2;
+                font-weight: Theme.fw-title-2;
+                letter-spacing: -0.2px;
+                overflow: elide;
+            }
+            if root.subtitle != "" : Text {
+                text: root.subtitle;
+                color: Theme.text-dim;
+                font-size: Theme.fs-micro;
+                overflow: elide;
+            }
+        }
+
+        // Leading slot: the app's own controls, next to the title.
+        @children
+
         Rectangle { horizontal-stretch: 1; }
 
-        // Search field (inline)
         if root.show-search : Rectangle {
-            width: 200px;
-            height: Theme.h-compact;
-            y: (parent.height - Theme.h-compact) / 2;
+            width: 240px;
+            height: Theme.h-regular;
+            y: (parent.height - Theme.h-regular) / 2;
             border-radius: Theme.r-md;
             background: Theme.bg-input;
             border-width: 1px;
-            border-color: search-input.has-focus ? Theme.accent : Theme.border-subtle;
+            border-color: search-input.has-focus ? Theme.accent-dim : Theme.border-default;
             clip: true;
+            animate border-color { duration: Theme.dur-fast; }
 
             HorizontalLayout {
-                padding-left: Theme.sp-2;
-                padding-right: Theme.sp-2;
-                spacing: Theme.sp-1;
+                padding-left: 10px;
+                padding-right: 8px;
+                spacing: 8px;
 
-                Text {
-                    text: "⌕";
-                    color: Theme.text-dim;
-                    font-size: Theme.fs-caption;
-                    vertical-alignment: center;
-                    width: 16px;
+                Icon {
+                    commands: Icons.search;
+                    size: 14px;
+                    tint: search-input.has-focus ? Theme.accent : Theme.text-dim;
+                    thickness: 1.7px;
+                    y: (parent.height - self.height) / 2;
                 }
 
                 search-input := TextInput {
@@ -70,13 +104,21 @@ export component YToolbar inherits Rectangle {
                     font-size: Theme.fs-caption;
                     color: Theme.text-primary;
                     text: root.search-text;
-
                     edited => {
                         root.search-text = self.text;
                         root.search-edited(self.text);
                     }
                     accepted => { root.search-accepted(self.text); }
                 }
+            }
+
+            if root.search-text == "" : Text {
+                x: 10px + 14px + 8px;
+                height: 100%;
+                text: root.search-placeholder;
+                color: Theme.text-dim;
+                font-size: Theme.fs-caption;
+                vertical-alignment: center;
             }
         }
     }

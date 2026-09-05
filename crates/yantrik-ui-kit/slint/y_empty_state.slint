@@ -1,10 +1,14 @@
-// YEmptyState — centered placeholder for empty views.
-// Icon + title + description + primary CTA + optional secondary action.
+// YEmptyState — what a view says when it has nothing to show.
+//
+// A stroke glyph in a tinted circle, a title, one sentence, and at most two actions. No emoji:
+// an empty inbox is not a party.
 import { Theme } from "theme.slint";
+import { Icon, Icons } from "icon.slint";
 import { YButton } from "y_button.slint";
 
 export component YEmptyState inherits Rectangle {
-    in property <string> icon: "📭";
+    in property <string> icon: "";
+    in property <string> icon-path: Icons.packages;
     in property <string> title: "Nothing here yet";
     in property <string> description: "";
     in property <string> action-label: "";
@@ -19,14 +23,24 @@ export component YEmptyState inherits Rectangle {
         spacing: Theme.sp-3;
         padding: Theme.sp-9;
 
-        // Icon
-        Text {
-            text: root.icon;
-            font-size: 48px;
-            horizontal-alignment: center;
+        HorizontalLayout {
+            alignment: center;
+            Rectangle {
+                width: 56px;
+                height: 56px;
+                border-radius: 28px;
+                background: Theme.tint-accent;
+                Icon {
+                    commands: root.icon-path;
+                    size: 26px;
+                    tint: Theme.accent;
+                    thickness: 1.5px;
+                    x: (parent.width - self.width) / 2;
+                    y: (parent.height - self.height) / 2;
+                }
+            }
         }
 
-        // Title
         Text {
             text: root.title;
             color: Theme.text-primary;
@@ -35,7 +49,6 @@ export component YEmptyState inherits Rectangle {
             horizontal-alignment: center;
         }
 
-        // Description
         if root.description != "" : Text {
             text: root.description;
             color: Theme.text-secondary;
@@ -45,10 +58,10 @@ export component YEmptyState inherits Rectangle {
             max-width: 360px;
         }
 
-        // Actions
         if root.action-label != "" : HorizontalLayout {
             alignment: center;
-            spacing: Theme.sp-3;
+            spacing: Theme.sp-2;
+            padding-top: Theme.sp-1;
 
             YButton {
                 label: root.action-label;

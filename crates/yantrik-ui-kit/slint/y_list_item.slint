@@ -1,36 +1,55 @@
-// YListItem — universal list row component.
-// Icon/avatar + title + subtitle + metadata + trailing badge/action.
-// Used across email, files, settings, notes, system monitor, downloads, networks.
+// YListItem — the universal row: leading glyph, title, subtitle, trailing metadata and badge.
+//
+// Selection is a 2px accent bar on the left edge plus the selected surface — a shape the eye
+// finds without reading. The leading glyph is a stroke icon (`icon-path`) in a rounded square;
+// `icon-char` remains as a fallback for rows that genuinely are initials (a person, a drive
+// letter), which is the one case where a character is the right icon.
 import { Theme } from "theme.slint";
+import { Icon } from "icon.slint";
 
 export component YListItem inherits Rectangle {
     in property <string> icon: "";
-    in property <string> icon-char: "";      // single char avatar fallback
+    in property <string> icon-char: "";
+    in property <string> icon-path: "";
     in property <color>  icon-bg: Theme.bg-elevated;
+    in property <color>  icon-tint: Theme.text-secondary;
     in property <string> title: "";
     in property <string> subtitle: "";
-    in property <string> metadata: "";       // right-aligned (date, size, etc.)
-    in property <string> badge: "";          // trailing badge text
+    in property <string> metadata: "";
+    in property <string> badge: "";
     in property <color>  badge-color: Theme.accent;
     in property <bool>   selected: false;
     in property <bool>   disabled: false;
     in property <bool>   show-checkbox: false;
     in property <bool>   checked: false;
-    in property <bool>   unread: false;      // bold title + accent dot
+    in property <bool>   unread: false;
+    /// Two-line rows are the default; set false for a compact 36px single-line row.
+    in property <bool>   two-line: true;
     callback clicked();
     callback context-menu();
     callback check-toggled(bool);
 
     property <bool> hovered: ta.has-hover && !root.disabled;
 
-    height: 52px;
+    height: root.two-line ? 56px : 36px;
     background: root.selected ? Theme.bg-selected
               : root.hovered ? Theme.hover-fill
               : transparent;
     border-radius: Theme.r-sm;
     opacity: root.disabled ? 0.5 : 1.0;
+    clip: true;
 
     animate background { duration: Theme.dur-fast; }
+
+    // Selection bar
+    Rectangle {
+        x: 0;
+        width: 2px;
+        height: parent.height - 12px;
+        y: 6px;
+        border-radius: 1px;
+        background: root.selected ? Theme.accent : transparent;
+    }
 
     ta := TouchArea {
         mouse-cursor: root.disabled ? default : pointer;
@@ -42,7 +61,6 @@ export component YListItem inherits Rectangle {
         padding-right: Theme.sp-3;
         spacing: Theme.sp-3;
 
-        // Checkbox
         if root.show-checkbox : TouchArea {
             width: 20px;
             height: 20px;
@@ -52,41 +70,46 @@ export component YListItem inherits Rectangle {
 
             Rectangle {
                 width: 16px; height: 16px;
-                border-radius: Theme.r-sm;
+                x: 2px; y: 2px;
+                border-radius: 4px;
                 border-width: 1px;
                 border-color: root.checked ? Theme.accent : Theme.text-dim;
                 background: root.checked ? Theme.accent : transparent;
-                x: 2px; y: 2px;
-
-                if root.checked : Text {
-                    text: "✓";
-                    color: Theme.text-on-accent;
-                    font-size: 10px;
-                    horizontal-alignment: center;
-                    vertical-alignment: center;
+                if root.checked : Icon {
+                    commands: "M4 10.5L8 14.5L16 6";
+                    size: 12px;
+                    tint: Theme.bg-deep;
+                    thickness: 2px;
+                    x: 2px; y: 2px;
                 }
             }
         }
 
-        // Icon/avatar
-        if root.icon != "" || root.icon-char != "" : Rectangle {
-            width: 36px;
-            height: 36px;
-            y: (parent.height - 36px) / 2;
-            border-radius: 18px;
+        if root.icon-path != "" || root.icon != "" || root.icon-char != "" : Rectangle {
+            property <length> box: root.two-line ? 32px : 24px;
+            width: self.box;
+            height: self.box;
+            y: (parent.height - self.box) / 2;
+            border-radius: Theme.r-sm;
             background: root.icon-bg;
 
-            Text {
+            if root.icon-path != "" : Icon {
+                commands: root.icon-path;
+                size: root.two-line ? 16px : 14px;
+                tint: root.selected ? Theme.accent : root.icon-tint;
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+            }
+            if root.icon-path == "" : Text {
                 text: root.icon != "" ? root.icon : root.icon-char;
-                color: Theme.text-secondary;
-                font-size: root.icon != "" ? 18px : Theme.fs-body;
+                color: root.icon-tint;
+                font-size: root.two-line ? Theme.fs-body : Theme.fs-caption;
                 font-weight: 600;
                 horizontal-alignment: center;
                 vertical-alignment: center;
             }
         }
 
-        // Unread dot
         if root.unread : Rectangle {
             width: 6px;
             height: 6px;
@@ -95,7 +118,6 @@ export component YListItem inherits Rectangle {
             background: Theme.accent;
         }
 
-        // Text content
         VerticalLayout {
             horizontal-stretch: 1;
             alignment: center;
@@ -103,13 +125,13 @@ export component YListItem inherits Rectangle {
 
             Text {
                 text: root.title;
-                color: Theme.text-primary;
+                color: root.selected ? Theme.text-primary : root.unread ? Theme.text-primary : Theme.text-primary;
                 font-size: Theme.fs-body;
-                font-weight: root.unread ? Theme.fw-headline : Theme.fw-body;
+                font-weight: root.unread || root.selected ? 500 : Theme.fw-body;
                 overflow: elide;
             }
 
-            if root.subtitle != "" : Text {
+            if root.two-line && root.subtitle != "" : Text {
                 text: root.subtitle;
                 color: Theme.text-secondary;
                 font-size: Theme.fs-caption;
@@ -117,26 +139,23 @@ export component YListItem inherits Rectangle {
             }
         }
 
-        // Metadata
         if root.metadata != "" : Text {
             text: root.metadata;
             color: Theme.text-dim;
-            font-size: Theme.fs-caption;
+            font-size: Theme.fs-micro;
             vertical-alignment: center;
         }
 
-        // Badge
         if root.badge != "" : Rectangle {
-            width: badge-text.preferred-width + Theme.sp-3;
-            height: 20px;
-            y: (parent.height - 20px) / 2;
-            border-radius: Theme.r-pill;
-            background: root.badge-color;
-
+            width: badge-text.preferred-width + 12px;
+            height: 18px;
+            y: (parent.height - 18px) / 2;
+            border-radius: 4px;
+            background: root.badge-color.transparentize(85%);
             badge-text := Text {
                 text: root.badge;
-                color: Theme.text-on-accent;
-                font-size: 10px;
+                color: root.badge-color;
+                font-size: Theme.fs-micro;
                 font-weight: 600;
                 horizontal-alignment: center;
                 vertical-alignment: center;
