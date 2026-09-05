@@ -29,9 +29,12 @@ pub use yantrik_ipc_transport;
 
 pub use yantrik_ipc_transport::SyncRpcClient;
 
+pub mod instance;
+pub mod theme;
+
 /// Commonly-needed imports for app authors.
 pub mod prelude {
-    pub use crate::{init_tracing, SyncRpcClient};
+    pub use crate::{init_tracing, instance, theme, SyncRpcClient};
     pub use serde_json;
     pub use slint;
     pub use tracing;
@@ -45,7 +48,10 @@ pub fn init_tracing(app_name: &str) {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive(directive.parse().expect("valid tracing directive")),
+                .add_directive(directive.parse().expect("valid tracing directive"))
+                // The runtime's own lines (instance guard, theme) must be visible too, or an
+                // app that exits at once because another instance holds the slot says nothing.
+                .add_directive("yantrik_app_runtime=info".parse().expect("valid directive")),
         )
         .init();
 }

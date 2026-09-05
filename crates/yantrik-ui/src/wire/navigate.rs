@@ -14,7 +14,7 @@ use crate::filebrowser;
 use crate::notifications;
 use crate::{
     App, BondData, BreadcrumbSegment, FileEntry, OpinionData, ProcessData, SharedRefData,
-    TerminalTabData, UrgeCardData,
+    UrgeCardData,
 };
 
 /// Wire on_navigate callback.
@@ -198,107 +198,12 @@ pub fn wire(ui: &App, ctx: &AppContext) {
                     ui.set_sys_top_processes(ModelRc::new(VecModel::from(procs)));
                 }
             }
-            // Terminal screen — spawn first tab if no tabs exist, start poll timer
-            14 => {
-                // Spawn first terminal tab if none exist
-                {
-                    let mut tabs = terminals.borrow_mut();
-                    if tabs.is_empty() {
-                        match crate::terminal::TerminalHandle::spawn(24, 80) {
-                            Ok(th) => {
-                                tabs.push(th);
-                                *terminal_active.borrow_mut() = 0;
-                                tracing::info!("Terminal tab 1 spawned");
-                            }
-                            Err(e) => {
-                                tracing::error!(error = %e, "Failed to spawn terminal");
-                            }
-                        }
-                    }
-                }
-
-                // Sync tab UI state and start poll timer
-                if let Some(ui) = ui_weak.upgrade() {
-                    {
-                        let tabs = terminals.borrow();
-                        let active = *terminal_active.borrow();
-                        // Build tab data for UI
-                        let tab_data: Vec<TerminalTabData> = tabs
-                            .iter()
-                            .enumerate()
-                            .map(|(i, th)| TerminalTabData {
-                                title: slint::format!("Shell {}", i + 1),
-                                is_active: i == active,
-                                is_alive: th.is_alive(),
-                            })
-                            .collect();
-                        ui.set_terminal_tab_count(tabs.len() as i32);
-                        ui.set_terminal_active_tab(active as i32);
-                        ui.set_terminal_tabs(ModelRc::new(VecModel::from(tab_data)));
-                    }
-
-                    super::terminal::start_poll_timer(
-                        &ui,
-                        &terminals,
-                        &terminal_active,
-                        &bridge,
-                        &term_poll_timer,
-                    );
-
-                    // Start split pane poll timer if split handle is available
-                    if let Some(ref sh) = *terminal_split_handle.borrow() {
-                        super::terminal::start_split_poll_timer(
-                            &ui,
-                            sh,
-                            &term_split_poll_timer,
-                        );
-                    }
-                }
-            }
-            // Notes editor — load notes list
-            15 => {
-                if let Some(ui) = ui_weak.upgrade() {
-                    super::notes::load_notes_list(&ui);
-                }
-            }
-            // Email client
-            17 => {
-                tracing::debug!("Navigated to email client");
-                // Backend email sync will be triggered here when integrated
-            }
-            // Weather Dashboard
-            19 => {
-                tracing::debug!("Navigated to weather dashboard");
-            }
-            // Music Player
-            20 => {
-                tracing::debug!("Navigated to music player");
-            }
             // Package Manager — auto-refresh on open
             21 => {
                 tracing::debug!("Navigated to package manager");
                 if let Some(ui) = ui_weak.upgrade() {
                     ui.invoke_pkg_refresh();
                 }
-            }
-            // System Monitor
-            23 => {
-                tracing::debug!("Navigated to system monitor");
-            }
-            // Download Manager
-            24 => {
-                tracing::debug!("Navigated to download manager");
-            }
-            // Code Snippet Manager
-            25 => {
-                tracing::debug!("Navigated to snippet manager");
-                if let Some(ui) = ui_weak.upgrade() {
-                    super::snippet_manager::load_snippets(&ui);
-                }
-            }
-            // Container Manager
-            26 => {
-                tracing::debug!("Navigated to container manager");
             }
             // Device Dashboard
             27 => {
@@ -307,21 +212,6 @@ pub fn wire(ui: &App, ctx: &AppContext) {
             // Permission Dashboard
             28 => {
                 tracing::debug!("Navigated to permission dashboard");
-            }
-            // Spreadsheet
-            29 => {
-                tracing::debug!("Navigated to spreadsheet");
-                if let Some(ui) = ui_weak.upgrade() {
-                    super::spreadsheet::load_spreadsheet(&ui);
-                }
-            }
-            // Document Editor
-            30 => {
-                tracing::debug!("Navigated to document editor");
-            }
-            // Presentation
-            31 => {
-                tracing::debug!("Navigated to presentation");
             }
             _ => {}
         }

@@ -55,6 +55,8 @@ mod lock;
 mod markdown;
 mod notifications;
 mod onboarding;
+mod icons;
+mod render_backend;
 mod streaming;
 mod system_context;
 mod telegram;
@@ -94,8 +96,24 @@ fn main() {
         }
     }
 
+    // Pick the renderer before Slint reads SLINT_BACKEND — it only looks once, at App::new().
+    // Getting this wrong is not a small penalty: femtovg on a machine with no GPU falls through
+    // to llvmpipe and burns ~6 cores, against ~1 for the software rasteriser. See render_backend.
+    let renderer = render_backend::select();
+
     // Create Slint UI
     let ui = App::new().unwrap();
+
+    // Ambient decoration is drawn at the renderer's budget: 60fps on a GPU where frames are
+    // nearly free, ~10fps on the software rasteriser where each one is main-thread time. The
+    // .slint files scale their phase increments by this, so the motion keeps its speed and only
+    // loses smoothness. Measured: drawing this at 60fps on the CPU saturated a core by itself.
+    ui.set_ambient_interval_ms(renderer.ambient_interval_ms());
+    tracing::info!(
+        renderer = ?renderer,
+        ambient_interval_ms = renderer.ambient_interval_ms(),
+        "Ambient animation budget set"
+    );
 
     // Initialize all shared state
     let ctx = app_context::AppContext::init(config, &ui, config_path);
@@ -105,6 +123,8 @@ fn main() {
 
     // Start background services
     let service_manager = start_services();
+    // The machine rail lists these; it needs the manager, which only exists from here.
+    wire::services::wire(&ui, service_manager.clone());
 
     // Debug: navigate to specific screen on startup via env var
     if let Ok(screen_str) = std::env::var("YANTRIK_START_SCREEN") {

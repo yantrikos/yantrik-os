@@ -28,27 +28,12 @@ pub struct DesktopEntry {
 /// Built-in Yantrik apps that appear in the app grid alongside system apps.
 pub fn builtin_apps() -> Vec<DesktopEntry> {
     vec![
-        DesktopEntry {
-            name: "Terminal".into(), exec: "__builtin__".into(), icon: String::new(),
-            categories: "System;TerminalEmulator;".into(), comment: "Shell terminal".into(),
-            app_id: "terminal".into(), icon_char: ">_".into(),
-        },
-        DesktopEntry {
+DesktopEntry {
             name: "Files".into(), exec: "__builtin__".into(), icon: String::new(),
             categories: "System;FileManager;".into(), comment: "Browse files".into(),
             app_id: "files".into(), icon_char: "F".into(),
         },
-        DesktopEntry {
-            name: "Email".into(), exec: "__builtin__".into(), icon: String::new(),
-            categories: "Network;Email;".into(), comment: "AI-powered email client".into(),
-            app_id: "email".into(), icon_char: "@".into(),
-        },
-        DesktopEntry {
-            name: "Notes".into(), exec: "__builtin__".into(), icon: String::new(),
-            categories: "Office;TextEditor;".into(), comment: "Quick notes".into(),
-            app_id: "notes".into(), icon_char: "\u{270E}".into(),
-        },
-        DesktopEntry {
+DesktopEntry {
             name: "Editor".into(), exec: "__builtin__".into(), icon: String::new(),
             categories: "Development;TextEditor;".into(), comment: "Text editor with AI assist".into(),
             app_id: "editor".into(), icon_char: "\u{2261}".into(),
@@ -98,42 +83,7 @@ pub fn builtin_apps() -> Vec<DesktopEntry> {
             categories: "System;PackageManager;".into(), comment: "Install and manage packages".into(),
             app_id: "packages".into(), icon_char: "P".into(),
         },
-        DesktopEntry {
-            name: "Network".into(), exec: "__builtin__".into(), icon: String::new(),
-            categories: "System;Network;".into(), comment: "WiFi, Ethernet, Bluetooth, VPN, Firewall".into(),
-            app_id: "network".into(), icon_char: "\u{25CE}".into(),
-        },
-        DesktopEntry {
-            name: "System Monitor".into(), exec: "__builtin__".into(), icon: String::new(),
-            categories: "System;Monitor;".into(), comment: "CPU, memory, disk, network, processes".into(),
-            app_id: "sysmonitor".into(), icon_char: "\u{2699}".into(),
-        },
-        DesktopEntry {
-            name: "Weather".into(), exec: "__builtin__".into(), icon: String::new(),
-            categories: "Utility;".into(), comment: "Weather forecast dashboard".into(),
-            app_id: "weather".into(), icon_char: "\u{2602}".into(),
-        },
-        DesktopEntry {
-            name: "Music".into(), exec: "__builtin__".into(), icon: String::new(),
-            categories: "AudioVideo;Music;Player;".into(), comment: "Music library and player".into(),
-            app_id: "music".into(), icon_char: "\u{266B}".into(),
-        },
-        DesktopEntry {
-            name: "Downloads".into(), exec: "__builtin__".into(), icon: String::new(),
-            categories: "Network;FileTransfer;".into(), comment: "Download manager".into(),
-            app_id: "downloads".into(), icon_char: "\u{2B07}".into(),
-        },
-        DesktopEntry {
-            name: "Snippets".into(), exec: "__builtin__".into(), icon: String::new(),
-            categories: "Development;Utility;".into(), comment: "Code snippet manager".into(),
-            app_id: "snippets".into(), icon_char: "<>".into(),
-        },
-        DesktopEntry {
-            name: "Containers".into(), exec: "__builtin__".into(), icon: String::new(),
-            categories: "Development;System;".into(), comment: "Docker/Podman container manager".into(),
-            app_id: "containers".into(), icon_char: "\u{2338}".into(),
-        },
-        DesktopEntry {
+DesktopEntry {
             name: "Devices".into(), exec: "__builtin__".into(), icon: String::new(),
             categories: "System;HardwareSettings;".into(), comment: "Hardware device dashboard".into(),
             app_id: "devices".into(), icon_char: "\u{2699}".into(),
@@ -143,27 +93,7 @@ pub fn builtin_apps() -> Vec<DesktopEntry> {
             categories: "System;Security;".into(), comment: "File & system permissions".into(),
             app_id: "permissions".into(), icon_char: "\u{2318}".into(),
         },
-        DesktopEntry {
-            name: "yDoc".into(), exec: "__builtin__".into(), icon: String::new(),
-            categories: "Office;WordProcessor;".into(), comment: "Document editor with markdown support".into(),
-            app_id: "documents".into(), icon_char: "YD".into(),
-        },
-        DesktopEntry {
-            name: "yPresent".into(), exec: "__builtin__".into(), icon: String::new(),
-            categories: "Office;Presentation;".into(), comment: "Presentation slide editor".into(),
-            app_id: "presentation".into(), icon_char: "YP".into(),
-        },
-        DesktopEntry {
-            name: "ySheets".into(), exec: "__builtin__".into(), icon: String::new(),
-            categories: "Office;Spreadsheet;".into(), comment: "Spreadsheet with formulas".into(),
-            app_id: "spreadsheet".into(), icon_char: "YS".into(),
-        },
-        DesktopEntry {
-            name: "Calendar".into(), exec: "__builtin__".into(), icon: String::new(),
-            categories: "Office;Calendar;".into(), comment: "Calendar with Google sync".into(),
-            app_id: "calendar".into(), icon_char: "\u{1F4C5}".into(),
-        },
-        DesktopEntry {
+DesktopEntry {
             name: "Skills".into(), exec: "__builtin__".into(), icon: String::new(),
             categories: "System;".into(), comment: "Install companion skills".into(),
             app_id: "skills".into(), icon_char: "\u{2605}".into(),

@@ -1,15 +1,20 @@
 // Yantrik Notes — standalone app window.
 // Wraps the shared NotesEditor component in its own Window.
 
-import { Theme } from "theme.slint";
+import { Theme, ThemeMode, AccentPreset } from "theme.slint";
 import { NotesEditor, NoteEntry, NoteVersionEntry, NoteBacklink } from "notes_editor.slint";
 
-export { NoteEntry, NoteVersionEntry, NoteBacklink }
+export { NoteEntry, NoteVersionEntry, NoteBacklink, ThemeMode, AccentPreset }
 
 export component NotesApp inherits Window {
-    title: "Yantrik Notes";
-    width: 1100px;
-    height: 720px;
+    default-font-family: Theme.font-ui;
+    title: "Notes";
+    // preferred-, not fixed: a fixed size makes the window unresizable, and the content
+    // stays this size even when the compositor maximises or fullscreens the window.
+    preferred-width: 1100px;
+    preferred-height: 720px;
+    min-width: 640px;
+    min-height: 400px;
     background: Theme.bg-deep;
 
     // ── Note list ──
@@ -84,7 +89,10 @@ export component NotesApp inherits Window {
     callback import-md <=> editor.import-md;
 
     editor := NotesEditor {
-        width: 100%;
-        height: 100%;
+        // Fills the window (no explicit size: Slint forbids width/height next to max-*).
+        // The screen's own layouts may report a bounded maximum (a stretch layout of fixed rows);
+        // the window must still open at its preferred size and grow with the user.
+        max-width: 100000px;
+        max-height: 100000px;
     }
 }

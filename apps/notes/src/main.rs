@@ -16,7 +16,16 @@ slint::include_modules!();
 fn main() {
     init_tracing("yantrik-notes");
 
+    // One window per app: a second launch defers to the running one (the shell focuses it).
+    let Some(_instance) = instance::claim("notes") else { return };
+
     let app = NotesApp::new().unwrap();
+
+    // Same dark/accent choice as the shell, read from the shell's settings file.
+    let theme = theme::load();
+    app.global::<ThemeMode>().set_dark(theme.dark);
+    app.global::<AccentPreset>().set_index(theme.accent_index);
+
     wire(&app);
     app.run().unwrap();
 }
@@ -164,19 +173,31 @@ fn scan_notes_fs() -> Vec<NoteEntry> {
             let path = de.path();
             if path.extension().map(|e| e == "md").unwrap_or(false) {
                 let fname = path.file_name().unwrap_or_default().to_string_lossy().to_string();
-                let title = fname.trim_end_matches(".md").to_string();
                 let content = std::fs::read_to_string(&path).unwrap_or_default();
-                let preview: String = content.chars().take(120).collect();
-                let modified = std::fs::metadata(&path)
+                // The first heading names the note; the filename is only the fallback.
+                let title = content
+                    .lines()
+                    .find_map(|l| l.strip_prefix("# ").map(|t| t.trim().to_string()))
+                    .filter(|t| !t.is_empty())
+                    .unwrap_or_else(|| fname.trim_end_matches(".md").to_string());
+                let preview: String = content
+                    .lines()
+                    .find(|l| !l.trim().is_empty() && !l.starts_with('#'))
+                    .unwrap_or_default()
+                    .chars()
+                    .take(120)
+                    .collect();
+                let (modified_secs, modified) = std::fs::metadata(&path)
                     .and_then(|m| m.modified())
                     .map(|t| {
                         let secs = t.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
-                        format!("{}", secs)
+                        let local: chrono::DateTime<chrono::Local> = t.into();
+                        (secs, local.format("%b %-d, %H:%M").to_string())
                     })
                     .unwrap_or_default();
                 let meta = read_meta(&path);
                 let wc = content.split_whitespace().count();
-                entries.push(NoteEntry {
+                entries.push((modified_secs, NoteEntry {
                     title: title.into(),
                     filename: fname.into(),
                     created: modified.clone().into(),
@@ -185,16 +206,13 @@ fn scan_notes_fs() -> Vec<NoteEntry> {
                     is_pinned: meta.pinned,
                     tags: meta.tags.into(),
                     word_count: wc as i32,
-                });
+                }));
             }
         }
     }
-    // Sort: pinned first, then by modified desc
-    entries.sort_by(|a, b| {
-        b.is_pinned.cmp(&a.is_pinned)
-            .then_with(|| b.modified.cmp(&a.modified))
-    });
-    entries
+    // Sort: pinned first, then newest first
+    entries.sort_by(|(sa, a), (sb, b)| b.is_pinned.cmp(&a.is_pinned).then_with(|| sb.cmp(sa)));
+    entries.into_iter().map(|(_, e)| e).collect()
 }
 
 fn template_content(template: &str) -> &'static str {

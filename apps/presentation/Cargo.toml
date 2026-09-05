@@ -20,4 +20,4 @@ serde_json = { workspace = true }
 tracing = { workspace = true }
 
 [build-dependencies]
-slint-build = "1.9"
+slint-build = "1.17"

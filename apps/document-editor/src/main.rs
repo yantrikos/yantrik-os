@@ -10,7 +10,16 @@ slint::include_modules!();
 fn main() {
     init_tracing("yantrik-document-editor");
 
+    // One window per app: a second launch defers to the running one (the shell focuses it).
+    let Some(_instance) = instance::claim("document-editor") else { return };
+
     let app = DocumentEditorApp::new().unwrap();
+
+    // Same dark/accent choice as the shell, read from the shell's settings file.
+    let theme = theme::load();
+    app.global::<ThemeMode>().set_dark(theme.dark);
+    app.global::<AccentPreset>().set_index(theme.accent_index);
+
     wire(&app);
     app.run().unwrap();
 }

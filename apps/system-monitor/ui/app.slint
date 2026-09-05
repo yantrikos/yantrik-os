@@ -1,15 +1,20 @@
 // Yantrik System Monitor — standalone app window.
 // Wraps the shared SystemMonitor component in its own Window.
 
-import { Theme } from "theme.slint";
+import { Theme, ThemeMode, AccentPreset } from "theme.slint";
 import { SystemMonitor, CpuCoreData, DiskData, NetworkInterfaceData, MonitorProcessData } from "system_monitor.slint";
 
-export { CpuCoreData, DiskData, NetworkInterfaceData, MonitorProcessData }
+export { CpuCoreData, DiskData, NetworkInterfaceData, MonitorProcessData, ThemeMode, AccentPreset }
 
 export component SystemMonitorApp inherits Window {
-    title: "Yantrik System Monitor";
-    width: 1200px;
-    height: 800px;
+    default-font-family: Theme.font-ui;
+    title: "System Monitor";
+    // preferred-, not fixed: a fixed size makes the window unresizable, and the content
+    // stays this size even when the compositor maximises or fullscreens the window.
+    preferred-width: 1200px;
+    preferred-height: 800px;
+    min-width: 640px;
+    min-height: 400px;
     background: Theme.bg-deep;
 
     // CPU
@@ -77,7 +82,10 @@ export component SystemMonitorApp inherits Window {
     callback back-pressed <=> inner.back-pressed;
 
     inner := SystemMonitor {
-        width: 100%;
-        height: 100%;
+        // Fills the window (no explicit size: Slint forbids width/height next to max-*).
+        // The screen's own layouts may report a bounded maximum (a stretch layout of fixed rows);
+        // the window must still open at its preferred size and grow with the user.
+        max-width: 100000px;
+        max-height: 100000px;
     }
 }

@@ -20,14 +20,12 @@ pub fn wire(ui: &App, ctx: &AppContext) {
                 if entry.exec == "__builtin__" {
                     break; // Fall through to built-in screen routing below
                 }
+                // A pin or the Lens can name an app ("notes") that ALSO has a .desktop entry
+                // (Name=Notes); this branch matches first, so it must launch exactly like the
+                // arms below do — same resolution, same environment scrubbing.
                 let parts: Vec<&str> = entry.exec.split_whitespace().collect();
                 if let Some((bin, args)) = parts.split_first() {
-                    match std::process::Command::new(bin).args(args).spawn() {
-                        Ok(_) => tracing::info!(name = %entry.name, "App started"),
-                        Err(e) => {
-                            tracing::error!(name = %entry.name, error = %e, "Failed to launch")
-                        }
-                    }
+                    spawn_app_with_args(bin, args);
                 }
                 return;
             }
@@ -36,10 +34,7 @@ pub fn wire(ui: &App, ctx: &AppContext) {
         // Fallback: hardcoded commands
         let cmd = match app.as_str() {
             "terminal" => {
-                if let Some(ui) = ui_weak.upgrade() {
-                    ui.set_current_screen(14);
-                    ui.invoke_navigate(14);
-                }
+                spawn_app("yantrik-terminal");
                 return;
             }
             "browser" => {
@@ -80,10 +75,7 @@ pub fn wire(ui: &App, ctx: &AppContext) {
                 return;
             }
             "notes" => {
-                if let Some(ui) = ui_weak.upgrade() {
-                    ui.set_current_screen(15);
-                    ui.invoke_navigate(15);
-                }
+                spawn_app("yantrik-notes");
                 return;
             }
             "editor" => {
@@ -140,17 +132,11 @@ pub fn wire(ui: &App, ctx: &AppContext) {
                 return;
             }
             "email" => {
-                if let Some(ui) = ui_weak.upgrade() {
-                    ui.set_current_screen(17);
-                    ui.invoke_navigate(17);
-                }
+                spawn_app("yantrik-email");
                 return;
             }
             "calendar" => {
-                if let Some(ui) = ui_weak.upgrade() {
-                    ui.set_current_screen(18);
-                    ui.invoke_navigate(18);
-                }
+                spawn_app("yantrik-calendar");
                 return;
             }
             "packages" => {
@@ -161,52 +147,31 @@ pub fn wire(ui: &App, ctx: &AppContext) {
                 return;
             }
             "network" => {
-                if let Some(ui) = ui_weak.upgrade() {
-                    ui.set_current_screen(22);
-                    ui.invoke_navigate(22);
-                }
+                spawn_app("yantrik-network-manager");
                 return;
             }
             "sysmonitor" | "system_monitor" => {
-                if let Some(ui) = ui_weak.upgrade() {
-                    ui.set_current_screen(23);
-                    ui.invoke_navigate(23);
-                }
+                spawn_app("yantrik-system-monitor");
                 return;
             }
             "weather" => {
-                if let Some(ui) = ui_weak.upgrade() {
-                    ui.set_current_screen(19);
-                    ui.invoke_navigate(19);
-                }
+                spawn_app("yantrik-weather");
                 return;
             }
             "music" | "music_player" => {
-                if let Some(ui) = ui_weak.upgrade() {
-                    ui.set_current_screen(20);
-                    ui.invoke_navigate(20);
-                }
+                spawn_app("yantrik-music-player");
                 return;
             }
             "downloads" | "download_manager" => {
-                if let Some(ui) = ui_weak.upgrade() {
-                    ui.set_current_screen(24);
-                    ui.invoke_navigate(24);
-                }
+                spawn_app("yantrik-download-manager");
                 return;
             }
             "snippets" | "snippet_manager" => {
-                if let Some(ui) = ui_weak.upgrade() {
-                    ui.set_current_screen(25);
-                    ui.invoke_navigate(25);
-                }
+                spawn_app("yantrik-snippet-manager");
                 return;
             }
             "containers" | "container_manager" => {
-                if let Some(ui) = ui_weak.upgrade() {
-                    ui.set_current_screen(26);
-                    ui.invoke_navigate(26);
-                }
+                spawn_app("yantrik-container-manager");
                 return;
             }
             "devices" | "device_dashboard" => {
@@ -224,24 +189,15 @@ pub fn wire(ui: &App, ctx: &AppContext) {
                 return;
             }
             "spreadsheet" => {
-                if let Some(ui) = ui_weak.upgrade() {
-                    ui.set_current_screen(29);
-                    ui.invoke_navigate(29);
-                }
+                spawn_app("yantrik-spreadsheet");
                 return;
             }
             "documents" | "document_editor" => {
-                if let Some(ui) = ui_weak.upgrade() {
-                    ui.set_current_screen(30);
-                    ui.invoke_navigate(30);
-                }
+                spawn_app("yantrik-document-editor");
                 return;
             }
             "presentation" | "slides" => {
-                if let Some(ui) = ui_weak.upgrade() {
-                    ui.set_current_screen(31);
-                    ui.invoke_navigate(31);
-                }
+                spawn_app("yantrik-presentation");
                 return;
             }
             "launchpad" => {
@@ -258,4 +214,62 @@ pub fn wire(ui: &App, ctx: &AppContext) {
             }
         };
     });
+}
+
+/// Where an app binary lives when `bin` is a bare name.
+///
+/// The shell is started from `/opt/yantrik/bin` (or a cargo target dir in development), and the
+/// apps are deployed beside it — but nothing puts that directory on PATH, so a bare
+/// `Command::new("yantrik-notes")` fails with ENOENT on a clean install and the launcher logs
+/// "Failed to launch" for every app. Prefer the shell's own directory, then the deploy path, and
+/// only then whatever PATH says.
+pub fn resolve_app_binary(bin: &str) -> std::path::PathBuf {
+    use std::path::{Path, PathBuf};
+    if bin.contains('/') {
+        return PathBuf::from(bin);
+    }
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            candidates.push(dir.join(bin));
+        }
+    }
+    candidates.push(Path::new("/opt/yantrik/bin").join(bin));
+    candidates
+        .into_iter()
+        .find(|p| p.is_file())
+        .unwrap_or_else(|| PathBuf::from(bin))
+}
+
+/// Launch a standalone app binary. The app's own single-instance guard handles repeats.
+pub fn spawn_app(bin: &str) {
+    spawn_app_with_args(bin, &[]);
+}
+
+/// The one place the shell starts an app process, whatever path asked for it.
+pub fn spawn_app_with_args(bin: &str, args: &[&str]) {
+    let path = resolve_app_binary(bin);
+    match std::process::Command::new(&path)
+        .args(args)
+        // The shell is often started with SLINT_FULLSCREEN=1 (dev runs, kiosk sessions). A child
+        // inherits the environment, and an app that inherits that variable opens fullscreen too.
+        // The renderer choice (SLINT_BACKEND, GALLIUM_DRIVER) is deliberately left inherited so
+        // apps draw with the same backend the shell settled on.
+        .env_remove("SLINT_FULLSCREEN")
+        .stdin(std::process::Stdio::null())
+        .spawn()
+    {
+        Ok(mut child) => {
+            tracing::info!(app = bin, path = %path.display(), "App launched");
+            // Reap it when it exits. Without a wait, every app the shell ever launched lingers
+            // as a zombie until the shell itself quits — and a zombie still has a /proc entry,
+            // which is enough to confuse anything that checks "is that pid alive".
+            let name = bin.to_string();
+            std::thread::spawn(move || match child.wait() {
+                Ok(status) => tracing::info!(app = %name, %status, "App exited"),
+                Err(e) => tracing::warn!(app = %name, error = %e, "Could not wait for app"),
+            });
+        }
+        Err(e) => tracing::error!(app = bin, path = %path.display(), error = %e, "Failed to launch app"),
+    }
 }
