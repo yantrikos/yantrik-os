@@ -405,7 +405,7 @@ export component MusicPlayerScreen inherits Rectangle {
 
         // ══════════════ AI response ══════════════
         if root.ai-panel-open && root.ai-response != "" : Rectangle {
-            max-height: 160px;
+            height: min(160px, ai-col.preferred-height + 16px);
             background: Theme.bg-overlay-panel;
             border-width: 1px;
             border-color: Theme.accent.transparentize(70%);

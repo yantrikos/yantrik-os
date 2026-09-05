@@ -1110,7 +1110,7 @@ export component DeviceDashboardScreen inherits Rectangle {
 
         // ── AI Response Panel ──
         if root.ai-panel-open && root.ai-response != "" : Rectangle {
-            max-height: 160px;
+            height: min(160px, ai-dev-resp.preferred-height + Theme.sp-4);
             background: Theme.bg-elevated;
             border-width: 1px;
             border-color: Theme.accent.transparentize(70%);

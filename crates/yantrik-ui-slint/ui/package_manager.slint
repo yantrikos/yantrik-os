@@ -326,7 +326,7 @@ export component PackageManager inherits Rectangle {
 
         // ── AI Response Panel ──
         if root.ai-panel-open && root.ai-response != "" : Rectangle {
-            max-height: 180px;
+            height: min(180px, ai-pkg-resp.preferred-height + 16px);
             background: Theme.bg-elevated;
             border-width: 1px;
             border-color: Theme.accent.transparentize(70%);

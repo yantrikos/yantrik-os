@@ -251,7 +251,7 @@ export component CalendarScreen inherits Rectangle {
 
                 // AI Response Panel
                 if root.ai-panel-open && root.ai-response != "" : Rectangle {
-                    max-height: 140px;
+                    height: min(140px, ai-cal-resp.preferred-height + Theme.sp-4);
                     border-radius: Theme.r-lg;
                     background: Theme.bg-overlay-panel;
                     border-width: 1px;

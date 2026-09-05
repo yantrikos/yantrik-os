@@ -422,7 +422,7 @@ export component NotesEditor inherits Rectangle {
 
         // ── AI Response Panel ──
         if root.ai-panel-open && root.ai-response != "" : Rectangle {
-            max-height: 200px;
+            height: min(200px, ai-notes-resp.preferred-height + 16px);
             background: Theme.bg-overlay-panel;
             border-width: 1px;
             border-color: Theme.accent.transparentize(70%);

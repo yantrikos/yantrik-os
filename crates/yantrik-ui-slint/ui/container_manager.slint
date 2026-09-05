@@ -1000,7 +1000,7 @@ export component ContainerManagerScreen inherits Rectangle {
 
                 // AI Response Panel (inside logs overlay)
                 if root.ai-panel-open && root.ai-response != "" : Rectangle {
-                    max-height: 160px;
+                    height: min(160px, ai-ct-resp.preferred-height + 16px);
                     background: Theme.bg-elevated;
                     border-width: 1px;
                     border-color: Theme.accent.transparentize(70%);

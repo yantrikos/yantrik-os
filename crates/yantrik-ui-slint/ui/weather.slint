@@ -335,7 +335,7 @@ export component WeatherDashboard inherits Rectangle {
 
         // ── Location Selector Panel ──
         if root.weather-location-panel-open : Rectangle {
-            max-height: 240px;
+            height: min(240px, loc-panel-col.preferred-height);
             background: Theme.bg-surface;
             border-width: 1px;
             border-color: Theme.border-subtle;
@@ -553,7 +553,7 @@ export component WeatherDashboard inherits Rectangle {
 
         // ── AI Response Panel ──
         if root.ai-panel-open && root.ai-response != "" : Rectangle {
-            max-height: 160px;
+            height: min(160px, ai-wx-resp.preferred-height + 16px);
             background: Theme.bg-overlay-panel;
             border-width: 1px;
             border-color: Theme.accent.transparentize(70%);

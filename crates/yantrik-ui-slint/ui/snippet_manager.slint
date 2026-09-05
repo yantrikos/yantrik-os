@@ -1104,7 +1104,7 @@ export component SnippetManagerScreen inherits Rectangle {
     // ── AI Response Panel ──
     Rectangle {
         visible: root.ai-panel-open && root.ai-response != "";
-        max-height: 180px;
+        height: min(180px, ai-snip-resp.preferred-height + 16px);
         width: 100%;
         background: Theme.bg-surface;
         border-width: 1px;

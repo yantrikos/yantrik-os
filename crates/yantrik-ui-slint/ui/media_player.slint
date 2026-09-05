@@ -436,7 +436,7 @@ export component MediaPlayer inherits Rectangle {
 
             // ── Subtitle track dropdown ──
             if root.player-show-subtitle-menu : Rectangle {
-                max-height: 160px;
+                height: min(160px, sub-col.preferred-height + 8px);
                 border-radius: 8px;
                 background: Theme.bg-card;
                 border-width: 1px;
@@ -650,7 +650,7 @@ export component MediaPlayer inherits Rectangle {
 
             // ── AI panel ──
             if root.ai-panel-open && root.ai-response != "" : Rectangle {
-                max-height: 120px;
+                height: min(120px, ai-mp-resp.preferred-height + 12px);
                 border-radius: 8px;
                 background: Theme.bg-card;
                 border-width: 1px;
