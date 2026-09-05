@@ -3573,6 +3573,12 @@ impl CompanionService {
                 superseded_by: None,
                 disputed_with: Vec::new(),
                 aged_last_verified: None,
+                // 0.17/0.18. These rows are read straight out of `memories` by
+                // SQL, so nothing narrowed them: they never went through the
+                // vector index (no matched window to trim to) and they are host
+                // rows rather than rows served from a mounted pack.
+                best_span: None,
+                pack: None,
             })
         })
         .ok()
