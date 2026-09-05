@@ -1,0 +1,98 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600&family=Barlow+Semi+Condensed:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
+  <style>
+    body { margin: 0; font-family: Barlow, "Helvetica Neue", Arial, sans-serif; }
+    a { color: #4ecdc4; text-decoration: none; }
+    a:hover { color: #7ee0d8; }
+    .mono { font-family: "JetBrains Mono", ui-monospace, Menlo, monospace; }
+    .cond { font-family: "Barlow Semi Condensed", Barlow, sans-serif; }
+    .lbl { font-size: 11px; font-weight: 500; letter-spacing: .09em; text-transform: uppercase; color: #4a5060; }
+    .row { display: flex; align-items: center; }
+  </style>
+</helmet>
+
+<div style="width: 900px; height: 620px; background: #0c0c14; padding: 40px; box-sizing: border-box; display: flex; align-items: flex-start; justify-content: center;">
+
+  <div style="width: 720px; background: #1e1e2e; border: 1px solid #ffffff14; border-radius: 16px; overflow: hidden;">
+
+    <!-- query -->
+    <div class="row" style="gap: 12px; padding: 0 18px; height: 54px; border-bottom: 1px solid #ffffff08;">
+      <svg width="17" height="17" viewBox="0 0 20 20" fill="none" stroke="{{accent}}" stroke-width="1.7" stroke-linecap="round"><circle cx="9" cy="9" r="6"/><path d="M13.5 13.5L17 17"/></svg>
+      <span style="font-size: 16px; color: #e8eaef; flex-grow: 1;">why is the desktop slow<span style="color: {{accent}};">|</span></span>
+      <span class="mono" style="font-size: 11px; color: #4a5060; padding: 3px 7px; border-radius: 4px; background: #ffffff08;">esc</span>
+    </div>
+
+    <!-- answer: the companion, not a search box -->
+    <div style="padding: 15px 18px; border-bottom: 1px solid #ffffff08; background: #4ecdc410;">
+      <div class="row" style="gap: 8px; margin-bottom: 7px;">
+        <div style="width: 5px; height: 5px; border-radius: 999px; background: {{accent}};"></div>
+        <span class="cond" style="font-size: 12px; font-weight: 500; letter-spacing: .05em; text-transform: uppercase; color: {{accent}};">answer</span>
+        <span class="mono" style="font-size: 11px; color: #4a5060;">from memory &middot; no model call</span>
+      </div>
+      <div style="font-size: 14px; color: #e8eaef; line-height: 1.55;">One full-screen software repaint costs about 96&nbsp;ms, and the particle field &mdash; 18 blurs, 37 drop-shadows, full width &mdash; was repainting continuously because its <span class="mono" style="font-size: 13px; color: #b084e0;">animate</span> blocks outlast the 3&nbsp;s poll that re-sets them.</div>
+      <div class="row" style="gap: 14px; margin-top: 9px;">
+        <span class="mono" style="font-size: 11px; color: #4a5060;">measured 19:12</span>
+        <span class="mono" style="font-size: 11px; color: #4a5060;">3 sources</span>
+      </div>
+    </div>
+
+    <!-- actions -->
+    <div style="padding: 10px 12px 6px;"><div class="lbl" style="padding-left: 6px;">Act</div></div>
+    <div style="display: flex; flex-direction: column; padding: 0 12px;">
+      <sc-for list="{{actions}}" as="a" hint-placeholder-count="3">
+        <div class="row" style="gap: 11px; padding: 8px 10px; border-radius: 7px; background: {{a.bg}};">
+          <div style="width: 22px; height: 22px; border-radius: 5px; background: #ffffff0a; display: flex; align-items: center; justify-content: center; flex-shrink: 0;">
+            <span class="mono" style="font-size: 11px; color: {{a.tone}};">{{a.sigil}}</span>
+          </div>
+          <div style="flex-grow: 1; min-width: 0;">
+            <div style="font-size: 13.5px; color: #e8eaef;">{{a.title}}</div>
+            <div class="mono" style="font-size: 11px; color: #4a5060; margin-top: 1px;">{{a.sub}}</div>
+          </div>
+          <sc-if value="{{a.gated}}" hint-placeholder-val="{{ true }}">
+            <span class="mono" style="font-size: 10px; letter-spacing: .05em; color: #ffb74d; padding: 2px 6px; border-radius: 3px; background: #ffb74d20; border: 1px solid #ffb74d40;">CONFIRM</span>
+          </sc-if>
+          <span class="mono" style="font-size: 11px; color: #4a5060;">{{a.key}}</span>
+        </div>
+      </sc-for>
+    </div>
+
+    <!-- footer: honest about where the answer came from -->
+    <div class="row" style="gap: 14px; padding: 9px 18px; margin-top: 8px; border-top: 1px solid #ffffff08; background: #161622;">
+      <span class="mono" style="font-size: 11px; color: #4a5060;">&#8629; run</span>
+      <span class="mono" style="font-size: 11px; color: #4a5060;">&#8593;&#8595; select</span>
+      <span class="mono" style="font-size: 11px; color: #4a5060;">tab expand</span>
+      <div style="flex-grow: 1;"></div>
+      <span class="mono" style="font-size: 11px; color: #4a5060;">1,847 memories</span>
+      <span class="mono" style="font-size: 11px; color: {{accent}};">local</span>
+    </div>
+  </div>
+</div>
+</x-dc>
+
+<script data-dc-script data-props='{
+  "accent": {"editor": "color", "default": "#4ecdc4", "options": ["#4ecdc4", "#d4a574", "#b484e0", "#6cd480", "#e87898"], "section": "Theme"}
+}'>
+class Component extends DCLogic {
+  renderVals() {
+    const accent = this.props.accent ?? '#4ecdc4';
+    return {
+      accent,
+      actions: [
+        { sigil: '>_', title: 'Open desktop.slint at the particle field', sub: 'crates/yantrik-ui-slint/ui/desktop.slint:445', key: '↵', bg: '#ffffff10', tone: accent, gated: false },
+        { sigil: '::', title: 'Re-run the CPU measurement',              sub: '20s window, per-thread',                       key: '2',      bg: 'transparent', tone: '#8890a0', gated: false },
+        { sigil: '!',  title: 'Restart the shell with ambient off',      sub: 'kills the running session',                    key: '3',      bg: 'transparent', tone: '#ffb74d', gated: true },
+      ],
+    };
+  }
+}
+</script>
+</body>
+</html>

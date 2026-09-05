@@ -1,0 +1,54 @@
+{
+  "artboards": [
+    {
+      "file": "Main.dc.html",
+      "x": 0,
+      "y": 0,
+      "w": 1600,
+      "h": 900,
+      "title": "Desktop"
+    },
+    {
+      "file": "Lens.dc.html",
+      "x": 1720,
+      "y": 0,
+      "w": 900,
+      "h": 620,
+      "title": "Intent Lens"
+    },
+    {
+      "file": "Launcher.dc.html",
+      "x": 1720,
+      "y": 740,
+      "w": 1080,
+      "h": 760,
+      "title": "App Launcher"
+    }
+  ],
+  "annotations": [
+    {
+      "id": "brief",
+      "x": 0,
+      "y": -150,
+      "w": 520,
+      "text": "Dense workstation direction.\n\nBuilt on the real Calm Graphite tokens from crates/yantrik-design-tokens — same surfaces, text hierarchy, accent presets and 8px grid. Type is Barlow / Barlow Semi Condensed / JetBrains Mono; the app currently sets no font family at all, so that part is a proposal.\n\nEvery number shown is real: measured today or read out of the repo."
+    },
+    {
+      "id": "note-panel",
+      "x": 1720,
+      "y": 1560,
+      "w": 460,
+      "text": "What changed from the concept desktop:\n\n• single-letter dock icons → drawn SVG icons with labels\n• empty centre → what the companion noticed, in the panel and the feed\n• orb as centrepiece → companion state as a panel lane and a dock entry\n• near-empty bar → workspaces, window, load, net, model, clock\n• greeting → the working set: project, recent files, open threads"
+    },
+    {
+      "id": "note-scale",
+      "x": 0,
+      "y": 1020,
+      "w": 560,
+      "text": "Why the bar no longer fills up:\n\nThe taskbar now grows with WINDOWS OPEN, not with apps installed — launcher button, then open windows with titles, then a few icon-only pins. All 49 scanned .desktop entries live behind the Apps button.\n\nBlocker worth knowing: AppGridItem carries only `icon-char` — a single character. Real icons need that struct and DesktopEntry extended to hold an icon name, plus an icon theme to resolve it against."
+    }
+  ],
+  "launch": {
+    "view": "canvas"
+  }
+}

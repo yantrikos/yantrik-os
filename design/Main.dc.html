@@ -1,0 +1,329 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600&family=Barlow+Semi+Condensed:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
+  <style>
+    body { margin: 0; font-family: Barlow, "Helvetica Neue", Arial, sans-serif; }
+    a { color: #4ecdc4; text-decoration: none; }
+    a:hover { color: #7ee0d8; }
+    .mono { font-family: "JetBrains Mono", ui-monospace, Menlo, monospace; }
+    .cond { font-family: "Barlow Semi Condensed", Barlow, sans-serif; }
+    .lbl { font-size: 11px; font-weight: 500; letter-spacing: .09em; text-transform: uppercase; color: #4a5060; }
+    .row { display: flex; align-items: center; }
+  </style>
+</helmet>
+
+<div style="width: 1600px; height: 900px; background: #0c0c14; color: #e8eaef; display: flex; flex-direction: column; overflow: hidden;">
+
+  <!-- ══ PANEL ══ 30px, the whole machine at a glance -->
+  <div class="row" style="height: 30px; flex-shrink: 0; background: #161622; border-bottom: 1px solid #ffffff0a; padding: 0 10px; gap: 14px; font-size: 12px;">
+
+    <div class="row" style="gap: 3px;">
+      <div class="mono" style="width: 18px; height: 18px; display: flex; align-items: center; justify-content: center; border-radius: 4px; background: {{accent}}; color: #0c0c14; font-size: 11px; font-weight: 500;">1</div>
+      <div class="mono" style="width: 18px; height: 18px; display: flex; align-items: center; justify-content: center; border-radius: 4px; color: #8890a0; font-size: 11px;">2</div>
+      <div class="mono" style="width: 18px; height: 18px; display: flex; align-items: center; justify-content: center; border-radius: 4px; color: #8890a0; font-size: 11px; background: #ffffff08;">3</div>
+      <div class="mono" style="width: 18px; height: 18px; display: flex; align-items: center; justify-content: center; border-radius: 4px; color: #4a5060; font-size: 11px;">4</div>
+    </div>
+
+    <div style="width: 1px; height: 14px; background: #ffffff0a;"></div>
+
+    <div class="row" style="gap: 7px; min-width: 0;">
+      <svg width="13" height="13" viewBox="0 0 20 20" fill="none" stroke="#8890a0" stroke-width="1.6"><rect x="2" y="3" width="16" height="13" rx="1.5"/><path d="M5 7l2.5 2.5L5 12"/><path d="M10 12h5"/></svg>
+      <span style="color: #e8eaef; font-weight: 500;">yantrik-ui</span>
+      <span class="mono" style="color: #4a5060; font-size: 11px;">cargo build --release</span>
+    </div>
+
+    <div style="flex-grow: 1;"></div>
+
+    <!-- companion lane: the differentiator, in the panel where it belongs -->
+    <div class="row" style="gap: 6px; padding: 0 9px; height: 19px; border-radius: 999px; background: #4ecdc418; border: 1px solid #ffffff0a;">
+      <div style="width: 5px; height: 5px; border-radius: 999px; background: {{accent}};"></div>
+      <span class="cond" style="color: {{accent}}; font-size: 12px; font-weight: 500;">watching build</span>
+      <span class="mono" style="color: #4a5060; font-size: 11px;">14m</span>
+    </div>
+
+    <div style="width: 1px; height: 14px; background: #ffffff0a;"></div>
+
+    <div class="row mono" style="gap: 12px; font-size: 11px; color: #8890a0;">
+      <span>CPU <span style="color: #e8eaef;">34%</span></span>
+      <span>MEM <span style="color: #e8eaef;">6.2</span>/31G</span>
+      <span>SWP <span style="color: #e8eaef;">0</span></span>
+      <span>NET <span style="color: #26a69a;">&#9660;2.1M</span> <span style="color: #4a5060;">&#9650;180K</span></span>
+    </div>
+
+    <div style="width: 1px; height: 14px; background: #ffffff0a;"></div>
+
+    <div class="row" style="gap: 5px;">
+      <svg width="12" height="12" viewBox="0 0 20 20" fill="none" stroke="#26a69a" stroke-width="1.6"><path d="M2 7.5a12 12 0 0116 0"/><path d="M5 11a8 8 0 0110 0"/><circle cx="10" cy="15" r="1.1" fill="#26a69a" stroke="none"/></svg>
+      <span class="cond" style="font-size: 12px; color: #8890a0;">lan</span>
+    </div>
+
+    <div class="row" style="gap: 5px; padding: 0 8px; height: 19px; border-radius: 4px; background: #ffffff06;">
+      <span class="cond" style="font-size: 12px; color: #8890a0;">gemma4:e4b</span>
+      <span class="mono" style="font-size: 10px; color: {{accent}};">LOCAL</span>
+    </div>
+
+    <span class="mono" style="font-size: 12px; color: #e8eaef;">19:14</span>
+    <span class="cond" style="font-size: 12px; color: #4a5060;">Thu 4 Sep</span>
+  </div>
+
+  <!-- ══ BODY ══ three rails -->
+  <div style="flex-grow: 1; display: flex; min-height: 0;">
+
+    <!-- ── LEFT: the working set ── -->
+    <div style="width: 296px; flex-shrink: 0; background: #0c0c14; border-right: 1px solid #ffffff0a; display: flex; flex-direction: column;">
+
+      <div style="padding: 14px 16px 10px;">
+        <div class="lbl">Project</div>
+        <div class="row" style="gap: 8px; margin-top: 6px;">
+          <div style="width: 3px; height: 15px; border-radius: 999px; background: {{accent}};"></div>
+          <span style="font-size: 15px; font-weight: 600;">yantrik-os</span>
+        </div>
+        <div class="mono" style="font-size: 11px; color: #4a5060; margin-top: 3px;">rebase/yantrikdb-0.10 &middot; 9 changed</div>
+      </div>
+
+      <div style="height: 1px; background: #ffffff08;"></div>
+
+      <div style="padding: 12px 16px 6px;"><div class="lbl">Recent</div></div>
+      <div style="display: flex; flex-direction: column; padding: 0 8px;">
+        <sc-for list="{{recents}}" as="f" hint-placeholder-count="5">
+          <div class="row" style="gap: 9px; padding: 5px 8px; border-radius: 6px;">
+            <svg width="13" height="13" viewBox="0 0 20 20" fill="none" stroke="#4a5060" stroke-width="1.6"><path d="M4 2.5h7l5 5v10H4z"/><path d="M11 2.5v5h5"/></svg>
+            <span class="mono" style="font-size: 12px; color: #e8eaef; flex-grow: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{f.name}}</span>
+            <span class="mono" style="font-size: 11px; color: #4a5060;">{{f.ago}}</span>
+          </div>
+        </sc-for>
+      </div>
+
+      <div style="height: 1px; background: #ffffff08; margin: 12px 0 0;"></div>
+
+      <div style="padding: 12px 16px 6px;" class="row">
+        <div class="lbl" style="flex-grow: 1;">Open threads</div>
+        <span class="mono" style="font-size: 11px; color: #4a5060;">3</span>
+      </div>
+      <div style="display: flex; flex-direction: column; gap: 1px; padding: 0 8px;">
+        <sc-for list="{{threads}}" as="t" hint-placeholder-count="3">
+          <div style="padding: 7px 8px; border-radius: 6px; background: #ffffff06;">
+            <div style="font-size: 13px; color: #e8eaef; line-height: 1.3;">{{t.title}}</div>
+            <div class="mono" style="font-size: 11px; color: #4a5060; margin-top: 2px;">{{t.meta}}</div>
+          </div>
+        </sc-for>
+      </div>
+
+      <div style="flex-grow: 1;"></div>
+
+      <div style="padding: 12px 16px; border-top: 1px solid #ffffff08;">
+        <div class="row" style="gap: 10px;">
+          <div style="flex-grow: 1;">
+            <div class="lbl">Memories</div>
+            <div class="mono" style="font-size: 17px; color: #e8eaef; margin-top: 1px;">1,847</div>
+          </div>
+          <div style="flex-grow: 1;">
+            <div class="lbl">Today</div>
+            <div class="mono" style="font-size: 17px; color: {{accent}}; margin-top: 1px;">+12</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── CENTRE: ask, and what it has been doing ── -->
+    <div style="flex-grow: 1; min-width: 0; display: flex; flex-direction: column; background: #0c0c14;">
+
+      <div style="padding: 14px 20px 12px;">
+        <div class="row" style="gap: 10px; height: 38px; padding: 0 13px; border-radius: 8px; background: #12121e; border: 1px solid #ffffff14;">
+          <svg width="15" height="15" viewBox="0 0 20 20" fill="none" stroke="#4a5060" stroke-width="1.7"><circle cx="9" cy="9" r="6"/><path d="M13.5 13.5L17 17"/></svg>
+          <span style="font-size: 14px; color: #4a5060; flex-grow: 1;">Ask, search, or run anything</span>
+          <span class="mono" style="font-size: 11px; color: #4a5060; padding: 2px 6px; border-radius: 4px; background: #ffffff08;">Ctrl K</span>
+        </div>
+      </div>
+
+      <div style="padding: 0 20px 8px;" class="row">
+        <div class="lbl" style="flex-grow: 1;">Activity</div>
+        <span class="cond" style="font-size: 12px; color: #4a5060;">last 2 hours</span>
+      </div>
+
+      <div style="flex-grow: 1; overflow: hidden; padding: 0 20px; display: flex; flex-direction: column; gap: 1px;">
+        <sc-for list="{{feed}}" as="e" hint-placeholder-count="7">
+          <div class="row" style="gap: 11px; padding: 9px 11px; border-radius: 7px; background: #ffffff06; align-items: flex-start;">
+            <div style="width: 6px; height: 6px; border-radius: 999px; margin-top: 6px; flex-shrink: 0; background: {{e.dot}};"></div>
+            <div style="flex-grow: 1; min-width: 0;">
+              <div class="row" style="gap: 8px;">
+                <span class="cond" style="font-size: 12px; font-weight: 500; letter-spacing: .04em; text-transform: uppercase; color: {{e.dot}};">{{e.kind}}</span>
+                <span class="mono" style="font-size: 11px; color: #4a5060;">{{e.at}}</span>
+              </div>
+              <div style="font-size: 13px; color: #e8eaef; margin-top: 3px; line-height: 1.42;">{{e.text}}</div>
+            </div>
+          </div>
+        </sc-for>
+      </div>
+    </div>
+
+    <!-- ── RIGHT: the machine ── -->
+    <div style="width: 318px; flex-shrink: 0; background: #0c0c14; border-left: 1px solid #ffffff0a; display: flex; flex-direction: column;">
+
+      <div style="padding: 14px 16px 10px;">
+        <div class="lbl" style="margin-bottom: 9px;">Load</div>
+        <sc-for list="{{meters}}" as="m" hint-placeholder-count="4">
+          <div style="margin-bottom: 9px;">
+            <div class="row" style="margin-bottom: 4px;">
+              <span class="cond" style="font-size: 12px; color: #8890a0; flex-grow: 1;">{{m.name}}</span>
+              <span class="mono" style="font-size: 12px; color: #e8eaef;">{{m.val}}</span>
+            </div>
+            <div style="height: 3px; border-radius: 999px; background: #ffffff0a; overflow: hidden;">
+              <div style="height: 3px; border-radius: 999px; width: {{m.pct}}; background: {{m.tone}};"></div>
+            </div>
+          </div>
+        </sc-for>
+      </div>
+
+      <div style="height: 1px; background: #ffffff08;"></div>
+
+      <div style="padding: 12px 16px 6px;"><div class="lbl">Services</div></div>
+      <div style="display: flex; flex-direction: column; padding: 0 8px;">
+        <sc-for list="{{services}}" as="s" hint-placeholder-count="6">
+          <div class="row" style="gap: 9px; padding: 4px 8px;">
+            <div style="width: 5px; height: 5px; border-radius: 999px; background: {{s.tone}}; flex-shrink: 0;"></div>
+            <span class="cond" style="font-size: 12px; color: #e8eaef; flex-grow: 1;">{{s.name}}</span>
+            <span class="mono" style="font-size: 11px; color: #4a5060;">{{s.note}}</span>
+          </div>
+        </sc-for>
+      </div>
+
+      <div style="height: 1px; background: #ffffff08; margin-top: 12px;"></div>
+
+      <div style="padding: 12px 16px;">
+        <div class="lbl" style="margin-bottom: 8px;">Companion</div>
+        <div style="display: flex; flex-direction: column; gap: 6px;">
+          <div class="row"><span class="cond" style="font-size: 12px; color: #8890a0; flex-grow: 1;">Bond</span><span class="mono" style="font-size: 12px; color: #e8eaef;">Acquaintance &middot; 0.54</span></div>
+          <div class="row"><span class="cond" style="font-size: 12px; color: #8890a0; flex-grow: 1;">Instincts</span><span class="mono" style="font-size: 12px; color: #e8eaef;">10 armed</span></div>
+          <div class="row"><span class="cond" style="font-size: 12px; color: #8890a0; flex-grow: 1;">Tools</span><span class="mono" style="font-size: 12px; color: #e8eaef;">118</span></div>
+          <div class="row"><span class="cond" style="font-size: 12px; color: #8890a0; flex-grow: 1;">Context</span><span class="mono" style="font-size: 12px; color: #e8eaef;">4.1K / 16K</span></div>
+        </div>
+      </div>
+
+      <div style="flex-grow: 1;"></div>
+
+      <div style="padding: 11px 16px; border-top: 1px solid #ffffff08; background: #161622;">
+        <div class="row" style="gap: 8px;">
+          <svg width="14" height="14" viewBox="0 0 20 20" fill="none" stroke="#ffb74d" stroke-width="1.6"><path d="M10 3l7 13H3z"/><path d="M10 8v3.5"/><circle cx="10" cy="13.8" r=".8" fill="#ffb74d" stroke="none"/></svg>
+          <span style="font-size: 12px; color: #ffb74d; flex-grow: 1;">Auto-lock never fires</span>
+        </div>
+        <div style="font-size: 12px; color: #8890a0; margin-top: 3px; line-height: 1.4;">Nothing emits UserIdle &mdash; idle detection is not wired.</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══ TASKBAR ══ launcher + open windows + pins. Grows with WINDOWS, not with apps installed. -->
+  <div class="row" style="height: 46px; flex-shrink: 0; background: #161622; border-top: 1px solid #ffffff0a; padding: 0 8px; gap: 8px;">
+
+    <!-- launcher: everything installed lives behind this, so the bar never fills up -->
+    <div class="row" style="gap: 8px; height: 32px; padding: 0 12px 0 10px; border-radius: 6px; background: {{accent}};">
+      <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="#0c0c14" stroke-width="1.8" stroke-linecap="round"><rect x="2.5" y="2.5" width="6" height="6" rx="1"/><rect x="11.5" y="2.5" width="6" height="6" rx="1"/><rect x="2.5" y="11.5" width="6" height="6" rx="1"/><rect x="11.5" y="11.5" width="6" height="6" rx="1"/></svg>
+      <span class="cond" style="font-size: 13px; font-weight: 600; color: #0c0c14;">Apps</span>
+    </div>
+
+    <div style="width: 1px; height: 20px; background: #ffffff0a;"></div>
+
+    <!-- open windows, with titles -->
+    <div class="row" style="gap: 3px; min-width: 0; flex-grow: 1;">
+      <sc-for list="{{windows}}" as="w" hint-placeholder-count="4">
+        <div class="row" style="gap: 8px; height: 32px; padding: 0 11px; border-radius: 6px; min-width: 0; max-width: 220px; background: {{w.bg}}; border-bottom: 2px solid {{w.rule}};">
+          <div style="width: 14px; height: 14px; border-radius: 3px; flex-shrink: 0; background: {{w.tone}};"></div>
+          <div style="min-width: 0; flex-grow: 1;">
+            <div class="cond" style="font-size: 12.5px; color: {{w.text}}; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{w.title}}</div>
+          </div>
+        </div>
+      </sc-for>
+    </div>
+
+    <div style="width: 1px; height: 20px; background: #ffffff0a;"></div>
+
+    <!-- pins: icon-only, so a handful costs almost no width -->
+    <div class="row" style="gap: 1px;">
+      <div style="width: 32px; height: 32px; border-radius: 6px; display: flex; align-items: center; justify-content: center;">
+        <svg width="17" height="17" viewBox="0 0 20 20" fill="none" stroke="#8890a0" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4.5" width="16" height="11" rx="1.5"/><path d="M2.5 6l7.5 5 7.5-5"/></svg>
+      </div>
+      <div style="width: 32px; height: 32px; border-radius: 6px; display: flex; align-items: center; justify-content: center;">
+        <svg width="17" height="17" viewBox="0 0 20 20" fill="none" stroke="#8890a0" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="2.5" width="13" height="15" rx="1.5"/><path d="M6.5 6.5h7M6.5 10h7M6.5 13.5h4"/></svg>
+      </div>
+      <div style="width: 32px; height: 32px; border-radius: 6px; display: flex; align-items: center; justify-content: center;">
+        <svg width="17" height="17" viewBox="0 0 20 20" fill="none" stroke="#8890a0" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 12l3.5-6 3 4.5 2.5-3 2 4.5 4-6"/></svg>
+      </div>
+      <div style="width: 32px; height: 32px; border-radius: 6px; display: flex; align-items: center; justify-content: center;">
+        <svg width="17" height="17" viewBox="0 0 20 20" fill="none" stroke="#8890a0" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="10" cy="10" r="2.8"/><path d="M10 2v2M10 16v2M2 10h2M16 10h2M4.3 4.3l1.5 1.5M14.2 14.2l1.5 1.5M15.7 4.3l-1.5 1.5M5.8 14.2l-1.5 1.5"/></svg>
+      </div>
+    </div>
+
+    <div style="width: 1px; height: 20px; background: #ffffff0a;"></div>
+
+    <div class="row" style="gap: 7px; height: 32px; padding: 0 11px; border-radius: 6px; border: 1px solid #ffffff14;">
+      <div style="width: 6px; height: 6px; border-radius: 999px; background: {{accent}};"></div>
+      <span class="cond" style="font-size: 12.5px; color: #e8eaef;">Companion</span>
+      <span class="mono" style="font-size: 11px; color: {{accent}};">2</span>
+    </div>
+  </div>
+</div>
+</x-dc>
+
+<script data-dc-script data-props='{
+  "accent": {"editor": "color", "default": "#4ecdc4", "options": ["#4ecdc4", "#d4a574", "#b484e0", "#6cd480", "#e87898"], "section": "Theme"}
+}'>
+class Component extends DCLogic {
+  renderVals() {
+    const accent = this.props.accent ?? '#4ecdc4';
+
+    return {
+      accent,
+      windows: [
+        { title: 'yantrik-ui — cargo build', tone: accent,    text: '#e8eaef', bg: '#ffffff10', rule: accent },
+        { title: '~/codes/yantrik-os',       tone: '#8890a0', text: '#8890a0', bg: 'transparent', rule: 'transparent' },
+        { title: 'desktop.slint',            tone: '#8890a0', text: '#8890a0', bg: 'transparent', rule: 'transparent' },
+        { title: 'Inbox — 3 unread',         tone: '#8890a0', text: '#8890a0', bg: 'transparent', rule: 'transparent' },
+      ],
+      recents: [
+        { name: 'render_backend.rs', ago: '4m' },
+        { name: 'desktop.slint',     ago: '11m' },
+        { name: 'sync_client.rs',    ago: '1h' },
+        { name: 'Cargo.toml',        ago: '1h' },
+        { name: 'deploy.sh',         ago: '2h' },
+      ],
+      threads: [
+        { title: 'Slint 1.9 → 1.17 upgrade', meta: '55.6k lines · clean' },
+        { title: 'Auto-lock never fires',      meta: 'no UserIdle producer' },
+        { title: 'App launch cost unmeasured', meta: '17 binaries' },
+      ],
+      feed: [
+        { kind: 'noticed',  at: '19:12', dot: accent,    text: 'Desktop CPU fell 98% → 3.1% after the particle field stopped being instantiated.' },
+        { kind: 'build',    at: '19:13', dot: '#26a69a', text: 'cargo build -p yantrik-ui finished in 15m 09s, no errors.' },
+        { kind: 'learned',  at: '18:47', dot: '#b084e0', text: 'An animate block on a property re-set faster than its easing repaints forever.' },
+        { kind: 'warned',   at: '18:31', dot: '#ffb74d', text: 'femtovg without a GPU costs 576% CPU — six times the software renderer.' },
+        { kind: 'ran',      at: '18:05', dot: '#8890a0', text: 'Measured per-thread CPU; the render thread held 97.5% of it.' },
+        { kind: 'noticed',  at: '17:40', dot: accent,    text: 'yantrikdb on disk is 0.18.0 but the lock wants 0.10.1.' },
+        { kind: 'ran',      at: '17:28', dot: '#8890a0', text: 'Synced yantrikdb crates into the WSL tree so the workspace resolves.' },
+      ],
+      meters: [
+        { name: 'CPU',    val: '34%',       pct: '34%', tone: accent },
+        { name: 'Memory', val: '6.2 / 31G', pct: '20%', tone: accent },
+        { name: 'Swap',   val: '0 / 8G',    pct: '0%',  tone: '#26a69a' },
+        { name: 'Disk',   val: '412 / 1.1T', pct: '37%', tone: '#8890a0' },
+      ],
+      services: [
+        { name: 'companion',      tone: '#26a69a', note: 'ready' },
+        { name: 'yantrikdb',      tone: '#26a69a', note: '1847 rec' },
+        { name: 'system-monitor', tone: '#26a69a', note: '3s' },
+        { name: 'notifications',  tone: '#26a69a', note: 'dbus' },
+        { name: 'network',        tone: '#26a69a', note: 'lan' },
+        { name: 'weather',        tone: '#4a5060', note: 'idle' },
+      ],
+    };
+  }
+}
+</script>
+</body>
+</html>

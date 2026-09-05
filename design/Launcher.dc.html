@@ -1,0 +1,114 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600&family=Barlow+Semi+Condensed:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
+  <style>
+    body { margin: 0; font-family: Barlow, "Helvetica Neue", Arial, sans-serif; }
+    a { color: #4ecdc4; text-decoration: none; }
+    a:hover { color: #7ee0d8; }
+    .mono { font-family: "JetBrains Mono", ui-monospace, Menlo, monospace; }
+    .cond { font-family: "Barlow Semi Condensed", Barlow, sans-serif; }
+    .lbl { font-size: 11px; font-weight: 500; letter-spacing: .09em; text-transform: uppercase; color: #4a5060; }
+    .row { display: flex; align-items: center; }
+  </style>
+</helmet>
+
+<div style="width: 1080px; height: 760px; background: #0c0c14; padding: 34px; box-sizing: border-box; display: flex;">
+
+  <div style="flex-grow: 1; display: flex; flex-direction: column; background: #1e1e2e; border: 1px solid #ffffff14; border-radius: 16px; overflow: hidden;">
+
+    <!-- search — typing filters, and the same box answers questions -->
+    <div class="row" style="gap: 12px; padding: 0 18px; height: 54px; flex-shrink: 0; border-bottom: 1px solid #ffffff08;">
+      <svg width="17" height="17" viewBox="0 0 20 20" fill="none" stroke="#4a5060" stroke-width="1.7" stroke-linecap="round"><circle cx="9" cy="9" r="6"/><path d="M13.5 13.5L17 17"/></svg>
+      <span style="font-size: 16px; color: #4a5060; flex-grow: 1;">Search 49 applications, or just ask</span>
+      <span class="mono" style="font-size: 11px; color: #4a5060; padding: 3px 7px; border-radius: 4px; background: #ffffff08;">esc</span>
+    </div>
+
+    <div style="flex-grow: 1; display: flex; min-height: 0;">
+
+      <!-- categories: straight off the freedesktop Categories= field the scanner already reads -->
+      <div style="width: 176px; flex-shrink: 0; border-right: 1px solid #ffffff08; padding: 12px 8px; display: flex; flex-direction: column; gap: 1px;">
+        <sc-for list="{{cats}}" as="c" hint-placeholder-count="8">
+          <div class="row" style="gap: 9px; height: 30px; padding: 0 10px; border-radius: 6px; background: {{c.bg}};">
+            <span class="cond" style="font-size: 13px; color: {{c.tone}}; flex-grow: 1;">{{c.name}}</span>
+            <span class="mono" style="font-size: 11px; color: #4a5060;">{{c.n}}</span>
+          </div>
+        </sc-for>
+      </div>
+
+      <!-- the grid -->
+      <div style="flex-grow: 1; min-width: 0; padding: 14px 16px; overflow: hidden;">
+        <div class="lbl" style="margin-bottom: 10px;">All applications</div>
+
+        <div style="display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 4px;">
+          <sc-for list="{{apps}}" as="a" hint-placeholder-count="20">
+            <div style="padding: 11px 8px 9px; border-radius: 8px; background: {{a.bg}}; display: flex; flex-direction: column; align-items: center; gap: 7px;">
+              <div style="width: 34px; height: 34px; border-radius: 8px; background: {{a.chip}}; display: flex; align-items: center; justify-content: center;">
+                <div style="width: 18px; height: 18px; border-radius: 4px; border: 1.6px solid {{a.tone}};"></div>
+              </div>
+              <span class="cond" style="font-size: 12.5px; color: {{a.text}}; text-align: center; line-height: 1.25; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%;">{{a.name}}</span>
+            </div>
+          </sc-for>
+        </div>
+      </div>
+    </div>
+
+    <!-- footer: says what is real and what is not -->
+    <div class="row" style="gap: 14px; padding: 9px 18px; flex-shrink: 0; border-top: 1px solid #ffffff08; background: #161622;">
+      <span class="mono" style="font-size: 11px; color: #4a5060;">&#8629; launch</span>
+      <span class="mono" style="font-size: 11px; color: #4a5060;">&#8984;&#8629; new workspace</span>
+      <div style="flex-grow: 1;"></div>
+      <span class="mono" style="font-size: 11px; color: #ffb74d;">icons are placeholders &mdash; AppGridItem carries only icon-char</span>
+    </div>
+  </div>
+</div>
+</x-dc>
+
+<script data-dc-script data-props='{
+  "accent": {"editor": "color", "default": "#4ecdc4", "options": ["#4ecdc4", "#d4a574", "#b484e0", "#6cd480", "#e87898"], "section": "Theme"}
+}'>
+class Component extends DCLogic {
+  renderVals() {
+    const accent = this.props.accent ?? '#4ecdc4';
+
+    const cats = [
+      { name: 'All',         n: '49', on: true },
+      { name: 'Development', n: '11' },
+      { name: 'System',      n: '9'  },
+      { name: 'Office',      n: '7'  },
+      { name: 'Network',     n: '6'  },
+      { name: 'AudioVideo',  n: '5'  },
+      { name: 'Graphics',    n: '4'  },
+      { name: 'Utility',     n: '7'  },
+    ].map((c) => ({
+      ...c,
+      bg:   c.on ? '#ffffff10' : 'transparent',
+      tone: c.on ? '#e8eaef'   : '#8890a0',
+    }));
+
+    const names = [
+      'Terminal', 'Files', 'Editor', 'Mail', 'Notes',
+      'System Monitor', 'Network', 'Packages', 'Memory', 'Music',
+      'Weather', 'Settings', 'Downloads', 'Calendar', 'Image Viewer',
+      'Spreadsheet', 'Presentation', 'Snippets', 'Containers', 'Bond',
+    ];
+    const apps = names.map((name, i) => ({
+      name,
+      bg:   i === 0 ? '#ffffff10' : 'transparent',
+      chip: i === 0 ? accent + '28' : '#ffffff0a',
+      tone: i === 0 ? accent : '#8890a0',
+      text: i === 0 ? '#e8eaef' : '#8890a0',
+    }));
+
+    return { accent, cats, apps };
+  }
+}
+</script>
+</body>
+</html>
