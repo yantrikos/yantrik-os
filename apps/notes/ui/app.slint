@@ -2,9 +2,9 @@
 // Wraps the shared NotesEditor component in its own Window.
 
 import { Theme, ThemeMode, AccentPreset } from "theme.slint";
-import { NotesEditor, NoteEntry, NoteVersionEntry, NoteBacklink } from "notes_editor.slint";
+import { NotesEditor, NoteEntry, NoteVersionEntry, NoteBacklink, NoteImage } from "notes_editor.slint";
 
-export { NoteEntry, NoteVersionEntry, NoteBacklink, ThemeMode, AccentPreset }
+export { NoteEntry, NoteVersionEntry, NoteBacklink, NoteImage, ThemeMode, AccentPreset }
 
 export component NotesApp inherits Window {
     default-font-family: Theme.font-ui;
@@ -85,6 +85,14 @@ export component NotesApp inherits Window {
     callback restore-version <=> editor.restore-version;
     callback find-backlinks <=> editor.find-backlinks;
     callback open-note <=> editor.open-note;
+
+    // ── Images ──
+    in property <[NoteImage]> note-images <=> editor.note-images;
+    in-out property <bool> images-panel-open <=> editor.images-panel-open;
+    in-out property <int> image-preview-index <=> editor.image-preview-index;
+    in-out property <string> attach-image-path <=> editor.attach-image-path;
+    callback scan-images <=> editor.scan-images;
+    callback attach-image <=> editor.attach-image;
     callback toggle-meeting-mode <=> editor.toggle-meeting-mode;
     callback export-md <=> editor.export-md;
     callback import-md <=> editor.import-md;

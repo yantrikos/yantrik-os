@@ -234,6 +234,10 @@ fn template_content(template: &str) -> &'static str {
 fn wikilinks(text: &str) -> Vec<String> {
     let mut out = Vec::new();
     for (start, _) in text.match_indices("[[") {
+        // `![[shot.png]]` is an image embed, not a link to a note.
+        if start > 0 && text.as_bytes()[start - 1] == b'!' {
+            continue;
+        }
         let rest = &text[start + 2..];
         if let Some(end) = rest.find("]]") {
             let target = rest[..end].split('|').next().unwrap_or("").trim();
@@ -316,6 +320,123 @@ fn load_note(ui: &NotesApp, idx: i32, id: &str) {
     }
     ui.set_selected_index(idx);
     ui.set_is_modified(false);
+}
+
+/// Where attached files live. Obsidian's convention, and it keeps the vault root readable.
+fn attachments_dir() -> PathBuf {
+    notes_dir().join("attachments")
+}
+
+/// A name that is free in `dir`: `shot.png`, then `shot-1.png`, and so on. Never overwrite an
+/// existing attachment — a different note may already embed it.
+fn unique_attachment_name(dir: &std::path::Path, base: &str) -> String {
+    if !dir.join(base).exists() {
+        return base.to_string();
+    }
+    let (stem, ext) = match base.rsplit_once('.') {
+        Some((s, e)) => (s, e),
+        None => (base, ""),
+    };
+    for n in 1.. {
+        let candidate = if ext.is_empty() {
+            format!("{stem}-{n}")
+        } else {
+            format!("{stem}-{n}.{ext}")
+        };
+        if !dir.join(&candidate).exists() {
+            return candidate;
+        }
+    }
+    unreachable!()
+}
+
+fn is_image_name(name: &str) -> bool {
+    let n = name.to_lowercase();
+    [".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".svg"]
+        .iter()
+        .any(|e| n.ends_with(e))
+}
+
+/// Every image a note embeds, in order, as written. Understands both
+/// `![[shot.png]]` and `![alt](attachments/shot.png)`.
+fn image_refs(text: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+
+    for (start, _) in text.match_indices("![[") {
+        let rest = &text[start + 3..];
+        if let Some(end) = rest.find("]]") {
+            let name = rest[..end].split('|').next().unwrap_or("").trim();
+            if !name.is_empty() {
+                out.push(name.to_string());
+            }
+        }
+    }
+
+    // ![alt](target) — the alt text is decoration, the target is the file.
+    for (start, _) in text.match_indices("](") {
+        // Only when it is an image: the run before `](` has to open with `![`.
+        let head = &text[..start];
+        let Some(open) = head.rfind("![") else { continue };
+        if head[open..].contains(']') {
+            continue;
+        }
+        let rest = &text[start + 2..];
+        if let Some(end) = rest.find(')') {
+            let target = rest[..end].split_whitespace().next().unwrap_or("").trim();
+            if !target.is_empty() && !target.starts_with("http") {
+                out.push(target.to_string());
+            }
+        }
+    }
+
+    out.dedup();
+    out
+}
+
+/// Resolve an embed against the vault: attachments first, then the vault root, then treat it
+/// as a path in its own right.
+fn resolve_image(reference: &str) -> Option<PathBuf> {
+    let candidates = [
+        attachments_dir().join(reference),
+        notes_dir().join(reference),
+        PathBuf::from(reference),
+    ];
+    candidates.into_iter().find(|p| p.is_file())
+}
+
+/// Load what the current note embeds. A reference that does not resolve is still listed, marked
+/// `found: false` — a silently missing picture is worse than a visibly missing one.
+fn images_for(content: &str) -> Vec<NoteImage> {
+    image_refs(content)
+        .into_iter()
+        .map(|reference| {
+            let resolved = resolve_image(&reference);
+            let (source, found) = match resolved.as_ref() {
+                Some(p) => match slint::Image::load_from_path(p) {
+                    Ok(img) => (img, true),
+                    Err(e) => {
+                        tracing::warn!(image = %p.display(), error = ?e, "Could not decode image");
+                        (slint::Image::default(), false)
+                    }
+                },
+                None => (slint::Image::default(), false),
+            };
+            NoteImage {
+                name: reference
+                    .rsplit('/')
+                    .next()
+                    .unwrap_or(&reference)
+                    .to_string()
+                    .into(),
+                path: resolved
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_else(|| reference.clone())
+                    .into(),
+                source,
+                found,
+            }
+        })
+        .collect()
 }
 
 fn wire(app: &NotesApp) {
@@ -460,6 +581,12 @@ fn wire(app: &NotesApp) {
             load_note(&ui, idx, &id);
             if ui.get_backlinks_panel_open() {
                 ui.set_backlinks(ModelRc::new(VecModel::from(backlinks_for(&id))));
+            }
+            if ui.get_images_panel_open() {
+                ui.set_image_preview_index(0);
+                ui.set_note_images(ModelRc::new(VecModel::from(images_for(
+                    &ui.get_current_content().to_string(),
+                ))));
             }
         });
     }
@@ -653,6 +780,78 @@ fn wire(app: &NotesApp) {
             tracing::warn!(note = %name, "Backlink target is not in the current list");
         });
     }
+    // ── Images ──
+    {
+        let weak = app.as_weak();
+        app.on_scan_images(move || {
+            let Some(ui) = weak.upgrade() else { return };
+            let found = images_for(&ui.get_current_content().to_string());
+            tracing::info!(images = found.len(), "Scanned note for images");
+            if ui.get_image_preview_index() as usize >= found.len() {
+                ui.set_image_preview_index(0);
+            }
+            ui.set_note_images(ModelRc::new(VecModel::from(found)));
+        });
+    }
+
+    {
+        let weak = app.as_weak();
+        let cf = current_file.clone();
+        app.on_attach_image(move |raw_path| {
+            let Some(ui) = weak.upgrade() else { return };
+            let id = cf.borrow().clone();
+            if id.is_empty() {
+                return;
+            }
+
+            let mut given = raw_path.to_string().trim().to_string();
+            if let Some(rest) = given.strip_prefix("~/") {
+                if let Ok(home) = std::env::var("HOME") {
+                    given = format!("{home}/{rest}");
+                }
+            }
+            let src = PathBuf::from(&given);
+            if !src.is_file() {
+                tracing::warn!(path = %given, "Attach: no such file");
+                return;
+            }
+            let Some(base) = src.file_name().map(|n| n.to_string_lossy().to_string()) else { return };
+            if !is_image_name(&base) {
+                tracing::warn!(path = %given, "Attach: not an image");
+                return;
+            }
+
+            // Never overwrite an existing attachment; a note elsewhere may embed it.
+            let dir = attachments_dir();
+            if std::fs::create_dir_all(&dir).is_err() {
+                tracing::error!(dir = %dir.display(), "Attach: cannot create attachments dir");
+                return;
+            }
+            let name = unique_attachment_name(&dir, &base);
+            if let Err(e) = std::fs::copy(&src, dir.join(&name)) {
+                tracing::error!(error = ?e, "Attach: copy failed");
+                return;
+            }
+
+            // Embed it, then save through the same path the Save button uses, so the reference
+            // and the file land together.
+            let mut content = ui.get_current_content().to_string();
+            if !content.ends_with('\n') && !content.is_empty() {
+                content.push('\n');
+            }
+            content.push_str(&format!("\n![[{name}]]\n"));
+            let title = ui.get_current_title().to_string();
+            if update_via_service(&id, &title, &content).is_err() {
+                let _ = std::fs::write(notes_dir().join(&id), &content);
+            }
+            ui.set_current_content(content.clone().into());
+            ui.set_meta_word_count(content.split_whitespace().count() as i32);
+            ui.set_is_modified(false);
+            ui.set_note_images(ModelRc::new(VecModel::from(images_for(&content))));
+            tracing::info!(image = %name, "Attached image");
+        });
+    }
+
     app.on_toggle_meeting_mode(|| {});
     app.on_import_md(|| {});
 }
@@ -665,5 +864,65 @@ fn refresh_list(ui: &NotesApp, folder: i32) {
     ui.set_note_count(count);
     if folder == 0 {
         ui.set_folder_all_count(count);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wikilinks_reads_targets_and_aliases() {
+        let links = wikilinks("see [[Build times]] and [[notes/other.md|that one]]");
+        assert_eq!(links, vec!["Build times", "notes/other.md"]);
+    }
+
+    #[test]
+    fn an_image_embed_is_not_a_note_link() {
+        // `![[shot.png]]` shares its opening bracket run with a wikilink; treating it as one
+        // would put a phantom note in every backlink list.
+        let links = wikilinks("![[shot.png]] but [[Real note]] counts");
+        assert_eq!(links, vec!["Real note"]);
+    }
+
+    #[test]
+    fn links_resolve_regardless_of_case_or_extension() {
+        assert_eq!(link_key("Build times"), link_key("build TIMES"));
+        assert_eq!(link_key("build-times.md"), link_key("build-times"));
+    }
+
+    #[test]
+    fn title_comes_from_the_first_heading() {
+        assert_eq!(title_of("# Real title\n\nbody", "slug.md"), "Real title");
+        assert_eq!(title_of("no heading here", "slug.md"), "slug");
+        // An empty heading is not a title.
+        assert_eq!(title_of("# \n\nbody", "slug.md"), "slug");
+    }
+
+    #[test]
+    fn image_refs_understands_both_syntaxes() {
+        let refs = image_refs("![[a.png]] then ![alt text](attachments/b.jpg) done");
+        assert_eq!(refs, vec!["a.png", "attachments/b.jpg"]);
+    }
+
+    #[test]
+    fn image_refs_skips_remote_and_plain_links() {
+        // A plain link is not an embed, and a remote image is not in the vault.
+        let refs = image_refs("[a note](other.md) and ![remote](https://example.com/x.png)");
+        assert!(refs.is_empty(), "got {refs:?}");
+    }
+
+    #[test]
+    fn attachment_names_never_collide() {
+        let dir = std::env::temp_dir().join(format!("yantrik-notes-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        assert_eq!(unique_attachment_name(&dir, "shot.png"), "shot.png");
+        std::fs::write(dir.join("shot.png"), b"x").unwrap();
+        assert_eq!(unique_attachment_name(&dir, "shot.png"), "shot-1.png");
+        std::fs::write(dir.join("shot-1.png"), b"x").unwrap();
+        assert_eq!(unique_attachment_name(&dir, "shot.png"), "shot-2.png");
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

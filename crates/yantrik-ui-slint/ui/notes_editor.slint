@@ -33,6 +33,15 @@ export struct NoteBacklink {
     filename: string,
 }
 
+/// An image a note embeds. `source` is already loaded by the Rust side; `found` is false when
+/// the reference does not resolve to a file, which is worth showing rather than hiding.
+export struct NoteImage {
+    name: string,
+    path: string,
+    source: image,
+    found: bool,
+}
+
 export component NotesEditor inherits Rectangle {
     background: Theme.bg-deep;
 
@@ -96,6 +105,15 @@ export component NotesEditor inherits Rectangle {
     callback find-backlinks();
     /// Open a note by filename — how a backlink is followed.
     callback open-note(string);
+
+    // ── Images ──
+    in property <[NoteImage]> note-images: [];
+    in-out property <bool> images-panel-open: false;
+    in-out property <int> image-preview-index: 0;
+    in-out property <string> attach-image-path: "";
+    callback scan-images();
+    /// Copy a file into the vault's attachments and embed it in the current note.
+    callback attach-image(string);
 
     // Meeting mode
     in property <bool> meeting-mode: false;
@@ -1152,6 +1170,219 @@ export component NotesEditor inherits Rectangle {
                             }
                         }
                     }
+
+                    // ── Images panel (toggle) ──
+                    if root.images-panel-open && root.selected-index >= 0 : Rectangle {
+                        height: 208px;
+                        background: Theme.bg-surface;
+
+                        Rectangle { y: 0; height: 1px; width: 100%; background: Theme.separator; }
+
+                        VerticalLayout {
+                            padding: 10px;
+                            spacing: 8px;
+
+                            // Header: count, a path to attach, rescan, close
+                            HorizontalLayout {
+                                spacing: 8px;
+
+                                Icon {
+                                    commands: Icons.image;
+                                    size: 13px;
+                                    tint: Theme.accent;
+                                    y: (parent.height - self.height) / 2;
+                                }
+                                Text {
+                                    text: "Images";
+                                    color: Theme.accent;
+                                    font-size: 12px;
+                                    font-weight: 600;
+                                    vertical-alignment: center;
+                                }
+                                if root.note-images.length > 0 : Text {
+                                    text: root.note-images.length;
+                                    color: Theme.text-dim;
+                                    font-size: Theme.fs-micro;
+                                    font-family: Theme.font-mono;
+                                    vertical-alignment: center;
+                                }
+
+                                Rectangle { horizontal-stretch: 1; }
+
+                                // There is no file picker in this app yet, so a path is typed or
+                                // pasted — the same way the music player takes a library folder.
+                                Rectangle {
+                                    width: 300px;
+                                    height: 26px;
+                                    y: (parent.height - 26px) / 2;
+                                    border-radius: Theme.r-sm;
+                                    background: Theme.bg-input;
+                                    border-width: 1px;
+                                    border-color: attach-input.has-focus ? Theme.accent-dim : Theme.border-default;
+                                    clip: true;
+
+                                    if root.attach-image-path == "" : Text {
+                                        x: 8px;
+                                        height: 100%;
+                                        text: "/path/to/picture.png";
+                                        color: Theme.text-dim;
+                                        font-size: Theme.fs-micro;
+                                        font-family: Theme.font-mono;
+                                        vertical-alignment: center;
+                                    }
+
+                                    attach-input := TextInput {
+                                        x: 8px;
+                                        width: parent.width - 16px;
+                                        height: 100%;
+                                        vertical-alignment: center;
+                                        single-line: true;
+                                        font-size: Theme.fs-micro;
+                                        font-family: Theme.font-mono;
+                                        color: Theme.text-primary;
+                                        text <=> root.attach-image-path;
+                                        accepted => {
+                                            root.attach-image(self.text);
+                                            root.attach-image-path = "";
+                                        }
+                                    }
+                                }
+
+                                YButton {
+                                    label: "Attach";
+                                    icon-path: Icons.plus;
+                                    variant: 1;
+                                    size: 0;
+                                    disabled: root.attach-image-path == "";
+                                    y: (parent.height - self.height) / 2;
+                                    clicked => {
+                                        root.attach-image(root.attach-image-path);
+                                        root.attach-image-path = "";
+                                    }
+                                }
+                                YIconButton {
+                                    icon-path: Icons.refresh;
+                                    variant: 2;
+                                    y: (parent.height - self.height) / 2;
+                                    clicked => { root.scan-images(); }
+                                }
+                                YIconButton {
+                                    icon-path: Icons.close;
+                                    variant: 2;
+                                    y: (parent.height - self.height) / 2;
+                                    clicked => { root.images-panel-open = false; }
+                                }
+                            }
+
+                            // Preview + the list of what this note embeds
+                            if root.note-images.length > 0 : HorizontalLayout {
+                                spacing: 10px;
+
+                                Rectangle {
+                                    width: 260px;
+                                    border-radius: Theme.r-md;
+                                    background: Theme.bg-deep;
+                                    border-width: 1px;
+                                    border-color: Theme.border-subtle;
+                                    clip: true;
+
+                                    if root.note-images.length > root.image-preview-index : Image {
+                                        source: root.note-images[root.image-preview-index].source;
+                                        image-fit: contain;
+                                        x: 4px;
+                                        y: 4px;
+                                        width: parent.width - 8px;
+                                        height: parent.height - 8px;
+                                    }
+                                }
+
+                                Flickable {
+                                    horizontal-stretch: 1;
+                                    viewport-height: image-strip.preferred-height;
+
+                                    image-strip := VerticalLayout {
+                                        alignment: start;
+                                        spacing: 3px;
+
+                                        for img[idx] in root.note-images : TouchArea {
+                                            height: 36px;
+                                            mouse-cursor: pointer;
+                                            clicked => { root.image-preview-index = idx; }
+
+                                            Rectangle {
+                                                border-radius: Theme.r-sm;
+                                                background: idx == root.image-preview-index ? Theme.tint-accent
+                                                          : parent.has-hover ? Theme.hover-fill : transparent;
+
+                                                HorizontalLayout {
+                                                    padding-left: 5px;
+                                                    padding-right: 8px;
+                                                    spacing: 8px;
+
+                                                    Rectangle {
+                                                        width: 44px;
+                                                        height: 28px;
+                                                        y: (parent.height - 28px) / 2;
+                                                        border-radius: 3px;
+                                                        background: Theme.bg-deep;
+                                                        clip: true;
+
+                                                        if img.found : Image {
+                                                            source: img.source;
+                                                            image-fit: contain;
+                                                            width: 100%;
+                                                            height: 100%;
+                                                        }
+                                                        if !img.found : Icon {
+                                                            commands: Icons.warning;
+                                                            size: 13px;
+                                                            tint: Theme.color-danger;
+                                                            x: (parent.width - self.width) / 2;
+                                                            y: (parent.height - self.height) / 2;
+                                                        }
+                                                    }
+
+                                                    Text {
+                                                        text: img.name;
+                                                        color: idx == root.image-preview-index ? Theme.accent : Theme.text-primary;
+                                                        font-size: 11px;
+                                                        vertical-alignment: center;
+                                                        horizontal-stretch: 1;
+                                                        overflow: elide;
+                                                    }
+
+                                                    if !img.found : Text {
+                                                        text: "missing";
+                                                        color: Theme.color-danger;
+                                                        font-size: Theme.fs-micro;
+                                                        vertical-alignment: center;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            if root.note-images.length == 0 : VerticalLayout {
+                                alignment: center;
+                                spacing: 4px;
+
+                                Text {
+                                    text: "No images in this note";
+                                    color: Theme.text-dim;
+                                    font-size: Theme.fs-caption;
+                                    horizontal-alignment: center;
+                                }
+                                Text {
+                                    text: "Attach a file, or write ![[picture.png]] in the body.";
+                                    color: Theme.text-dim.transparentize(30%);
+                                    font-size: Theme.fs-micro;
+                                    horizontal-alignment: center;
+                                }
+                            }
+                        }
+                    }
                 }
 
                 // ── Status bar with metadata ──
@@ -1183,6 +1414,33 @@ export component NotesEditor inherits Rectangle {
                         }
 
                         Rectangle { horizontal-stretch: 1; }
+
+                        // Images toggle
+                        TouchArea {
+                            width: 62px;
+                            height: 18px;
+                            mouse-cursor: pointer;
+                            clicked => {
+                                root.images-panel-open = !root.images-panel-open;
+                                if (root.images-panel-open) { root.scan-images(); }
+                            }
+                            HorizontalLayout {
+                                spacing: 4px;
+                                Icon {
+                                    commands: Icons.image;
+                                    size: 11px;
+                                    tint: root.images-panel-open ? Theme.accent : Theme.text-dim;
+                                    y: (parent.height - self.height) / 2;
+                                }
+                                Text {
+                                    text: "Images";
+                                    color: root.images-panel-open ? Theme.accent : Theme.text-dim;
+                                    font-size: 10px;
+                                    font-weight: root.images-panel-open ? 600 : 400;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
 
                         // Backlinks toggle
                         TouchArea {
