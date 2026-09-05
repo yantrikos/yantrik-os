@@ -1,6 +1,6 @@
 #!/bin/bash
 # Build and deploy Yantrik OS within WSL Ubuntu
-# Usage: ./deploy.sh [--skip-build] [--debug]
+# Usage: ./deploy.sh [--skip-build] [--debug|--fast]
 #
 # Prerequisites:
 #   - WSL2 with Ubuntu and Rust toolchain
@@ -12,6 +12,9 @@ REMOTE_BIN="/opt/yantrik/bin"
 WSL_TARGET="/home/yantrik/target-yantrik"
 WSL_SRC="/home/yantrik/src/yantrik-os"
 WIN_SRC="/mnt/c/Users/sync/codes/yantrik-os"
+# Sibling repo supplying the yantrikdb-core path dependency.
+WSL_DB_SRC="/home/yantrik/src/yantrikdb"
+WIN_DB_SRC="/mnt/c/Users/sync/codes/yantrikdb"
 
 # Colors
 GREEN='\033[0;32m'
@@ -30,9 +33,24 @@ if [ "${1:-}" = "--debug" ] || [ "${2:-}" = "--debug" ]; then
     PROFILE="debug"
     PROFILE_FLAG=""
 fi
+# --fast: the iteration profile from Cargo.toml — workspace crates unoptimised + incremental,
+# dependencies at opt-level 3, so it draws at release speed but rebuilds in a fraction of the
+# time. Use it while iterating on the UI; ship with the default release build.
+if [ "${1:-}" = "--fast" ] || [ "${2:-}" = "--fast" ]; then
+    PROFILE="fast"
+    PROFILE_FLAG="--profile fast"
+fi
 
 # Step 1: Build via WSL2
 if [ "${1:-}" != "--skip-build" ]; then
+    # The workspace path-depends on ../yantrikdb/crates/yantrikdb-core, which lives in
+    # a SEPARATE repo. Syncing only yantrik-os leaves that dangling and cargo fails at
+    # manifest load with "failed to read .../yantrikdb/crates/yantrikdb-core/Cargo.toml"
+    # before it compiles a single line. Only Cargo.toml/Cargo.lock/crates are copied:
+    # that repo also carries many gigabytes of dist-* artifact directories.
+    step "Syncing yantrikdb dependency..."
+    wsl.exe -d Ubuntu -- bash -lc         "mkdir -p $WSL_DB_SRC &&          rsync -a --checksum $WIN_DB_SRC/Cargo.toml $WIN_DB_SRC/Cargo.lock $WSL_DB_SRC/ &&          rsync -a --checksum --delete $WIN_DB_SRC/crates/ $WSL_DB_SRC/crates/ --exclude target"         || fail "Failed to sync yantrikdb dependency from $WIN_DB_SRC"
+
     step "Syncing source to native FS..."
     wsl.exe -d Ubuntu -- bash -lc \
         "rsync -a --checksum --delete $WIN_SRC/ $WSL_SRC/ \
@@ -53,14 +71,14 @@ if [ "${1:-}" != "--skip-build" ]; then
             -p yantrik-download-manager -p yantrik-snippet-manager"
         step "Building ALL packages ($PROFILE) via WSL2..."
     else
-        PACKAGES="-p yantrik-ui -p yantrik"
+        PACKAGES="-p yantrik-ui -p yantrik -p weather-service -p system-monitor-service -p notes-service -p notifications-service -p calendar-service -p network-service -p email-service -p yantrik-notes -p yantrik-email -p yantrik-calendar -p yantrik-weather -p yantrik-music-player -p yantrik-network-manager -p yantrik-system-monitor -p yantrik-download-manager -p yantrik-snippet-manager -p yantrik-container-manager -p yantrik-spreadsheet -p yantrik-document-editor -p yantrik-presentation -p yantrik-terminal"
         step "Building core packages ($PROFILE) via WSL2... (set BUILD_ALL=1 for all)"
     fi
 
     wsl.exe -d Ubuntu -- bash -lc \
         "cd $WSL_SRC && \
          export RUSTC_WRAPPER=sccache && \
-         RUSTFLAGS=\"-A warnings\" CARGO_TARGET_DIR=$WSL_TARGET \
+         CARGO_TARGET_DIR=$WSL_TARGET \
          cargo build $PROFILE_FLAG $PACKAGES 2>&1"
 
     # Verify binaries exist
@@ -147,7 +165,7 @@ wsl.exe -d Ubuntu -- bash -lc \
         WAYLAND_DISPLAY=wayland-0 \
         XDG_RUNTIME_DIR=/run/user/1000 \
         DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus \
-        SLINT_BACKEND=winit-software \
+        # renderer chosen by yantrik-ui::render_backend — do not hardcode
         LD_PRELOAD=\"/lib/libgcompat.so.0 /usr/lib/libgcompat_shim.so\" \
         nohup /opt/yantrik/bin/yantrik-ui /opt/yantrik/config.yaml \
             >> /opt/yantrik/logs/yantrik-os.log 2>&1 &

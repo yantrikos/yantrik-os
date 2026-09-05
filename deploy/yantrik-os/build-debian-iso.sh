@@ -261,7 +261,7 @@ echo "yantrik ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/yantrik
 chmod 440 /etc/sudoers.d/yantrik
 
 # Directory structure
-mkdir -p /opt/yantrik/{bin,data,logs,models/{embedder,whisper,llm},skills,i18n}
+mkdir -p /opt/yantrik/{bin,data,logs,models/{embedder,whisper,llm,tts},skills,i18n}
 
 # Hostname
 echo "yantrik" > /etc/hostname
@@ -316,20 +316,44 @@ else
     warn "Embedder skipped (--no-embedder) — Core Mode will NOT work"
 fi
 
-# ── Whisper tiny (~146MB) — optional, for voice ──
-if $INCLUDE_WHISPER; then
-    WHISPER_DIR="$ROOTFS/opt/yantrik/models/whisper"
-    HF_WHISPER="https://huggingface.co/openai/whisper-tiny/resolve/main"
-    info "Whisper voice model (~146MB)..."
-    for f in config.json tokenizer.json model.safetensors; do
-        if [ ! -f "$WHISPER_DIR/$f" ]; then
-            sudo wget -q -O "$WHISPER_DIR/$f" "$HF_WHISPER/$f"
-        fi
-    done
-    ok "Whisper voice model"
+# (Whisper is now always included above)
+
+# ── Piper TTS (~66MB) — ALWAYS included for voice ──
+# Natural-sounding voice synthesis via Piper (binary + voice model)
+TTS_DIR="$ROOTFS/opt/yantrik/models/tts"
+PIPER_URL="https://github.com/rhasspy/piper/releases/download/2023.11.14-2/piper_linux_x86_64.tar.gz"
+PIPER_VOICE_URL="https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_US/lessac/medium"
+if [ ! -f "$TTS_DIR/piper" ]; then
+    info "Piper TTS binary + voice model (~66MB)..."
+    sudo wget -q "$PIPER_URL" -O /tmp/piper.tar.gz
+    tar xzf /tmp/piper.tar.gz -C /tmp/
+    sudo cp /tmp/piper/piper "$TTS_DIR/"
+    sudo cp /tmp/piper/lib*.so* "$TTS_DIR/" 2>/dev/null || true
+    sudo cp -r /tmp/piper/espeak-ng-data "$TTS_DIR/"
+    sudo chmod +x "$TTS_DIR/piper"
+    rm -rf /tmp/piper /tmp/piper.tar.gz
+    ok "Piper binary installed"
 else
-    info "Whisper skipped (use --with-models to include voice)"
+    ok "Piper binary (cached)"
 fi
+if [ ! -f "$TTS_DIR/en_US-lessac-medium.onnx" ]; then
+    sudo wget -q "$PIPER_VOICE_URL/en_US-lessac-medium.onnx" -O "$TTS_DIR/en_US-lessac-medium.onnx"
+    sudo wget -q "$PIPER_VOICE_URL/en_US-lessac-medium.onnx.json" -O "$TTS_DIR/en_US-lessac-medium.onnx.json"
+    ok "Piper voice model (en_US-lessac-medium)"
+else
+    ok "Piper voice model (cached)"
+fi
+
+# ── Whisper STT (~75MB) — ALWAYS included for voice ──
+WHISPER_DIR="$ROOTFS/opt/yantrik/models/whisper"
+HF_WHISPER="https://huggingface.co/openai/whisper-tiny/resolve/main"
+info "Whisper STT model (~75MB)..."
+for f in config.json tokenizer.json model.safetensors; do
+    if [ ! -f "$WHISPER_DIR/$f" ]; then
+        sudo wget -q -O "$WHISPER_DIR/$f" "$HF_WHISPER/$f"
+    fi
+done
+ok "Whisper STT model"
 
 # ── Offline LLM (~2.6GB) — optional, for Enhanced Mode ──
 if $INCLUDE_LLM; then
@@ -481,7 +505,8 @@ sudo tee "$LABWC_DIR/rc.xml" > /dev/null <<'RCXML'
 <?xml version="1.0" encoding="UTF-8"?>
 <labwc_config>
   <core><gap>0</gap></core>
-  <theme><titlebar><height>0</height></titlebar></theme>
+  <!-- Apps are real windows and get real title bars; the shell removes its own below. -->
+  <theme><titlebar><height>28</height></titlebar></theme>
   <keyboard>
     <keybind key="A-Tab"><action name="NextWindow" /></keybind>
     <keybind key="A-F4"><action name="Close" /></keybind>
@@ -495,7 +520,8 @@ sudo tee "$LABWC_DIR/rc.xml" > /dev/null <<'RCXML'
     </keybind>
   </keyboard>
   <windowRules>
-    <windowRule title="Yantrik*">
+    <!-- Exact title: the shell only. "Yantrik*" also caught every app titled "Yantrik ..." -->
+    <windowRule title="Yantrik OS">
       <action name="ToggleDecorations" />
       <action name="ToggleFullscreen" />
     </windowRule>

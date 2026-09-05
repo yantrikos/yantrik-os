@@ -30,7 +30,7 @@ if [ "${1:-}" != "--skip-build" ]; then
     step "Building via WSL2..."
     wsl.exe -d Ubuntu -- bash -lc \
         'cd /mnt/c/Users/sync/codes/yantrik-os && \
-         RUSTFLAGS="-A warnings" CARGO_TARGET_DIR=/home/yantrik/target-yantrik \
+         CARGO_TARGET_DIR=/home/yantrik/target-yantrik \
          cargo build --release -p yantrik-ui -p yantrik 2>&1'
 
     wsl.exe -d Ubuntu -- bash -lc \
@@ -90,7 +90,7 @@ wsl.exe -d Ubuntu -- bash -lc "
         WAYLAND_DISPLAY=wayland-0 \
         XDG_RUNTIME_DIR=/run/user/1000 \
         DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus \
-        SLINT_BACKEND=winit-software \
+        # renderer chosen by yantrik-ui::render_backend — do not hardcode
         LD_PRELOAD=/usr/lib/libgcompat_shim.so \
         nohup $REMOTE_BIN/yantrik-ui $CONFIG >> $LOG 2>&1 &
     '

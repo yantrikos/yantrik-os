@@ -481,7 +481,8 @@ sudo tee "$LABWC_DIR/rc.xml" > /dev/null <<'RCXML'
 <?xml version="1.0" encoding="UTF-8"?>
 <labwc_config>
   <core><gap>0</gap></core>
-  <theme><titlebar><height>0</height></titlebar></theme>
+  <!-- Apps are real windows and get real title bars; the shell removes its own below. -->
+  <theme><titlebar><height>28</height></titlebar></theme>
   <keyboard>
     <keybind key="A-Tab"><action name="NextWindow" /></keybind>
     <keybind key="A-F4"><action name="Close" /></keybind>
@@ -490,7 +491,8 @@ sudo tee "$LABWC_DIR/rc.xml" > /dev/null <<'RCXML'
     </keybind>
   </keyboard>
   <windowRules>
-    <windowRule title="Yantrik*">
+    <!-- Exact title: the shell only. "Yantrik*" also caught every app titled "Yantrik ..." -->
+    <windowRule title="Yantrik OS">
       <action name="ToggleDecorations" />
       <action name="ToggleFullscreen" />
     </windowRule>

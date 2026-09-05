@@ -171,7 +171,7 @@ if [ -n "$COMPONENT" ]; then
     step "Building $name..."
     wsl.exe -d Ubuntu -- bash -lc \
         "cd /mnt/c/Users/sync/codes/yantrik-os && \
-         RUSTFLAGS=\"-A warnings\" CARGO_TARGET_DIR=$WSL_TARGET \
+         CARGO_TARGET_DIR=$WSL_TARGET \
          cargo build --release -p $name 2>&1" \
         || fail "Build failed for $name"
     ok "$name built successfully"
@@ -180,7 +180,7 @@ else
     step "Building all components..."
     wsl.exe -d Ubuntu -- bash -lc \
         "cd /mnt/c/Users/sync/codes/yantrik-os && \
-         RUSTFLAGS=\"-A warnings\" CARGO_TARGET_DIR=$WSL_TARGET \
+         CARGO_TARGET_DIR=$WSL_TARGET \
          cargo build --release -p yantrik-ui -p yantrik 2>&1" \
         || fail "Build failed"
     ok "All components built successfully"

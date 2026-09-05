@@ -94,7 +94,10 @@ url = "2"
 crossbeam-channel = "0.5"
 
 # UI
-slint = { version = "1.9", features = ["renderer-software"] }
+# Both renderers are compiled in; SLINT_BACKEND picks at runtime.
+# femtovg draws on the GPU (WSLg reaches the real adapter via GALLIUM_DRIVER=d3d12);
+# software is the fallback for hosts with no usable GL.
+slint = { version = "1.17", features = ["renderer-femtovg", "renderer-software"] }
 
 # System
 sysinfo = "0.33"
@@ -124,6 +127,35 @@ yantrik-brain = { path = "crates/yantrik-brain" }
 yantrikdb-core = { path = "../yantrikdb/crates/yantrikdb-core", package = "yantrikdb" }
 yantrik-ml = { git = "https://github.com/yantrikos/yantrik-ml.git" }
 yantrikdb-server = { path = "crates/yantrikdb-server" }
+
+# The workspace previously had no release profile at all, so release builds ran
+# with lto = false. Thin LTO is most of the win for a few percent of build time;
+# codegen-units is deliberately left at the default 16 rather than 1, because this
+# tree is rebuilt and redeployed constantly and serialising codegen would cost more
+# developer time than the extra few percent of runtime is worth.
+[profile.release]
+lto = "thin"
+
+# yantrik-ui-slint is one enormous generated module: 55k lines of .slint become a single
+# Rust crate that rustc chews through at ~14 GB RSS, and it is rebuilt on EVERY .slint edit.
+# Its code is glue — property bindings and layout — while the hot paths (rasterising, text,
+# layout solving) live in Slint's own runtime crates, which keep opt-level 3. Dropping the
+# generated crate to opt-level 1 costs nothing measurable at runtime and takes minutes off
+# every build; more codegen units let it spread across cores instead of one saturated one.
+[profile.release.package.yantrik-ui-slint]
+opt-level = 1
+codegen-units = 32
+
+# Iteration profile: `cargo build --profile fast`. Workspace crates unoptimised and
+# incremental (they are what changes); every dependency at opt-level 3 (they are what runs).
+# The software rasteriser lives in the deps, so a fast build still draws at release speed.
+[profile.fast]
+inherits = "dev"
+opt-level = 0
+debug = false
+incremental = true
+[profile.fast.package."*"]
+opt-level = 3
 
 # Only optimize LLM-critical deps in dev builds (candle, tokenizers).
 # Everything else compiles at opt-level 0 for faster debug builds.
