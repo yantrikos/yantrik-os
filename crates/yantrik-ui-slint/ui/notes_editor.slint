@@ -94,6 +94,8 @@ export component NotesEditor inherits Rectangle {
     in property <[NoteBacklink]> backlinks: [];
     in-out property <bool> backlinks-panel-open: false;
     callback find-backlinks();
+    /// Open a note by filename — how a backlink is followed.
+    callback open-note(string);
 
     // Meeting mode
     in property <bool> meeting-mode: false;
@@ -1126,7 +1128,7 @@ export component NotesEditor inherits Rectangle {
 
                                     for bl[idx] in root.backlinks : TouchArea {
                                         height: 24px;
-                                        clicked => { /* navigate to backlinked note */ }
+                                        clicked => { root.open-note(bl.filename); }
                                         Rectangle {
                                             height: 24px;
                                             border-radius: 4px;

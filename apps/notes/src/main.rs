@@ -227,6 +227,97 @@ fn template_content(template: &str) -> &'static str {
 
 // ── Wire all callbacks ───────────────────────────────────────────────
 
+/// Every `[[target]]` in the text, in order. `[[target|alias]]` yields `target`.
+///
+/// match_indices gives byte offsets at char boundaries, so the slicing below is safe on
+/// non-ASCII note bodies.
+fn wikilinks(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for (start, _) in text.match_indices("[[") {
+        let rest = &text[start + 2..];
+        if let Some(end) = rest.find("]]") {
+            let target = rest[..end].split('|').next().unwrap_or("").trim();
+            if !target.is_empty() && !target.contains('\n') {
+                out.push(target.to_string());
+            }
+        }
+    }
+    out
+}
+
+/// A link resolves by title or by filename, case-insensitively, with or without the extension —
+/// `[[Build times]]`, `[[build times]]` and `[[build-times.md]]` should all find the same note.
+fn link_key(s: &str) -> String {
+    s.trim().trim_end_matches(".md").to_lowercase()
+}
+
+/// The first `# ` heading names a note; the filename is only the fallback.
+fn title_of(content: &str, fname: &str) -> String {
+    content
+        .lines()
+        .find_map(|l| l.strip_prefix("# ").map(|t| t.trim().to_string()))
+        .filter(|t| !t.is_empty())
+        .unwrap_or_else(|| fname.trim_end_matches(".md").to_string())
+}
+
+/// Notes that link *to* `target_file`. Reads the vault each call: it is a flat directory of
+/// small files, and a stale link graph is worse than a slow one.
+fn backlinks_for(target_file: &str) -> Vec<NoteBacklink> {
+    let dir = notes_dir();
+    let target_content = std::fs::read_to_string(dir.join(target_file)).unwrap_or_default();
+    let keys = [
+        link_key(&title_of(&target_content, target_file)),
+        link_key(target_file),
+    ];
+
+    let mut out: Vec<NoteBacklink> = Vec::new();
+    let Ok(entries) = std::fs::read_dir(&dir) else { return out };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().map(|e| e != "md").unwrap_or(true) {
+            continue;
+        }
+        let fname = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+        // A note linking to itself is not a backlink.
+        if fname == target_file {
+            continue;
+        }
+        let content = std::fs::read_to_string(&path).unwrap_or_default();
+        if wikilinks(&content).iter().any(|l| keys.contains(&link_key(l))) {
+            out.push(NoteBacklink {
+                title: title_of(&content, &fname).into(),
+                filename: fname.into(),
+            });
+        }
+    }
+    out.sort_by_key(|b| b.title.to_lowercase());
+    out
+}
+
+/// Load a note into the editor. Shared by the list and by following a backlink.
+fn load_note(ui: &NotesApp, idx: i32, id: &str) {
+    if let Ok(note) = get_via_service(id) {
+        let wc = note.body.split_whitespace().count();
+        ui.set_current_content(note.body.into());
+        ui.set_current_title(note.title.into());
+        ui.set_current_tags(note.tags.join(", ").into());
+        ui.set_meta_word_count(wc as i32);
+        ui.set_meta_created(note.created_at.into());
+        ui.set_meta_modified(note.modified_at.into());
+    } else {
+        // Filesystem fallback
+        let path = notes_dir().join(id);
+        let content = std::fs::read_to_string(&path).unwrap_or_default();
+        let meta = read_meta(&path);
+        ui.set_current_title(title_of(&content, id).into());
+        ui.set_current_content(content.clone().into());
+        ui.set_current_tags(meta.tags.into());
+        ui.set_meta_word_count(content.split_whitespace().count() as i32);
+    }
+    ui.set_selected_index(idx);
+    ui.set_is_modified(false);
+}
+
 fn wire(app: &NotesApp) {
     let current_file: Rc<RefCell<String>> = Rc::new(RefCell::new(String::new()));
 
@@ -366,28 +457,10 @@ fn wire(app: &NotesApp) {
             let entry = model.row_data(idx as usize).unwrap();
             let id = entry.filename.to_string();
             *cf.borrow_mut() = id.clone();
-
-            if let Ok(note) = get_via_service(&id) {
-                let wc = note.body.split_whitespace().count();
-                ui.set_current_content(note.body.into());
-                ui.set_current_title(note.title.into());
-                ui.set_current_tags(note.tags.join(", ").into());
-                ui.set_meta_word_count(wc as i32);
-                ui.set_meta_created(note.created_at.into());
-                ui.set_meta_modified(note.modified_at.into());
-            } else {
-                // Filesystem fallback
-                let path = notes_dir().join(&id);
-                let content = std::fs::read_to_string(&path).unwrap_or_default();
-                let title = id.trim_end_matches(".md").to_string();
-                let meta = read_meta(&path);
-                ui.set_current_content(content.clone().into());
-                ui.set_current_title(title.into());
-                ui.set_current_tags(meta.tags.into());
-                ui.set_meta_word_count(content.split_whitespace().count() as i32);
+            load_note(&ui, idx, &id);
+            if ui.get_backlinks_panel_open() {
+                ui.set_backlinks(ModelRc::new(VecModel::from(backlinks_for(&id))));
             }
-            ui.set_selected_index(idx);
-            ui.set_is_modified(false);
         });
     }
 
@@ -544,7 +617,42 @@ fn wire(app: &NotesApp) {
     app.on_ai_dismiss(|| {});
     app.on_view_version(|_| {});
     app.on_restore_version(|_| {});
-    app.on_find_backlinks(|| {});
+    // ── Backlinks ──
+    {
+        let weak = app.as_weak();
+        let cf = current_file.clone();
+        app.on_find_backlinks(move || {
+            let Some(ui) = weak.upgrade() else { return };
+            let id = cf.borrow().clone();
+            if id.is_empty() {
+                return;
+            }
+            let found = backlinks_for(&id);
+            tracing::info!(note = %id, backlinks = found.len(), "Scanned vault for backlinks");
+            ui.set_backlinks(ModelRc::new(VecModel::from(found)));
+        });
+    }
+
+    // ── Follow a backlink ──
+    {
+        let weak = app.as_weak();
+        let cf = current_file.clone();
+        app.on_open_note(move |name| {
+            let Some(ui) = weak.upgrade() else { return };
+            let name = name.to_string();
+            let model = ui.get_notes_list();
+            for i in 0..model.row_count() {
+                let Some(entry) = model.row_data(i) else { continue };
+                if entry.filename.as_str() == name {
+                    *cf.borrow_mut() = name.clone();
+                    load_note(&ui, i as i32, &name);
+                    ui.set_backlinks(ModelRc::new(VecModel::from(backlinks_for(&name))));
+                    return;
+                }
+            }
+            tracing::warn!(note = %name, "Backlink target is not in the current list");
+        });
+    }
     app.on_toggle_meeting_mode(|| {});
     app.on_import_md(|| {});
 }
