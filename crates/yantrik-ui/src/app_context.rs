@@ -321,6 +321,7 @@ impl AppContext {
 
         // Set initial clock
         ui.set_clock_text(current_time_hhmm().into());
+        ui.set_date_text(current_date_short().into());
 
         // Ensure ~/.yantrik directory and cmd_log exist for ErrorCompanion
         if let Ok(home) = std::env::var("HOME") {
@@ -535,6 +536,16 @@ pub fn current_date_text() -> String {
     let month_name = month_names[mon as usize];
 
     format!("{}, {} {}", day_name, month_name, mday)
+}
+
+/// Short date for the status bar: "Thu 4 Sep". The long form belongs on the lock screen,
+/// where it is the only thing to read; on a 32px bar it is three words too many.
+pub fn current_date_short() -> String {
+    let (_, _, _, wday, mon, mday) = local_time();
+    let day = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][wday as usize];
+    let month = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+        [mon as usize];
+    format!("{day} {mday} {month}")
 }
 
 /// Convert days since Unix epoch to (year, month, day).

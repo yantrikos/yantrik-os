@@ -3,6 +3,7 @@
 // Follows the QuickSettings overlay pattern (backdrop + centered card).
 
 import { Theme } from "theme.slint";
+import { Icon, Icons } from "icon.slint";
 
 export component PowerMenu inherits Rectangle {
     in-out property <bool> is-open: false;
@@ -71,10 +72,11 @@ export component PowerMenu inherits Rectangle {
                         padding-left: 16px;
                         spacing: 14px;
 
-                        Text {
-                            text: "\u{1f512}";
-                            font-size: 18px;
-                            vertical-alignment: center;
+                        Icon {
+                            commands: Icons.lock;
+                            size: 18px;
+                            tint: Theme.text-secondary;
+                            y: (parent.height - self.height) / 2;
                         }
                         Text {
                             text: "Lock";
@@ -100,10 +102,11 @@ export component PowerMenu inherits Rectangle {
                         padding-left: 16px;
                         spacing: 14px;
 
-                        Text {
-                            text: "\u{1f4a4}";
-                            font-size: 18px;
-                            vertical-alignment: center;
+                        Icon {
+                            commands: Icons.moon;
+                            size: 18px;
+                            tint: Theme.text-secondary;
+                            y: (parent.height - self.height) / 2;
                         }
                         Text {
                             text: "Suspend";
@@ -131,10 +134,11 @@ export component PowerMenu inherits Rectangle {
                         padding-left: 16px;
                         spacing: 14px;
 
-                        Text {
-                            text: "\u{1f504}";
-                            font-size: 18px;
-                            vertical-alignment: center;
+                        Icon {
+                            commands: Icons.refresh;
+                            size: 18px;
+                            tint: Theme.text-secondary;
+                            y: (parent.height - self.height) / 2;
                         }
                         Text {
                             text: "Restart";
@@ -160,11 +164,11 @@ export component PowerMenu inherits Rectangle {
                         padding-left: 16px;
                         spacing: 14px;
 
-                        Text {
-                            text: "\u{23fb}";
-                            color: Theme.color-emotional;
-                            font-size: 18px;
-                            vertical-alignment: center;
+                        Icon {
+                            commands: Icons.power;
+                            size: 18px;
+                            tint: Theme.color-emotional;
+                            y: (parent.height - self.height) / 2;
                         }
                         Text {
                             text: "Shut Down";

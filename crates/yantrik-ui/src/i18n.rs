@@ -50,11 +50,29 @@ struct I18nInner {
     rtl: bool,
 }
 
+/// English strings, compiled into the binary as the floor of the fallback chain.
+const EMBEDDED_EN: &str = include_str!("../i18n/en.yaml");
+
 impl I18n {
     /// Load translations for a locale. Falls back to English for missing keys.
     pub fn load(locale: &str) -> Self {
         let base_dir = Self::i18n_dir();
-        let fallback = Self::load_yaml(&base_dir, "en");
+        let mut fallback = Self::load_yaml(&base_dir, "en");
+        // The English strings are compiled in. Without this, a binary run from anywhere the
+        // i18n directory is not (a target/ dir, a fresh VM, a broken deploy) fell all the way
+        // through to "return the key", and the desktop read `dock.apps` where it meant Apps.
+        // A translation system whose last resort is its own key names is not a fallback chain;
+        // it is a bug with a delay. The file on disk still wins when present, so translators
+        // and packagers keep their override path.
+        if fallback.is_empty() {
+            match serde_yaml::from_str::<HashMap<String, String>>(EMBEDDED_EN) {
+                Ok(map) => {
+                    tracing::info!(keys = map.len(), "Using embedded English translations");
+                    fallback = map;
+                }
+                Err(e) => tracing::error!(error = %e, "Embedded en.yaml failed to parse"),
+            }
+        }
         let strings = if locale == "en" {
             fallback.clone()
         } else {

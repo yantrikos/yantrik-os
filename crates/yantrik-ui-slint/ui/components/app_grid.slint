@@ -1,224 +1,266 @@
-// App Grid — full-screen app launcher overlay.
-// Shows all installed apps in a scrollable grid with search.
-// Triggered by Super+A or dock gesture.
+// App Grid — the launcher. Everything installed lives here, behind the taskbar's Apps button.
+//
+// Search on top, categories down the left, a grid of everything on the right. The categories
+// come straight from the freedesktop `Categories=` field the scanner already reads, so a new
+// .desktop file files itself. Icons are real where the icon theme has one and a stroke glyph
+// for the app's category where it does not — a labelled shape, never a letter in a box.
 
 import { Theme } from "theme.slint";
+import { Icon, Icons } from "icon.slint";
 
 export struct AppGridItem {
     app-id: string,
     name: string,
-    icon-char: string,
+    icon-char: string,   // legacy single-char badge; kept so older call sites still compile
+    icon: image,         // resolved from the icon theme, when it could be
+    has-icon: bool,
+    category: string,    // development | office | network | audiovideo | graphics | game | system | settings | utility
+}
+
+export struct CategoryItem {
+    id: string,
+    name: string,
+    count: int,
 }
 
 export component AppGrid inherits Rectangle {
     in-out property <bool> is-open: false;
     in property <[AppGridItem]> apps: [];
+    in property <[CategoryItem]> categories: [];
+    in property <string> active-category: "all";
 
     callback launch-app(string);
     callback close();
     callback search-changed(string);
+    callback category-selected(string);
 
     width: 100%;
     height: 100%;
 
-    property <int> columns: 4;
-    property <length> cell-size: 140px;
-    property <length> grid-width: root.columns * root.cell-size + (root.columns - 1) * 16px + 48px;
+    property <int> columns: 5;
+    property <length> cell-w: 118px;
+    property <length> cell-h: 96px;
+    property <length> cell-gap: 6px;
+    property <length> rail-w: 176px;
+    property <length> grid-w: root.columns * root.cell-w + (root.columns - 1) * root.cell-gap;
+    property <length> panel-w: root.rail-w + root.grid-w + 16px * 3;
 
     // Backdrop (click to close)
     if root.is-open : TouchArea {
         width: 100%;
         height: 100%;
         clicked => { root.is-open = false; root.close(); }
-
-        Rectangle {
-            width: 100%;
-            height: 100%;
-            background: Theme.overlay-backdrop;
-        }
+        Rectangle { width: 100%; height: 100%; background: Theme.overlay-backdrop; }
     }
 
-    // Centered panel
     if root.is-open : Rectangle {
-        x: (parent.width - root.grid-width) / 2;
-        y: (parent.height - panel-height) / 2;
         property <int> rows: (root.apps.length + root.columns - 1) / root.columns;
-        property <length> panel-height: min(self.rows * (root.cell-size + 12px) + 190px, parent.height - 80px);
-        width: root.grid-width;
-        height: panel-height;
-        background: Theme.bg-elevated;
-        border-radius: 16px;
+        property <length> panel-h: min(parent.height - 80px, max(360px, self.rows * (root.cell-h + root.cell-gap) + 150px));
+        x: (parent.width - root.panel-w) / 2;
+        y: (parent.height - self.panel-h) / 2;
+        width: root.panel-w;
+        height: self.panel-h;
+        background: Theme.bg-card;
+        border-radius: Theme.r-xl;
         border-width: 1px;
-        border-color: Theme.border-subtle;
-        drop-shadow-blur: 32px;
-        drop-shadow-color: Theme.overlay-shadow;
+        border-color: Theme.border-strong;
         clip: true;
 
-        // Block click-through
+        // Block click-through to the backdrop
         TouchArea { width: 100%; height: 100%; }
 
         VerticalLayout {
-            padding: 20px;
-            spacing: 12px;
+            spacing: 0;
 
-            // Header with recent apps row
-            Text {
-                text: "Applications";
-                color: Theme.text-primary;
-                font-size: Theme.fs-title-1;
-                font-weight: Theme.fw-title-1;
-                horizontal-alignment: center;
-            }
-
-            // Search bar — search-first layout
+            // ── Search ──
             Rectangle {
-                height: Theme.h-prominent;
-                background: Theme.bg-deep;
-                border-radius: Theme.r-lg;
-                border-width: 1px;
-                border-color: search-input.has-focus ? Theme.accent : Theme.border-subtle;
-                clip: true;
-
-                animate border-color { duration: Theme.dur-fast; }
+                height: 54px;
+                background: transparent;
+                Rectangle { y: parent.height - 1px; width: 100%; height: 1px; background: Theme.separator; }
 
                 HorizontalLayout {
-                    padding-left: Theme.sp-4;
-                    padding-right: Theme.sp-4;
-                    spacing: Theme.sp-2;
+                    padding-left: 18px;
+                    padding-right: 14px;
+                    spacing: Theme.sp-3;
 
-                    // Search icon
-                    Text {
-                        text: "⌕";
-                        color: search-input.has-focus ? Theme.accent : Theme.text-dim;
-                        font-size: Theme.fs-headline;
-                        vertical-alignment: center;
-                        animate color { duration: Theme.dur-fast; }
+                    Icon {
+                        commands: Icons.search;
+                        size: 16px;
+                        thickness: 1.7px;
+                        tint: search-input.has-focus ? Theme.accent : Theme.text-dim;
+                        y: (parent.height - self.height) / 2;
                     }
-
                     search-input := TextInput {
                         vertical-alignment: center;
                         font-size: Theme.fs-body;
                         color: Theme.text-primary;
                         horizontal-stretch: 1;
-
-                        edited => {
-                            root.search-changed(self.text);
-                        }
+                        edited => { root.search-changed(self.text); }
                     }
-
-                    // Result count badge
                     Rectangle {
-                        width: count-text.preferred-width + Theme.sp-3;
+                        width: esc.preferred-width + 12px;
                         height: 20px;
                         y: (parent.height - 20px) / 2;
-                        border-radius: Theme.r-pill;
-                        background: Theme.bg-elevated;
-
-                        count-text := Text {
-                            text: root.apps.length + " apps";
+                        border-radius: 4px;
+                        background: Theme.hover-fill;
+                        esc := Text {
+                            text: "esc";
                             color: Theme.text-dim;
-                            font-size: Theme.fs-caption;
+                            font-size: Theme.fs-micro;
                             horizontal-alignment: center;
                             vertical-alignment: center;
                         }
                     }
                 }
-            }
 
-            Rectangle { height: 1px; background: Theme.separator; }
-
-            // Empty state
-            if root.apps.length == 0 : VerticalLayout {
-                vertical-stretch: 1;
-                alignment: center;
-                spacing: Theme.sp-2;
-
-                Text {
-                    text: "📦";
-                    font-size: 40px;
-                    horizontal-alignment: center;
-                }
-                Text {
-                    text: "No apps found";
-                    color: Theme.text-secondary;
-                    font-size: Theme.fs-headline;
-                    font-weight: Theme.fw-headline;
-                    horizontal-alignment: center;
-                }
-                Text {
-                    text: "Try a different search term";
+                if search-input.text == "" : Text {
+                    x: 18px + 16px + Theme.sp-3;
+                    height: 100%;
+                    text: "Search " + root.apps.length + " applications";
                     color: Theme.text-dim;
-                    font-size: Theme.fs-caption;
-                    horizontal-alignment: center;
+                    font-size: Theme.fs-body;
+                    vertical-alignment: center;
                 }
             }
 
-            // Scrollable app grid
-            if root.apps.length > 0 : Flickable {
+            HorizontalLayout {
                 vertical-stretch: 1;
-                viewport-height: ((root.apps.length + root.columns - 1) / root.columns) * (root.cell-size + Theme.sp-3);
+                spacing: 0;
 
-                for app[idx] in root.apps : TouchArea {
-                    x: Math.mod(idx, root.columns) * (root.cell-size + Theme.sp-4) + Theme.sp-1;
-                    y: Math.floor(idx / root.columns) * (root.cell-size + Theme.sp-3);
-                    width: root.cell-size;
-                    height: root.cell-size;
+                // ── Categories ──
+                Rectangle {
+                    width: root.rail-w;
+                    background: transparent;
+                    Rectangle { x: parent.width - 1px; width: 1px; height: 100%; background: Theme.separator; }
 
-                    clicked => {
-                        root.launch-app(app.app-id);
-                        root.is-open = false;
-                        root.close();
-                    }
+                    VerticalLayout {
+                        padding: 10px;
+                        spacing: 1px;
+                        alignment: start;
 
-                    cell := Rectangle {
-                        width: 100%;
-                        height: 100%;
-                        border-radius: Theme.r-lg;
-                        background: parent.has-hover ? Theme.hover-fill : transparent;
-                        property <bool> hovered: parent.has-hover;
-                        animate background { duration: Theme.dur-fast; }
+                        for c in root.categories : cat := TouchArea {
+                            height: 30px;
+                            mouse-cursor: pointer;
+                            property <bool> active: c.id == root.active-category;
+                            clicked => { root.category-selected(c.id); }
 
-                        VerticalLayout {
-                            alignment: center;
-                            spacing: Theme.sp-2;
-                            padding: Theme.sp-3;
-
-                            // Icon badge — consistent canvas size
-                            HorizontalLayout {
-                                alignment: center;
-                                Rectangle {
-                                    width: 56px;
-                                    height: 56px;
-                                    border-radius: Theme.r-lg;
-                                    background: Theme.bg-card;
-                                    border-width: 1px;
-                                    border-color: cell.hovered ? Theme.accent-dim : Theme.border-subtle;
-                                    drop-shadow-blur: cell.hovered ? 8px : 0;
-                                    drop-shadow-color: Theme.accent-glow;
-
-                                    animate border-color { duration: Theme.dur-fast; }
-                                    animate drop-shadow-blur { duration: Theme.dur-normal; }
-
+                            Rectangle {
+                                width: 100%; height: 100%;
+                                border-radius: Theme.r-sm;
+                                background: cat.active ? Theme.hover-fill-strong
+                                          : cat.has-hover ? Theme.hover-fill
+                                          : transparent;
+                                HorizontalLayout {
+                                    padding-left: 10px;
+                                    padding-right: 10px;
+                                    spacing: 8px;
                                     Text {
-                                        text: app.icon-char;
-                                        color: cell.hovered ? Theme.accent : Theme.text-secondary;
-                                        font-size: 22px;
-                                        font-weight: 700;
-                                        horizontal-alignment: center;
+                                        text: c.name;
+                                        color: cat.active ? Theme.text-primary : Theme.text-secondary;
+                                        font-size: Theme.font-label;
+                                        font-weight: cat.active ? 500 : 400;
                                         vertical-alignment: center;
-                                        animate color { duration: Theme.dur-fast; }
+                                        horizontal-stretch: 1;
+                                    }
+                                    Text {
+                                        text: c.count;
+                                        color: Theme.text-dim;
+                                        font-size: Theme.fs-micro;
+                                        vertical-alignment: center;
                                     }
                                 }
                             }
+                        }
+                    }
+                }
 
-                            // App name — consistent label
-                            Text {
-                                text: app.name;
-                                color: Theme.text-primary;
-                                font-size: Theme.fs-caption;
-                                font-weight: Theme.fw-body-strong;
-                                horizontal-alignment: center;
-                                overflow: elide;
+                // ── Grid ──
+                VerticalLayout {
+                    horizontal-stretch: 1;
+                    padding: 16px;
+                    spacing: 10px;
+
+                    if root.apps.length == 0 : VerticalLayout {
+                        vertical-stretch: 1;
+                        alignment: center;
+                        spacing: Theme.sp-2;
+                        Text {
+                            text: "Nothing matches";
+                            color: Theme.text-secondary;
+                            font-size: Theme.fs-headline;
+                            font-weight: Theme.fw-headline;
+                            horizontal-alignment: center;
+                        }
+                        Text {
+                            text: "Try another word, or a different category.";
+                            color: Theme.text-dim;
+                            font-size: Theme.fs-caption;
+                            horizontal-alignment: center;
+                        }
+                    }
+
+                    if root.apps.length > 0 : Flickable {
+                        vertical-stretch: 1;
+                        viewport-height: ((root.apps.length + root.columns - 1) / root.columns) * (root.cell-h + root.cell-gap);
+
+                        for app[idx] in root.apps : cell := TouchArea {
+                            x: Math.mod(idx, root.columns) * (root.cell-w + root.cell-gap);
+                            y: Math.floor(idx / root.columns) * (root.cell-h + root.cell-gap);
+                            width: root.cell-w;
+                            height: root.cell-h;
+                            mouse-cursor: pointer;
+                            clicked => {
+                                root.launch-app(app.app-id);
+                                root.is-open = false;
+                                root.close();
+                            }
+
+                            Rectangle {
+                                width: 100%; height: 100%;
+                                border-radius: Theme.r-md;
+                                background: cell.has-hover ? Theme.hover-fill : transparent;
+
+                                VerticalLayout {
+                                    alignment: center;
+                                    spacing: 7px;
+                                    padding: 8px;
+
+                                    HorizontalLayout {
+                                        alignment: center;
+                                        Rectangle {
+                                            width: 44px;
+                                            height: 44px;
+                                            border-radius: Theme.r-md;
+                                            background: cell.has-hover ? Theme.bg-elevated : Theme.bg-surface;
+                                            border-width: 1px;
+                                            border-color: cell.has-hover ? Theme.border-strong : Theme.border-default;
+
+                                            if app.has-icon : Image {
+                                                source: app.icon;
+                                                width: 28px;
+                                                height: 28px;
+                                                x: (parent.width - self.width) / 2;
+                                                y: (parent.height - self.height) / 2;
+                                                image-fit: contain;
+                                            }
+                                            if !app.has-icon : Icon {
+                                                commands: Icons.app-or-category(app.app-id, app.category);
+                                                size: 22px;
+                                                tint: cell.has-hover ? Theme.text-primary : Theme.text-secondary;
+                                                x: (parent.width - self.width) / 2;
+                                                y: (parent.height - self.height) / 2;
+                                            }
+                                        }
+                                    }
+
+                                    Text {
+                                        text: app.name;
+                                        color: cell.has-hover ? Theme.text-primary : Theme.text-secondary;
+                                        font-size: Theme.fs-caption;
+                                        horizontal-alignment: center;
+                                        overflow: elide;
+                                    }
+                                }
                             }
                         }
                     }

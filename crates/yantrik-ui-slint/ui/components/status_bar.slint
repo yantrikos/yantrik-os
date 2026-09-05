@@ -1,12 +1,24 @@
-// StatusBar — 32px precision instrument panel.
-// 3-zone layout: Left (workspace/app context) | Center (AI ambient lane) | Right (indicators + clock)
-// Design: calm, quiet, precise. No continuous animations, no glows.
-// AI presence via a small accent dot — dormant/available/active states.
+// StatusBar — the whole machine on one 32px line.
+//
+// 3-zone layout: Left (AI dot + project) | Center (AI context lane) | Right (load, model,
+// network, badges, power, clock+date).
+//
+// Two rules this file follows that its predecessor did not:
+//   1. No emoji. Every glyph is a stroke Icon, so it scales, recolours, and does not depend
+//      on whichever emoji font the host happens to have.
+//   2. Nothing below 11px. The old bar set its most important labels at 8px and 9px, which
+//      reads as decoration rather than information. A status bar is read in a glance from
+//      arm's length; Theme.fs-micro (11px) is the floor.
+//
+// No continuous animation. The thinking pulse is the only motion and it runs only while
+// the companion is actually thinking.
 
 import { Theme } from "theme.slint";
+import { Icon, Icons } from "icon.slint";
 
 export component StatusBar inherits Rectangle {
     in property <string> clock-text: "00:00";
+    in property <string> date-text: "";
     in property <string> companion-status: "idle";       // idle, thinking, listening
     in property <bool> companion-online: true;
     in property <bool> battery-available: false;
@@ -23,7 +35,10 @@ export component StatusBar inherits Rectangle {
     in property <string> ai-provider-label: "";
     in property <string> ai-fallback-banner: "";
     // V63 — AI context lane
-    in property <string> ai-context-text: "";             // Center lane: "Processing...", "2 suggestions", etc.
+    in property <string> ai-context-text: "";
+    // Load readout — set from Rust on every observer poll, regardless of screen
+    in property <int> cpu-percent: 0;
+    in property <string> mem-text: "";
 
     callback anchor-clicked();
     callback queue-clicked();
@@ -44,8 +59,8 @@ export component StatusBar inherits Rectangle {
     }
 
     HorizontalLayout {
-        padding-left: Theme.sp-4;
-        padding-right: Theme.sp-4;
+        padding-left: Theme.sp-3;
+        padding-right: Theme.sp-3;
 
         // ── LEFT ZONE: AI dot + Project context ──
         HorizontalLayout {
@@ -53,7 +68,7 @@ export component StatusBar inherits Rectangle {
             spacing: Theme.sp-3;
             alignment: start;
 
-            // AI status dot — 6px, simple state-based coloring
+            // AI status dot — 6px, state-coloured; the only thing on the bar that ever moves
             TouchArea {
                 width: 24px;
                 height: Theme.status-bar-height;
@@ -69,13 +84,11 @@ export component StatusBar inherits Rectangle {
                     background: !root.companion-online ? Theme.color-danger
                               : root.companion-status == "thinking" ? Theme.accent
                               : root.companion-status == "listening" ? Theme.accent-light
-                              : Theme.text-dim;  // dormant: neutral
+                              : Theme.text-dim;
 
-                    // Gentle pulse only when actively thinking
                     opacity: root.companion-status == "thinking" ? ai-pulse-opacity : 1.0;
                     property <float> ai-pulse-opacity: 0.6;
                     animate ai-pulse-opacity { duration: 2000ms; }
-                    // Pulse driven by timer only when thinking
                     Timer {
                         interval: 2000ms;
                         running: root.companion-status == "thinking";
@@ -91,7 +104,7 @@ export component StatusBar inherits Rectangle {
             // Project indicator
             if root.active-project != "" : Rectangle {
                 width: proj-text.preferred-width + Theme.sp-3;
-                height: 18px;
+                height: 20px;
                 y: (Theme.status-bar-height - self.height) / 2;
                 border-radius: Theme.r-pill;
                 background: Theme.tint-accent;
@@ -114,7 +127,6 @@ export component StatusBar inherits Rectangle {
             horizontal-stretch: 1;
             alignment: center;
 
-            // Show AI context only when there's something to say
             if root.ai-context-text != "" : Text {
                 text: root.ai-context-text;
                 color: Theme.text-dim;
@@ -127,13 +139,49 @@ export component StatusBar inherits Rectangle {
             }
         }
 
-        // ── RIGHT ZONE: Badges + Indicators + Clock ──
+        // ── RIGHT ZONE: load | model | network | badges | power | clock ──
         HorizontalLayout {
             horizontal-stretch: 1;
             spacing: Theme.sp-3;
             alignment: end;
 
-            // AI Privacy badge
+            // Load readout — CPU and memory, always visible
+            HorizontalLayout {
+                spacing: Theme.sp-2;
+                Text {
+                    text: "CPU";
+                    color: Theme.text-dim;
+                    font-size: Theme.fs-micro;
+                    font-weight: Theme.fw-micro;
+                    vertical-alignment: center;
+                }
+                Text {
+                    text: root.cpu-percent + "%";
+                    color: root.cpu-percent >= 90 ? Theme.color-warning : Theme.text-secondary;
+                    font-size: Theme.fs-micro;
+                    font-weight: 500;
+                    vertical-alignment: center;
+                    min-width: 26px;
+                }
+                Text {
+                    text: "MEM";
+                    color: Theme.text-dim;
+                    font-size: Theme.fs-micro;
+                    font-weight: Theme.fw-micro;
+                    vertical-alignment: center;
+                }
+                Text {
+                    text: root.mem-text;
+                    color: Theme.text-secondary;
+                    font-size: Theme.fs-micro;
+                    font-weight: 500;
+                    vertical-alignment: center;
+                }
+            }
+
+            Rectangle { width: 1px; height: 14px; y: (parent.height - 14px) / 2; background: Theme.separator; }
+
+            // AI privacy / model badge
             TouchArea {
                 width: ai-priv-row.preferred-width + Theme.sp-3;
                 height: Theme.status-bar-height;
@@ -142,71 +190,38 @@ export component StatusBar inherits Rectangle {
 
                 Rectangle {
                     width: parent.width;
-                    height: 18px;
-                    y: (parent.height - 18px) / 2;
-                    border-radius: Theme.r-pill;
-                    background: root.ai-privacy-mode == "local" ? Theme.color-success.transparentize(92%)
-                              : root.ai-privacy-mode == "cloud" ? Theme.holo-blue.transparentize(92%)
-                              : Theme.color-warning.transparentize(92%);
-                    border-width: 1px;
-                    border-color: root.ai-privacy-mode == "local" ? Theme.color-success.transparentize(81%)
-                                : root.ai-privacy-mode == "cloud" ? Theme.holo-blue.transparentize(81%)
-                                : Theme.color-warning.transparentize(81%);
+                    height: 20px;
+                    y: (parent.height - 20px) / 2;
+                    border-radius: Theme.r-sm;
+                    background: Theme.hover-fill;
 
                     ai-priv-row := HorizontalLayout {
-                        padding-left: 6px;
-                        padding-right: 6px;
-                        spacing: 3px;
+                        padding-left: 7px;
+                        padding-right: 7px;
+                        spacing: 5px;
                         alignment: center;
 
-                        Text {
-                            text: root.ai-privacy-mode == "local" ? "🔒"
-                                : root.ai-privacy-mode == "cloud" ? "☁"
-                                : "🔄";
-                            font-size: 8px;
-                            vertical-alignment: center;
+                        Icon {
+                            commands: root.ai-privacy-mode == "local" ? Icons.lock
+                                    : root.ai-privacy-mode == "cloud" ? Icons.cloud
+                                    : Icons.hybrid;
+                            size: 12px;
+                            tint: root.ai-privacy-mode == "local" ? Theme.color-success
+                                : root.ai-privacy-mode == "cloud" ? Theme.holo-blue
+                                : Theme.color-warning;
+                            y: (parent.height - self.height) / 2;
                         }
+                        // The model name when we know it; the mode when we do not
                         Text {
-                            text: root.ai-privacy-mode == "local" ? "Local"
+                            text: root.ai-provider-label != "" ? root.ai-provider-label
+                                : root.ai-privacy-mode == "local" ? "Local"
                                 : root.ai-privacy-mode == "cloud" ? "Cloud"
                                 : "Hybrid";
-                            color: root.ai-privacy-mode == "local" ? Theme.color-success
-                                 : root.ai-privacy-mode == "cloud" ? Theme.holo-blue
-                                 : Theme.color-warning;
-                            font-size: 8px;
-                            font-weight: 600;
+                            color: Theme.text-secondary;
+                            font-size: Theme.fs-micro;
+                            font-weight: 500;
                             vertical-alignment: center;
                         }
-                    }
-                }
-            }
-
-            // Power button
-            TouchArea {
-                width: 24px;
-                height: Theme.status-bar-height;
-                mouse-cursor: pointer;
-                property <bool> hovered: self.has-hover;
-                clicked => { root.power-pressed(); }
-
-                Rectangle {
-                    x: (parent.width - 18px) / 2;
-                    y: (parent.height - 18px) / 2;
-                    width: 18px;
-                    height: 18px;
-                    border-radius: 9px;
-                    background: parent.hovered ? Theme.hover-fill : transparent;
-                    border-width: 1px;
-                    border-color: parent.hovered ? Theme.text-secondary : Theme.border-default;
-                    animate background { duration: Theme.dur-fast; }
-                    animate border-color { duration: Theme.dur-fast; }
-
-                    Text {
-                        text: "⏻";
-                        color: Theme.text-dim;
-                        font-size: 10px;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
                     }
                 }
             }
@@ -219,9 +234,9 @@ export component StatusBar inherits Rectangle {
                 clicked => { root.whisper-hint-clicked(); }
 
                 whisper-badge := Rectangle {
-                    width: max(18px, whisper-text.preferred-width + 10px);
-                    height: 18px;
-                    y: (parent.height - 18px) / 2;
+                    width: max(20px, whisper-text.preferred-width + 10px);
+                    height: 20px;
+                    y: (parent.height - 20px) / 2;
                     border-radius: Theme.r-pill;
                     background: Theme.accent-dim;
 
@@ -239,15 +254,15 @@ export component StatusBar inherits Rectangle {
             // Incognito badge
             if root.incognito-enabled : Rectangle {
                 width: inc-text.preferred-width + 10px;
-                height: 18px;
-                y: (Theme.status-bar-height - 18px) / 2;
-                border-radius: Theme.r-pill;
+                height: 20px;
+                y: (Theme.status-bar-height - 20px) / 2;
+                border-radius: Theme.r-sm;
                 background: Theme.color-danger-dim;
 
                 inc-text := Text {
                     text: "INC";
                     color: Theme.color-danger;
-                    font-size: 8px;
+                    font-size: Theme.fs-micro;
                     font-weight: 700;
                     letter-spacing: 0.5px;
                     horizontal-alignment: center;
@@ -258,15 +273,15 @@ export component StatusBar inherits Rectangle {
             // DND badge
             if root.dnd-enabled : Rectangle {
                 width: dnd-text.preferred-width + 10px;
-                height: 18px;
-                y: (Theme.status-bar-height - 18px) / 2;
-                border-radius: Theme.r-pill;
+                height: 20px;
+                y: (Theme.status-bar-height - 20px) / 2;
+                border-radius: Theme.r-sm;
                 background: Theme.color-warning-dim;
 
                 dnd-text := Text {
                     text: "DND";
                     color: Theme.color-warning;
-                    font-size: 8px;
+                    font-size: Theme.fs-micro;
                     font-weight: 700;
                     letter-spacing: 0.5px;
                     horizontal-alignment: center;
@@ -282,9 +297,9 @@ export component StatusBar inherits Rectangle {
                 clicked => { root.queue-clicked(); }
 
                 queue-badge := Rectangle {
-                    width: max(18px, queue-text.preferred-width + 10px);
-                    height: 18px;
-                    y: (parent.height - 18px) / 2;
+                    width: max(20px, queue-text.preferred-width + 10px);
+                    height: 20px;
+                    y: (parent.height - 20px) / 2;
                     border-radius: Theme.r-pill;
                     background: Theme.amber-dim;
 
@@ -299,7 +314,7 @@ export component StatusBar inherits Rectangle {
                 }
             }
 
-            // WiFi + Battery → opens Quick Settings
+            // Network + Battery → opens Quick Settings
             TouchArea {
                 height: Theme.status-bar-height;
                 mouse-cursor: pointer;
@@ -308,17 +323,16 @@ export component StatusBar inherits Rectangle {
                 HorizontalLayout {
                     spacing: Theme.sp-2;
 
-                    // WiFi indicator — simple icon
-                    Text {
-                        text: root.wifi-connected ? "📶" : "📵";
-                        color: root.wifi-connected ? Theme.text-secondary : Theme.text-dim;
-                        font-size: 11px;
-                        vertical-alignment: center;
+                    Icon {
+                        commands: Icons.wifi;
+                        size: 13px;
+                        tint: root.wifi-connected ? Theme.color-success : Theme.text-dim;
+                        y: (parent.height - self.height) / 2;
                     }
 
                     // Battery (when hardware present)
                     if root.battery-available : HorizontalLayout {
-                        spacing: 3px;
+                        spacing: 4px;
 
                         Rectangle {
                             width: 20px;
@@ -329,7 +343,6 @@ export component StatusBar inherits Rectangle {
                             border-color: root.battery-level <= 20 ? Theme.color-danger : Theme.text-dim;
                             background: transparent;
 
-                            // Fill bar
                             Rectangle {
                                 x: 1.5px; y: 1.5px;
                                 width: max(0px, (parent.width - 5px) * root.battery-level / 100);
@@ -341,7 +354,6 @@ export component StatusBar inherits Rectangle {
                                           : Theme.text-secondary;
                             }
 
-                            // Terminal nub
                             Rectangle {
                                 x: parent.width;
                                 y: 2.5px;
@@ -355,19 +367,41 @@ export component StatusBar inherits Rectangle {
                         Text {
                             text: root.battery-level + "%";
                             color: root.battery-level <= 20 ? Theme.color-danger : Theme.text-dim;
-                            font-size: 9px;
+                            font-size: Theme.fs-micro;
                             vertical-alignment: center;
                         }
                     }
                 }
             }
 
-            // Clock — right-most element
+            // Power
+            TouchArea {
+                width: 22px;
+                height: Theme.status-bar-height;
+                mouse-cursor: pointer;
+                clicked => { root.power-pressed(); }
+
+                Icon {
+                    commands: Icons.power;
+                    size: 13px;
+                    tint: parent.has-hover ? Theme.text-primary : Theme.text-dim;
+                    x: (parent.width - self.width) / 2;
+                    y: (parent.height - self.height) / 2;
+                }
+            }
+
+            // Clock + date — right-most
             Text {
                 text: root.clock-text;
-                color: Theme.text-secondary;
+                color: Theme.text-primary;
                 font-size: Theme.fs-caption;
                 font-weight: Theme.fw-body-strong;
+                vertical-alignment: center;
+            }
+            if root.date-text != "" : Text {
+                text: root.date-text;
+                color: Theme.text-dim;
+                font-size: Theme.fs-caption;
                 vertical-alignment: center;
             }
         }

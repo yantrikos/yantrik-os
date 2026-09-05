@@ -417,14 +417,14 @@ pub fn wire(ui: &App, ctx: &AppContext) {
 
     // Settings search (sidebar category filtering)
     let all_cats: Vec<SettingsCategoryItem> = vec![
-        SettingsCategoryItem { icon: "\u{25D0}".into(), label: "Appearance".into(), id: 0 },
-        SettingsCategoryItem { icon: "\u{25C9}".into(), label: "AI & Intelligence".into(), id: 1 },
-        SettingsCategoryItem { icon: "\u{25A3}".into(), label: "Desktop".into(), id: 2 },
-        SettingsCategoryItem { icon: "\u{25CE}".into(), label: "Network".into(), id: 3 },
-        SettingsCategoryItem { icon: "\u{1F517}".into(), label: "Accounts".into(), id: 4 },
-        SettingsCategoryItem { icon: "\u{2298}".into(), label: "Privacy & Security".into(), id: 5 },
-        SettingsCategoryItem { icon: "\u{2299}".into(), label: "System".into(), id: 6 },
-        SettingsCategoryItem { icon: "\u{26A1}".into(), label: "Skills".into(), id: 7 },
+        SettingsCategoryItem { icon: "".into(), label: "Appearance".into(), id: 0 },
+        SettingsCategoryItem { icon: "".into(), label: "AI & Intelligence".into(), id: 1 },
+        SettingsCategoryItem { icon: "".into(), label: "Desktop".into(), id: 2 },
+        SettingsCategoryItem { icon: "".into(), label: "Network".into(), id: 3 },
+        SettingsCategoryItem { icon: "".into(), label: "Accounts".into(), id: 4 },
+        SettingsCategoryItem { icon: "".into(), label: "Privacy & Security".into(), id: 5 },
+        SettingsCategoryItem { icon: "".into(), label: "System".into(), id: 6 },
+        SettingsCategoryItem { icon: "".into(), label: "Skills".into(), id: 7 },
     ];
     // Push initial categories
     ui.set_settings_categories(ModelRc::new(VecModel::from(all_cats.clone())));

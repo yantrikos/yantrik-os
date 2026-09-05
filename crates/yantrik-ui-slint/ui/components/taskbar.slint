@@ -1,0 +1,214 @@
+// Taskbar — launcher, open windows, a few pins, the companion.
+//
+// Replaces the centred dock on the desktop. The difference that matters is what the bar
+// COUNTS: a dock grows with applications installed (49 .desktop files scanned at boot, and
+// climbing), a taskbar grows with windows open. One of those is bounded by what the person
+// is actually doing; the other is not. Everything installed lives behind the launcher button.
+//
+// Layout, left to right:
+//   [⊞ Apps] │ window │ window │ window …            │ pin pin pin pin │ [● Companion 2]
+//
+// Windows come from the compositor (wlrctl toplevel list via windows.rs) already refreshed on
+// the 3s poll; the first entry is the most recently focused, and is drawn as active. Pins are
+// the first few dock items, icon-only, so a handful cost almost no width.
+//
+// Deliberately no hover-lift, no glow, no per-item animation: this bar is looked at hundreds
+// of times a day and should be still.
+
+import { Theme } from "theme.slint";
+import { Icon, Icons } from "icon.slint";
+import { DockItem } from "app_dock.slint";
+import { WindowItem } from "window_switcher.slint";
+
+export component Taskbar inherits Rectangle {
+    in property <[WindowItem]> windows: [];
+    in property <[DockItem]> pins: [];
+    /// How many of `pins` to show. The dock list carries every built-in app; a taskbar wants a few.
+    in property <int> pin-count: 6;
+    in property <string> launcher-label: "Apps";
+    in property <int> companion-count: 0;
+    in property <bool> companion-online: true;
+    in property <string> companion-status: "idle";
+
+    callback open-launcher();
+    callback activate-window(string);
+    callback launch-app(string);
+    callback open-companion();
+
+    height: 40px;
+    background: Theme.bg-surface;
+
+    // Top edge
+    Rectangle { y: 0; width: 100%; height: 1px; background: Theme.separator; }
+
+    HorizontalLayout {
+        padding-left: Theme.sp-2;
+        padding-right: Theme.sp-2;
+        padding-top: 4px;
+        padding-bottom: 4px;
+        spacing: Theme.sp-2;
+
+        // ── Launcher ──
+        launcher := TouchArea {
+            width: launcher-row.preferred-width + 20px;
+            mouse-cursor: pointer;
+            clicked => { root.open-launcher(); }
+
+            Rectangle {
+                width: 100%; height: 100%;
+                border-radius: Theme.r-sm;
+                background: launcher.pressed ? Theme.accent-dim
+                          : launcher.has-hover ? Theme.accent-light
+                          : Theme.accent;
+
+                launcher-row := HorizontalLayout {
+                    alignment: center;
+                    spacing: 7px;
+                    Icon { commands: Icons.apps; tint: Theme.bg-deep; thickness: 1.8px; y: (parent.height - self.height) / 2; }
+                    Text {
+                        text: root.launcher-label;
+                        color: Theme.bg-deep;
+                        font-size: Theme.font-label;
+                        font-weight: 600;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+        }
+
+        Rectangle { width: 1px; height: 20px; y: (parent.height - 20px) / 2; background: Theme.separator; }
+
+        // ── Open windows ──
+        HorizontalLayout {
+            horizontal-stretch: 1;
+            alignment: start;
+            spacing: 3px;
+
+            for w[i] in root.windows : win := TouchArea {
+                property <bool> is-active: i == 0;
+                width: min(220px, win-row.preferred-width + 22px);
+                mouse-cursor: pointer;
+                clicked => { root.activate-window(w.title); }
+
+                Rectangle {
+                    width: 100%; height: 100%;
+                    border-radius: Theme.r-sm;
+                    background: win.is-active ? Theme.hover-fill-strong
+                              : win.has-hover ? Theme.hover-fill
+                              : transparent;
+                    clip: true;
+
+                    // Active underline — the one piece of state on the bar
+                    Rectangle {
+                        y: parent.height - 2px;
+                        width: 100%; height: 2px;
+                        background: win.is-active ? Theme.accent : transparent;
+                    }
+
+                    win-row := HorizontalLayout {
+                        padding-left: 10px;
+                        padding-right: 10px;
+                        spacing: 8px;
+                        Icon {
+                            commands: Icons.app-or-window(w.app-id);
+                            size: 14px;
+                            tint: win.is-active ? Theme.text-primary : Theme.text-secondary;
+                            y: (parent.height - self.height) / 2;
+                        }
+                        Text {
+                            text: w.title;
+                            color: win.is-active ? Theme.text-primary : Theme.text-secondary;
+                            font-size: Theme.fs-caption;
+                            font-weight: win.is-active ? 500 : 400;
+                            vertical-alignment: center;
+                            overflow: elide;
+                            max-width: 170px;
+                        }
+                    }
+                }
+            }
+        }
+
+        Rectangle { width: 1px; height: 20px; y: (parent.height - 20px) / 2; background: Theme.separator; }
+
+        // ── Pins (icon only) ──
+        HorizontalLayout {
+            spacing: 1px;
+            for p[i] in root.pins : pin := TouchArea {
+                // Items past pin-count collapse to nothing rather than being filtered out:
+                // a `for` cannot skip, and a zero-width cell costs only the 1px spacing.
+                width: i < root.pin-count ? 32px : 0px;
+                visible: i < root.pin-count;
+                mouse-cursor: pointer;
+                clicked => { root.launch-app(p.app-id); }
+
+                Rectangle {
+                    width: 100%; height: 100%;
+                    border-radius: Theme.r-sm;
+                    background: pin.has-hover ? Theme.hover-fill : transparent;
+                    clip: true;
+
+                    Icon {
+                        commands: Icons.app-or-window(p.app-id);
+                        size: 17px;
+                        tint: pin.has-hover ? Theme.text-primary : Theme.text-secondary;
+                        x: (parent.width - self.width) / 2;
+                        y: (parent.height - self.height) / 2;
+                    }
+
+                    // Running: a 3px mark under the icon
+                    if p.is-running : Rectangle {
+                        x: (parent.width - 10px) / 2;
+                        y: parent.height - 3px;
+                        width: 10px; height: 3px;
+                        border-radius: 1.5px;
+                        background: Theme.accent;
+                    }
+                }
+            }
+        }
+
+        Rectangle { width: 1px; height: 20px; y: (parent.height - 20px) / 2; background: Theme.separator; }
+
+        // ── Companion ──
+        comp := TouchArea {
+            width: comp-row.preferred-width + 22px;
+            mouse-cursor: pointer;
+            clicked => { root.open-companion(); }
+
+            Rectangle {
+                width: 100%; height: 100%;
+                border-radius: Theme.r-sm;
+                border-width: 1px;
+                border-color: comp.has-hover ? Theme.border-strong : Theme.border-default;
+                background: comp.has-hover ? Theme.hover-fill : transparent;
+
+                comp-row := HorizontalLayout {
+                    alignment: center;
+                    spacing: 7px;
+                    Rectangle {
+                        width: 6px; height: 6px;
+                        y: (parent.height - 6px) / 2;
+                        border-radius: 3px;
+                        background: !root.companion-online ? Theme.color-danger
+                                  : root.companion-status == "thinking" ? Theme.accent-light
+                                  : Theme.accent;
+                    }
+                    Text {
+                        text: "Companion";
+                        color: Theme.text-primary;
+                        font-size: Theme.fs-caption;
+                        vertical-alignment: center;
+                    }
+                    if root.companion-count > 0 : Text {
+                        text: root.companion-count;
+                        color: Theme.accent;
+                        font-size: Theme.fs-micro;
+                        font-weight: 600;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+        }
+    }
+}

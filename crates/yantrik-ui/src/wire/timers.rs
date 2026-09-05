@@ -26,6 +26,7 @@ fn wire_clock(ui: &App, user_name: &str) {
     timer.start(TimerMode::Repeated, Duration::from_secs(30), move || {
         if let Some(ui) = ui_weak.upgrade() {
             ui.set_clock_text(app_context::current_time_hhmm().into());
+            ui.set_date_text(app_context::current_date_short().into());
             ui.set_greeting_text(
                 format!("{}, {}", app_context::time_of_day_greeting(), name).into(),
             );

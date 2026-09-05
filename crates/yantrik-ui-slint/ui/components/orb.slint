@@ -24,16 +24,20 @@ export component Orb inherits Rectangle {
     background: transparent;
 
     // Master animation phase (0.0 → 1.0, loops)
+    // Ambient animation budget in ms per tick; 0 disables. See app.slint.
+    in property <int> ambient-interval-ms: 16;
+    property <float> tick-scale: max(16, ambient-interval-ms) / 16.0;
+
     property <float> phase: 0;
     // Secondary phase for independent slow effects
     property <float> phase2: 0;
 
     Timer {
-        interval: 16ms;
-        running: true;
+        interval: max(16, root.ambient-interval-ms) * 1ms;
+        running: root.ambient-interval-ms > 0;
         triggered => {
-            phase = mod(phase + (is-thinking ? 0.007 : 0.0025), 1.0);
-            phase2 = mod(phase2 + 0.0012, 1.0);
+            phase = mod(phase + (is-thinking ? 0.007 : 0.0025) * root.tick-scale, 1.0);
+            phase2 = mod(phase2 + 0.0012 * root.tick-scale, 1.0);
         }
     }
 

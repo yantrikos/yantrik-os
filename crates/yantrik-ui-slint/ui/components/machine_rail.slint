@@ -1,0 +1,193 @@
+// MachineRail — the right-hand rail: what the machine and the companion are doing.
+//
+// Load meters, the out-of-process services and their state, and the companion's own
+// vitals. Every value here is already produced somewhere in the shell (the observer poll,
+// the service manager, the bond system); this is the first place they are all visible at
+// once without opening a dashboard.
+//
+// Still by design: no easing on the meters. A bar that animates towards its value reads as
+// motion when the value is actually flat, and this rail is glanced at, not watched.
+
+import { Theme } from "theme.slint";
+import { Icon, Icons } from "icon.slint";
+
+export struct ServiceItem {
+    id: string,
+    status: string,   // running | starting | stopped | failed
+    note: string,     // short right-hand detail: "up", "autostart", an error
+}
+
+component SectionLabel inherits Text {
+    color: Theme.text-dim;
+    font-size: Theme.fs-micro;
+    font-weight: Theme.fw-micro;
+    letter-spacing: 1px;
+}
+
+component Meter inherits VerticalLayout {
+    vertical-stretch: 0;
+    in property <string> name;
+    in property <string> value-text;
+    in property <int> percent: 0;
+    in property <color> tone: Theme.accent;
+
+    spacing: 4px;
+    padding-bottom: 9px;
+
+    HorizontalLayout {
+        Text {
+            text: root.name;
+            color: Theme.text-secondary;
+            font-size: Theme.fs-caption;
+            horizontal-stretch: 1;
+            vertical-alignment: center;
+        }
+        Text {
+            text: root.value-text;
+            color: Theme.text-primary;
+            font-size: Theme.fs-caption;
+            font-weight: 500;
+            horizontal-alignment: right;
+            vertical-alignment: center;
+        }
+    }
+    Rectangle {
+        height: 3px;
+        border-radius: 1.5px;
+        background: Theme.border-strong;
+        Rectangle {
+            x: 0;
+            height: 3px;
+            width: parent.width * max(0, min(100, root.percent)) / 100;
+            border-radius: 1.5px;
+            background: root.tone;
+        }
+    }
+}
+
+component KeyValue inherits HorizontalLayout {
+    vertical-stretch: 0;
+    in property <string> key;
+    in property <string> value;
+    in property <color> value-color: Theme.text-primary;
+    spacing: Theme.sp-2;
+    Text {
+        text: root.key;
+        color: Theme.text-secondary;
+        font-size: Theme.fs-caption;
+        horizontal-stretch: 1;
+        vertical-alignment: center;
+    }
+    Text {
+        text: root.value;
+        color: root.value-color;
+        font-size: Theme.fs-caption;
+        font-weight: 500;
+        horizontal-alignment: right;
+        vertical-alignment: center;
+        overflow: elide;
+        max-width: 160px;
+    }
+}
+
+export component MachineRail inherits Rectangle {
+    in property <int> cpu-percent: 0;
+    in property <int> mem-percent: 0;
+    in property <string> mem-text: "";
+    in property <int> swap-percent: 0;
+    in property <string> swap-text: "";
+    in property <int> disk-percent: 0;
+    in property <string> disk-text: "";
+    in property <[ServiceItem]> services: [];
+    in property <string> bond-level: "Stranger";
+    in property <float> bond-score: 0.0;
+    in property <bool> companion-online: true;
+    in property <string> companion-status: "idle";
+    in property <string> provider-label: "";
+    in property <int> memory-count: 0;
+    in property <int> whisper-count: 0;
+
+    width: 318px;
+    background: Theme.bg-deep.transparentize(28%);
+
+    Rectangle { x: 0; width: 1px; height: 100%; background: Theme.separator; }
+
+    VerticalLayout {
+        padding: Theme.sp-4;
+        spacing: 0;
+
+        SectionLabel { text: "LOAD"; }
+        Rectangle { height: 9px; }
+        Meter { name: "CPU";    value-text: root.cpu-percent + "%"; percent: root.cpu-percent;
+                tone: root.cpu-percent >= 90 ? Theme.color-warning : Theme.accent; }
+        Meter { name: "Memory"; value-text: root.mem-text;  percent: root.mem-percent;
+                tone: root.mem-percent >= 90 ? Theme.color-warning : Theme.accent; }
+        Meter { name: "Swap";   value-text: root.swap-text; percent: root.swap-percent;
+                tone: root.swap-percent > 0 ? Theme.color-warning : Theme.color-success; }
+        Meter { name: "Disk";   value-text: root.disk-text; percent: root.disk-percent;
+                tone: root.disk-percent >= 90 ? Theme.color-danger : Theme.text-secondary; }
+
+        Rectangle { height: 1px; background: Theme.separator; }
+        Rectangle { height: Theme.sp-3; }
+
+        SectionLabel { text: "SERVICES"; }
+        Rectangle { height: 6px; }
+        if root.services.length == 0 : Text {
+            text: "No services registered.";
+            color: Theme.text-dim;
+            font-size: Theme.fs-caption;
+        }
+        for s in root.services : HorizontalLayout {
+            height: 24px;
+            spacing: 9px;
+            Rectangle {
+                width: 6px; height: 6px;
+                y: (parent.height - 6px) / 2;
+                border-radius: 3px;
+                background: s.status == "running"  ? Theme.color-success
+                          : s.status == "starting" ? Theme.color-warning
+                          : s.status == "failed"   ? Theme.color-danger
+                          : Theme.text-dim;
+            }
+            Text {
+                text: s.id;
+                color: s.status == "stopped" ? Theme.text-secondary : Theme.text-primary;
+                font-size: Theme.fs-caption;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+                overflow: elide;
+            }
+            Text {
+                text: s.note;
+                color: s.status == "failed" ? Theme.color-danger : Theme.text-dim;
+                font-size: Theme.fs-micro;
+                vertical-alignment: center;
+                overflow: elide;
+                max-width: 110px;
+            }
+        }
+
+        Rectangle { height: Theme.sp-3; }
+        Rectangle { height: 1px; background: Theme.separator; }
+        Rectangle { height: Theme.sp-3; }
+
+        SectionLabel { text: "COMPANION"; }
+        Rectangle { height: 8px; }
+        VerticalLayout {
+            vertical-stretch: 0;
+            spacing: 6px;
+            KeyValue { key: "State";
+                       value: !root.companion-online ? "offline" : root.companion-status;
+                       value-color: !root.companion-online ? Theme.color-danger
+                                  : root.companion-status == "thinking" ? Theme.accent
+                                  : Theme.text-primary; }
+            KeyValue { key: "Model"; value: root.provider-label != "" ? root.provider-label : "—"; }
+            KeyValue { key: "Bond";  value: root.bond-level + " · " + Math.round(root.bond-score * 100) + "%"; }
+            KeyValue { key: "Memories"; value: "" + root.memory-count; }
+            KeyValue { key: "Suggestions"; value: "" + root.whisper-count;
+                       value-color: root.whisper-count > 0 ? Theme.accent : Theme.text-primary; }
+        }
+
+        Rectangle { vertical-stretch: 1; }
+    }
+}

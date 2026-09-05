@@ -25,6 +25,8 @@ import { ParticleField } from "components/particle_field.slint";
 import { Orb } from "components/orb.slint";
 import { StatusBar } from "components/status_bar.slint";
 import { AppDock, DockItem } from "components/app_dock.slint";
+import { Taskbar } from "components/taskbar.slint";
+import { Icon, Icons } from "components/icon.slint";
 import { IntentLens, LensResult } from "components/intent_lens.slint";
 import { MessageData } from "components/message_bubble.slint";
 import { UrgeCardData } from "components/glance_card.slint";
@@ -32,7 +34,8 @@ import { WhisperCardStack, WhisperCardItem } from "components/whisper_card.slint
 import { QuickSettings } from "components/quick_settings.slint";
 import { ClipboardPanel, ClipboardEntryData } from "components/clipboard_panel.slint";
 import { PowerMenu } from "components/power_menu.slint";
-import { AppGrid, AppGridItem } from "components/app_grid.slint";
+import { AppGrid, AppGridItem, CategoryItem } from "components/app_grid.slint";
+import { MachineRail, ServiceItem } from "components/machine_rail.slint";
 import { WindowSwitcher, WindowItem } from "components/window_switcher.slint";
 import { CommandPalette, CommandItem } from "components/command_palette.slint";
 import { MorningBriefCard, BriefSection } from "components/morning_brief.slint";
@@ -50,6 +53,22 @@ export component DesktopScreen inherits Rectangle {
     in property <int> pending-count: 0;
     in property <bool> settings-incognito-mode: false;
     in property <bool> dnd-mode: false;
+    // Panel readouts — load from the observer poll, date from the clock timer
+    in property <int> bar-cpu-percent: 0;
+    in property <string> bar-mem-text: "";
+    in property <string> date-text: "";
+    in property <int> bar-mem-percent: 0;
+    in property <int> bar-swap-percent: 0;
+    in property <string> bar-swap-text: "";
+    in property <int> bar-disk-percent: 0;
+    in property <string> bar-disk-text: "";
+    in property <[ServiceItem]> services: [];
+    in property <string> bond-level: "Stranger";
+    in property <float> bond-score: 0.0;
+    // Launcher categories
+    in property <[CategoryItem]> grid-categories: [];
+    in property <string> grid-active-category: "all";
+    callback grid-category-selected(string);
 
     // Companion state
     in property <bool> is-thinking: false;
@@ -60,6 +79,15 @@ export component DesktopScreen inherits Rectangle {
     in property <int> memory-count: 0;
 
     // Ambient Intelligence
+    // Ambient animation budget, in milliseconds per tick, set from Rust at startup.
+    // 16 = 60fps on a GPU; ~100 = 10fps on the software rasteriser, which costs roughly
+    // a sixth as much and still moves; 0 turns ambient animation off entirely for a
+    // headless or unattended deployment. Phase increments are multiplied by tick-scale
+    // so the animation runs at the same SPEED at any of these rates, just fewer frames.
+    in property <int> ambient-interval-ms: 16;
+    // Frames are fewer at a longer interval, so each step must be proportionally larger
+    // for the animation to keep the same wall-clock speed.
+    property <float> tick-scale: max(16, ambient-interval-ms) / 16.0;
     in property <float> particle-sentiment: 0.0;
     in property <float> particle-cognitive-load: 0.0;
     in property <float> particle-time-of-day: 0.5;
@@ -184,6 +212,9 @@ export component DesktopScreen inherits Rectangle {
         ai-privacy-mode: root.ai-privacy-mode;
         ai-provider-label: root.ai-provider-label;
         ai-fallback-banner: root.ai-fallback-banner;
+        cpu-percent: root.bar-cpu-percent;
+        mem-text: root.bar-mem-text;
+        date-text: root.date-text;
         anchor-clicked => { root.lens-open = !root.lens-open; root.open-lens(); }
         queue-clicked => { root.lens-open = true; root.open-lens(); }
         whisper-hint-clicked => { root.whisper-hint-clicked(); }
@@ -347,10 +378,10 @@ export component DesktopScreen inherits Rectangle {
             // Animated phase for subtle backdrop movement
             property <float> bg-phase: 0;
             Timer {
-                interval: 16ms;
-                running: true;
+                interval: max(16, root.ambient-interval-ms) * 1ms;
+                running: root.ambient-interval-ms > 0;
                 triggered => {
-                    parent.bg-phase = mod(parent.bg-phase + 0.0008, 1.0);
+                    parent.bg-phase = mod(parent.bg-phase + 0.0008 * root.tick-scale, 1.0);
                 }
             }
 
@@ -418,8 +449,23 @@ export component DesktopScreen inherits Rectangle {
             background: @radial-gradient(circle, #f0f0f4 0%, #e4e4ec 50%, #d8d8e0 100%);
         }
 
-        // Particle field (neurons + nebula clouds + ambient intelligence)
-        ParticleField {
+        // Particle field (neurons + nebula clouds + ambient intelligence).
+        //
+        // NOT INSTANTIATED when the ambient budget is 0, which is the default on the software
+        // rasteriser. This is a full-screen component carrying 18 blurs and 37 drop-shadows —
+        // multi-pass convolutions that are the most expensive thing a CPU rasteriser does — and
+        // it costs that on EVERY repaint, not only animated ones. Measured: a screen without it
+        // repaints for 0.6% of a core; the desktop with it sat at 97%.
+        //
+        // Stopping its Timer was not enough, and the reason is the `animate` blocks below. Those
+        // properties are re-set by system_poll every 3s while time-of-day eases over 5s, so the
+        // component is permanently mid-animation and repaints continuously with the Timer idle.
+        // An expensive full-screen layer has to be absent, not merely still.
+        //
+        // Nothing is lost functionally: this is pure backdrop with no TouchArea and no state the
+        // user can read. The orb keeps its click target, which lives in the wrapper below.
+        if root.ambient-interval-ms > 0 : ParticleField {
+            ambient-interval-ms: root.ambient-interval-ms;
             width: 100%;
             height: 100%;
             active: true;
@@ -436,30 +482,144 @@ export component DesktopScreen inherits Rectangle {
             animate time-of-day { duration: 5000ms; }
         }
 
-        // ── Greeting (center of desktop, hidden in focus mode) ──
-        if !root.focus-mode : VerticalLayout {
-            alignment: center;
-            padding-bottom: 80px;  // Push up a bit from dead center
+        // ── Working set (left rail, hidden in focus mode) ──
+        // What replaced the centred greeting. A desktop that shows the project, the recent
+        // files and the memory count is a desktop that shows work; one that says "Good
+        // evening" shows nothing. Every line here is data the shell already had.
+        if !root.focus-mode : Rectangle {
+            x: 0; y: 0;
+            width: 296px;
+            height: parent.height - 40px;
+            background: Theme.bg-deep.transparentize(28%);
 
-            // Greeting text
-            Text {
-                text: root.greeting-text;
-                color: Theme.text-primary;
-                font-size: 32px;
-                font-weight: 300;
-                letter-spacing: 2px;
-                horizontal-alignment: center;
+            Rectangle { x: parent.width - 1px; width: 1px; height: 100%; background: Theme.separator; }
+
+            VerticalLayout {
+                padding: Theme.sp-4;
+                spacing: 0;
+
+                Text { text: "PROJECT"; color: Theme.text-dim; font-size: Theme.fs-micro; font-weight: Theme.fw-micro; letter-spacing: 1px; }
+                HorizontalLayout {
+                    spacing: Theme.sp-2;
+                    padding-top: 6px;
+                    Rectangle { width: 3px; height: 15px; y: (parent.height - 15px) / 2; border-radius: 1.5px; background: Theme.accent; }
+                    Text {
+                        text: root.active-project != "" ? root.active-project : "No active project";
+                        color: root.active-project != "" ? Theme.text-primary : Theme.text-secondary;
+                        font-size: Theme.fs-headline;
+                        font-weight: Theme.fw-headline;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+                }
+
+                Rectangle { height: 1px; background: Theme.separator; }
+                Rectangle { height: Theme.sp-3; }
+
+                Text { text: "RECENT"; color: Theme.text-dim; font-size: Theme.fs-micro; font-weight: Theme.fw-micro; letter-spacing: 1px; }
+                Rectangle { height: 6px; }
+
+                if root.lens-recents.length == 0 : Text {
+                    text: "Nothing yet — open something.";
+                    color: Theme.text-dim;
+                    font-size: Theme.fs-caption;
+                }
+                for r in root.lens-recents : TouchArea {
+                    height: 28px;
+                    mouse-cursor: pointer;
+                    clicked => { root.lens-result-selected(r.action-id); }
+                    Rectangle {
+                        width: 100%; height: 100%;
+                        border-radius: Theme.r-sm;
+                        background: parent.has-hover ? Theme.hover-fill : transparent;
+                        HorizontalLayout {
+                            padding-left: 8px; padding-right: 8px;
+                            spacing: 9px;
+                            Icon { commands: Icons.file; size: 13px; tint: Theme.text-dim; y: (parent.height - self.height) / 2; }
+                            Text {
+                                text: r.title;
+                                color: Theme.text-primary;
+                                font-size: Theme.fs-caption;
+                                vertical-alignment: center;
+                                overflow: elide;
+                                horizontal-stretch: 1;
+                            }
+                            Text {
+                                text: r.subtitle;
+                                color: Theme.text-dim;
+                                font-size: Theme.fs-micro;
+                                vertical-alignment: center;
+                                overflow: elide;
+                                max-width: 90px;
+                            }
+                        }
+                    }
+                }
+
+                Rectangle { vertical-stretch: 1; }
+
+                Rectangle { height: 1px; background: Theme.separator; }
+                HorizontalLayout {
+                    padding-top: Theme.sp-3;
+                    spacing: Theme.sp-3;
+                    VerticalLayout {
+                        horizontal-stretch: 1;
+                        Text { text: "MEMORIES"; color: Theme.text-dim; font-size: Theme.fs-micro; font-weight: Theme.fw-micro; letter-spacing: 1px; }
+                        Text { text: root.memory-count; color: Theme.text-primary; font-size: 17px; font-weight: 500; }
+                    }
+                    VerticalLayout {
+                        horizontal-stretch: 1;
+                        Text { text: "PENDING"; color: Theme.text-dim; font-size: Theme.fs-micro; font-weight: Theme.fw-micro; letter-spacing: 1px; }
+                        Text { text: root.pending-count; color: root.pending-count > 0 ? Theme.accent : Theme.text-primary; font-size: 17px; font-weight: 500; }
+                    }
+                }
             }
+        }
 
-            // Memory count
-            Text {
-                text: root.memory-count > 0 ?
-                    root.memory-count + " memories" : "ready";
-                color: Theme.text-dim;
-                font-size: 13px;
-                letter-spacing: 3px;
-                horizontal-alignment: center;
-                opacity: 0.6;
+        // ── Ask bar (top of the content area, hidden in focus mode) ──
+        // The Lens is the primary interaction; it should look like one, not like an orb
+        // to be discovered. Clicking opens the same overlay the orb used to.
+        if !root.focus-mode : TouchArea {
+            x: 296px + Theme.sp-5;
+            y: Theme.sp-4;
+            width: parent.width - 296px - 318px - Theme.sp-5 * 2;
+            height: 38px;
+            mouse-cursor: pointer;
+            clicked => { root.lens-open = true; root.open-lens(); }
+
+            Rectangle {
+                width: 100%; height: 100%;
+                border-radius: Theme.r-md;
+                background: Theme.bg-input;
+                border-width: 1px;
+                border-color: parent.has-hover ? Theme.accent-dim : Theme.border-strong;
+
+                HorizontalLayout {
+                    padding-left: 13px; padding-right: 10px;
+                    spacing: Theme.sp-3;
+                    Icon { commands: Icons.search; size: 15px; tint: Theme.text-dim; thickness: 1.7px; y: (parent.height - self.height) / 2; }
+                    Text {
+                        text: "Ask, search, or run anything";
+                        color: Theme.text-dim;
+                        font-size: Theme.fs-body;
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                    }
+                    Rectangle {
+                        width: kbd.preferred-width + 12px;
+                        height: 20px;
+                        y: (parent.height - 20px) / 2;
+                        border-radius: 4px;
+                        background: Theme.hover-fill;
+                        kbd := Text {
+                            text: "Ctrl K";
+                            color: Theme.text-dim;
+                            font-size: Theme.fs-micro;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
             }
         }
 
@@ -518,54 +678,42 @@ export component DesktopScreen inherits Rectangle {
             }
         }
 
-        // ── Floating Orb — bottom center (hidden in focus mode) ──
-        if !root.focus-mode : TouchArea {
-            x: (parent.width - Theme.orb-desktop-size) / 2;
-            y: parent.height - Theme.orb-desktop-size - 72px;
-            width: Theme.orb-desktop-size;
-            height: Theme.orb-desktop-size;
-            clicked => {
-                root.lens-open = !root.lens-open;
-                root.open-lens();
-            }
-
-            Orb {
-                width: 100%;
-                height: 100%;
-                size-px: 80;
-                is-thinking: root.is-thinking;
-                has-urges: root.has-urges;
-                is-speaking: root.is-speaking;
-                is-listening: root.is-listening;
-            }
+        // ── Machine rail (right, hidden in focus mode) ──
+        if !root.focus-mode : MachineRail {
+            x: parent.width - self.width;
+            y: 0;
+            height: parent.height - 40px;
+            cpu-percent: root.bar-cpu-percent;
+            mem-percent: root.bar-mem-percent;
+            mem-text: root.bar-mem-text;
+            swap-percent: root.bar-swap-percent;
+            swap-text: root.bar-swap-text;
+            disk-percent: root.bar-disk-percent;
+            disk-text: root.bar-disk-text;
+            services: root.services;
+            bond-level: root.bond-level;
+            bond-score: root.bond-score;
+            companion-online: root.companion-online;
+            companion-status: root.companion-status;
+            provider-label: root.ai-provider-label;
+            memory-count: root.memory-count;
+            whisper-count: root.whisper-hint-count;
         }
 
-        // ── Auto-hiding dock (bottom edge) ──
-        AppDock {
+        // ── Taskbar (bottom edge) ──
+        Taskbar {
             y: parent.height - self.height;
             width: 100%;
-            items: root.dock-items.length > 0 ? root.dock-items : [
-                { app-id: "terminal",      label: Tr.dock-terminal, icon-char: ">_", is-running: false },
-                { app-id: "browser",       label: Tr.dock-browser,  icon-char: "W",  is-running: false },
-                { app-id: "files",         label: Tr.dock-files,    icon-char: "F",  is-running: false },
-                { app-id: "email",         label: Tr.dock-email,    icon-char: "@",  is-running: false },
-                { app-id: "notes",         label: Tr.dock-notes,    icon-char: "✎",  is-running: false },
-                { app-id: "editor",        label: Tr.dock-editor,   icon-char: "≡",  is-running: false },
-                { app-id: "memory",        label: Tr.dock-memory,   icon-char: "◈",  is-running: false },
-                { app-id: "notifications", label: Tr.dock-alerts,   icon-char: "N",  is-running: false },
-                { app-id: "system",        label: Tr.dock-system,   icon-char: "◉",  is-running: false },
-                { app-id: "media",         label: Tr.dock-media,    icon-char: "♪",  is-running: false },
-                { app-id: "calendar",      label: Tr.dock-calendar, icon-char: "▦",  is-running: false },
-                { app-id: "launchpad",     label: Tr.dock-apps,     icon-char: "⊞",  is-running: false },
-                { app-id: "spreadsheet",   label: Tr.dock-ysheets,  icon-char: "YS", is-running: false },
-                { app-id: "documents",     label: Tr.dock-ydoc,     icon-char: "YD", is-running: false },
-                { app-id: "presentation",  label: Tr.dock-ypresent, icon-char: "YP", is-running: false },
-                { app-id: "settings",      label: Tr.dock-settings, icon-char: "⚙",  is-running: false },
-            ];
+            windows: root.window-list;
+            pins: root.dock-items;
+            launcher-label: Tr.dock-apps;
+            companion-count: root.whisper-hint-count;
+            companion-online: root.companion-online;
+            companion-status: root.companion-status;
+            open-launcher => { root.app-grid-open = !root.app-grid-open; }
+            activate-window(title) => { root.switch-window(title); }
             launch-app(app-id) => { root.launch-app(app-id); }
-            anchor-pressed => {
-                root.app-grid-open = !root.app-grid-open;
-            }
+            open-companion => { root.lens-open = !root.lens-open; root.open-lens(); }
         }
     }
 
@@ -602,6 +750,9 @@ export component DesktopScreen inherits Rectangle {
         height: 100%;
         is-open <=> root.app-grid-open;
         apps: root.grid-apps;
+        categories: root.grid-categories;
+        active-category: root.grid-active-category;
+        category-selected(id) => { root.grid-category-selected(id); }
         launch-app(app-id) => { root.grid-launch-app(app-id); }
         close => { root.app-grid-open = false; }
         search-changed(query) => { root.grid-search-apps(query); }

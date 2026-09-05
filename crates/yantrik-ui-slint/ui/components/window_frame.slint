@@ -4,6 +4,7 @@
 // Supports drag-to-move (title bar) and drag-to-resize (edges/corners).
 
 import { Theme } from "theme.slint";
+import { Icon, Icons } from "icon.slint";
 
 // Invisible resize handle — placed on window edges/corners.
 // Updates win-x/y/w/h based on which edges are active.
@@ -56,6 +57,8 @@ component ResizeHandle inherits TouchArea {
 export component WindowFrame inherits Rectangle {
     in property <string> title: "";
     in property <string> icon-char: "";
+    /// Stroke glyph from the Icons global; when set it replaces icon-char.
+    in property <string> icon-path: "";
     in property <color> icon-color: Theme.cyan;
     in-out property <bool> is-maximized: true;
 
@@ -153,18 +156,26 @@ export component WindowFrame inherits Rectangle {
                     alignment: start;
                     horizontal-stretch: 1;
 
-                    if root.icon-char != "" : Rectangle {
+                    if root.icon-char != "" || root.icon-path != "" : Rectangle {
                         width: 22px;
                         height: 22px;
+                        y: (parent.height - 22px) / 2;
                         border-radius: 5px;
-                        background: @radial-gradient(circle, root.icon-color, Theme.overlay-backdrop);
-                        drop-shadow-blur: 6px;
-                        drop-shadow-color: root.icon-color;
+                        background: root.icon-color.with-alpha(0.16);
 
-                        Text {
+                        if root.icon-path != "" : Icon {
+                            commands: root.icon-path;
+                            size: 14px;
+                            tint: root.icon-color;
+                            thickness: 1.7px;
+                            x: (parent.width - self.width) / 2;
+                            y: (parent.height - self.height) / 2;
+                        }
+                        if root.icon-path == "" : Text {
                             text: root.icon-char;
-                            color: Theme.text-on-accent;
-                            font-size: 12px;
+                            color: root.icon-color;
+                            font-size: 11px;
+                            font-weight: 600;
                             horizontal-alignment: center;
                             vertical-alignment: center;
                         }
@@ -196,14 +207,13 @@ export component WindowFrame inherits Rectangle {
 
                             animate background { duration: 120ms; }
 
-                            Text {
-                                text: "\u{2500}";
-                                color: min-btn.has-hover ? Theme.cyan : Theme.text-secondary;
-                                font-size: 14px;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
-
-                                animate color { duration: 120ms; }
+                            Icon {
+                                commands: Icons.minus;
+                                size: 14px;
+                                tint: min-btn.has-hover ? Theme.cyan : Theme.text-secondary;
+                                x: (parent.width - self.width) / 2;
+                                y: (parent.height - self.height) / 2;
+                                animate tint { duration: 120ms; }
                             }
                         }
                     }
@@ -219,14 +229,13 @@ export component WindowFrame inherits Rectangle {
 
                             animate background { duration: 120ms; }
 
-                            Text {
-                                text: root.is-maximized ? "\u{2750}" : "\u{25a1}";
-                                color: max-btn.has-hover ? Theme.cyan : Theme.text-secondary;
-                                font-size: 14px;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
-
-                                animate color { duration: 120ms; }
+                            Icon {
+                                commands: root.is-maximized ? Icons.minimize : Icons.maximize;
+                                size: 14px;
+                                tint: max-btn.has-hover ? Theme.cyan : Theme.text-secondary;
+                                x: (parent.width - self.width) / 2;
+                                y: (parent.height - self.height) / 2;
+                                animate tint { duration: 120ms; }
                             }
                         }
                     }
@@ -245,14 +254,13 @@ export component WindowFrame inherits Rectangle {
                             animate background { duration: 120ms; }
                             animate drop-shadow-blur { duration: 120ms; }
 
-                            Text {
-                                text: "\u{2715}";
-                                color: close-btn.has-hover ? Theme.text-on-accent : Theme.text-secondary;
-                                font-size: 14px;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
-
-                                animate color { duration: 120ms; }
+                            Icon {
+                                commands: Icons.close;
+                                size: 14px;
+                                tint: close-btn.has-hover ? Theme.text-on-accent : Theme.text-secondary;
+                                x: (parent.width - self.width) / 2;
+                                y: (parent.height - self.height) / 2;
+                                animate tint { duration: 120ms; }
                             }
                         }
                     }

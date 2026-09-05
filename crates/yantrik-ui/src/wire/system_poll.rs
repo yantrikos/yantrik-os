@@ -212,6 +212,34 @@ pub fn wire(ui: &App, ctx: &AppContext) {
             ui.set_particle_cognitive_load(cognitive_load);
             ui.set_particle_time_of_day(time_of_day);
 
+            // Panel load readout. The dashboard (screen 10) sets its own detailed figures
+            // only while visible; the status bar is on every screen, so this is unconditional.
+            ui.set_bar_cpu_percent(snap.cpu_usage_percent.round() as i32);
+            ui.set_bar_mem_text(
+                format!(
+                    "{} / {}",
+                    format_bytes(snap.memory_used_bytes),
+                    format_bytes(snap.memory_total_bytes)
+                )
+                .into(),
+            );
+
+            ui.set_bar_mem_percent(if snap.memory_total_bytes > 0 {
+                (snap.memory_used_bytes * 100 / snap.memory_total_bytes) as i32
+            } else { 0 });
+            if snap.swap_total_bytes > 0 {
+                ui.set_bar_swap_percent((snap.swap_used_bytes * 100 / snap.swap_total_bytes) as i32);
+                ui.set_bar_swap_text(format!("{} / {}", format_bytes(snap.swap_used_bytes), format_bytes(snap.swap_total_bytes)).into());
+            } else {
+                ui.set_bar_swap_percent(0);
+                ui.set_bar_swap_text("none".into());
+            }
+            if snap.disk_total_bytes > 0 {
+                let used = snap.disk_total_bytes.saturating_sub(snap.disk_available_bytes);
+                ui.set_bar_disk_percent((used * 100 / snap.disk_total_bytes) as i32);
+                ui.set_bar_disk_text(format!("{} / {}", format_bytes(used), format_bytes(snap.disk_total_bytes)).into());
+            }
+
             // Auto-lock on idle (only from desktop screen, 0 = disabled)
             let lock_timeout = ui.get_settings_auto_lock_secs() as u64;
             if lock_timeout > 0
