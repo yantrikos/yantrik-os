@@ -15,7 +15,16 @@ slint::include_modules!();
 fn main() {
     init_tracing("yantrik-calendar");
 
+    // One window per app: a second launch defers to the running one (the shell focuses it).
+    let Some(_instance) = instance::claim("calendar") else { return };
+
     let app = CalendarApp::new().unwrap();
+
+    // Same dark/accent choice as the shell, read from the shell's settings file.
+    let theme = theme::load();
+    app.global::<ThemeMode>().set_dark(theme.dark);
+    app.global::<AccentPreset>().set_index(theme.accent_index);
+
     wire(&app);
     app.run().unwrap();
 }
@@ -107,16 +116,15 @@ fn last_day_of_month(year: i32, month: u32) -> u32 {
     }
 }
 
+/// Column index of a date in the month grid: 0=Sunday .. 6=Saturday.
+///
+/// This MUST match the header row in calendar.slint, which is Sun-first. The previous
+/// hand-rolled Zeller returned a Monday-first index and the grid used it as the number of
+/// leading blanks, so every month was drawn one column to the left of the truth.
 fn day_of_week_for_date(year: i32, month: u32, day: u32) -> u32 {
-    // Zeller's congruence → 0=Mon .. 6=Sun
-    let (y, m) = if month <= 2 { (year - 1, month + 12) } else { (year, month) };
-    let q = day as i32;
-    let k = y % 100;
-    let j = y / 100;
-    let h = (q + (13 * (m as i32 + 1)) / 5 + k + k / 4 + j / 4 - 2 * j) % 7;
-    let h = ((h + 7) % 7) as u32; // 0=Sat
-    // Convert: 0=Sat→5, 1=Sun→6, 2=Mon→0, 3=Tue→1 ...
-    (h + 5) % 7
+    chrono::NaiveDate::from_ymd_opt(year, month, day)
+        .map(|d| d.weekday().num_days_from_sunday())
+        .unwrap_or(0)
 }
 
 fn month_name(month: u32) -> &'static str {
