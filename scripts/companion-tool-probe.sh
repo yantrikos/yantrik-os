@@ -18,15 +18,21 @@ TARGET=${TARGET:-/home/yantrik/target-yantrik/fast}
 CONFIG=${CONFIG:-/home/yantrik/yantrik-run/config.yaml}
 cd /home/yantrik/yantrik-run || exit 1
 
-pkill -x yantrik-ui 2>/dev/null
-pkill -x yantrik-notes 2>/dev/null
+# Matched by path: pgrep/pkill compare against a 15-character process name, so
+# `yantrik-system-monitor` matches nothing at all — silently.
+pkill -f "$TARGET/yantrik-ui" 2>/dev/null
+pkill -f "$TARGET/yantrik-notes" 2>/dev/null
+pkill -f "$TARGET/yantrik-system-monitor" 2>/dev/null
 sleep 2
-rm -f /tmp/yantrik-*/companion.sock /tmp/yantrik-*/app-notes.sock
+rm -f /tmp/yantrik-*/companion.sock /tmp/yantrik-*/app-notes.sock /tmp/yantrik-*/app-system-monitor.sock
 
 setsid nohup "$TARGET/yantrik-ui" "$CONFIG" > shell_tool.log 2>&1 &
 setsid nohup "$TARGET/yantrik-notes" > notes_tool.log 2>&1 &
+# system-monitor publishes the one action declared `dangerous`, which is what proves the gate
+# reads each action's own risk rather than the tool's.
+setsid nohup "$TARGET/yantrik-system-monitor" > monitor_tool.log 2>&1 &
 sleep 12
-echo "shell: $(pgrep -cx yantrik-ui) alive, notes: $(pgrep -cx yantrik-notes) alive"
+echo "shell: $(pgrep -cf "$TARGET/yantrik-ui") alive, notes: $(pgrep -cf "$TARGET/yantrik-notes") alive, monitor: $(pgrep -cf "$TARGET/yantrik-system-monitor") alive"
 
 python3 - <<'PY'
 import glob, json, socket, sys, time
@@ -117,7 +123,17 @@ if view and view["state"]["notes"]:
     elif target not in out:
         fails.append(f"app_action did not open {target!r}: {out[:200]}")
 
-# 5. A wrong app name explains itself instead of failing blankly.
+# 5. Each action's own risk is what the gate reads, not the tool's. `app_action` is Standard, so
+#    under a standard ceiling `sort_processes` (standard) must run and `kill_process` (dangerous)
+#    must not — otherwise one Standard tool would be a door to everything any app publishes.
+out = run("app_action", {"app": "system-monitor", "action": "sort_processes", "args": {"by": "memory"}})
+print(f"standard action : {out.strip()[:100]}")
+out = run("app_action", {"app": "system-monitor", "action": "kill_process", "args": {"pid": 999999}})
+print(f"dangerous action: {out.strip()[:110]}")
+if ceiling in ("safe", "standard", "sensitive") and "Permission denied" not in out:
+    fails.append(f"a dangerous action was not refused under a {ceiling} ceiling: {out[:120]}")
+
+# 6. A wrong app name explains itself instead of failing blankly.
 out = run("describe_app", {"app": "no-such-app"})
 print(f"missing app     : {out.strip()[:120]}")
 if "notes" not in out:
@@ -133,6 +149,7 @@ print(f"PASS: tools callable by name under the {ceiling} ceiling, and the mind r
 PY
 STATUS=$?
 
-pkill -x yantrik-ui 2>/dev/null
-pkill -x yantrik-notes 2>/dev/null
+pkill -f "$TARGET/yantrik-ui" 2>/dev/null
+pkill -f "$TARGET/yantrik-notes" 2>/dev/null
+pkill -f "$TARGET/yantrik-system-monitor" 2>/dev/null
 exit $STATUS

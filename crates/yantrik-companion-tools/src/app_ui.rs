@@ -17,7 +17,7 @@ use std::time::Duration;
 
 use yantrik_ipc_transport::SyncRpcClient;
 
-use super::{PermissionLevel, Tool, ToolContext, ToolRegistry};
+use super::{parse_permission, PermissionLevel, Tool, ToolContext, ToolRegistry};
 
 pub fn register(reg: &mut ToolRegistry) {
     reg.register(Box::new(ListAppsTool));
@@ -69,6 +69,23 @@ fn describe(app: &str) -> Result<serde_json::Value, String> {
     client(app, READ_TIMEOUT)
         .call("app.describe", serde_json::json!({}))
         .map_err(|e| e.message)
+}
+
+/// The risk the app itself declared for this action.
+///
+/// Apps do not have one risk level — reading which note is open and killing a process arrive
+/// through the same door — so each action states its own, and it is checked here against the
+/// caller's ceiling. An action with no declaration is treated as Standard, the same floor the
+/// runtime uses: an unknown risk is never treated as no risk.
+fn declared_permission(view: &serde_json::Value, action: &str) -> PermissionLevel {
+    view.get("actions")
+        .and_then(|v| v.as_array())
+        .and_then(|actions| {
+            actions.iter().find(|a| a.get("name").and_then(|n| n.as_str()) == Some(action))
+        })
+        .and_then(|a| a.get("permission").and_then(|p| p.as_str()))
+        .map(parse_permission)
+        .unwrap_or(PermissionLevel::Standard)
 }
 
 // ── Which of our apps are open ──
@@ -241,13 +258,27 @@ impl Tool for AppActionTool {
         })
     }
 
-    fn execute(&self, _ctx: &ToolContext, args: &serde_json::Value) -> String {
+    fn execute(&self, ctx: &ToolContext, args: &serde_json::Value) -> String {
         let app = args["app"].as_str().unwrap_or("").trim();
         let action = args["action"].as_str().unwrap_or("").trim();
         if app.is_empty() || action.is_empty() {
             return "Error: both `app` and `action` are required.".to_string();
         }
         let action_args = args.get("args").cloned().unwrap_or(serde_json::json!({}));
+
+        // Ask the app what this action costs before doing it. `app_action` itself is Standard —
+        // enough to open a note — but an app may publish something that ends a process or deletes
+        // a file, and that must meet the configured ceiling on its own terms rather than ride in
+        // on the tool's.
+        if let Ok(ref view) = describe(app) {
+            let needed = declared_permission(view, action);
+            if needed > ctx.max_permission {
+                return format!(
+                    "Permission denied: '{app}.{action}' is declared {needed} but max is {}",
+                    ctx.max_permission
+                );
+            }
+        }
 
         let outcome = client(app, ACT_TIMEOUT).call(
             "app.act",

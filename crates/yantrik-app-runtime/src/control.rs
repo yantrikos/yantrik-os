@@ -153,15 +153,37 @@ pub struct Action {
     pub name: String,
     pub description: String,
     pub params: Vec<Param>,
+    /// How much damage this can do, in the companion's vocabulary:
+    /// `safe`, `standard`, `sensitive`, `dangerous`.
+    ///
+    /// Declared per action rather than per surface because apps do not have one risk level:
+    /// reading which note is open and killing a process arrive through the same door. The
+    /// caller compares this against its own ceiling; the app states the fact.
+    pub permission: &'static str,
 }
 
 impl Action {
     pub fn new(name: &str, description: &str) -> Self {
-        Self { name: name.into(), description: description.into(), params: Vec::new() }
+        Self {
+            name: name.into(),
+            description: description.into(),
+            params: Vec::new(),
+            // Steering someone's window is not free, so the floor is `standard`, not `safe`.
+            permission: "standard",
+        }
     }
 
     pub fn arg(mut self, param: Param) -> Self {
         self.params.push(param);
+        self
+    }
+
+    /// Declare this action riskier (or safer) than the default `standard`.
+    ///
+    /// Use `dangerous` for anything that destroys work or state a person cannot get back:
+    /// killing a process, deleting a file, sending mail.
+    pub fn risk(mut self, permission: &'static str) -> Self {
+        self.permission = permission;
         self
     }
 
@@ -181,6 +203,7 @@ impl Action {
         serde_json::json!({
             "name": self.name,
             "description": self.description,
+            "permission": self.permission,
             "parameters": {
                 "type": "object",
                 "properties": serde_json::Value::Object(properties),
@@ -443,10 +466,18 @@ mod tests {
             .schema();
 
         assert_eq!(schema["name"], "open_note");
+        // Unstated risk is `standard`: steering someone's window is never free.
+        assert_eq!(schema["permission"], "standard");
         assert_eq!(schema["parameters"]["properties"]["title"]["type"], "string");
         assert_eq!(schema["parameters"]["properties"]["focus"]["type"], "boolean");
         // Only the required argument is listed as required.
         assert_eq!(schema["parameters"]["required"], serde_json::json!(["title"]));
+    }
+
+    #[test]
+    fn an_action_can_declare_itself_dangerous() {
+        let schema = Action::new("kill_process", "End a process").risk("dangerous").schema();
+        assert_eq!(schema["permission"], "dangerous");
     }
 
     #[test]

@@ -3,7 +3,7 @@
 //! Polls `system-monitor` service via JSON-RPC IPC every 2 seconds.
 //! Falls back to local `sysinfo` crate if the service is unavailable.
 
-use slint::{ComponentHandle, ModelRc, Timer, TimerMode, VecModel};
+use slint::{ComponentHandle, Model, ModelRc, Timer, TimerMode, VecModel};
 use yantrik_app_runtime::prelude::*;
 use yantrik_ipc_contracts::system_monitor::{
     CpuInfo, DiskInfo, MemoryInfo, NetworkInterface, ProcessInfo, SystemSnapshot,
@@ -311,6 +311,168 @@ fn apply_processes(ui: &SystemMonitorApp, procs: &[ProcessInfo]) {
 
 // ── Wire all callbacks ───────────────────────────────────────────────
 
+// ── The control surface ──────────────────────────────────────────────
+//
+// This window already holds, in numbers, everything the companion previously had to shell out
+// for: `top`, `df`, `free`, `uptime`. It refreshes every two seconds anyway, so reading it costs
+// nothing and is more current than a subprocess would be.
+//
+// `kill_process` is published as `dangerous`. Every other action here is a view change; this one
+// ends someone's work, and the caller's ceiling should have to allow it explicitly.
+
+fn publish_control(app: &SystemMonitorApp) {
+    use yantrik_app_runtime::control::{Action, App, Param, View};
+
+    let describe = {
+        let weak = app.as_weak();
+        move || {
+            let Some(ui) = weak.upgrade() else {
+                return View::new("System Monitor — closing");
+            };
+
+            let cpu = ui.get_cpu_usage();
+            let mem = ui.get_memory_usage();
+            let health = ui.get_health_status().to_string();
+
+            let procs = ui.get_processes();
+            // The busiest handful. The window shows hundreds; a caller asking "what is eating the
+            // machine" wants the top of the list, not a transcript of it.
+            let top: Vec<serde_json::Value> = (0..procs.row_count().min(10))
+                .filter_map(|i| procs.row_data(i))
+                .map(|p| {
+                    serde_json::json!({
+                        "pid": p.pid,
+                        "name": p.name.to_string(),
+                        "cpu_percent": (p.cpu_percent * 10.0).round() / 10.0,
+                        "mem_percent": (p.mem_percent * 10.0).round() / 10.0,
+                        "status": p.status.to_string(),
+                    })
+                })
+                .collect();
+
+            let disk_model = ui.get_disks();
+            let disks: Vec<serde_json::Value> = (0..disk_model.row_count())
+                .filter_map(|i| disk_model.row_data(i))
+                .map(|d| {
+                    serde_json::json!({
+                        "mount": d.mount_point.to_string(),
+                        "used": d.used_bytes.to_string(),
+                        "total": d.total_bytes.to_string(),
+                        "percent": (d.usage_percent * 10.0).round() / 10.0,
+                    })
+                })
+                .collect();
+
+            let net_model = ui.get_network_interfaces();
+            let interfaces: Vec<serde_json::Value> = (0..net_model.row_count())
+                .filter_map(|i| net_model.row_data(i))
+                .map(|n| {
+                    serde_json::json!({
+                        "name": n.name.to_string(),
+                        "ip": n.ip_address.to_string(),
+                    })
+                })
+                .collect();
+
+            let summary = format!(
+                "System — {health}, CPU {cpu:.0}%, memory {mem:.0}% ({} of {}), up {}",
+                ui.get_memory_used_text(),
+                ui.get_memory_total_text(),
+                ui.get_uptime_text()
+            );
+
+            View::new(summary)
+                .with("health", health)
+                .with("health_score", ui.get_health_score() as f64)
+                .with("health_summary", ui.get_health_summary().to_string())
+                .with("cpu_percent", (cpu * 10.0).round() as f64 / 10.0)
+                .with("cpu_model", ui.get_cpu_model().to_string())
+                .with("load_average", serde_json::json!([
+                    ui.get_load_avg_1().to_string(),
+                    ui.get_load_avg_5().to_string(),
+                    ui.get_load_avg_15().to_string(),
+                ]))
+                .with("memory_percent", (mem * 10.0).round() as f64 / 10.0)
+                .with("memory_used", ui.get_memory_used_text().to_string())
+                .with("memory_total", ui.get_memory_total_text().to_string())
+                .with("memory_available", ui.get_memory_available_text().to_string())
+                .with("swap_percent", (ui.get_swap_usage() * 10.0).round() as f64 / 10.0)
+                .with("uptime", ui.get_uptime_text().to_string())
+                .with("top_processes", serde_json::Value::Array(top))
+                .with("disks", serde_json::Value::Array(disks))
+                .with("interfaces", serde_json::Value::Array(interfaces))
+        }
+    };
+
+    let weak = app.as_weak();
+    let ui_for = move || weak.upgrade().ok_or_else(|| "System Monitor window is gone".to_string());
+
+    let sort_ui = ui_for.clone();
+    let search_ui = ui_for.clone();
+    let kill_ui = ui_for;
+
+    App::new("system-monitor")
+        .describe(describe)
+        .action(
+            Action::new("sort_processes", "Order the process list by what it is using")
+                .arg(Param::text("by").describe("cpu | memory")),
+            move |args| {
+                let ui = sort_ui()?;
+                let column = match args["by"].as_str().unwrap_or_default().to_lowercase().as_str() {
+                    "cpu" => 0,
+                    "memory" | "mem" => 1,
+                    other => return Err(format!("sort by cpu or memory, not `{other}`")),
+                };
+                ui.invoke_sort_by_column(column);
+                Ok(serde_json::json!({ "sorted_by": args["by"].as_str().unwrap_or_default() }))
+            },
+        )
+        .action(
+            Action::new("filter_processes", "Show only processes whose name matches")
+                .arg(Param::text("query").describe("Empty string clears the filter")),
+            move |args| {
+                let ui = search_ui()?;
+                let query = args["query"].as_str().unwrap_or_default().to_string();
+                ui.set_process_search(query.clone().into());
+                ui.invoke_process_search_changed(query.into());
+                let procs = ui.get_processes();
+                Ok(serde_json::json!({ "showing": procs.row_count() }))
+            },
+        )
+        .action(
+            Action::new("kill_process", "End a running process by pid")
+                .arg(Param::number("pid"))
+                .arg(Param::flag("force").describe("SIGKILL instead of SIGTERM").optional())
+                // Everything else on this surface changes a view. This ends someone's work, and
+                // there is no undo — so it must clear the caller's ceiling on its own.
+                .risk("dangerous"),
+            move |args| {
+                let ui = kill_ui()?;
+                let pid = args["pid"].as_i64().ok_or("`pid` must be a number")? as i32;
+                if pid <= 1 {
+                    return Err(format!("{pid} is not a process this app should end"));
+                }
+                // Named from the list we are showing, so the answer says what was ended rather
+                // than only which number.
+                let procs = ui.get_processes();
+                let name = (0..procs.row_count())
+                    .filter_map(|i| procs.row_data(i))
+                    .find(|p| p.pid == pid)
+                    .map(|p| p.name.to_string())
+                    .unwrap_or_else(|| "unknown".to_string());
+
+                if args["force"].as_bool().unwrap_or(false) {
+                    ui.invoke_force_kill_process(pid);
+                    Ok(serde_json::json!({ "killed": pid, "name": name, "signal": "SIGKILL" }))
+                } else {
+                    ui.invoke_kill_process(pid);
+                    Ok(serde_json::json!({ "killed": pid, "name": name, "signal": "SIGTERM" }))
+                }
+            },
+        )
+        .serve();
+}
+
 fn wire(app: &SystemMonitorApp) {
     // Initial snapshot
     let snap = snapshot_via_service().unwrap_or_else(|_| snapshot_local());
@@ -320,6 +482,10 @@ fn wire(app: &SystemMonitorApp) {
     apply_processes(app, &procs);
 
     // Polling timer — every 2 seconds
+    // Published before the poll starts; the first `app.describe` may catch a fresh window, and
+    // reporting zeroes honestly is better than delaying the surface for two seconds.
+    publish_control(app);
+
     let timer = Timer::default();
     let weak = app.as_weak();
     timer.start(TimerMode::Repeated, std::time::Duration::from_secs(2), move || {

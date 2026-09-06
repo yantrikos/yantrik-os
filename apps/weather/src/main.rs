@@ -6,7 +6,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use slint::{ComponentHandle, ModelRc, SharedString, Timer, TimerMode, VecModel};
+use slint::{ComponentHandle, Model, ModelRc, SharedString, Timer, TimerMode, VecModel};
 use yantrik_app_runtime::prelude::*;
 use yantrik_ipc_transport::SyncRpcClient;
 
@@ -491,11 +491,189 @@ fn apply_weather_data(ui: &WeatherApp, data: WeatherData) {
 
 // ── Wire callbacks ───────────────────────────────────────────────────
 
+// ── The control surface ──────────────────────────────────────────────
+//
+// There is a `get_weather` tool that calls an API. This is different and worth having as well:
+// it reports what the person is actually looking at — their location, their units, the alert on
+// their screen — rather than what a fresh query would return.
+
+fn publish_control(app: &WeatherApp) {
+    use yantrik_app_runtime::control::{Action, App, Param, View};
+
+    let describe = {
+        let weak = app.as_weak();
+        move || {
+            let Some(ui) = weak.upgrade() else {
+                return View::new("Weather — closing");
+            };
+            let now = ui.get_current();
+
+            if !now.error_text.is_empty() {
+                return View::new(format!("Weather — {}", now.error_text))
+                    .with("error", now.error_text.to_string());
+            }
+
+            let alert_model = ui.get_weather_alerts();
+            let alerts: Vec<serde_json::Value> = (0..alert_model.row_count())
+                .filter_map(|i| alert_model.row_data(i))
+                .map(|a| {
+                    serde_json::json!({
+                        "title": a.title.to_string(),
+                        "description": a.description.to_string(),
+                        "severity": match a.severity { 2 => "severe", 1 => "moderate", _ => "info" },
+                    })
+                })
+                .collect();
+
+            let daily_model = ui.get_daily();
+            let forecast: Vec<serde_json::Value> = (0..daily_model.row_count().min(7))
+                .filter_map(|i| daily_model.row_data(i))
+                .map(|d| {
+                    serde_json::json!({
+                        "day": d.day_name.to_string(),
+                        "high": d.high.to_string(),
+                        "low": d.low.to_string(),
+                        "precipitation": d.precip_chance.to_string(),
+                    })
+                })
+                .collect();
+
+            let saved_model = ui.get_weather_saved_locations();
+            let saved: Vec<serde_json::Value> = (0..saved_model.row_count())
+                .filter_map(|i| saved_model.row_data(i))
+                .map(|l| {
+                    serde_json::json!({ "name": l.name.to_string(), "active": l.is_active })
+                })
+                .collect();
+
+            let summary = if now.is_loading {
+                format!("Weather — loading {}", now.location)
+            } else if let Some(first) = alerts.first() {
+                format!(
+                    "Weather — {} in {}, {} — {}",
+                    now.temperature,
+                    now.location,
+                    now.condition,
+                    first["title"].as_str().unwrap_or_default()
+                )
+            } else {
+                format!(
+                    "Weather — {} in {}, {}, feels like {}",
+                    now.temperature, now.location, now.condition, now.feels_like
+                )
+            };
+
+            View::new(summary)
+                .with("location", now.location.to_string())
+                .with("temperature", now.temperature.to_string())
+                .with("feels_like", now.feels_like.to_string())
+                .with("condition", now.condition.to_string())
+                .with("humidity", now.humidity.to_string())
+                .with("wind", format!("{} {}", now.wind_speed, now.wind_direction).trim().to_string())
+                .with("uv_index", now.uv_index.to_string())
+                .with("visibility", now.visibility.to_string())
+                .with("pressure", now.pressure.to_string())
+                .with("sunrise", now.sunrise.to_string())
+                .with("sunset", now.sunset.to_string())
+                .with("air_quality", format!("{} ({})", ui.get_weather_aqi_value(), ui.get_weather_aqi_label()))
+                .with("units", if ui.get_weather_use_fahrenheit() { "fahrenheit" } else { "celsius" })
+                .with("last_updated", ui.get_weather_last_updated().to_string())
+                .with("alerts", serde_json::Value::Array(alerts))
+                .with("forecast", serde_json::Value::Array(forecast))
+                .with("saved_locations", serde_json::Value::Array(saved))
+        }
+    };
+
+    let weak = app.as_weak();
+    let ui_for = move || weak.upgrade().ok_or_else(|| "Weather window is gone".to_string());
+
+    let refresh_ui = ui_for.clone();
+    let select_ui = ui_for.clone();
+    let add_ui = ui_for.clone();
+    let units_ui = ui_for;
+
+    App::new("weather")
+        .describe(describe)
+        .action(Action::new("refresh", "Fetch the current conditions again"), move |_| {
+            let ui = refresh_ui()?;
+            ui.invoke_refresh_pressed();
+            Ok(serde_json::json!({ "refreshing": ui.get_current().location.to_string() }))
+        })
+        .action(
+            Action::new("show_location", "Switch to one of the saved locations")
+                .arg(Param::text("name")),
+            move |args| {
+                let ui = select_ui()?;
+                let want = args["name"].as_str().unwrap_or_default().trim().to_lowercase();
+                let saved = ui.get_weather_saved_locations();
+                let row = (0..saved.row_count())
+                    .find(|i| {
+                        saved.row_data(*i).map(|l| l.name.to_lowercase().contains(&want)).unwrap_or(false)
+                    })
+                    .ok_or_else(|| {
+                        let names: Vec<String> = (0..saved.row_count())
+                            .filter_map(|i| saved.row_data(i))
+                            .map(|l| l.name.to_string())
+                            .collect();
+                        if names.is_empty() {
+                            "no locations are saved yet; add one first".to_string()
+                        } else {
+                            format!("no saved location matches \"{want}\"; there is: {}", names.join(", "))
+                        }
+                    })?;
+                ui.invoke_weather_select_location(row as i32);
+                Ok(serde_json::json!({ "showing": ui.get_current().location.to_string() }))
+            },
+        )
+        .action(
+            Action::new("add_location", "Look a place up and save it").arg(Param::text("name")),
+            move |args| {
+                let ui = add_ui()?;
+                let name = args["name"].as_str().unwrap_or_default().trim().to_string();
+                if name.is_empty() {
+                    return Err("`name` is empty".into());
+                }
+                ui.invoke_weather_add_location(name.clone().into());
+                Ok(serde_json::json!({
+                    "added": name,
+                    "saved": ui.get_weather_saved_locations().row_count(),
+                }))
+            },
+        )
+        .action(
+            Action::new("set_units", "Show temperatures in Celsius or Fahrenheit")
+                .arg(Param::text("units").describe("celsius | fahrenheit")),
+            move |args| {
+                let ui = units_ui()?;
+                let want_f = match args["units"].as_str().unwrap_or_default().to_lowercase().as_str() {
+                    "fahrenheit" | "f" | "imperial" => true,
+                    "celsius" | "c" | "metric" => false,
+                    other => return Err(format!("units are celsius or fahrenheit, not `{other}`")),
+                };
+                // Both halves, in the order the switch does them. The callback only *reads*
+                // `weather-use-fahrenheit` — the Slint toggle flips the property itself and then
+                // calls it — so invoking the callback alone would refetch in the units already
+                // showing. Setting it only when it differs keeps this idempotent: asking twice
+                // for fahrenheit must not land back on celsius.
+                if ui.get_weather_use_fahrenheit() != want_f {
+                    ui.set_weather_use_fahrenheit(want_f);
+                    ui.invoke_weather_toggle_units();
+                }
+                Ok(serde_json::json!({
+                    "units": if ui.get_weather_use_fahrenheit() { "fahrenheit" } else { "celsius" },
+                }))
+            },
+        )
+        .serve();
+}
+
 fn wire(app: &WeatherApp) {
     let data_slot: Arc<Mutex<Option<WeatherData>>> = Arc::new(Mutex::new(None));
     let state = WeatherState::new();
 
     app.set_weather_saved_locations(ModelRc::new(VecModel::from(state.to_slint_locations())));
+
+    publish_control(app);
 
     // ── Refresh ──
     {

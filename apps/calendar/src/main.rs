@@ -6,7 +6,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
+use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use yantrik_app_runtime::prelude::*;
 use yantrik_ipc_transport::SyncRpcClient;
 
@@ -210,6 +210,169 @@ fn events_for_day(events: &[CalEvent], year: i32, month: u32, day: i32) -> Vec<C
 
 // ── Wire all callbacks ───────────────────────────────────────────────
 
+// ── The control surface ──────────────────────────────────────────────
+//
+// "What is on my calendar today" should never be answered by photographing a month grid and
+// asking a vision model to read the numbers. See `yantrik_app_runtime::control`.
+
+fn publish_control(app: &CalendarApp, state: Rc<RefCell<CalState>>) {
+    use yantrik_app_runtime::control::{Action, App, Param, View};
+
+    let describe = {
+        let weak = app.as_weak();
+        let st = state.clone();
+        move || {
+            let Some(ui) = weak.upgrade() else {
+                return View::new("Calendar — closing");
+            };
+            let month = ui.get_month_title().to_string();
+            let day = ui.get_selected_day();
+
+            let today_model = ui.get_events_today();
+            let today: Vec<serde_json::Value> = (0..today_model.row_count())
+                .filter_map(|i| today_model.row_data(i))
+                .map(|e| {
+                    serde_json::json!({
+                        "title": e.title.to_string(),
+                        "date": e.date_text.to_string(),
+                        "time": e.time_text.to_string(),
+                        "all_day": e.is_all_day,
+                    })
+                })
+                .collect();
+
+            // Which days of the month have anything on them. Six numbers instead of a picture of
+            // a grid, and it is what a caller planning around the month actually needs.
+            let grid = ui.get_days();
+            let busy: Vec<serde_json::Value> = (0..grid.row_count())
+                .filter_map(|i| grid.row_data(i))
+                .filter(|d| d.is_current_month && d.has_events)
+                .map(|d| serde_json::json!({ "day": d.day_number, "events": d.event_count }))
+                .collect();
+
+            let summary = if today.is_empty() {
+                format!("Calendar — {month}, nothing on day {day}")
+            } else if today.len() == 1 {
+                format!(
+                    "Calendar — {month}, one thing on day {day}: {}",
+                    today[0]["title"].as_str().unwrap_or_default()
+                )
+            } else {
+                format!("Calendar — {month}, {} things on day {day}", today.len())
+            };
+
+            let s = st.borrow();
+            View::new(summary)
+                .with("month", month)
+                .with("year", s.year)
+                .with("month_number", s.month as i64)
+                .with("selected_day", day)
+                .with("view", match ui.get_view_mode() {
+                    1 => "week",
+                    2 => "day",
+                    _ => "month",
+                })
+                .with("events_on_selected_day", serde_json::Value::Array(today))
+                .with("days_with_events", serde_json::Value::Array(busy))
+                .with("events_this_month", s.events.len() as i64)
+        }
+    };
+
+    let weak = app.as_weak();
+    let ui_for = move || weak.upgrade().ok_or_else(|| "Calendar window is gone".to_string());
+
+    let day_ui = ui_for.clone();
+    let move_ui = ui_for.clone();
+    let today_ui = ui_for.clone();
+    let add_ui = ui_for.clone();
+    let view_ui = ui_for;
+
+    App::new("calendar")
+        .describe(describe)
+        .action(
+            Action::new("select_day", "Show what is on one day of the month shown")
+                .arg(Param::number("day").describe("Day of the month, 1-31")),
+            move |args| {
+                let ui = day_ui()?;
+                let day = args["day"].as_i64().ok_or("`day` must be a number")? as i32;
+                if !(1..=31).contains(&day) {
+                    return Err(format!("{day} is not a day of the month"));
+                }
+                ui.invoke_day_clicked(day);
+                let model = ui.get_events_today();
+                let titles: Vec<String> = (0..model.row_count())
+                    .filter_map(|i| model.row_data(i))
+                    .map(|e| e.title.to_string())
+                    .collect();
+                Ok(serde_json::json!({ "day": day, "events": titles }))
+            },
+        )
+        .action(
+            Action::new("show_month", "Move to the next or previous month")
+                .arg(Param::text("direction").describe("next | previous")),
+            move |args| {
+                let ui = move_ui()?;
+                match args["direction"].as_str().unwrap_or_default().to_lowercase().as_str() {
+                    "next" | "forward" => ui.invoke_next_month(),
+                    "previous" | "prev" | "back" => ui.invoke_prev_month(),
+                    other => return Err(format!("`direction` is next or previous, not `{other}`")),
+                }
+                Ok(serde_json::json!({ "showing": ui.get_month_title().to_string() }))
+            },
+        )
+        .action(Action::new("go_to_today", "Jump back to the current month and day"), move |_| {
+            let ui = today_ui()?;
+            ui.invoke_today_pressed();
+            Ok(serde_json::json!({
+                "showing": ui.get_month_title().to_string(),
+                "day": ui.get_selected_day(),
+            }))
+        })
+        .action(
+            Action::new("add_event", "Put something on the calendar")
+                .arg(Param::text("title"))
+                .arg(Param::text("date").describe("YYYY-MM-DD"))
+                .arg(Param::text("time").describe("HH:MM, 24-hour"))
+                .arg(Param::text("notes").optional()),
+            move |args| {
+                let ui = add_ui()?;
+                let title = args["title"].as_str().unwrap_or_default().trim().to_string();
+                let date = args["date"].as_str().unwrap_or_default().trim().to_string();
+                let time = args["time"].as_str().unwrap_or_default().trim().to_string();
+                if title.is_empty() {
+                    return Err("`title` is empty".into());
+                }
+                // Checked here rather than let the service reject a malformed timestamp: the
+                // error a caller can act on names the format it should have used.
+                if date.len() != 10 || date.matches('-').count() != 2 {
+                    return Err(format!("`date` should look like 2026-09-06, not `{date}`"));
+                }
+                if !time.contains(':') {
+                    return Err(format!("`time` should look like 14:30, not `{time}`"));
+                }
+                let notes = args["notes"].as_str().unwrap_or_default().to_string();
+                ui.invoke_save_event(title.clone().into(), date.clone().into(), time.clone().into(), notes.into());
+                Ok(serde_json::json!({ "added": title, "on": format!("{date} {time}") }))
+            },
+        )
+        .action(
+            Action::new("set_view", "Switch between the month, week and day views")
+                .arg(Param::text("view").describe("month | week | day")),
+            move |args| {
+                let ui = view_ui()?;
+                let mode = match args["view"].as_str().unwrap_or_default().to_lowercase().as_str() {
+                    "month" => 0,
+                    "week" => 1,
+                    "day" => 2,
+                    other => return Err(format!("unknown view `{other}`; use month, week or day")),
+                };
+                ui.invoke_switch_view(mode);
+                Ok(serde_json::json!({ "view": args["view"].as_str().unwrap_or_default() }))
+            },
+        )
+        .serve();
+}
+
 fn wire(app: &CalendarApp) {
     let (ty, tm, td) = today();
     let state = Rc::new(RefCell::new(CalState {
@@ -229,6 +392,9 @@ fn wire(app: &CalendarApp) {
         app.set_events_today(ModelRc::new(VecModel::from(day_events)));
         app.set_selected_day(td as i32);
     }
+
+    // Published once the month is loaded, so the first `app.describe` reports real events.
+    publish_control(app, state.clone());
 
     // ── Prev month ──
     {
