@@ -30,6 +30,13 @@ pub enum CompanionCommand {
     SendMessage {
         text: String,
         token_tx: Sender<String>,
+        /// The board ticket this belongs to, when it was submitted rather than blocked on.
+        ///
+        /// Carried on the command rather than tracked by the submitter, because only the worker
+        /// knows when a job actually *starts* — everything before that is queueing, and a caller
+        /// told "running" while its request sits in a channel has been told the one thing it
+        /// most needs to be right.
+        job: Option<String>,
     },
     /// Reload the LLM backend from a new provider config.
     /// Used when user adds/edits a provider in settings.
@@ -52,6 +59,7 @@ pub enum CompanionCommand {
         name: String,
         args: serde_json::Value,
         reply_tx: Sender<String>,
+        job: Option<String>,
     },
     /// List the tools an outside caller may run.
     ListTools {
@@ -209,6 +217,7 @@ pub struct MorningBriefSectionData {
 
 /// The bridge between Slint UI and the companion worker thread.
 pub struct CompanionBridge {
+    board: crate::jobs::Board,
     cmd_tx: Sender<CompanionCommand>,
     worker_handle: Option<std::thread::JoinHandle<()>>,
     /// Whether the LLM backend responded successfully on the last call.
@@ -230,6 +239,7 @@ pub struct CompanionBridge {
 pub struct CompanionHandle {
     cmd_tx: Sender<CompanionCommand>,
     online: Arc<AtomicBool>,
+    board: crate::jobs::Board,
 }
 
 impl CompanionHandle {
@@ -241,7 +251,7 @@ impl CompanionHandle {
     pub fn ask(&self, prompt: String, timeout: std::time::Duration) -> Result<String, String> {
         let (token_tx, token_rx) = crossbeam_channel::unbounded();
         self.cmd_tx
-            .send(CompanionCommand::SendMessage { text: prompt, token_tx })
+            .send(CompanionCommand::SendMessage { text: prompt, token_tx, job: None })
             .map_err(|_| "companion worker is not running".to_string())?;
 
         let deadline = std::time::Instant::now() + timeout;
@@ -304,7 +314,7 @@ impl CompanionHandle {
     ) -> Result<String, String> {
         let (reply_tx, reply_rx) = crossbeam_channel::bounded(1);
         self.cmd_tx
-            .send(CompanionCommand::RunTool { name, args, reply_tx })
+            .send(CompanionCommand::RunTool { name, args, reply_tx, job: None })
             .map_err(|_| "companion worker is not running".to_string())?;
         reply_rx
             .recv_timeout(timeout)
@@ -322,6 +332,51 @@ impl CompanionHandle {
             .map_err(|_| "the companion did not answer in time".to_string())
     }
 
+    /// Ask for something and get a ticket, not an answer.
+    ///
+    /// Returns in about a millisecond whatever the companion is doing, along with the two facts a
+    /// caller can act on: how many jobs are in front of it, and how busy the lane is. The
+    /// alternative — blocking — told the caller nothing for as long as fifty seconds and then
+    /// gave it no way to have chosen differently.
+    pub fn submit_ask(&self, text: String) -> Result<crate::jobs::Receipt, String> {
+        let receipt = self.board.submit("model", "ask");
+        // Tokens go nowhere: the board is the subscriber for a submitted job, and the chat UI is
+        // not watching this one.
+        let (token_tx, _token_rx) = crossbeam_channel::unbounded();
+        self.cmd_tx
+            .send(CompanionCommand::SendMessage {
+                text,
+                token_tx,
+                job: Some(receipt.ticket.clone()),
+            })
+            .map_err(|_| "companion worker is not running".to_string())?;
+        Ok(receipt)
+    }
+
+    /// The same, for a tool.
+    pub fn submit_tool(
+        &self,
+        name: String,
+        args: serde_json::Value,
+    ) -> Result<crate::jobs::Receipt, String> {
+        let receipt = self.board.submit("model", &format!("tool:{name}"));
+        let (reply_tx, _reply_rx) = crossbeam_channel::unbounded();
+        self.cmd_tx
+            .send(CompanionCommand::RunTool {
+                name,
+                args,
+                reply_tx,
+                job: Some(receipt.ticket.clone()),
+            })
+            .map_err(|_| "companion worker is not running".to_string())?;
+        Ok(receipt)
+    }
+
+    /// The board, for status and cancellation.
+    pub fn board(&self) -> &crate::jobs::Board {
+        &self.board
+    }
+
     /// Whether the LLM backend answered on the last call.
     pub fn is_online(&self) -> bool {
         self.online.load(Ordering::Relaxed)
@@ -334,11 +389,17 @@ impl CompanionBridge {
         CompanionHandle {
             cmd_tx: self.cmd_tx.clone(),
             online: self.online.clone(),
+            board: self.board.clone(),
         }
     }
 
     /// Start the companion worker thread.
-    pub fn start(config: CompanionConfig, ui_weak: slint::Weak<App>, event_bus: yantrik_os::EventBus) -> Self {
+    pub fn start(
+        config: CompanionConfig,
+        ui_weak: slint::Weak<App>,
+        event_bus: yantrik_os::EventBus,
+        board: crate::jobs::Board,
+    ) -> Self {
         let (cmd_tx, cmd_rx) = crossbeam_channel::unbounded();
         let online = Arc::new(AtomicBool::new(true));
         let online_w = online.clone();
@@ -349,11 +410,13 @@ impl CompanionBridge {
         let bus_w = event_bus.clone();
 
         let self_tx = cmd_tx.clone();
+        let board_w = board.clone();
         let worker_handle = std::thread::spawn(move || {
-            worker_loop(config, cmd_rx, self_tx, ui_weak, online_w, bond_w, ambient_w, bus_w);
+            worker_loop(config, cmd_rx, self_tx, ui_weak, online_w, bond_w, ambient_w, bus_w, board_w);
         });
 
         Self {
+            board,
             cmd_tx,
             worker_handle: Some(worker_handle),
             online,
@@ -381,7 +444,11 @@ impl CompanionBridge {
     /// Send a message and get a channel to receive streaming tokens.
     pub fn send_message(&self, text: String) -> Receiver<String> {
         let (token_tx, token_rx) = crossbeam_channel::unbounded();
-        if self.cmd_tx.send(CompanionCommand::SendMessage { text, token_tx: token_tx.clone() }).is_err() {
+        if self
+            .cmd_tx
+            .send(CompanionCommand::SendMessage { text, token_tx: token_tx.clone(), job: None })
+            .is_err()
+        {
             tracing::error!("Companion worker thread is dead — cannot send message");
             let _ = token_tx.send("__REPLACE__".to_string());
             let _ = token_tx.send("Companion service crashed. Please restart the application.".to_string());
@@ -528,6 +595,7 @@ fn worker_loop(
     cached_bond: Arc<std::sync::atomic::AtomicU8>,
     ambient: AmbientState,
     event_bus: yantrik_os::EventBus,
+    board: crate::jobs::Board,
 ) {
     // Save config services before moving config into build_companion
     let config_services = config.enabled_services.clone();
@@ -605,7 +673,24 @@ fn worker_loop(
 
     loop {
         match cmd_rx.recv() {
-            Ok(CompanionCommand::SendMessage { text, token_tx }) => {
+            Ok(CompanionCommand::SendMessage { text, token_tx, job }) => {
+                // Work that arrived without a ticket gets one here, and that is not bookkeeping:
+                // the startup brief and every message typed into the chat box come through this
+                // arm, and without an entry the board reported "0 active" while the worker was
+                // busy for forty seconds. A caller reading that would conclude the lane was free.
+                // The board must account for everything the lane does, or it is worse than no
+                // board at all.
+                let job = job.or_else(|| {
+                    let kind = if text.contains("You just started up") { "brief" } else { "ask" };
+                    Some(board.submit("model", kind).ticket)
+                });
+
+                // The moment this arm runs is the moment the job is no longer waiting. Anything
+                // earlier would be a guess; anything later would report a generation as queued
+                // while it is already producing tokens.
+                if let Some(id) = &job {
+                    board.start(id);
+                }
                 // Track real user message timestamp for synthesis gate
                 // Skip system-generated prompts (startup brief, etc.)
                 let is_system_generated = text.contains("You just started up")
@@ -700,6 +785,8 @@ fn worker_loop(
                     let token_tx_ref = &token_tx;
                     let token_count_ref = &mut token_count;
                     let start_ref = &start;
+                    let job_ref = job.as_ref();
+                    let board_ref = &board;
                     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                         companion.handle_message_streaming(&text, |token| {
                             if *token_count_ref == 0 {
@@ -709,6 +796,11 @@ fn worker_loop(
                                 );
                             }
                             *token_count_ref += 1;
+                            // The board sees the same stream the chat does, so a caller watching
+                            // a ticket can show the answer arriving rather than a spinner.
+                            if let Some(id) = job_ref {
+                                board_ref.progress(id, token, token == "__REPLACE__");
+                            }
                             let _ = token_tx_ref.send(token.to_string());
                         })
                     }))
@@ -785,6 +877,15 @@ fn worker_loop(
                 }
 
                 // Sentinel to indicate generation is done (sent in all cases)
+                if let Some(id) = &job {
+                    // Settled from what the board already holds: the partial text *is* the
+                    // answer once the stream ends, so there is no second copy to keep in step.
+                    let text = board
+                        .wait(id, std::time::Duration::ZERO)
+                        .and_then(|s| s["partial"].as_str().map(str::to_string))
+                        .unwrap_or_default();
+                    board.finish(id, Ok(text));
+                }
                 let _ = token_tx.send("__DONE__".to_string());
 
                 // Push updated state (includes online status)
@@ -874,9 +975,23 @@ fn worker_loop(
                     }
                 }
             }
-            Ok(CompanionCommand::RunTool { name, args, reply_tx }) => {
+            Ok(CompanionCommand::RunTool { name, args, reply_tx, job }) => {
                 tracing::info!(tool = %name, "Running tool for an outside caller");
-                let _ = reply_tx.send(companion.run_tool(&name, &args));
+                // As above: a blocking caller's tool still occupies the lane, so it still belongs
+                // on the board.
+                let job = job.or_else(|| Some(board.submit("model", &format!("tool:{name}")).ticket));
+                if let Some(id) = &job {
+                    board.start(id);
+                }
+                let output = companion.run_tool(&name, &args);
+                if let Some(id) = &job {
+                    // A tool that reports a permission denial or a bad argument has still *run*;
+                    // it is `Done` with that answer, not `Failed`. Failure here is reserved for
+                    // the companion being unable to try at all, which is a different thing for a
+                    // caller to react to.
+                    board.finish(id, Ok(output.clone()));
+                }
+                let _ = reply_tx.send(output);
             }
             Ok(CompanionCommand::ListTools { reply_tx }) => {
                 let _ = reply_tx.send(companion.tool_catalog());

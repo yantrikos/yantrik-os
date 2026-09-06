@@ -243,7 +243,11 @@ impl AppContext {
         }
 
         // Start companion bridge (spawns worker thread)
-        let bridge = Arc::new(CompanionBridge::start(config, ui.as_weak(), event_bus.clone()));
+        // One board for the whole process: the worker reports to it and the RPC layer reads it,
+        // so what a caller is told about the queue is the queue.
+        let board = crate::jobs::Board::new();
+        let bridge =
+            Arc::new(CompanionBridge::start(config, ui.as_weak(), event_bus.clone(), board));
 
         // Start multi-provider chat system (Discord, Matrix, IRC, Slack, Signal, etc.)
         // This also handles Telegram if configured, replacing the legacy poller.

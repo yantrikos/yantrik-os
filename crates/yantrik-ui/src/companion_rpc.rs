@@ -15,6 +15,20 @@
 //!   companion.status { }                      → { online }
 //!   companion.tools  { }                      → { tools: [{ name, category, permission, ... }] }
 //!   companion.tool   { name, args, timeout_ms? } → { result }
+//!   companion.submit { kind: ask|tool, ... }   → { ticket, ahead, active, eta_seconds?, eta_basis }
+//!   companion.await  { ticket, wait_ms? }      → { state, ahead, partial, result?, error? }
+//!   companion.jobs   { }                       → { lanes: [...], typical: [...] }
+//!   companion.cancel { ticket }                → { was }
+//!
+//! `ask` and `tool` above block until the work is finished, which is the wrong shape whenever
+//! anything else is already in flight: the worker is one lane, so a one-millisecond tool call
+//! arriving mid-generation waits for the whole answer — measured at thirty-six to fifty seconds —
+//! and learns nothing while it does.
+//!
+//! `submit` is the same work, accepted rather than served. It returns in about a millisecond with
+//! a ticket and, more usefully, with how many jobs are ahead and how long they have typically
+//! taken. A caller can then wait on `await`, get on with something else, or decide not to bother.
+//! The blocking pair stay, for callers that genuinely want to wait.
 //!
 //! The last two matter more than they look. The companion carries 178 tools — browsers, windows,
 //! files, containers, mail — and until now the only way to reach any of them was to persuade a
@@ -159,10 +173,97 @@ impl ServiceHandler for CompanionRpc {
                 Ok(serde_json::json!({ "result": result }))
             }
 
+            // ── Accepted, not served ──
+            "companion.submit" => {
+                let receipt = match params.get("kind").and_then(|v| v.as_str()).unwrap_or("ask") {
+                    "ask" => {
+                        let prompt = params
+                            .get("prompt")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .trim()
+                            .to_string();
+                        if prompt.is_empty() {
+                            return Err(bad_request("submitting an ask needs a `prompt`"));
+                        }
+                        self.handle.submit_ask(prompt).map_err(failed)?
+                    }
+                    "tool" => {
+                        let name = params
+                            .get("name")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .trim()
+                            .to_string();
+                        if name.is_empty() {
+                            return Err(bad_request(
+                                "submitting a tool needs a `name`; call companion.tools to see them",
+                            ));
+                        }
+                        let args = params.get("args").cloned().unwrap_or(serde_json::json!({}));
+                        self.handle.submit_tool(name, args).map_err(failed)?
+                    }
+                    other => {
+                        return Err(bad_request(format!(
+                            "unknown kind `{other}`; submit an `ask` or a `tool`"
+                        )))
+                    }
+                };
+                Ok(serde_json::to_value(&receipt).unwrap_or(serde_json::json!({})))
+            }
+
+            "companion.await" => {
+                let ticket = params
+                    .get("ticket")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .trim()
+                    .to_string();
+                if ticket.is_empty() {
+                    return Err(bad_request("await needs a `ticket` from companion.submit"));
+                }
+                // Zero is a legitimate ask — "where is it right now" — so it is not defaulted
+                // away. The board's own ceiling bounds the rest.
+                let wait =
+                    Duration::from_millis(params.get("wait_ms").and_then(|v| v.as_u64()).unwrap_or(0));
+                self.handle.board().wait(&ticket, wait).ok_or_else(|| {
+                    failed(format!(
+                        "no job called `{ticket}`; it either never existed or finished long enough                          ago to have been forgotten"
+                    ))
+                })
+            }
+
+            // The whole board. Answers "is it worth asking right now" without submitting anything.
+            "companion.jobs" => Ok(self.handle.board().overview()),
+
+            "companion.cancel" => {
+                let ticket = params.get("ticket").and_then(|v| v.as_str()).unwrap_or("").trim();
+                if ticket.is_empty() {
+                    return Err(bad_request("cancel needs a `ticket`"));
+                }
+                match self.handle.board().cancel(ticket) {
+                    Some(was) => Ok(serde_json::json!({
+                        "cancelled": ticket,
+                        "was": was,
+                        // Said plainly, because the difference matters: a queued job simply never
+                        // runs, while a running one is *asked* to stop and may still finish.
+                        "note": match was {
+                            crate::jobs::State::Queued => "it had not started, so it will not run",
+                            crate::jobs::State::Running =>
+                                "it is already running; it will stop at the next token it produces",
+                            _ => "it had already finished",
+                        },
+                    })),
+                    None => Err(failed(format!("no job called `{ticket}`"))),
+                }
+            }
+
             // Cheap enough to call before showing an AI affordance at all.
             "companion.status" => Ok(serde_json::json!({ "online": self.handle.is_online() })),
 
-            other => Err(bad_request(format!("unknown method `{other}`"))),
+            other => Err(bad_request(format!(
+                "unknown method `{other}`; this service serves companion.ask, companion.recall,                  companion.status, companion.tools, companion.tool, companion.submit,                  companion.await, companion.jobs, companion.cancel"
+            ))),
         }
     }
 }

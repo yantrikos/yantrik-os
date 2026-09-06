@@ -40,6 +40,7 @@ mod apps;
 mod bridge;
 mod companion_rpc;
 mod control;
+mod jobs;
 mod cards;
 mod clipboard;
 // NOTE: #[allow(dead_code)] required to avoid rustc 1.93.1 ICE in check_mod_deathness.
