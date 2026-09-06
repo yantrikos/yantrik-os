@@ -379,8 +379,11 @@ impl Tool for DeleteAutomationTool {
             return "Error: provide name or automation_id".to_string();
         };
 
-        // Also cancel linked schedule if any
-        if let Some(a) = AutomationStore::get(&ctx.db.conn(), &automation_id) {
+        // Also cancel linked schedule if any.
+        // Bound first: the `if let` scrutinee holds the connection lock for the whole body, and
+        // `Scheduler::cancel` takes it again.
+        let linked = AutomationStore::get(&ctx.db.conn(), &automation_id);
+        if let Some(a) = linked {
             if let Some(schedule_id) = a.trigger_config.get("schedule_id").and_then(|v| v.as_str()) {
                 Scheduler::cancel(&ctx.db.conn(), schedule_id);
             }

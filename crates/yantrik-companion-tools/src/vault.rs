@@ -187,7 +187,10 @@ impl Tool for VaultListTool {
     }
 
     fn execute(&self, ctx: &ToolContext, _args: &serde_json::Value) -> String {
-        match yantrikdb_core::vault::list(&ctx.db.conn()) {
+        // Bound first: a `match` scrutinee holds its temporaries — here the connection guard —
+        // for the whole match, and an arm below asks for the same lock.
+        let listed = yantrikdb_core::vault::list(&ctx.db.conn());
+        match listed {
             Ok(entries) if entries.is_empty() => "Vault is empty. No credentials stored yet.".to_string(),
             Ok(entries) => {
                 let pin_status = if yantrikdb_core::vault::has_pin(&ctx.db.conn()) {

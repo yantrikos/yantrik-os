@@ -114,7 +114,11 @@ pub fn run_think_cycle(service: &mut CompanionService) {
         if trigger.get("trigger_type").and_then(|v| v.as_str()) == Some("scheduled_task") {
             if let Some(action) = trigger.get("action").and_then(|v| v.as_str()) {
                 if let Some(auto_id) = action.strip_prefix("automation:") {
-                    if let Some(automation) = AutomationStore::get(&service.db.conn(), auto_id) {
+                    // Fetched into a binding first: an `if let` scrutinee's temporaries live for
+                    // the whole body, so calling `conn()` again inside would lock a non-reentrant
+                    // mutex the same thread already holds.
+                    let found = AutomationStore::get(&service.db.conn(), auto_id);
+                    if let Some(automation) = found {
                         if automation.enabled {
                             AutomationStore::record_run(&service.db.conn(), auto_id);
                             automation_triggers.push(serde_json::json!({

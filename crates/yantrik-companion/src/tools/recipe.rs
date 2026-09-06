@@ -227,9 +227,15 @@ impl Tool for RunRecipeTool {
             None => return "Missing required parameter: recipe_id".to_string(),
         };
 
-        // Try by ID first, then by name (case-insensitive)
-        let recipe = RecipeStore::get(&ctx.db.conn(), id_or_name)
-            .or_else(|| RecipeStore::find_by_name(&ctx.db.conn(), id_or_name));
+        // Try by ID first, then by name (case-insensitive).
+        //
+        // Two statements, not one chained `or_else`: the first `conn()` guard would still be
+        // alive when the closure ran, and locking it twice on one thread never returns.
+        let by_id = RecipeStore::get(&ctx.db.conn(), id_or_name);
+        let recipe = match by_id {
+            Some(r) => Some(r),
+            None => RecipeStore::find_by_name(&ctx.db.conn(), id_or_name),
+        };
 
         let recipe = match recipe {
             Some(r) => r,

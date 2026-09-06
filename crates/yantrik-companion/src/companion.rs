@@ -3128,6 +3128,31 @@ impl CompanionService {
         // Maintenance report
         let maintenance_report = query_maintenance_log(&self.db.conn());
 
+        // Every database read below is its own statement, and that is the whole point.
+        //
+        // These six used to sit inside the `CompanionState { .. }` literal as
+        // `Evolution::get_style(&self.db.conn())`, `count_opinions(&self.db.conn())`, and so on.
+        // A temporary lives until the end of the *enclosing statement*, and a struct literal is
+        // one statement — so the guard taken by the first field was still held when the second
+        // field asked for the lock again. `conn()` is a plain (non-reentrant) mutex, so the
+        // thread waited on itself, forever.
+        //
+        // The cost was the whole companion: this runs in `push_state`, which the worker calls
+        // before entering its command loop, so the worker never reached `recv()`. Every
+        // `companion.ask`, every tool call, the morning brief — all queued behind a thread parked
+        // in a futex with nothing to say. It looked exactly like a broken LLM, which is where the
+        // search had been going.
+        let style = Evolution::get_style(&self.db.conn());
+        let opinions_count = Evolution::count_opinions(&self.db.conn());
+        let shared_references_count = Evolution::count_shared_references(&self.db.conn());
+        let open_loops_count = crate::world_model::count_open_threads(&self.db.conn());
+        let overdue_commitment_count =
+            crate::world_model::WorldModel::overdue_commitments(&self.db.conn()).len();
+        let pending_attention_count: i64 = crate::world_model::attention_summary(&self.db.conn())
+            .iter()
+            .map(|(_, c)| *c)
+            .sum();
+
         CompanionState {
             last_interaction_ts: self.last_interaction_ts,
             current_ts: now,
@@ -3142,9 +3167,9 @@ impl CompanionService {
             // Soul state
             bond_level: self.bond_level,
             bond_score: self.bond_score,
-            formality: Evolution::get_style(&self.db.conn()).formality,
-            opinions_count: Evolution::count_opinions(&self.db.conn()),
-            shared_references_count: Evolution::count_shared_references(&self.db.conn()),
+            formality: style.formality,
+            opinions_count,
+            shared_references_count,
             bond_level_changed: self.bond_level_changed,
             // Phase 2: Proactive intelligence
             current_hour,
@@ -3168,10 +3193,9 @@ impl CompanionService {
             user_interests: self.user_interests.clone(),
             user_location: self.user_location.clone(),
             // Open Loops Guardian
-            open_loops_count: crate::world_model::count_open_threads(&self.db.conn()),
-            overdue_commitment_count: crate::world_model::WorldModel::overdue_commitments(&self.db.conn()).len(),
-            pending_attention_count: crate::world_model::attention_summary(&self.db.conn())
-                .iter().map(|(_, c)| c).sum(),
+            open_loops_count,
+            overdue_commitment_count,
+            pending_attention_count,
             model_tier: self.capability_profile.tier,
         }
     }
@@ -3403,7 +3427,10 @@ impl CompanionService {
         let completed = tm.poll(&self.db.conn());
         let mut notifications = Vec::new();
         for task_id in &completed {
-            if let Some(status) = tm.get_status(&self.db.conn(), task_id) {
+            // Bound first: the body records a memory and marks the task, both of which take the
+            // connection lock that an `if let` scrutinee would still be holding.
+            let status = tm.get_status(&self.db.conn(), task_id);
+            if let Some(status) = status {
                 let output = crate::task_manager::TaskManager::read_output(task_id, 20);
                 let exit_str = status.exit_code.map(|c| c.to_string()).unwrap_or_else(|| "?".into());
                 let text = format!(

@@ -537,18 +537,27 @@ fn worker_loop(
     let mut last_user_message_ts: f64 = 0.0;
 
     // Push initial state to UI
+    //
+    // These three steps are traced because the worker once stopped somewhere between here and
+    // the command loop, with no log to say where: every RPC call then timed out and the desktop
+    // looked merely slow. A silent gap before a loop that must never stop is worth four lines.
+    tracing::debug!("Worker startup: pushing initial state");
     push_state(&companion, &ui_weak, online.load(Ordering::Relaxed));
 
     // Sync initial bond level
+    tracing::debug!("Worker startup: syncing bond level");
     cached_bond.store(companion.bond_level().as_u8(), Ordering::Relaxed);
 
 
 
     // Resume any running/waiting recipes from before shutdown
+    tracing::debug!("Worker startup: checking for resumable recipes");
     for rid in yantrik_companion::recipe::RecipeStore::get_resumable(&companion.db.conn()) {
         tracing::info!(recipe_id = %rid, "Resuming recipe from previous session");
         let _ = cmd_tx.send(CompanionCommand::ProcessRecipeStep { recipe_id: rid });
     }
+
+    tracing::info!("Companion worker ready for commands");
 
     loop {
         match cmd_rx.recv() {
