@@ -44,7 +44,8 @@ impl Tool for VaultStoreTool {
                         "password": {"type": "string", "description": "Password or API key to store"},
                         "url": {"type": "string", "description": "Optional URL for the service"},
                         "notes": {"type": "string", "description": "Optional notes (also encrypted)"},
-                        "category": {"type": "string", "description": "Category: general, email, social, dev, finance, work"}
+                        "category": {"type": "string", "description": "Category: general, email, social, dev, finance, work"},
+                        "pin": {"type": "string", "description": "Vault PIN, required if the vault is protected. Ask the user for it."}
                     },
                     "required": ["service", "username", "password"]
                 }
@@ -58,10 +59,30 @@ impl Tool for VaultStoreTool {
         let password = args.get("password").and_then(|v| v.as_str()).unwrap_or_default();
         let url = args.get("url").and_then(|v| v.as_str());
         let notes = args.get("notes").and_then(|v| v.as_str());
+        let pin = args.get("pin").and_then(|v| v.as_str());
         let category = args.get("category").and_then(|v| v.as_str());
 
         if service.is_empty() || username.is_empty() || password.is_empty() {
             return "Error: service, username, and password are required".to_string();
+        }
+
+        // The PIN first, because it is now what *produces* the key rather than a gate standing in
+        // front of one. Asking for the encryption before checking the PIN used to work, since the
+        // key was readable either way; on a protected vault it fails with "locked" — true, and
+        // telling the caller nothing it can act on.
+        if yantrikdb_core::vault::has_pin(&ctx.db.conn()) {
+            match pin {
+                None => {
+                    return "VAULT_PIN_REQUIRED: this vault is protected. Ask the user for their \
+                            vault PIN and pass it as `pin`."
+                        .to_string()
+                }
+                Some(p) => {
+                    if !yantrikdb_core::vault::verify_pin(&ctx.db.conn(), p) {
+                        return "VAULT_PIN_INVALID: Incorrect PIN. Access denied.".to_string();
+                    }
+                }
+            }
         }
 
         let enc = match yantrikdb_core::vault::vault_encryption(&ctx.db.conn()) {
@@ -108,16 +129,17 @@ impl Tool for VaultGetTool {
         let search = args.get("search").and_then(|v| v.as_str());
         let pin = args.get("pin").and_then(|v| v.as_str());
 
-        let enc = match yantrikdb_core::vault::vault_encryption(&ctx.db.conn()) {
-            Ok(e) => e,
-            Err(e) => return format!("Error: {e}"),
-        };
-
-        // PIN verification
+        // The PIN first, because it is now what *produces* the key rather than a gate standing in
+        // front of one. Asking for the encryption before checking the PIN used to work, since the
+        // key was readable either way; on a protected vault it fails with "locked" — true, and
+        // telling the caller nothing it can act on.
         if yantrikdb_core::vault::has_pin(&ctx.db.conn()) {
             match pin {
-                None => return "VAULT_PIN_REQUIRED: A security PIN is required to access credentials. \
-                    Please ask the user to provide their vault PIN.".to_string(),
+                None => {
+                    return "VAULT_PIN_REQUIRED: this vault is protected. Ask the user for their \
+                            vault PIN and pass it as `pin`."
+                        .to_string()
+                }
                 Some(p) => {
                     if !yantrikdb_core::vault::verify_pin(&ctx.db.conn(), p) {
                         return "VAULT_PIN_INVALID: Incorrect PIN. Access denied.".to_string();
@@ -125,6 +147,11 @@ impl Tool for VaultGetTool {
                 }
             }
         }
+
+        let enc = match yantrikdb_core::vault::vault_encryption(&ctx.db.conn()) {
+            Ok(e) => e,
+            Err(e) => return format!("Error: {e}"),
+        };
 
         let entries = if let Some(svc) = service {
             match yantrikdb_core::vault::get(&ctx.db.conn(), &enc, svc) {
