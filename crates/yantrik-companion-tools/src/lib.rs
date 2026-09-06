@@ -11,6 +11,7 @@ pub use yantrik_companion_core::permission::{PermissionLevel, parse_permission};
 pub use yantrik_companion_core::sanitize;
 
 pub mod antivirus;
+pub mod app_ui;
 pub mod archive;
 pub mod artifacts;
 pub mod bluetooth;
@@ -64,6 +65,7 @@ use yantrik_companion_core::tools::ToolRegistry;
 /// Register all pure tools into the given registry.
 pub fn register_all(reg: &mut ToolRegistry) {
     antivirus::register(reg);
+    app_ui::register(reg);
     archive::register(reg);
     artifacts::register(reg);
     bluetooth::register(reg);

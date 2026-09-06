@@ -47,6 +47,16 @@ pub enum CompanionCommand {
     GetEvolution {
         reply_tx: Sender<EvolutionSnapshot>,
     },
+    /// Run one tool by name, without a model in the loop.
+    RunTool {
+        name: String,
+        args: serde_json::Value,
+        reply_tx: Sender<String>,
+    },
+    /// List the tools an outside caller may run.
+    ListTools {
+        reply_tx: Sender<serde_json::Value>,
+    },
     /// Search memories.
     RecallMemories {
         query: String,
@@ -276,6 +286,40 @@ impl CompanionHandle {
         reply_rx
             .recv_timeout(timeout)
             .map_err(|_| "companion timed out".to_string())
+    }
+
+    /// Run one tool by name and get its result.
+    ///
+    /// The 178 tools were reachable only by persuading a language model to choose one. This is the
+    /// same registry, called by name, with the same permission ceiling and the same audit trail —
+    /// and it works when the model does not.
+    ///
+    /// The worker is single-threaded, so this queues behind whatever it is already doing: an
+    /// answer in progress, a think cycle. That is why the timeout is the caller's to choose.
+    pub fn tool(
+        &self,
+        name: String,
+        args: serde_json::Value,
+        timeout: std::time::Duration,
+    ) -> Result<String, String> {
+        let (reply_tx, reply_rx) = crossbeam_channel::bounded(1);
+        self.cmd_tx
+            .send(CompanionCommand::RunTool { name, args, reply_tx })
+            .map_err(|_| "companion worker is not running".to_string())?;
+        reply_rx
+            .recv_timeout(timeout)
+            .map_err(|_| "the companion did not finish the tool in time".to_string())
+    }
+
+    /// The tools an outside caller may run, within the configured permission ceiling.
+    pub fn tools(&self, timeout: std::time::Duration) -> Result<serde_json::Value, String> {
+        let (reply_tx, reply_rx) = crossbeam_channel::bounded(1);
+        self.cmd_tx
+            .send(CompanionCommand::ListTools { reply_tx })
+            .map_err(|_| "companion worker is not running".to_string())?;
+        reply_rx
+            .recv_timeout(timeout)
+            .map_err(|_| "the companion did not answer in time".to_string())
     }
 
     /// Whether the LLM backend answered on the last call.
@@ -829,6 +873,13 @@ fn worker_loop(
                         let _ = reply_tx.send(vec![]);
                     }
                 }
+            }
+            Ok(CompanionCommand::RunTool { name, args, reply_tx }) => {
+                tracing::info!(tool = %name, "Running tool for an outside caller");
+                let _ = reply_tx.send(companion.run_tool(&name, &args));
+            }
+            Ok(CompanionCommand::ListTools { reply_tx }) => {
+                let _ = reply_tx.send(companion.tool_catalog());
             }
             Ok(CompanionCommand::GetBondLevel { reply_tx }) => {
                 let _ = reply_tx.send(companion.bond_level());

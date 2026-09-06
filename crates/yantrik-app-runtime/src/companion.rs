@@ -61,6 +61,33 @@ pub fn recall(query: &str, limit: usize) -> Result<Vec<Recalled>, String> {
         .collect())
 }
 
+/// Run one of the companion's tools by name, without a model in the loop.
+///
+/// The companion carries ~178 of them — files, windows, browser, containers, packages — behind
+/// the permission ceiling in its config. An app that wants one thing done should ask for that
+/// thing rather than describe it in a prompt and hope: this is a function call, and it works
+/// when the model is unavailable.
+///
+/// The result is the tool's own prose, which is what tools return; a caller wanting structure
+/// parses it.
+pub fn tool(name: &str, args: serde_json::Value) -> Result<String, String> {
+    let response = client()
+        .call(
+            "companion.tool",
+            serde_json::json!({
+                "name": name,
+                "args": args,
+                "timeout_ms": ASK_TIMEOUT.as_millis() as u64,
+            }),
+        )
+        .map_err(|e| format!("[{}] {}", e.code, e.message))?;
+    response
+        .get("result")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .ok_or_else(|| "companion returned no result".to_string())
+}
+
 /// Whether the companion is reachable and its backend answered last time.
 ///
 /// Cheap: an app can call this before offering an AI action.

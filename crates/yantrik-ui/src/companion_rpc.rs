@@ -13,6 +13,14 @@
 //!   companion.ask    { prompt, timeout_ms? }  → { text }
 //!   companion.recall { query, limit? }        → { results: [{ rid, text, score, ... }] }
 //!   companion.status { }                      → { online }
+//!   companion.tools  { }                      → { tools: [{ name, category, permission, ... }] }
+//!   companion.tool   { name, args, timeout_ms? } → { result }
+//!
+//! The last two matter more than they look. The companion carries 178 tools — browsers, windows,
+//! files, containers, mail — and until now the only way to reach any of them was to persuade a
+//! language model to pick one during a conversation. That is a slow and unreliable way to make a
+//! function call, and it stops working entirely when the model does. `companion.tool` is the same
+//! registry, with the same permission ceiling and the same audit trail, called by name.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -108,6 +116,47 @@ impl ServiceHandler for CompanionRpc {
                     })
                     .collect();
                 Ok(serde_json::json!({ "results": results }))
+            }
+
+            // Reading the catalogue is instant; the wait is the queue. The worker is
+            // single-threaded, so this sits behind whatever answer is in flight, and a caller
+            // asking what tools exist should not be told "no" because a reply was mid-sentence.
+            "companion.tools" => {
+                let timeout_ms = params
+                    .get("timeout_ms")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(DEFAULT_TIMEOUT_MS)
+                    .min(MAX_TIMEOUT_MS);
+                self.handle.tools(Duration::from_millis(timeout_ms)).map_err(failed)
+            }
+
+            "companion.tool" => {
+                let name = params
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .trim()
+                    .to_string();
+                if name.is_empty() {
+                    return Err(bad_request("tool needs a `name`; call companion.tools to see them"));
+                }
+                let args = params.get("args").cloned().unwrap_or(serde_json::json!({}));
+                // Tools shell out to real programs — a package install, a container build — so the
+                // default here is generous, and still bounded.
+                let timeout_ms = params
+                    .get("timeout_ms")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(DEFAULT_TIMEOUT_MS)
+                    .min(MAX_TIMEOUT_MS);
+
+                tracing::info!(tool = %name, "companion.tool");
+                let result = self
+                    .handle
+                    .tool(name, args, Duration::from_millis(timeout_ms))
+                    .map_err(failed)?;
+                // Tools return prose, not JSON: they were written to be read by a model. A caller
+                // that wants structure should parse it, not have us guess at a shape.
+                Ok(serde_json::json!({ "result": result }))
             }
 
             // Cheap enough to call before showing an AI affordance at all.

@@ -1154,6 +1154,52 @@ impl CompanionService {
         self.registry.execute(&ctx, tool_name, args)
     }
 
+    /// Execute a tool for a caller that is not the model.
+    ///
+    /// The 178 tools were reachable only through LLM tool-calling: to read a web page or list the
+    /// windows, something had to persuade a language model to choose the tool. That is a slow,
+    /// expensive and unreliable way to make a function call, and it fails entirely when the model
+    /// is unavailable. This is the same registry, called by name.
+    ///
+    /// Unlike [`Self::execute_tool_direct`], which the recipe engine calls with a fixed Standard
+    /// ceiling, this honours `tools.max_permission` from the config — the gate the user configured
+    /// is the gate an outside caller meets. The gate itself lives in `ToolRegistry::execute`, so a
+    /// tool above the ceiling is refused and audited here exactly as it would be mid-conversation.
+    pub fn run_tool(&self, tool_name: &str, args: &serde_json::Value) -> String {
+        let metadata = self.registry.list_metadata(PermissionLevel::Dangerous);
+        let ctx = ToolContext {
+            db: &self.db,
+            max_permission: parse_permission(&self.config.tools.max_permission),
+            registry_metadata: Some(&metadata),
+            task_manager: Some(&self.task_manager),
+            incognito: self.incognito,
+            agent_spawner: None,
+        };
+        self.registry.execute(&ctx, tool_name, args)
+    }
+
+    /// Every tool an outside caller may run, with what it is for.
+    ///
+    /// Names and one-line descriptions only — the full JSON schemas are what the model needs, and
+    /// a caller that already knows which tool it wants does not need to read 178 of them.
+    pub fn tool_catalog(&self) -> serde_json::Value {
+        let max_perm = parse_permission(&self.config.tools.max_permission);
+        let tools: Vec<serde_json::Value> = self
+            .registry
+            .list_metadata(max_perm)
+            .into_iter()
+            .map(|m| {
+                serde_json::json!({
+                    "name": m.name,
+                    "category": m.category,
+                    "permission": m.permission.to_string(),
+                    "description": m.description,
+                })
+            })
+            .collect();
+        serde_json::json!({ "tools": tools, "ceiling": max_perm.to_string() })
+    }
+
     /// Execute a recipe synchronously and return the final answer.
     /// Used by the query planner when it decides a complex query needs a recipe.
     fn execute_recipe_sync(

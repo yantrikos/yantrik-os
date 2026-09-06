@@ -7,6 +7,8 @@ description = "Pure tool implementations for the Yantrik companion agent"
 [dependencies]
 yantrik-companion-core = { workspace = true }
 yantrikdb-core = { workspace = true }
+# The app control surface (app.describe / app.act) lives on the same socket bus the services use.
+yantrik-ipc-transport = { workspace = true }
 rusqlite = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
