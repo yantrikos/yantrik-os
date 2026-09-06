@@ -334,6 +334,102 @@ fn eval_js(
     }
 }
 
+/// Which browser to drive, found rather than assumed.
+///
+/// Both launchers used to hardcode `chromium`, which is not installed on Debian by default and is
+/// a snap-only transitional package on Ubuntu 24.04. On a clean machine the spawn failed and the
+/// tools reported nothing useful — the browser simply never appeared.
+///
+/// Chrome first, because it is the one with the automation surface we depend on and the one most
+/// likely to be current; the rest are what people actually have installed.
+pub fn chrome_binary() -> Result<String, String> {
+    const CANDIDATES: [&str; 6] = [
+        "google-chrome",
+        "google-chrome-stable",
+        "chromium",
+        "chromium-browser",
+        "brave-browser",
+        "microsoft-edge",
+    ];
+    for name in CANDIDATES {
+        if std::process::Command::new("which")
+            .arg(name)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+        {
+            return Ok(name.to_string());
+        }
+    }
+    Err(format!(
+        "no browser found. Looked for: {}. Install one, e.g. `apt install google-chrome-stable`.",
+        CANDIDATES.join(", ")
+    ))
+}
+
+/// Where a browsing identity keeps its cookies, logins and history.
+///
+/// One profile per identity, under the user's data directory rather than `/tmp`. The old
+/// hardcoded `/tmp/chromium-profile` meant one identity for the whole machine — you could not
+/// hold a work account and a personal one — and every session died with the tmpdir on reboot.
+/// Sessions are the thing worth keeping: they survive where a stored password would have to be
+/// replayed through a login form, 2FA and a device check.
+pub fn profile_dir(identity: &str) -> std::path::PathBuf {
+    let identity = sanitize_identity(identity);
+    let base = std::env::var("HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| std::path::PathBuf::from("/tmp"));
+    base.join(".local/share/yantrik/browsers").join(identity)
+}
+
+/// An identity names a directory, so it may not wander out of one.
+fn sanitize_identity(identity: &str) -> String {
+    let cleaned: String = identity
+        .trim()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '-' })
+        .collect();
+    if cleaned.is_empty() {
+        "default".to_string()
+    } else {
+        cleaned
+    }
+}
+
+/// The debugging port for an identity.
+///
+/// Derived from the name rather than fixed, because the two launchers both used 9222: whichever
+/// browser started first owned the port, `is_browser_running` could not tell them apart, and the
+/// headless extraction browser would happily drive the user's visible window — or report "already
+/// running" when only the other one was up.
+pub fn port_for(identity: &str) -> u16 {
+    let identity = sanitize_identity(identity);
+    if identity == "default" {
+        return CDP_PORT;
+    }
+    // FNV-1a, so the same name always lands on the same port and a caller can find it again.
+    let mut hash: u32 = 2166136261;
+    for byte in identity.as_bytes() {
+        hash ^= *byte as u32;
+        hash = hash.wrapping_mul(16777619);
+    }
+    // 9223..=9322, leaving 9222 to the default identity.
+    9223 + (hash % 100) as u16
+}
+
+/// Check if a browser is listening on this identity's port.
+fn is_identity_running(identity: &str) -> bool {
+    port_is_open(port_for(identity))
+}
+
+fn port_is_open(port: u16) -> bool {
+    TcpStream::connect_timeout(
+        &format!("{CDP_HOST}:{port}").parse().unwrap(),
+        Duration::from_millis(500),
+    )
+    .is_ok()
+}
+
 /// Check if Chromium CDP is reachable.
 fn is_browser_running() -> bool {
     TcpStream::connect_timeout(
@@ -357,7 +453,14 @@ fn ensure_headless_browser() -> Result<(), String> {
     }
 
     tracing::info!("Auto-launching headless Chromium for data extraction");
-    let result = std::process::Command::new("chromium")
+    let binary = match chrome_binary() {
+        Ok(b) => b,
+        Err(e) => return Err(e),
+    };
+    let profile = profile_dir("default");
+    let _ = std::fs::create_dir_all(&profile);
+
+    let result = std::process::Command::new(&binary)
         .args([
             "--headless=new",
             "--ozone-platform=wayland",
@@ -379,9 +482,9 @@ fn ensure_headless_browser() -> Result<(), String> {
             "--disable-infobars",
             "--excludeSwitches=enable-automation",
             // Anti-detection: use real browser profile dir for persistent cookies/state
-            "--user-data-dir=/tmp/chromium-profile",
-            "about:blank",
         ])
+        .arg(format!("--user-data-dir={}", profile.display()))
+        .arg("about:blank")
         .env("WAYLAND_DISPLAY", "wayland-0")
         .env("XDG_RUNTIME_DIR", "/run/user/1000")
         .stdin(std::process::Stdio::null())
@@ -432,6 +535,10 @@ impl Tool for LaunchBrowserTool {
                     "type": "object",
                     "properties": {
                         "url": {"type": "string", "description": "Optional URL to open (default: about:blank)"},
+                        "identity": {
+                            "type": "string",
+                            "description": "Which browsing identity to use - its own cookies, logins and history. Defaults to 'default'. Use separate identities for separate accounts."
+                        },
                         "headless": {"type": "boolean", "description": "Run in headless mode (no visible window). Default: false"}
                     }
                 }
@@ -460,26 +567,54 @@ impl Tool for LaunchBrowserTool {
 
         // Launch Chromium with CDP + Wayland support
         // Ensure Wayland env vars are set (worker thread may not have them)
-        let mut chrome_args = vec![
-            "--ozone-platform=wayland",
-            "--remote-debugging-address=127.0.0.1",
-            "--remote-debugging-port=9222",
-            "--no-first-run",
-            "--no-default-browser-check",
-            "--disable-gpu",
-            // Anti-detection: prevent navigator.webdriver=true (primary CAPTCHA trigger)
-            "--disable-blink-features=AutomationControlled",
-            // Anti-detection: real Chrome user-agent (not "HeadlessChrome")
-            "--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
-            // Anti-detection: realistic viewport size
-            "--window-size=1920,1080",
-        ];
-        if headless {
-            chrome_args.push("--headless=new");
+        // Which account this window is. One profile per identity, so a work account and a
+        // personal one are different sessions rather than the same cookie jar.
+        let identity = args.get("identity").and_then(|v| v.as_str()).unwrap_or("default");
+        let profile = profile_dir(identity);
+        if let Err(e) = std::fs::create_dir_all(&profile) {
+            return format!("Cannot create the profile directory {}: {e}", profile.display());
         }
-        chrome_args.push(url);
+        let port = port_for(identity);
 
-        let result = std::process::Command::new("chromium")
+        let binary = match chrome_binary() {
+            Ok(b) => b,
+            Err(e) => return format!("Error: {e}"),
+        };
+
+        let mut chrome_args: Vec<String> = vec![
+            "--ozone-platform=wayland".into(),
+            "--remote-debugging-address=127.0.0.1".into(),
+            format!("--remote-debugging-port={port}"),
+            // Chrome 2026 refuses a DevTools websocket whose Origin it does not know, which is
+            // every connection we make. Without this every CDP call fails the handshake with 403.
+            "--remote-allow-origins=*".into(),
+            format!("--user-data-dir={}", profile.display()),
+            "--no-first-run".into(),
+            "--no-default-browser-check".into(),
+            // Anti-detection: prevent navigator.webdriver=true (primary CAPTCHA trigger)
+            "--disable-blink-features=AutomationControlled".into(),
+            // Anti-detection: realistic viewport size
+            "--window-size=1920,1080".into(),
+        ];
+        // Headed by default, and that is the point rather than an oversight. What makes a site
+        // trust this browser is not a flag: it is a real profile with a real logged-in session, on
+        // the user's own machine and their own address. A headless window on a datacentre IP is
+        // what every cloud automation service is fighting, and running on someone's desktop is the
+        // one advantage they cannot buy. Headless is for background work on sites that do not care.
+        //
+        // `--disable-gpu` is deliberately absent when headed: it forces software rendering, and a
+        // SwiftShader WebGL string is itself a fingerprint.
+        if headless {
+            chrome_args.push("--headless=new".into());
+            chrome_args.push("--disable-gpu".into());
+            // The one signal `--headless=new` still leaks to any script that looks.
+            chrome_args.push(
+                "--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36".into(),
+            );
+        }
+        chrome_args.push(url.to_string());
+
+        let result = std::process::Command::new(&binary)
             .args(&chrome_args)
             .env("WAYLAND_DISPLAY", "wayland-0")
             .env("XDG_RUNTIME_DIR", "/run/user/1000")
@@ -570,7 +705,7 @@ impl Tool for BrowseTool {
         };
 
         // Scan interactive elements
-        let elements = eval_js(&mut ws, SCAN_ELEMENTS_JS).unwrap_or_default();
+        let elements = eval_js(&mut ws, &scan_js(false)).unwrap_or_default();
         let element_count = if elements.is_empty() { 0 } else { elements.lines().count() };
 
         let mut out = format!("Title: {title}\nURL: {url}\n\n");
@@ -1414,43 +1549,117 @@ fn url_decode(s: &str) -> String {
 
 /// JS that scans the page for interactive elements, stores them in
 /// `window.__yantrik_elements`, and returns a numbered list.
+///
+/// Two things this does that a plain `querySelectorAll` does not, both measured against real
+/// pages:
+///
+/// **It works out the accessible name.** A bare scan reads `textContent` and gets nothing from an
+/// `<input>`, so a login form came back as `[2] input[text] ""` and `[3] input[password] ""` — the
+/// two fields that are the entire task, unnamed. Resolving the name the way a screen reader does
+/// — `aria-labelledby`, then `aria-label`, then the associated `<label for>`, then a wrapping
+/// label — turns those into "Username or email address" and "Password". On Wikipedia 320 of 1795
+/// elements had no name at all before this.
+///
+/// Chromium can compute this itself, over CDP's `Accessibility.getFullAXTree`, and that was the
+/// obvious answer until it was timed: 1.65 seconds on a Wikipedia article, because it walks the
+/// whole document. Doing that before every click is not fluency. The same names come out of ten
+/// lines of JavaScript in the page, in single-digit milliseconds.
+///
+/// **It knows what is on screen.** A person considers what they can see; a scan of the whole
+/// document returned 1795 elements and 124 KB for one Wikipedia page, of which 125 elements and
+/// 9.5 KB were actually visible. Every element still gets an index — so a click on something below
+/// the fold still works, and indices stay stable across looks — but the report leads with what is
+/// in view and says how much is not.
 const SCAN_ELEMENTS_JS: &str = r#"(() => {
+    // Replaced by the caller: see `scan_js`.
+    const showAll = __SHOW_ALL__;
     const sels = 'a[href], button, input, textarea, select, [role="button"], [role="link"], [role="tab"], [role="menuitem"], [contenteditable="true"], summary, details';
-    const allEls = document.querySelectorAll(sels);
+
+    // The accessible name, in the order the accname algorithm resolves it.
+    const nameOf = (el) => {
+        const byIds = (ids) => ids.split(/\s+/)
+            .map(id => document.getElementById(id))
+            .filter(Boolean)
+            .map(n => (n.innerText || n.textContent || '').trim())
+            .join(' ')
+            .trim();
+
+        const labelledby = el.getAttribute('aria-labelledby');
+        if (labelledby) { const t = byIds(labelledby); if (t) return t; }
+
+        const aria = el.getAttribute('aria-label');
+        if (aria && aria.trim()) return aria.trim();
+
+        if (el.id) {
+            const lab = document.querySelector('label[for="' + CSS.escape(el.id) + '"]');
+            if (lab) { const t = (lab.innerText || lab.textContent || '').trim(); if (t) return t; }
+        }
+        const wrapping = el.closest('label');
+        if (wrapping) { const t = (wrapping.innerText || wrapping.textContent || '').trim(); if (t) return t; }
+
+        const own = (el.innerText || el.textContent || '').trim();
+        if (own) return own;
+
+        return (el.placeholder || el.value || el.alt || el.title || '').trim();
+    };
+
     const els = [];
-    allEls.forEach(el => {
+    document.querySelectorAll(sels).forEach(el => {
         const r = el.getBoundingClientRect();
         if (r.width === 0 && r.height === 0 && el.tagName !== 'INPUT') return;
         if (el.disabled) return;
         if (el.closest('[aria-hidden="true"]') && !el.closest('[aria-modal="true"]')) return;
         els.push(el);
     });
+    // Indexed before filtering, so an index means the same thing whatever is scrolled into view.
     window.__yantrik_elements = els;
+
+    const visible = [];
     const lines = [];
     els.forEach((el, i) => {
+        const r = el.getBoundingClientRect();
+        const onscreen = r.bottom > 0 && r.top < innerHeight && r.right > 0 && r.left < innerWidth;
+
         const tag = el.tagName.toLowerCase();
         const type = el.type || '';
         const role = el.getAttribute('role') || '';
-        let text = (el.ariaLabel || el.textContent || el.placeholder || el.value || el.alt || el.title || '').trim().replace(/\s+/g, ' ');
+        let text = nameOf(el).replace(/\s+/g, ' ');
         if (text.length > 60) text = text.substring(0, 57) + '...';
         const name = el.name || el.id || '';
         const href = el.href || '';
+
         let desc = '[' + (i+1) + '] ' + tag;
         if (type && type !== 'submit') desc += '[' + type + ']';
         if (role) desc += '[' + role + ']';
         if (name) desc += ' name="' + name + '"';
         if (text) desc += ' "' + text + '"';
         if (href && tag === 'a') {
-            try { desc += ' → ' + new URL(href).pathname.substring(0, 60); } catch(e) { desc += ' → ' + href.substring(0, 60); }
+            try { desc += ' \u2192 ' + new URL(href).pathname.substring(0, 60); } catch(e) { desc += ' \u2192 ' + href.substring(0, 60); }
         }
         if (tag === 'input' || tag === 'textarea') {
             const val = el.value || '';
             if (val) desc += ' value="' + val.substring(0, 40) + '"';
         }
-        lines.push(desc);
+        if (onscreen || showAll) visible.push(desc); else lines.push(desc);
     });
-    return lines.join('\n');
+
+    const offscreen = lines.length;
+    let out = visible.join('\n');
+    if (offscreen > 0) {
+        // Said rather than silently dropped: an agent that cannot see something must know it is
+        // there, or it will conclude the page does not have it and give up.
+        out += '\n\n(' + offscreen + ' more not currently on screen \u2014 scroll, or ask for all)';
+    }
+    return out;
 })()"#;
+
+/// The scan, told whether to report everything or only what is in view.
+///
+/// A substitution rather than two constants: the two versions differed by one boolean and keeping
+/// them as separate strings is how they drift apart.
+fn scan_js(show_all: bool) -> String {
+    SCAN_ELEMENTS_JS.replace("__SHOW_ALL__", if show_all { "true" } else { "false" })
+}
 
 // ── Browser Snapshot ──
 
@@ -1470,6 +1679,10 @@ impl Tool for BrowserSnapshotTool {
                 "parameters": {
                     "type": "object",
                     "properties": {
+                        "all": {
+                            "type": "boolean",
+                            "description": "Include elements that are not currently on screen. Off by default: the snapshot reports what is visible and says how many more there are."
+                        },
                         "include_text": {"type": "boolean", "description": "Also include page text content (default: true)"}
                     }
                 }
@@ -1479,6 +1692,9 @@ impl Tool for BrowserSnapshotTool {
 
     fn execute(&self, _ctx: &ToolContext, args: &serde_json::Value) -> String {
         let include_text = args.get("include_text").and_then(|v| v.as_bool()).unwrap_or(true);
+        // What is on screen, unless asked otherwise — a person considers what they can see, and
+        // the whole document is thirteen times the bytes for a page like a Wikipedia article.
+        let show_all = args.get("all").and_then(|v| v.as_bool()).unwrap_or(false);
 
         let (mut ws, tab) = match connect_first_tab() {
             Ok(v) => v,
@@ -1489,7 +1705,7 @@ impl Tool for BrowserSnapshotTool {
         let current_url = eval_js(&mut ws, "window.location.href").unwrap_or_default();
 
         // Scan interactive elements
-        let elements = match eval_js(&mut ws, SCAN_ELEMENTS_JS) {
+        let elements = match eval_js(&mut ws, &scan_js(show_all)) {
             Ok(e) => e,
             Err(e) => return format!("Error scanning elements: {e}"),
         };
@@ -1900,7 +2116,7 @@ impl Tool for BrowserSeeTool {
             .unwrap_or("(no vision response)");
 
         // 4. Also get DOM element scan for actionable targets
-        let elements = eval_js(&mut ws, SCAN_ELEMENTS_JS).unwrap_or_default();
+        let elements = eval_js(&mut ws, &scan_js(false)).unwrap_or_default();
         let element_count = if elements.is_empty() { 0 } else { elements.lines().count() };
 
         // 5. Combine vision analysis + element list
@@ -2141,5 +2357,64 @@ impl Tool for BrowserTypeXYTool {
 
         let preview = if text.len() > 50 { &text[..text.floor_char_boundary(50)] } else { text };
         format!("Typed at ({}, {}): \"{}\"", x as i64, y as i64, preview)
+    }
+}
+
+#[cfg(test)]
+mod identity_tests {
+    use super::*;
+
+    #[test]
+    fn an_identity_cannot_wander_out_of_its_directory() {
+        // The name reaches us from a tool call, which reaches us from a model, which may have read
+        // it off a web page. It names a directory, so it gets to be alphanumeric and nothing else.
+        // The property, not the exact spelling: nothing that can traverse a path survives.
+        for hostile in ["../../etc", "..", "a/../../b", "/etc/shadow", "x y"] {
+            let safe = sanitize_identity(hostile);
+            assert!(!safe.contains('/'), "{hostile:?} -> {safe:?}");
+            assert!(!safe.contains('.'), "{hostile:?} -> {safe:?}");
+            assert!(!safe.contains(' '), "{hostile:?} -> {safe:?}");
+        }
+        assert_eq!(sanitize_identity("work/personal"), "work-personal");
+        assert_eq!(sanitize_identity(""), "default");
+        assert_eq!(sanitize_identity("   "), "default");
+        assert_eq!(sanitize_identity("company-x_2"), "company-x_2");
+    }
+
+    #[test]
+    fn each_identity_gets_its_own_port() {
+        // The bug this exists for: both launchers hardcoded 9222, so the headless extraction
+        // browser and the user's visible window fought over one port and `is_browser_running`
+        // could not tell which had won.
+        assert_eq!(port_for("default"), CDP_PORT);
+        let work = port_for("work");
+        let personal = port_for("personal");
+        assert_ne!(work, personal);
+        assert_ne!(work, CDP_PORT);
+        assert!((9223..=9322).contains(&work));
+    }
+
+    #[test]
+    fn the_same_identity_always_finds_its_own_browser_again() {
+        // Derived, not allocated: a second process must land on the same port without a registry.
+        assert_eq!(port_for("marketing"), port_for("marketing"));
+        assert_eq!(port_for("marketing"), port_for("  marketing  "));
+    }
+
+    #[test]
+    fn profiles_live_where_they_survive_a_reboot() {
+        let dir = profile_dir("work");
+        let shown = dir.display().to_string();
+        assert!(shown.ends_with("/browsers/work"), "{shown}");
+        // The old hardcoded /tmp/chromium-profile lost every session on reboot, and a session is
+        // the thing worth keeping.
+        assert!(!shown.starts_with("/tmp/chromium"), "{shown}");
+    }
+
+    #[test]
+    fn the_scan_is_told_which_mode_it_is_in() {
+        assert!(scan_js(true).contains("const showAll = true;"));
+        assert!(scan_js(false).contains("const showAll = false;"));
+        assert!(!scan_js(false).contains("__SHOW_ALL__"), "the placeholder must be substituted");
     }
 }
