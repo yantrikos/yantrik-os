@@ -2,7 +2,7 @@
 //!
 //! Manages Docker/Podman containers via `std::process::Command`.
 
-use slint::{ComponentHandle, ModelRc, VecModel};
+use slint::{ComponentHandle, Model, ModelRc, VecModel};
 use yantrik_app_runtime::prelude::*;
 
 slint::include_modules!();
@@ -154,12 +154,217 @@ fn refresh(app: &ContainerManagerApp) {
 
 // ── Wire all callbacks ───────────────────────────────────────────────
 
+// ── The control surface ──────────────────────────────────────────────
+//
+// The companion has docker tools of its own, and they shell out exactly as this app does. What
+// this adds is the *user's* view: which containers they are looking at, which one is selected,
+// what the log pane is showing. See `yantrik_app_runtime::control`.
+//
+// Stopping and removing are declared `dangerous`. Starting a container is recoverable; removing
+// one, or the volume under it, is not.
+
+/// Container whose name or id matches `needle`, as shown in the list.
+fn container_named(ui: &ContainerManagerApp, needle: &str) -> Option<(String, String)> {
+    let want = needle.trim().to_lowercase();
+    if want.is_empty() {
+        return None;
+    }
+    let model = ui.get_containers();
+    let rows: Vec<ContainerData> = (0..model.row_count()).filter_map(|i| model.row_data(i)).collect();
+    rows.iter()
+        .find(|c| c.name.to_lowercase() == want || c.id.to_lowercase().starts_with(&want))
+        .or_else(|| rows.iter().find(|c| c.name.to_lowercase().contains(&want)))
+        .map(|c| (c.id.to_string(), c.name.to_string()))
+}
+
+fn publish_control(app: &ContainerManagerApp) {
+    use yantrik_app_runtime::control::{Action, App, Param, View};
+
+    let describe = {
+        let weak = app.as_weak();
+        move || {
+            let Some(ui) = weak.upgrade() else {
+                return View::new("Containers — closing");
+            };
+
+            let model = ui.get_containers();
+            let containers: Vec<serde_json::Value> = (0..model.row_count())
+                .filter_map(|i| model.row_data(i))
+                .map(|c| {
+                    serde_json::json!({
+                        "name": c.name.to_string(),
+                        "id": c.id.to_string(),
+                        "image": c.image.to_string(),
+                        "status": c.status.to_string(),
+                        "detail": c.status_text.to_string(),
+                        "ports": c.ports.to_string(),
+                    })
+                })
+                .collect();
+
+            let image_model = ui.get_images();
+            let images: Vec<serde_json::Value> = (0..image_model.row_count().min(30))
+                .filter_map(|i| image_model.row_data(i))
+                .map(|i| {
+                    serde_json::json!({
+                        "tag": i.repo_tag.to_string(),
+                        "size": i.size_text.to_string(),
+                    })
+                })
+                .collect();
+
+            let volume_model = ui.get_volumes();
+            let volumes: Vec<serde_json::Value> = (0..volume_model.row_count().min(30))
+                .filter_map(|i| volume_model.row_data(i))
+                .map(|v| {
+                    serde_json::json!({
+                        "name": v.name.to_string(),
+                        "driver": v.driver.to_string(),
+                    })
+                })
+                .collect();
+
+            let runtime = ui.get_runtime_name().to_string();
+            let summary = if containers.is_empty() {
+                format!("Containers — no {runtime} containers")
+            } else {
+                format!(
+                    "Containers — {} running of {} on {runtime}, {} images",
+                    ui.get_running_count(),
+                    ui.get_total_count(),
+                    images.len()
+                )
+            };
+
+            let mut view = View::new(summary)
+                .with("runtime", runtime)
+                .with("tab", match ui.get_active_tab() {
+                    1 => "images",
+                    2 => "volumes",
+                    _ => "containers",
+                })
+                .with("running", ui.get_running_count())
+                .with("stopped", ui.get_stopped_count())
+                .with("total", ui.get_total_count())
+                .with("containers", serde_json::Value::Array(containers))
+                .with("images", serde_json::Value::Array(images))
+                .with("volumes", serde_json::Value::Array(volumes));
+
+            // Only when the pane is actually open. A log tail is the largest thing this surface
+            // can carry, and sending one nobody asked for would make every describe expensive.
+            if ui.get_show_logs() {
+                let log = ui.get_log_text().to_string();
+                let tail: String = log.chars().rev().take(4000).collect::<Vec<_>>().into_iter().rev().collect();
+                view = view.with(
+                    "open_logs",
+                    serde_json::json!({
+                        "container": ui.get_log_container_name().to_string(),
+                        "tail": tail,
+                    }),
+                );
+            }
+            view
+        }
+    };
+
+    let weak = app.as_weak();
+    let ui_for = move || weak.upgrade().ok_or_else(|| "Containers window is gone".to_string());
+
+    let refresh_ui = ui_for.clone();
+    let start_ui = ui_for.clone();
+    let stop_ui = ui_for.clone();
+    let restart_ui = ui_for.clone();
+    let logs_ui = ui_for.clone();
+    let remove_ui = ui_for;
+
+    App::new("containers")
+        .describe(describe)
+        .action(Action::new("refresh", "Re-read containers, images and volumes"), move |_| {
+            let ui = refresh_ui()?;
+            ui.invoke_ct_refresh();
+            Ok(serde_json::json!({
+                "running": ui.get_running_count(),
+                "total": ui.get_total_count(),
+            }))
+        })
+        .action(
+            Action::new("start", "Start a stopped container").arg(Param::text("container")),
+            move |args| {
+                let ui = start_ui()?;
+                let want = args["container"].as_str().unwrap_or_default();
+                let (id, name) = container_named(&ui, want)
+                    .ok_or_else(|| format!("no container here is called \"{want}\""))?;
+                ui.invoke_ct_start(id.into());
+                Ok(serde_json::json!({ "started": name }))
+            },
+        )
+        .action(
+            // Recoverable, but it interrupts whatever the container was serving.
+            Action::new("stop", "Stop a running container")
+                .arg(Param::text("container"))
+                .risk("sensitive"),
+            move |args| {
+                let ui = stop_ui()?;
+                let want = args["container"].as_str().unwrap_or_default();
+                let (id, name) = container_named(&ui, want)
+                    .ok_or_else(|| format!("no container here is called \"{want}\""))?;
+                ui.invoke_ct_stop(id.into());
+                Ok(serde_json::json!({ "stopped": name }))
+            },
+        )
+        .action(
+            Action::new("restart", "Restart a container")
+                .arg(Param::text("container"))
+                .risk("sensitive"),
+            move |args| {
+                let ui = restart_ui()?;
+                let want = args["container"].as_str().unwrap_or_default();
+                let (id, name) = container_named(&ui, want)
+                    .ok_or_else(|| format!("no container here is called \"{want}\""))?;
+                ui.invoke_ct_restart(id.into());
+                Ok(serde_json::json!({ "restarted": name }))
+            },
+        )
+        .action(
+            Action::new("show_logs", "Open the log pane for a container, and read the tail")
+                .arg(Param::text("container")),
+            move |args| {
+                let ui = logs_ui()?;
+                let want = args["container"].as_str().unwrap_or_default();
+                let (id, name) = container_named(&ui, want)
+                    .ok_or_else(|| format!("no container here is called \"{want}\""))?;
+                ui.invoke_ct_logs(id.into());
+                let log = ui.get_log_text().to_string();
+                let tail: String = log.lines().rev().take(40).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n");
+                Ok(serde_json::json!({ "container": name, "tail": tail }))
+            },
+        )
+        .action(
+            // No undo, and the container's writable layer goes with it.
+            Action::new("remove", "Delete a container")
+                .arg(Param::text("container"))
+                .risk("dangerous"),
+            move |args| {
+                let ui = remove_ui()?;
+                let want = args["container"].as_str().unwrap_or_default();
+                let (id, name) = container_named(&ui, want)
+                    .ok_or_else(|| format!("no container here is called \"{want}\""))?;
+                ui.invoke_ct_remove(id.into());
+                Ok(serde_json::json!({ "removed": name }))
+            },
+        )
+        .serve();
+}
+
 fn wire(app: &ContainerManagerApp) {
     let rt = runtime_cmd();
     app.set_runtime_name(rt.into());
 
     // Initial load
     refresh(app);
+
+    // Published after the first read, so a describe reports real containers.
+    publish_control(app);
 
     // Tab switch
     app.on_ct_tab(|_tab| {

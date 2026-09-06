@@ -30,8 +30,98 @@ fn main() {
 
 // ── Wire all callbacks ───────────────────────────────────────────────
 
+/// The last thing this terminal ran, and whether it worked.
+#[derive(Clone)]
+struct LastCommand {
+    command: String,
+    exit_code: i32,
+}
+
+// ── The control surface ──────────────────────────────────────────────
+//
+// Read-only, and deliberately so. The companion already has `run_command`, which runs on a worker
+// thread; this terminal runs commands with a blocking `Command::output()` on the UI thread, so an
+// agent-issued command would freeze the window for as long as it took. Publishing a `run` action
+// here would be a second, worse path to something we already do properly.
+//
+// What it *can* do that nothing else can is say what the person at the keyboard is doing — which
+// directory they are in, what they last ran, and whether it failed. That is the whole point of
+// the ErrorCompanion feature, and until now it had no way to find out.
+
+fn publish_control(
+    app: &TerminalApp,
+    output: Rc<RefCell<String>>,
+    last_command: Rc<RefCell<Option<LastCommand>>>,
+) {
+    use yantrik_app_runtime::control::{Action, App, View};
+
+    let describe = {
+        let weak = app.as_weak();
+        let out = output.clone();
+        let last = last_command;
+        move || {
+            let Some(ui) = weak.upgrade() else {
+                return View::new("Terminal — closing");
+            };
+            let cwd = ui.get_current_directory().to_string();
+            let last = last.borrow().clone();
+
+            let summary = match &last {
+                Some(c) if c.exit_code != 0 => {
+                    format!("Terminal — in {cwd}, `{}` failed with {}", c.command, c.exit_code)
+                }
+                Some(c) => format!("Terminal — in {cwd}, last ran `{}`", c.command),
+                None => format!("Terminal — in {cwd}, nothing run yet"),
+            };
+
+            // The tail, not the transcript. A long session's scrollback is unbounded, and what
+            // anyone wants is what just happened.
+            let buffer = out.borrow();
+            let tail: String = buffer
+                .lines()
+                .rev()
+                .take(60)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect::<Vec<_>>()
+                .join("\n");
+
+            View::new(summary)
+                .with("directory", cwd)
+                .with("alive", ui.get_is_alive())
+                .with(
+                    "last_command",
+                    match &last {
+                        Some(c) => serde_json::json!({
+                            "command": c.command,
+                            "exit_code": c.exit_code,
+                            "failed": c.exit_code != 0,
+                        }),
+                        None => serde_json::Value::Null,
+                    },
+                )
+                .with("recent_output", tail)
+        }
+    };
+
+    let weak = app.as_weak();
+    let cleared = output;
+
+    App::new("terminal")
+        .describe(describe)
+        .action(Action::new("clear", "Empty the terminal's scrollback"), move |_| {
+            let ui = weak.upgrade().ok_or_else(|| "Terminal window is gone".to_string())?;
+            *cleared.borrow_mut() = "$ ".to_string();
+            ui.set_terminal_output("$ ".into());
+            Ok(serde_json::json!({ "cleared": true }))
+        })
+        .serve();
+}
+
 fn wire(app: &TerminalApp) {
     let output_buffer: Rc<RefCell<String>> = Rc::new(RefCell::new(String::new()));
+    let last_command: Rc<RefCell<Option<LastCommand>>> = Rc::new(RefCell::new(None));
     let cwd: Rc<RefCell<String>> = Rc::new(RefCell::new(
         std::env::current_dir()
             .map(|p| p.to_string_lossy().to_string())
@@ -63,6 +153,7 @@ fn wire(app: &TerminalApp) {
         let buf = output_buffer.clone();
         let cwd_ref = cwd.clone();
         let input_line: Rc<RefCell<String>> = Rc::new(RefCell::new(String::new()));
+        let last_run = last_command.clone();
 
         app.on_terminal_key_pressed(move |event| {
             let Some(ui) = weak.upgrade() else {
@@ -135,7 +226,7 @@ fn wire(app: &TerminalApp) {
                     .output();
 
                 let output_text = match result {
-                    Ok(output) => {
+                    Ok(ref output) => {
                         let stdout = String::from_utf8_lossy(&output.stdout);
                         let stderr = String::from_utf8_lossy(&output.stderr);
                         let mut combined = String::new();
@@ -151,8 +242,15 @@ fn wire(app: &TerminalApp) {
                             combined
                         }
                     }
-                    Err(e) => format!("Error: {}\n", e),
+                    Err(ref e) => format!("Error: {}\n", e),
                 };
+
+                *last_run.borrow_mut() = Some(LastCommand {
+                    command: cmd_str.clone(),
+                    // 127 is the shell's own "could not run it", which is the closest honest
+                    // answer when the process never started.
+                    exit_code: result.as_ref().map(|o| o.status.code().unwrap_or(-1)).unwrap_or(127),
+                });
 
                 let mut b = buf.borrow_mut();
                 b.push('\n');
@@ -190,6 +288,8 @@ fn wire(app: &TerminalApp) {
             slint::private_unstable_api::re_exports::EventResult::Reject
         });
     }
+
+    publish_control(app, output_buffer.clone(), last_command.clone());
 
     // Tab management stubs
     app.on_new_tab(|| { tracing::info!("New tab requested (standalone mode — single tab only)"); });

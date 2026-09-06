@@ -15,7 +15,7 @@ unset XDG_RUNTIME_DIR          # so the sockets land in /tmp/yantrik-<uid>, whic
 TARGET=${TARGET:-/home/yantrik/target-yantrik/fast}
 cd /home/yantrik/yantrik-run || exit 1
 
-APPS="notes email calendar system-monitor weather"
+APPS="notes email calendar system-monitor weather containers terminal"
 
 # Matched by path, not by name: pgrep/pkill compare against a 15-character process name, so
 # `yantrik-system-monitor` matches nothing at all — silently, which once made this script report
@@ -23,6 +23,7 @@ APPS="notes email calendar system-monitor weather"
 for app in $APPS; do
   pkill -f "$TARGET/yantrik-$app" 2>/dev/null
 done
+pkill -f "$TARGET/yantrik-container-manager" 2>/dev/null
 sleep 1
 rm -f /tmp/yantrik-*/app-*.sock
 
@@ -31,6 +32,10 @@ for app in $APPS; do
   # nothing. Every other app here has real data or a real service.
   if [ "$app" = "email" ]; then
     YANTRIK_EMAIL_DEMO=1 setsid nohup "$TARGET/yantrik-email" > "control_$app.log" 2>&1 &
+  elif [ "$app" = "containers" ]; then
+    # The one app whose id is not its binary name: the window is Container Manager, the surface
+    # it publishes is `containers`, which is what a caller would think to ask for.
+    setsid nohup "$TARGET/yantrik-container-manager" > "control_$app.log" 2>&1 &
   else
     setsid nohup "$TARGET/yantrik-$app" > "control_$app.log" 2>&1 &
   fi
@@ -39,14 +44,16 @@ sleep 9
 
 alive=""
 for app in $APPS; do
-  alive="$alive $app:$(pgrep -cf "$TARGET/yantrik-$app")"
+  bin=$app
+  [ "$app" = "containers" ] && bin="container-manager"
+  alive="$alive $app:$(pgrep -cf "$TARGET/yantrik-$bin")"
 done
 echo "running:$alive"
 
 python3 - <<'PY'
 import glob, json, socket, sys
 
-APPS = ["notes", "email", "calendar", "system-monitor", "weather"]
+APPS = ["notes", "email", "calendar", "system-monitor", "weather", "containers", "terminal"]
 fails = []
 
 def socket_for(app):
@@ -196,6 +203,28 @@ if "weather" in views:
         fails.append(f"weather: set_units is not idempotent — {set_units} then {again}")
     result(call(path, "app.act", {"action": "set_units", "args": {"units": "celsius"}}), "units")
 
+if "containers" in views:
+    path, view = views["containers"]
+    st = view["state"]
+    print(f"containers      : {st.get('running')} running of {st.get('total')} on {st.get('runtime')}")
+    # Removing a container destroys its writable layer; stopping one only interrupts it.
+    risks = {a["name"]: a["permission"] for a in view["actions"]}
+    if risks.get("remove") != "dangerous" or risks.get("stop") != "sensitive":
+        fails.append(f"containers: risks are wrong — {risks}")
+    else:
+        print(f"                : start={risks['start']}, stop={risks['stop']}, remove={risks['remove']}")
+
+if "terminal" in views:
+    path, view = views["terminal"]
+    st = view["state"]
+    print(f"terminal        : in {st.get('directory')}, last={st.get('last_command')}")
+    if not st.get("directory"):
+        fails.append("terminal: reported no working directory")
+    # Read-only on purpose: the companion's run_command already does this properly, off the UI
+    # thread. A `run` here would freeze the window for the length of the command.
+    if any(a["name"] in ("run", "execute") for a in view["actions"]):
+        fails.append("terminal: must not publish a way to run commands")
+
 print()
 if fails:
     print("FAILED:")
@@ -209,4 +238,5 @@ STATUS=$?
 for app in $APPS; do
   pkill -f "$TARGET/yantrik-$app" 2>/dev/null
 done
+pkill -f "$TARGET/yantrik-container-manager" 2>/dev/null
 exit $STATUS
