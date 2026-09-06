@@ -479,7 +479,7 @@ pub fn clean_response_for_learning(response: &str, tools_used: &[String]) -> Str
         return response.to_string();
     }
 
-    let mut clean_lines = Vec::new();
+    let mut clean_lines: Vec<String> = Vec::new();
     let mut skip_bullet_block = false;
 
     for line in response.lines() {
@@ -503,13 +503,22 @@ pub fn clean_response_for_learning(response: &str, tools_used: &[String]) -> Str
         }
         skip_bullet_block = false;
 
-        // Skip sentences that are just summarizing tool results
+        // Drop the sentences that merely narrate a tool call, and keep the rest of the line.
+        //
+        // This used to drop the whole line, which the comment above never claimed and the caller
+        // cannot afford: a model's reply is usually one paragraph, so a single "I found these
+        // memories about your preferences" took "you really enjoy espresso" down with it and the
+        // response reached learning empty.
         let lower = trimmed.to_lowercase();
         if TOOL_FOLLOW_UP_PATTERNS.iter().any(|p| lower.contains(p)) {
+            let kept = strip_narration(trimmed);
+            if !kept.is_empty() {
+                clean_lines.push(kept);
+            }
             continue;
         }
 
-        clean_lines.push(trimmed);
+        clean_lines.push(trimmed.to_string());
     }
 
     let result = clean_lines.join(" ").trim().to_string();
@@ -521,6 +530,36 @@ pub fn clean_response_for_learning(response: &str, tools_used: &[String]) -> Str
     }
 
     result
+}
+
+/// Keep the sentences in a line that are not narrating a tool call.
+///
+/// Split on sentence endings followed by a space, which leaves decimals and abbreviations alone
+/// because those have no space after the point. Crude, and right far more often than dropping the
+/// line was.
+fn strip_narration(line: &str) -> String {
+    let mut kept: Vec<&str> = Vec::new();
+    let mut rest = line;
+
+    while !rest.is_empty() {
+        let end = rest
+            .match_indices(". ")
+            .map(|(i, _)| i + 2)
+            .chain(rest.match_indices("! ").map(|(i, _)| i + 2))
+            .chain(rest.match_indices("? ").map(|(i, _)| i + 2))
+            .min()
+            .unwrap_or(rest.len());
+        let (sentence, remainder) = rest.split_at(end);
+        rest = remainder;
+
+        let lower = sentence.to_lowercase();
+        if !TOOL_FOLLOW_UP_PATTERNS.iter().any(|p| lower.contains(p)) {
+            kept.push(sentence.trim());
+        }
+    }
+
+    kept.retain(|s| !s.is_empty());
+    kept.join(" ")
 }
 
 // ── Helpers ──
