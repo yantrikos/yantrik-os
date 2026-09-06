@@ -138,6 +138,10 @@ yantrikdb-server = { path = "crates/yantrikdb-server" }
 # developer time than the extra few percent of runtime is worth.
 [profile.release]
 lto = "thin"
+# A shipped binary has no use for its symbol table, and it is not small: the iteration build
+# carries 127 MB of debug info on top of 195 MB of everything else. Stripping is the difference
+# between what we need to run and what we needed to compile.
+strip = true
 
 # yantrik-ui-slint is one enormous generated module: 55k lines of .slint become a single
 # Rust crate that rustc chews through at ~14 GB RSS, and it is rebuilt on EVERY .slint edit.

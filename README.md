@@ -280,6 +280,7 @@ yantrik-os/
 └── docs/
     ├── architecture.md      # System design
     ├── app-control.md       # How apps publish state to the companion
+    ├── footprint.md         # What it costs to run, and where that goes
     ├── CONTRIBUTING.md      # Contributor guide
     └── getting-started.md   # Installation walkthrough
 ```
