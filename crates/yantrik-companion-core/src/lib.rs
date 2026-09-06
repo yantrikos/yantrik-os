@@ -11,6 +11,7 @@ pub mod evolution;
 pub mod instincts;
 pub mod permission;
 pub mod sanitize;
+pub mod taint;
 pub mod tools;
 pub mod types;
 pub mod urge_defaults;

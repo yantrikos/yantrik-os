@@ -2249,6 +2249,11 @@ impl CompanionService {
     where
         F: FnMut(&str),
     {
+        // A new exchange, so nothing carried in from the last one. The taint rule is about what
+        // this conversation has taken in — a page read ten minutes ago must not block a
+        // credential now, and a credential fetched then must not license an exfiltration now.
+        yantrik_companion_core::taint::begin_turn();
+
         // Step 0: SecurityGuard — check user input for injection
         if let Some(warning) = self.guard.check_input(user_text, &self.db) {
             on_token(&warning);

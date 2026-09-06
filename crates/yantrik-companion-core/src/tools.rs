@@ -93,7 +93,19 @@ impl ToolRegistry {
                     return msg;
                 }
 
+                // The second gate, and a different question from the first. Permission asks
+                // whether this tool may ever run; this asks whether it may run *now*, given what
+                // has already entered the conversation. See `crate::taint`.
+                if let Err(refusal) = crate::taint::check(name, tool.category()) {
+                    tracing::warn!("{}", refusal);
+                    audit_log(ctx.db, name, args, &refusal);
+                    return refusal;
+                }
+
                 let result = tool.execute(ctx, args);
+                // Recorded after the fact, because what a tool returns is what taints the turn —
+                // and a tool that failed returned nothing to be tainted by.
+                crate::taint::note(name, tool.category());
                 audit_log(ctx.db, name, args, &result);
                 return result;
             }
@@ -340,5 +352,146 @@ pub fn format_size(bytes: u64) -> String {
         format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
     } else {
         format!("{:.1} GB", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
+    }
+}
+
+
+#[cfg(test)]
+mod gate_tests {
+    //! Does the gate actually fire?
+    //!
+    //! `taint`'s own tests check the policy. These drive the real [`ToolRegistry::execute`] with
+    //! real tools, because a correct policy that is never consulted protects nothing — and the
+    //! wiring is one forgotten line, in a function that has two other early returns.
+
+    use super::*;
+    use crate::permission::PermissionLevel;
+
+    /// A tool that does nothing but claim a name and a category, which is all the policy reads.
+    struct Fake {
+        name: &'static str,
+        category: &'static str,
+    }
+
+    impl Tool for Fake {
+        fn name(&self) -> &'static str {
+            self.name
+        }
+        fn permission(&self) -> PermissionLevel {
+            PermissionLevel::Safe
+        }
+        fn category(&self) -> &'static str {
+            self.category
+        }
+        fn definition(&self) -> serde_json::Value {
+            serde_json::json!({})
+        }
+        fn execute(&self, _ctx: &ToolContext, _args: &serde_json::Value) -> String {
+            format!("{} ran", self.name)
+        }
+    }
+
+    fn registry() -> ToolRegistry {
+        let mut reg = ToolRegistry::new();
+        reg.register(Box::new(Fake { name: "browse", category: "browser" }));
+        reg.register(Box::new(Fake { name: "vault_get", category: "vault" }));
+        reg.register(Box::new(Fake { name: "browser_login", category: "browser" }));
+        reg.register(Box::new(Fake { name: "run_command", category: "system" }));
+        reg
+    }
+
+    /// The audit log writes to the database, so a real one is needed even though nothing reads it
+    /// back. In memory, so the test leaves nothing behind.
+    fn db() -> yantrikdb_core::YantrikDB {
+        yantrikdb_core::YantrikDB::new(":memory:", 384).expect("in-memory database")
+    }
+
+    fn ctx(db: &yantrikdb_core::YantrikDB) -> ToolContext<'_> {
+        ToolContext {
+            db,
+            max_permission: PermissionLevel::Dangerous,
+            registry_metadata: None,
+            task_manager: None,
+            incognito: true,
+            agent_spawner: None,
+        }
+    }
+
+    #[test]
+    fn a_page_cannot_make_the_agent_fetch_a_credential() {
+        let db = db();
+        let ctx = ctx(&db);
+        let reg = registry();
+        crate::taint::begin_turn();
+
+        assert_eq!(reg.execute(&ctx, "browse", &serde_json::json!({})), "browse ran");
+
+        let refused = reg.execute(&ctx, "vault_get", &serde_json::json!({}));
+        assert!(refused.starts_with("Refused:"), "the gate did not fire: {refused}");
+        assert!(refused.contains("browse"), "and it must name what caused it: {refused}");
+    }
+
+    #[test]
+    fn the_ordinary_case_is_untouched() {
+        // If the rule breaks ordinary work it will be turned off, and then it protects nothing.
+        let db = db();
+        let ctx = ctx(&db);
+        let reg = registry();
+        crate::taint::begin_turn();
+
+        assert_eq!(reg.execute(&ctx, "browse", &serde_json::json!({})), "browse ran");
+        assert_eq!(
+            reg.execute(&ctx, "run_command", &serde_json::json!({})),
+            "run_command ran",
+            "no credential is in play, so there is nothing to leak"
+        );
+    }
+
+    #[test]
+    fn logging_in_mid_session_still_works() {
+        let db = db();
+        let ctx = ctx(&db);
+        let reg = registry();
+        crate::taint::begin_turn();
+
+        reg.execute(&ctx, "browse", &serde_json::json!({}));
+        assert_eq!(
+            reg.execute(&ctx, "browser_login", &serde_json::json!({})),
+            "browser_login ran",
+            "a tool that never returns the secret must stay usable after browsing"
+        );
+    }
+
+    #[test]
+    fn the_trifecta_is_refused_through_the_registry() {
+        let db = db();
+        let ctx = ctx(&db);
+        let reg = registry();
+        crate::taint::begin_turn();
+
+        reg.execute(&ctx, "vault_get", &serde_json::json!({}));
+        reg.execute(&ctx, "browse", &serde_json::json!({}));
+
+        let refused = reg.execute(&ctx, "run_command", &serde_json::json!({}));
+        assert!(refused.starts_with("Refused:"), "{refused}");
+        assert!(refused.contains("vault_get") && refused.contains("browse"), "{refused}");
+    }
+
+    #[test]
+    fn a_failed_tool_does_not_taint_what_follows() {
+        // `note` runs after execute, so a tool that never produced content never made the turn
+        // untrusted. Checked because the ordering is easy to get backwards.
+        let db = db();
+        let ctx = ctx(&db);
+        let reg = registry();
+        crate::taint::begin_turn();
+
+        let unknown = reg.execute(&ctx, "no_such_tool", &serde_json::json!({}));
+        assert!(unknown.starts_with("Unknown tool"));
+        assert_eq!(
+            reg.execute(&ctx, "vault_get", &serde_json::json!({})),
+            "vault_get ran",
+            "a tool that did not run cannot have brought anything in"
+        );
     }
 }
