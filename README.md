@@ -279,6 +279,7 @@ yantrik-os/
 ├── build.sh                 # Component build system
 └── docs/
     ├── architecture.md      # System design
+    ├── app-control.md       # How apps publish state to the companion
     ├── CONTRIBUTING.md      # Contributor guide
     └── getting-started.md   # Installation walkthrough
 ```
