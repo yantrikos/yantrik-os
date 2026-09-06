@@ -10226,6 +10226,7 @@ dependencies = [
  "serde",
  "serde_json",
  "slint",
+ "tokio",
  "tracing",
  "tracing-subscriber",
  "yantrik-ipc-contracts",
@@ -10356,6 +10357,7 @@ dependencies = [
  "tungstenite",
  "ureq 2.12.1",
  "yantrik-companion-core",
+ "yantrik-ipc-transport",
  "yantrikdb",
 ]
 
@@ -10713,6 +10715,7 @@ dependencies = [
  "serde_yaml",
  "slint",
  "sysinfo",
+ "tokio",
  "tracing",
  "tracing-subscriber",
  "ureq 2.12.1",

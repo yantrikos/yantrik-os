@@ -103,6 +103,30 @@ fn search_via_service(query: &str) -> Result<Vec<NoteEntry>, String> {
     Ok(summaries.into_iter().map(summary_to_entry).collect())
 }
 
+/// Search the vault directly, for when notes-service is not running.
+///
+/// Without this, a failed service call left the list untouched: the search box showed a query and
+/// the list showed everything, with nothing to say the search had not happened. Every other read
+/// in this file already falls back to the filesystem; search was the one that did not.
+fn search_fs(query: &str) -> Vec<NoteEntry> {
+    let needle = query.trim().to_lowercase();
+    if needle.is_empty() {
+        return scan_notes_fs();
+    }
+    scan_notes_fs()
+        .into_iter()
+        .filter(|e| {
+            if e.title.to_lowercase().contains(&needle) {
+                return true;
+            }
+            // Body too — a note is usually easier to find by something it says than by its title.
+            std::fs::read_to_string(notes_dir().join(e.filename.as_str()))
+                .map(|body| body.to_lowercase().contains(&needle))
+                .unwrap_or(false)
+        })
+        .collect()
+}
+
 fn summary_to_entry(s: yantrik_ipc_contracts::notes::NoteSummary) -> NoteEntry {
     let tag_preview = s.tags.first().cloned().unwrap_or_default();
     NoteEntry {
@@ -607,6 +631,200 @@ fn wire_ai_action(app: &NotesApp, current_file: Rc<RefCell<String>>, action: AiA
     }
 }
 
+// ── The control surface ──────────────────────────────────────────────
+//
+// What the companion can see of Notes, and what it can ask Notes to do. Before this, the only
+// way for it to know which note was open was to screenshot the window and send the pixels to a
+// vision model — for our own software, which knows the answer exactly.
+//
+// Every action below calls the callback the button calls. That is deliberate: one code path, so
+// an action cannot drift away from what the app actually does, and driving Notes needs no
+// synthetic mouse.
+
+/// Filename of the row whose title (or filename) matches `needle`, case-insensitively.
+///
+/// Callers name notes the way a person would — by title — while the app addresses them by
+/// filename. Exact title first, then filename, then a contains-match, so a half-remembered name
+/// still lands.
+fn note_named(ui: &NotesApp, needle: &str) -> Option<String> {
+    let want = needle.trim().to_lowercase();
+    if want.is_empty() {
+        return None;
+    }
+    let model = ui.get_notes_list();
+    let rows: Vec<NoteEntry> = (0..model.row_count()).filter_map(|i| model.row_data(i)).collect();
+
+    let exact = rows.iter().find(|e| {
+        e.title.to_lowercase() == want || e.filename.to_lowercase() == want
+    });
+    exact
+        .or_else(|| rows.iter().find(|e| e.title.to_lowercase().contains(&want)))
+        .map(|e| e.filename.to_string())
+}
+
+fn publish_control(app: &NotesApp, current_file: Rc<RefCell<String>>) {
+    use yantrik_app_runtime::control::{Action, App, Param, View};
+
+    let describe = {
+        let weak = app.as_weak();
+        let cf = current_file.clone();
+        move || {
+            let Some(ui) = weak.upgrade() else {
+                return View::new("Notes — closing");
+            };
+            let open = cf.borrow().clone();
+            let title = ui.get_current_title().to_string();
+            let modified = ui.get_is_modified();
+            let words = ui.get_meta_word_count();
+
+            let summary = if open.is_empty() {
+                format!("Notes — no note open, {} in the vault", ui.get_note_count())
+            } else {
+                format!(
+                    "Notes — {}\u{201c}{title}\u{201d}, {words} words{}",
+                    if modified { "editing " } else { "" },
+                    if modified { ", unsaved" } else { "" }
+                )
+            };
+
+            // The titles, not the bodies. A caller that wants a body asks for the note; this is
+            // the glance, and it has to stay small enough to send on every turn.
+            let model = ui.get_notes_list();
+            let listed: Vec<serde_json::Value> = (0..model.row_count().min(50))
+                .filter_map(|i| model.row_data(i))
+                .map(|e| {
+                    serde_json::json!({
+                        "title": e.title.to_string(),
+                        "filename": e.filename.to_string(),
+                        "pinned": e.is_pinned,
+                    })
+                })
+                .collect();
+
+            View::new(summary)
+                .with("open_note", if open.is_empty() { serde_json::Value::Null } else { open.clone().into() })
+                .with("title", title)
+                .with("unsaved", modified)
+                .with("word_count", words)
+                .with("note_count", ui.get_note_count())
+                .with("folder", match ui.get_active_folder() {
+                    1 => "favorites",
+                    2 => "recent",
+                    _ => "all",
+                })
+                .with("search_query", ui.get_search_query().to_string())
+                .with("notes", serde_json::Value::Array(listed))
+        }
+    };
+
+    let weak = app.as_weak();
+    let ui_for = move || weak.upgrade().ok_or_else(|| "Notes window is gone".to_string());
+
+    let open_ui = ui_for.clone();
+    let new_ui = ui_for.clone();
+    let save_ui = ui_for.clone();
+    let append_ui = ui_for.clone();
+    let search_ui = ui_for.clone();
+    let folder_ui = ui_for;
+    let append_file = current_file;
+
+    App::new("notes")
+        .describe(describe)
+        .action(
+            Action::new("open_note", "Open a note in the editor, by title or filename")
+                .arg(Param::text("title").describe("The note's title, or its filename")),
+            move |args| {
+                let ui = open_ui()?;
+                let want = args["title"].as_str().unwrap_or_default();
+                let filename = note_named(&ui, want)
+                    .ok_or_else(|| format!("no note here is called \"{want}\""))?;
+                // The same callback the backlinks panel calls.
+                ui.invoke_open_note(filename.clone().into());
+                Ok(serde_json::json!({ "opened": filename, "title": ui.get_current_title().to_string() }))
+            },
+        )
+        .action(
+            Action::new("new_note", "Start a new note and open it for editing"),
+            move |_args| {
+                let ui = new_ui()?;
+                ui.invoke_new_note();
+                Ok(serde_json::json!({ "title": ui.get_current_title().to_string() }))
+            },
+        )
+        .action(
+            Action::new("save", "Write the open note to disk"),
+            move |_args| {
+                let ui = save_ui()?;
+                if ui.get_current_title().is_empty() {
+                    return Err("no note is open".into());
+                }
+                ui.invoke_save_note();
+                Ok(serde_json::json!({ "saved": ui.get_current_title().to_string() }))
+            },
+        )
+        .action(
+            Action::new("append", "Add text to the end of the open note and save it")
+                .arg(Param::text("text").describe("Markdown to append")),
+            move |args| {
+                let ui = append_ui()?;
+                if append_file.borrow().is_empty() {
+                    return Err("no note is open; call new_note or open_note first".into());
+                }
+                let addition = args["text"].as_str().unwrap_or_default();
+                if addition.trim().is_empty() {
+                    return Err("`text` is empty".into());
+                }
+                let mut content = ui.get_current_content().to_string();
+                if !content.is_empty() && !content.ends_with('\n') {
+                    content.push('\n');
+                }
+                content.push_str(addition);
+                if !content.ends_with('\n') {
+                    content.push('\n');
+                }
+                ui.set_meta_word_count(content.split_whitespace().count() as i32);
+                ui.set_current_content(content.into());
+                ui.set_is_modified(true);
+                // Saved, unlike the AI suggestions in the panel: this text was asked for
+                // explicitly by name, not proposed for review.
+                ui.invoke_save_note();
+                Ok(serde_json::json!({ "appended_chars": addition.len() }))
+            },
+        )
+        .action(
+            Action::new("search", "Filter the note list, and report what matched")
+                .arg(Param::text("query")),
+            move |args| {
+                let ui = search_ui()?;
+                let query = args["query"].as_str().unwrap_or_default().to_string();
+                ui.set_search_query(query.clone().into());
+                ui.invoke_search_notes(query.into());
+                let model = ui.get_notes_list();
+                let hits: Vec<String> = (0..model.row_count().min(25))
+                    .filter_map(|i| model.row_data(i))
+                    .map(|e| e.title.to_string())
+                    .collect();
+                Ok(serde_json::json!({ "matched": ui.get_note_count(), "titles": hits }))
+            },
+        )
+        .action(
+            Action::new("set_folder", "Switch the list between all, favorites and recent")
+                .arg(Param::text("folder").describe("all | favorites | recent")),
+            move |args| {
+                let ui = folder_ui()?;
+                let index = match args["folder"].as_str().unwrap_or_default().to_lowercase().as_str() {
+                    "all" => 0,
+                    "favorites" | "favourites" | "pinned" => 1,
+                    "recent" => 2,
+                    other => return Err(format!("unknown folder `{other}`; use all, favorites or recent")),
+                };
+                ui.invoke_select_folder(index);
+                Ok(serde_json::json!({ "showing": ui.get_note_count() }))
+            },
+        )
+        .serve();
+}
+
 fn wire(app: &NotesApp) -> slint::Timer {
     let current_file: Rc<RefCell<String>> = Rc::new(RefCell::new(String::new()));
 
@@ -762,11 +980,10 @@ fn wire(app: &NotesApp) -> slint::Timer {
                 refresh_list(&ui, ui.get_active_folder());
                 return;
             }
-            if let Ok(results) = search_via_service(&q) {
-                let count = results.len() as i32;
-                ui.set_notes_list(ModelRc::new(VecModel::from(results)));
-                ui.set_note_count(count);
-            }
+            let results = search_via_service(&q).unwrap_or_else(|_| search_fs(&q));
+            let count = results.len() as i32;
+            ui.set_notes_list(ModelRc::new(VecModel::from(results)));
+            ui.set_note_count(count);
         });
     }
 
@@ -1057,6 +1274,10 @@ fn wire(app: &NotesApp) -> slint::Timer {
 
     app.on_toggle_meeting_mode(|| {});
     app.on_import_md(|| {});
+
+    // Published last: everything the surface reports is wired by now, so the first
+    // `app.describe` cannot catch a half-built window.
+    publish_control(app, current_file.clone());
 
     // ── Watch the vault ──
     //

@@ -191,6 +191,262 @@ fn folder_to_ui(f: &yantrik_ipc_contracts::email::EmailFolder, idx: usize) -> Em
 
 // ── Wire all callbacks ───────────────────────────────────────────────
 
+// ── The control surface ──────────────────────────────────────────────
+//
+// What the companion can see of Email, and what it can ask Email to do, without photographing
+// the window. See `yantrik_app_runtime::control`.
+
+/// Row of the message whose subject or sender matches `needle`, case-insensitively.
+///
+/// A caller names mail the way a person does — by subject, or by who sent it — so both are
+/// tried, exact before partial.
+fn message_row(ui: &EmailApp, needle: &str) -> Option<i32> {
+    let want = needle.trim().to_lowercase();
+    if want.is_empty() {
+        return None;
+    }
+    let model = ui.get_email_list();
+    let rows: Vec<(usize, EmailListItem)> =
+        (0..model.row_count()).filter_map(|i| model.row_data(i).map(|r| (i, r))).collect();
+
+    let matches = |item: &EmailListItem, exact: bool| {
+        let subject = item.subject.to_lowercase();
+        let from = item.from_name.to_lowercase();
+        let addr = item.from_addr.to_lowercase();
+        if exact {
+            subject == want || from == want || addr == want
+        } else {
+            subject.contains(&want) || from.contains(&want) || addr.contains(&want)
+        }
+    };
+
+    rows.iter()
+        .find(|(_, it)| matches(it, true))
+        .or_else(|| rows.iter().find(|(_, it)| matches(it, false)))
+        .map(|(i, _)| *i as i32)
+}
+
+fn publish_control(app: &EmailApp) {
+    use yantrik_app_runtime::control::{Action, App, Param, View};
+
+    let describe = {
+        let weak = app.as_weak();
+        move || {
+            let Some(ui) = weak.upgrade() else {
+                return View::new("Email — closing");
+            };
+            if !ui.get_has_account() {
+                return View::new("Email — no account configured").with("has_account", false);
+            }
+
+            let folders = ui.get_folders();
+            let folder = (0..folders.row_count())
+                .find_map(|i| folders.row_data(i).filter(|_| i as i32 == ui.get_selected_folder_index()))
+                .map(|f| f.name.to_string())
+                .unwrap_or_else(|| "INBOX".to_string());
+
+            let detail = ui.get_email_detail();
+            let reading = !detail.subject.is_empty();
+
+            let summary = if ui.get_is_composing() {
+                format!("Email — composing to {}", {
+                    let to = ui.get_compose_to().to_string();
+                    if to.is_empty() { "(nobody yet)".to_string() } else { to }
+                })
+            } else if reading {
+                format!(
+                    "Email — {folder}, reading \u{201c}{}\u{201d} from {}",
+                    detail.subject, detail.from_name
+                )
+            } else {
+                format!(
+                    "Email — {folder}, {} unread of {}",
+                    ui.get_email_folder_unread(),
+                    ui.get_email_folder_total()
+                )
+            };
+
+            let list = ui.get_email_list();
+            let messages: Vec<serde_json::Value> = (0..list.row_count().min(25))
+                .filter_map(|i| list.row_data(i))
+                .map(|m| {
+                    serde_json::json!({
+                        "subject": m.subject.to_string(),
+                        "from": m.from_name.to_string(),
+                        "address": m.from_addr.to_string(),
+                        "date": m.date_text.to_string(),
+                        "read": m.is_read,
+                        "flagged": m.is_flagged,
+                    })
+                })
+                .collect();
+
+            let folder_rows: Vec<serde_json::Value> = (0..folders.row_count())
+                .filter_map(|i| folders.row_data(i))
+                .map(|f| {
+                    serde_json::json!({
+                        "name": f.name.to_string(),
+                        "unread": f.unread_count,
+                        "total": f.total_count,
+                    })
+                })
+                .collect();
+
+            let open = if reading {
+                serde_json::json!({
+                    "subject": detail.subject.to_string(),
+                    "from": detail.from_name.to_string(),
+                    "address": detail.from_addr.to_string(),
+                    "date": detail.date_text.to_string(),
+                    "flagged": detail.is_flagged,
+                    // The body, because summarising mail is the most common thing to want and
+                    // fetching it a second way would be the screenshot problem again.
+                    "body": detail.body.to_string(),
+                })
+            } else {
+                serde_json::Value::Null
+            };
+
+            View::new(summary)
+                .with("has_account", true)
+                .with("account", ui.get_account_name().to_string())
+                .with("folder", folder)
+                .with("unread", ui.get_email_folder_unread())
+                .with("total", ui.get_email_folder_total())
+                .with("composing", ui.get_is_composing())
+                .with("search_query", ui.get_email_search_query().to_string())
+                .with("open_message", open)
+                .with("folders", serde_json::Value::Array(folder_rows))
+                .with("messages", serde_json::Value::Array(messages))
+        }
+    };
+
+    let weak = app.as_weak();
+    let ui_for = move || weak.upgrade().ok_or_else(|| "Email window is gone".to_string());
+
+    let open_ui = ui_for.clone();
+    let folder_ui = ui_for.clone();
+    let search_ui = ui_for.clone();
+    let read_ui = ui_for.clone();
+    let flag_ui = ui_for.clone();
+    let compose_ui = ui_for;
+
+    App::new("email")
+        .describe(describe)
+        .action(
+            Action::new("open_message", "Open a message by subject or sender")
+                .arg(Param::text("which").describe("Part of the subject, the sender's name, or their address")),
+            move |args| {
+                let ui = open_ui()?;
+                let want = args["which"].as_str().unwrap_or_default();
+                let row = message_row(&ui, want)
+                    .ok_or_else(|| format!("nothing in this folder matches \"{want}\""))?;
+                ui.invoke_email_selected(row);
+                let detail = ui.get_email_detail();
+                Ok(serde_json::json!({
+                    "subject": detail.subject.to_string(),
+                    "from": detail.from_name.to_string(),
+                }))
+            },
+        )
+        .action(
+            Action::new("select_folder", "Switch to another mailbox")
+                .arg(Param::text("folder").describe("Folder name, e.g. INBOX, Sent, Archive")),
+            move |args| {
+                let ui = folder_ui()?;
+                let want = args["folder"].as_str().unwrap_or_default().trim().to_lowercase();
+                let folders = ui.get_folders();
+                let row = (0..folders.row_count())
+                    .find(|i| {
+                        folders
+                            .row_data(*i)
+                            .map(|f| f.name.to_lowercase() == want || f.folder_type.to_lowercase() == want)
+                            .unwrap_or(false)
+                    })
+                    .ok_or_else(|| {
+                        let names: Vec<String> = (0..folders.row_count())
+                            .filter_map(|i| folders.row_data(i))
+                            .map(|f| f.name.to_string())
+                            .collect();
+                        format!("no folder called \"{want}\"; there is: {}", names.join(", "))
+                    })?;
+                ui.invoke_folder_clicked(row as i32);
+                Ok(serde_json::json!({
+                    "folder": ui.get_folders().row_data(row).map(|f| f.name.to_string()),
+                    "unread": ui.get_email_folder_unread(),
+                }))
+            },
+        )
+        .action(
+            Action::new("search", "Search the mailbox").arg(Param::text("query")),
+            move |args| {
+                let ui = search_ui()?;
+                let query = args["query"].as_str().unwrap_or_default().to_string();
+                ui.set_email_search_query(query.clone().into());
+                ui.invoke_search_emails(query.into());
+                let list = ui.get_email_list();
+                let hits: Vec<String> = (0..list.row_count().min(25))
+                    .filter_map(|i| list.row_data(i))
+                    .map(|m| m.subject.to_string())
+                    .collect();
+                Ok(serde_json::json!({ "matched": hits.len(), "subjects": hits }))
+            },
+        )
+        .action(
+            Action::new("mark_read", "Mark a message as read")
+                .arg(Param::text("which").describe("Subject or sender; omit for the open message").optional()),
+            move |args| {
+                let ui = read_ui()?;
+                let row = match args["which"].as_str() {
+                    Some(w) if !w.trim().is_empty() => message_row(&ui, w)
+                        .ok_or_else(|| format!("nothing matches \"{w}\""))?,
+                    _ => message_row(&ui, &ui.get_email_detail().subject.to_string())
+                        .ok_or_else(|| "no message is open".to_string())?,
+                };
+                ui.invoke_mark_read(row);
+                Ok(serde_json::json!({ "marked": row }))
+            },
+        )
+        .action(
+            Action::new("flag", "Flag or unflag a message")
+                .arg(Param::text("which").describe("Subject or sender; omit for the open message").optional()),
+            move |args| {
+                let ui = flag_ui()?;
+                let row = match args["which"].as_str() {
+                    Some(w) if !w.trim().is_empty() => message_row(&ui, w)
+                        .ok_or_else(|| format!("nothing matches \"{w}\""))?,
+                    _ => message_row(&ui, &ui.get_email_detail().subject.to_string())
+                        .ok_or_else(|| "no message is open".to_string())?,
+                };
+                ui.invoke_mark_flagged(row);
+                Ok(serde_json::json!({ "flagged": row }))
+            },
+        )
+        .action(
+            Action::new(
+                "compose",
+                "Open the composer with a draft filled in. Does NOT send — the user reviews and sends it.",
+            )
+            .arg(Param::text("to"))
+            .arg(Param::text("subject"))
+            .arg(Param::text("body")),
+            move |args| {
+                let ui = compose_ui()?;
+                ui.invoke_compose_new();
+                ui.set_compose_to(args["to"].as_str().unwrap_or_default().into());
+                ui.set_compose_subject(args["subject"].as_str().unwrap_or_default().into());
+                ui.set_compose_body(args["body"].as_str().unwrap_or_default().into());
+                // Sending is not offered on this surface on purpose: a draft can be read before
+                // it leaves, and mail that has already gone cannot be taken back.
+                Ok(serde_json::json!({
+                    "drafted": true,
+                    "note": "waiting for the user to send it",
+                }))
+            },
+        )
+        .serve();
+}
+
 fn wire(app: &EmailApp) {
     let email_ids: std::rc::Rc<std::cell::RefCell<Vec<String>>> =
         std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
@@ -208,6 +464,10 @@ fn wire(app: &EmailApp) {
     } else {
         app.set_has_account(false);
     }
+
+    // Published once the mailbox is loaded, so the first `app.describe` is not of an empty
+    // window.
+    publish_control(app);
 
     // ── Folder clicked ──
     {

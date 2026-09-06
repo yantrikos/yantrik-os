@@ -10,5 +10,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+# The control surface serves JSON-RPC on its own thread; the transport server is async.
+tokio = { workspace = true, features = ["rt", "net", "io-util"] }
 yantrik-ipc-contracts = { workspace = true }
 yantrik-ipc-transport = { workspace = true }
