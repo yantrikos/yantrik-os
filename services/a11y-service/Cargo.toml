@@ -1,0 +1,18 @@
+[package]
+name = "a11y-service"
+version = "0.1.0"
+edition = "2021"
+description = "Yantrik accessibility service — reads foreign windows semantically over AT-SPI"
+
+[[bin]]
+name = "a11y-service"
+path = "src/main.rs"
+
+[dependencies]
+yantrik-service-sdk = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+# Already in the workspace for the system bus; AT-SPI is D-Bus and nothing more.
+zbus = { workspace = true }
+tokio = { workspace = true, features = ["rt"] }

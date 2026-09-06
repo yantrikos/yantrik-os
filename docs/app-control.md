@@ -8,18 +8,32 @@ app.describe {}                → { app, summary, state, actions: [...] }
 app.act      { action, args }  → { result }
 ```
 
+## Three ways to see, in order
+
+1. **`app.describe`** — our own apps, which publish their state because we wrote them.
+2. **AT-SPI** — everyone else's. GTK, Qt, Chromium and Firefox publish their whole widget tree over
+   D-Bus for screen readers, and have for twenty years. `a11y-service` reads it; the companion sees
+   `list_readable_windows`, `describe_window` and `window_action`.
+3. **`analyze_screen`** — a screenshot and a vision model, for what neither can see: a game, a
+   video, a remote desktop, an application with no accessibility bridge.
+
+The rule below was first written as *semantic for ours, visual for theirs*. That was too
+pessimistic: most of theirs is semantic too, and vision belongs third rather than second. A zenity
+dialog reads as eleven elements in **1.4 KB** with no GPU — and its Cancel button can be pressed by
+name, through the same interface a screen reader uses, with no synthetic pointer.
+
 ## Why, rather than a screenshot
 
 The companion can already see the desktop: `grim` takes a picture, the PNG is base64'd and posted
-to a vision model, and the model reports what the pixels look like. That is the right answer for a
-foreign window — we did not write Firefox and it owes us no account of itself.
+to a vision model, and the model reports what the pixels look like.
 
-It is the wrong answer for our own. Notes knows exactly which note is open. Asking a vision model
-to *infer* that from a photograph of a window we wrote is slow, lossy, expensive, and needs a GPU
-that a VPS does not have. So an app says it instead: a few hundred bytes of exact truth, always
-current.
+That is the wrong answer for our own windows. Notes knows exactly which note is open. Asking a
+vision model to *infer* that from a photograph of a window we wrote is slow, lossy, expensive, and
+needs a GPU that a VPS does not have. So an app says it instead: a few hundred bytes of exact
+truth, always current.
 
-**Semantic for ours, visual for theirs.**
+**Read it if it will tell you; photograph it only if it will not.** Ours tell you because we made
+them; most of theirs tell you because screen readers needed them to.
 
 `act` is the same surface turned around. An app already exposes its capabilities to its own
 buttons; publishing them by name means driving our own software never needs a synthetic mouse
@@ -172,3 +186,7 @@ list on screen when notes-service was down.
 | `weather` | conditions, alerts, forecast, units | reports what the user sees, not a fresh query |
 | `containers` | containers, images, volumes, open log tail | `stop` sensitive, `remove` dangerous |
 | `terminal` | directory, last command and its exit code | read-only by design |
+
+Windows from other applications are not in this table and never will be: they publish through
+AT-SPI instead, and `a11y-service` reads whatever the toolkit chose to expose. What Yantrik
+controls there is not the contents but the order in which the three ways are tried.

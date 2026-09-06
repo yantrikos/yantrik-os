@@ -183,6 +183,13 @@ fn start_services() -> yantrik_shell_core::service_manager::ServiceManager {
     mgr.register("calendar", "calendar-service", false);
     mgr.register("network", "network-service", true);
     mgr.register("email", "email-service", false);
+    // Reads windows we did not write. Autostarted: it costs nothing when there is no
+    // accessibility bus, and connects lazily if one appears later.
+    mgr.register("a11y", "a11y-service", true);
+    // The kernel's periphery. Not autostarted from here — it needs CAP_NET_ADMIN and
+    // CAP_SYS_ADMIN to open its descriptors, which a desktop session cannot grant. Registered so
+    // the shell can report whether it is running.
+    mgr.register("perception", "perception-service", false);
 
     // Start autostart services (best-effort — binary may not exist in dev)
     mgr.start_autostart();

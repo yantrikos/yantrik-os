@@ -1,0 +1,22 @@
+[package]
+id = "com.yantrikos.a11y"
+name = "Accessibility Service"
+version = "0.1.0"
+description = "Reads and drives windows Yantrik did not write, over AT-SPI"
+publisher = "Yantrik OS"
+roles = ["service"]
+icon = "eye"
+
+[[permissions]]
+capability = "session.accessibility"
+reason = "Reads the widget trees other applications publish for screen readers, and presses their controls by name"
+
+[service]
+binary = "a11y-service"
+methods = [
+    "a11y.windows",
+    "a11y.describe",
+    "a11y.act",
+    "a11y.status",
+]
+autostart = true

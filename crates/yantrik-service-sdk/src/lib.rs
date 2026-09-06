@@ -108,13 +108,24 @@ pub fn run_service(id: &str, handler: impl ServiceHandler) {
 pub fn init_tracing(service_id: &str) {
     // Convert "my-service" to "my_service" for the Rust module tracing filter.
     let crate_name = service_id.replace('-', "_");
-    let directive = format!("{crate_name}=info");
+
+    // Two directives, because the service id and the crate name are usually *not* the same: the
+    // `a11y` service lives in the `a11y_service` crate, `perception` in `perception_service`. With
+    // only the first, a service's own logs were filtered out by its own logging setup, and the
+    // startup of every one of them looked silent unless someone thought to set RUST_LOG.
+    let mut filter = if std::env::var_os("RUST_LOG").is_some() {
+        tracing_subscriber::EnvFilter::from_default_env()
+    } else {
+        // A service run by hand should say what it is doing. ERROR-only is the wrong default for
+        // a background process someone is watching to find out whether it started.
+        tracing_subscriber::EnvFilter::new("info")
+    };
+    for directive in [format!("{crate_name}=info"), format!("{crate_name}_service=info")] {
+        filter = filter.add_directive(directive.parse().expect("valid tracing directive"));
+    }
 
     tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive(directive.parse().expect("valid tracing directive")),
-        )
+        .with_env_filter(filter)
         // `try_init`, not `init`: calling this twice is not a bug worth a panic. A service that
         // set up logging for its own startup will reach `run_service` with a subscriber already
         // installed, and the right answer there is to keep the one that is working.

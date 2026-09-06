@@ -1,0 +1,27 @@
+[package]
+id = "com.yantrikos.perception"
+name = "Perception Service"
+version = "0.1.0"
+description = "The kernel's account of what is happening, and who did it"
+publisher = "Yantrik OS"
+roles = ["service"]
+icon = "activity"
+
+[[permissions]]
+capability = "kernel.process_events"
+reason = "Joins the netlink process connector so program launches are pushed rather than polled (CAP_NET_ADMIN, dropped after startup)"
+
+[[permissions]]
+capability = "kernel.file_events"
+reason = "Watches the directories in its scope with fanotify, which reports which process wrote a file (CAP_SYS_ADMIN, dropped after startup)"
+
+[service]
+binary = "perception-service"
+methods = [
+    "perception.since",
+    "perception.snapshot",
+    "perception.scope",
+]
+# Not autostarted: it needs capabilities the session cannot grant, so it is started by the system
+# rather than by the shell. Registered here so the shell can see whether it is up.
+autostart = false

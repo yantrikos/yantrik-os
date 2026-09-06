@@ -31,6 +31,7 @@ pub mod edit;
 pub mod encoding;
 pub mod files;
 pub mod firewall;
+pub mod foreign_ui;
 pub mod git;
 pub mod github;
 pub mod glob;
@@ -85,6 +86,7 @@ pub fn register_all(reg: &mut ToolRegistry) {
     encoding::register(reg);
     files::register(reg);
     firewall::register(reg);
+    foreign_ui::register(reg);
     git::register(reg);
     // github requires config param — registered by companion
     glob::register(reg);

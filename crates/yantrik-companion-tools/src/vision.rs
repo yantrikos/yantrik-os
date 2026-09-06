@@ -111,7 +111,7 @@ impl Tool for AnalyzeScreenTool {
             "type": "function",
             "function": {
                 "name": "analyze_screen",
-                "description": "Capture and analyze screen contents with AI",
+                "description": "Photograph the screen and ask a vision model what is on it. This is the LAST resort and the most expensive: it needs a GPU, it is only accurate to what a model can read off pixels, and it is stale the moment it is taken. Try describe_app first for Yantrik's own apps, then describe_window for other applications (Firefox, LibreOffice, anything GTK or Qt) — both are exact, free and current. Use this for what neither can see: a game, a video, a remote desktop, an app with no accessibility bridge.",
                 "parameters": {
                     "type": "object",
                     "properties": {

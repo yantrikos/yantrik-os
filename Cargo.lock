@@ -3,6 +3,18 @@
 version = 4
 
 [[package]]
+name = "a11y-service"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "yantrik-service-sdk",
+ "zbus",
+]
+
+[[package]]
 name = "ab_glyph"
 version = "0.2.32"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10782,7 +10794,7 @@ dependencies = [
 
 [[package]]
 name = "yantrikdb"
-version = "0.18.0"
+version = "0.20.0"
 dependencies = [
  "aes-gcm",
  "arc-swap",

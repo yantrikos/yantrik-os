@@ -71,7 +71,7 @@ if [ "${1:-}" != "--skip-build" ]; then
             -p yantrik-download-manager -p yantrik-snippet-manager"
         step "Building ALL packages ($PROFILE) via WSL2..."
     else
-        PACKAGES="-p yantrik-ui -p yantrik -p weather-service -p system-monitor-service -p notes-service -p notifications-service -p calendar-service -p network-service -p email-service -p yantrik-notes -p yantrik-email -p yantrik-calendar -p yantrik-weather -p yantrik-music-player -p yantrik-network-manager -p yantrik-system-monitor -p yantrik-download-manager -p yantrik-snippet-manager -p yantrik-container-manager -p yantrik-spreadsheet -p yantrik-document-editor -p yantrik-presentation -p yantrik-terminal"
+        PACKAGES="-p yantrik-ui -p yantrik -p weather-service -p system-monitor-service -p notes-service -p notifications-service -p calendar-service -p network-service -p email-service -p a11y-service -p perception-service -p yantrik-notes -p yantrik-email -p yantrik-calendar -p yantrik-weather -p yantrik-music-player -p yantrik-network-manager -p yantrik-system-monitor -p yantrik-download-manager -p yantrik-snippet-manager -p yantrik-container-manager -p yantrik-spreadsheet -p yantrik-document-editor -p yantrik-presentation -p yantrik-terminal"
         step "Building core packages ($PROFILE) via WSL2... (set BUILD_ALL=1 for all)"
     fi
 
@@ -103,7 +103,7 @@ wsl.exe -d Ubuntu -- bash -lc "
 
 # Step 2a: Deploy service binaries
 step "Deploying services..."
-SERVICES="weather-service system-monitor-service notes-service notifications-service calendar-service network-service email-service"
+SERVICES="weather-service system-monitor-service notes-service notifications-service calendar-service network-service email-service a11y-service perception-service"
 wsl.exe -d Ubuntu -- bash -lc "
     for svc in $SERVICES; do
         if [ -f $WSL_TARGET/$PROFILE/\$svc ]; then
