@@ -28,6 +28,7 @@ members = [
     "services/calendar-service",
     "services/network-service",
     "services/email-service",
+    "services/perception-service",
     "crates/yantrik-app-runtime",
     "apps/notes",
     "apps/container-manager",

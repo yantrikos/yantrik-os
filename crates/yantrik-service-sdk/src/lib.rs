@@ -99,7 +99,13 @@ pub fn run_service(id: &str, handler: impl ServiceHandler) {
 }
 
 /// Initialize tracing-subscriber with an env filter and a service-level directive.
-fn init_tracing(service_id: &str) {
+///
+/// Public, and idempotent, because a service that does real work before it starts serving needs
+/// to be able to log it. Perception opens privileged descriptors, applies a Landlock ruleset and
+/// drops its capabilities *before* `run_service` is ever called — with tracing set up only inside
+/// `run_service`, every one of those lines went nowhere, which is how a silently-failed privilege
+/// drop stayed invisible.
+pub fn init_tracing(service_id: &str) {
     // Convert "my-service" to "my_service" for the Rust module tracing filter.
     let crate_name = service_id.replace('-', "_");
     let directive = format!("{crate_name}=info");
@@ -109,5 +115,9 @@ fn init_tracing(service_id: &str) {
             tracing_subscriber::EnvFilter::from_default_env()
                 .add_directive(directive.parse().expect("valid tracing directive")),
         )
-        .init();
+        // `try_init`, not `init`: calling this twice is not a bug worth a panic. A service that
+        // set up logging for its own startup will reach `run_service` with a subscriber already
+        // installed, and the right answer there is to keep the one that is working.
+        .try_init()
+        .ok();
 }
