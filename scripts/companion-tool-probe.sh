@@ -24,7 +24,7 @@ pkill -f "$TARGET/yantrik-ui" 2>/dev/null
 pkill -f "$TARGET/yantrik-notes" 2>/dev/null
 pkill -f "$TARGET/yantrik-system-monitor" 2>/dev/null
 sleep 2
-rm -f /tmp/yantrik-*/companion.sock /tmp/yantrik-*/app-notes.sock /tmp/yantrik-*/app-system-monitor.sock
+rm -f /tmp/yantrik-*/companion.sock /tmp/yantrik-*/app-notes.sock /tmp/yantrik-*/app-system-monitor.sock /tmp/yantrik-*/app-shell.sock
 
 setsid nohup "$TARGET/yantrik-ui" "$CONFIG" > shell_tool.log 2>&1 &
 setsid nohup "$TARGET/yantrik-notes" > notes_tool.log 2>&1 &
@@ -100,6 +100,9 @@ for line in out.splitlines():
     print(f"    {line}")
 if "notes:" not in out:
     fails.append("list_apps did not see the running Notes window")
+# The desktop is an app too, and it is the one the companion lives in.
+if "shell:" not in out:
+    fails.append("list_apps did not see the shell itself")
 
 view = None
 out = run("describe_app", {"app": "notes"})
@@ -123,7 +126,36 @@ if view and view["state"]["notes"]:
     elif target not in out:
         fails.append(f"app_action did not open {target!r}: {out[:200]}")
 
-# 5. Each action's own risk is what the gate reads, not the tool's. `app_action` is Standard, so
+# 5. The shell describes its own desktop, and can be steered around it.
+out = run("describe_app", {"app": "shell"})
+try:
+    shell = json.loads(out)
+    st = shell["state"]
+    print(f"shell           : {shell['summary']}")
+    print(f"                  services={[s['id'] + '/' + s['status'] for s in st.get('services', [])]}")
+    if not st.get("services"):
+        fails.append("shell: reported no services")
+    if st.get("screen") in (None, "unknown"):
+        fails.append(f"shell: could not name its own screen ({st.get('screen_id')})")
+except (ValueError, KeyError):
+    fails.append(f"shell: describe_app did not return a view: {out[:200]}")
+    shell = None
+
+if shell:
+    out = run("app_action", {"app": "shell", "action": "show_screen", "args": {"screen": "files"}})
+    print(f"shell nav       : {out.strip()[:100]}")
+    after = json.loads(run("describe_app", {"app": "shell"}))
+    if after["state"]["screen"] != "files":
+        fails.append(f"shell: show_screen left it on {after['state']['screen']!r}")
+    run("app_action", {"app": "shell", "action": "show_screen", "args": {"screen": "desktop"}})
+    # Locking is sensitive, not an ordinary view change; under a standard ceiling it must be
+    # refused, or the mind could lock someone out of their own session on a whim.
+    out = run("app_action", {"app": "shell", "action": "lock", "args": {}})
+    print(f"shell lock      : {out.strip()[:110]}")
+    if ceiling in ("safe", "standard") and "Permission denied" not in out:
+        fails.append(f"the shell was locked under a {ceiling} ceiling: {out[:120]}")
+
+# 6. Each action's own risk is what the gate reads, not the tool's. `app_action` is Standard, so
 #    under a standard ceiling `sort_processes` (standard) must run and `kill_process` (dangerous)
 #    must not — otherwise one Standard tool would be a door to everything any app publishes.
 out = run("app_action", {"app": "system-monitor", "action": "sort_processes", "args": {"by": "memory"}})
@@ -133,7 +165,7 @@ print(f"dangerous action: {out.strip()[:110]}")
 if ceiling in ("safe", "standard", "sensitive") and "Permission denied" not in out:
     fails.append(f"a dangerous action was not refused under a {ceiling} ceiling: {out[:120]}")
 
-# 6. A wrong app name explains itself instead of failing blankly.
+# 7. A wrong app name explains itself instead of failing blankly.
 out = run("describe_app", {"app": "no-such-app"})
 print(f"missing app     : {out.strip()[:120]}")
 if "notes" not in out:

@@ -21,6 +21,8 @@ yantrik-os = { workspace = true }
 yantrik-ui-slint = { path = "../yantrik-ui-slint" }
 yantrik-ipc-contracts = { workspace = true }
 yantrik-ipc-transport = { workspace = true }
+# The shell publishes its own app.describe / app.act, like every app under apps/.
+yantrik-app-runtime = { workspace = true }
 yantrik-shell-core = { workspace = true }
 slint = { workspace = true }
 crossbeam-channel = { workspace = true }

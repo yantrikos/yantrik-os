@@ -39,6 +39,7 @@ mod app_context;
 mod apps;
 mod bridge;
 mod companion_rpc;
+mod control;
 mod cards;
 mod clipboard;
 // NOTE: #[allow(dead_code)] required to avoid rustc 1.93.1 ICE in check_mod_deathness.
@@ -130,6 +131,10 @@ fn main() {
     // Publish the companion so the apps under apps/ can use it. Without this their AI actions
     // are stubs: the model, the memory and the bond all live in this process.
     companion_rpc::serve(ctx.bridge.handle());
+
+    // And publish the desktop itself, the same way every app does. Without it, "what is on my
+    // desktop right now" was answerable only by photographing a status bar we wrote ourselves.
+    control::publish(&ui);
 
     // Debug: navigate to specific screen on startup via env var
     if let Ok(screen_str) = std::env::var("YANTRIK_START_SCREEN") {
