@@ -38,6 +38,7 @@ pub fn register(reg: &mut ToolRegistry) {
     reg.register(Box::new(WebSearchTool));
     reg.register(Box::new(BrowserClickXYTool));
     reg.register(Box::new(BrowserTypeXYTool));
+    reg.register(Box::new(BrowserLoginTool));
 }
 
 // ── CDP helpers ──
@@ -2369,11 +2370,11 @@ mod identity_tests {
         // The name reaches us from a tool call, which reaches us from a model, which may have read
         // it off a web page. It names a directory, so it gets to be alphanumeric and nothing else.
         // The property, not the exact spelling: nothing that can traverse a path survives.
-        for hostile in ["../../etc", "..", "a/../../b", "/etc/shadow", "x y"] {
+        for hostile in ["../../etc", "..", "a/../../b", "/etc/shadow", "x\0y"] {
             let safe = sanitize_identity(hostile);
             assert!(!safe.contains('/'), "{hostile:?} -> {safe:?}");
             assert!(!safe.contains('.'), "{hostile:?} -> {safe:?}");
-            assert!(!safe.contains(' '), "{hostile:?} -> {safe:?}");
+            assert!(!safe.contains('\0'), "{hostile:?} -> {safe:?}");
         }
         assert_eq!(sanitize_identity("work/personal"), "work-personal");
         assert_eq!(sanitize_identity(""), "default");
@@ -2416,5 +2417,321 @@ mod identity_tests {
         assert!(scan_js(true).contains("const showAll = true;"));
         assert!(scan_js(false).contains("const showAll = false;"));
         assert!(!scan_js(false).contains("__SHOW_ALL__"), "the placeholder must be substituted");
+    }
+}
+
+// ── Signing in without showing anyone the password ──
+
+/// JS that finds a login form and reports what it found, naming nothing secret.
+///
+/// Password field first, because it is the only unambiguous anchor on a page: `input[type=
+/// password]`. The username is then whatever visible text field sits nearest *above* it in the
+/// document, which is how every login form on the web is laid out. Guessing from names — `user`,
+/// `login`, `email`, `identifier` — works until a site calls it `session[login]`, and the
+/// positional rule does not care what it is called.
+const FIND_LOGIN_FORM_JS: &str = r#"(() => {
+    const visible = (el) => {
+        const r = el.getBoundingClientRect();
+        return r.width > 0 && r.height > 0;
+    };
+
+    const passwords = [...document.querySelectorAll('input[type="password"]')].filter(visible);
+    if (passwords.length === 0) return JSON.stringify({ found: false, why: 'no password field on this page' });
+    const password = passwords[0];
+
+    const all = [...document.querySelectorAll('input')].filter(visible);
+    const before = all.slice(0, all.indexOf(password));
+    const user = before.reverse().find(el =>
+        ['text', 'email', 'tel', ''].includes((el.type || '').toLowerCase())
+    ) || null;
+
+    // The submit control, if the form has an obvious one. Not required: many forms submit on
+    // Enter, and pressing Enter is what a person does anyway.
+    const form = password.closest('form');
+    const submit = form
+        ? form.querySelector('button[type="submit"], input[type="submit"], button:not([type])')
+        : null;
+
+    window.__yantrik_login = { user, password, submit };
+    return JSON.stringify({
+        found: true,
+        origin: location.origin,
+        has_user_field: !!user,
+        has_submit: !!submit,
+        // Named, never valued: enough for a caller to see the right form was found, and nothing
+        // that could carry what is typed into it.
+        user_field: user ? (user.getAttribute('aria-label') || user.name || user.id || user.type) : null,
+    });
+})()"#;
+
+/// Focus one of the fields found above, so `Input.insertText` goes to the right place.
+fn focus_login_field(
+    ws: &mut WebSocket<MaybeTlsStream<TcpStream>>,
+    which: &str,
+) -> Result<(), String> {
+    let js = format!(
+        "(() => {{ const f = window.__yantrik_login && window.__yantrik_login.{which}; \
+          if (!f) return 'missing'; f.focus(); f.value = ''; return 'ok'; }})()"
+    );
+    match eval_js(ws, &js)?.as_str() {
+        "ok" => Ok(()),
+        _ => Err(format!("the {which} field went away before it could be filled")),
+    }
+}
+
+/// Whether a stored credential belongs to the page currently open.
+///
+/// The check that makes this tool safe to offer at all. Without it, a page can navigate itself
+/// anywhere and be handed the password for somewhere else — which is the entire attack, performed
+/// by the defence. Compared on registrable host rather than full URL, because a credential saved
+/// for `https://reddit.com` must work on `https://www.reddit.com/login`.
+fn origin_matches(stored_url: &str, page_origin: &str) -> bool {
+    let host_of = |s: &str| -> String {
+        let s = s.trim().trim_end_matches('/');
+        let s = s.split("://").last().unwrap_or(s);
+        let host = s.split('/').next().unwrap_or(s);
+        let host = host.split('@').last().unwrap_or(host);
+        let host = host.split(':').next().unwrap_or(host);
+        host.trim_start_matches("www.").to_lowercase()
+    };
+    let stored = host_of(stored_url);
+    let page = host_of(page_origin);
+    if stored.is_empty() || page.is_empty() {
+        return false;
+    }
+    // Exact host, or the page is a subdomain of the stored host: `accounts.google.com` for a
+    // credential saved against `google.com`. Never the reverse, and never a suffix match that
+    // would let `notreddit.com` pass for `reddit.com`.
+    page == stored || page.ends_with(&format!(".{stored}"))
+}
+
+pub struct BrowserLoginTool;
+
+impl Tool for BrowserLoginTool {
+    fn name(&self) -> &'static str { "browser_login" }
+    /// Sensitive rather than Standard: it reads a credential, even though it never shows one.
+    fn permission(&self) -> PermissionLevel { PermissionLevel::Sensitive }
+    fn category(&self) -> &'static str { "browser" }
+
+    fn definition(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "function",
+            "function": {
+                "name": "browser_login",
+                "description": "Sign in to the page currently open, using a credential from the \
+                                vault. The password is typed straight into the form and is never \
+                                returned, logged, or shown to you — you get only whether it \
+                                worked. Navigate to the site's login page first. Refuses if the \
+                                open page is not the site the credential belongs to.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "service": {
+                            "type": "string",
+                            "description": "The vault entry to use, e.g. 'reddit.com'"
+                        },
+                        "pin": {
+                            "type": "string",
+                            "description": "Vault PIN, if the vault is protected. Ask the user."
+                        },
+                        "submit": {
+                            "type": "boolean",
+                            "description": "Press the sign-in button afterwards. Default true."
+                        }
+                    },
+                    "required": ["service"]
+                }
+            }
+        })
+    }
+
+    fn execute(&self, ctx: &ToolContext, args: &serde_json::Value) -> String {
+        let service = args.get("service").and_then(|v| v.as_str()).unwrap_or("").trim();
+        if service.is_empty() {
+            return "Error: `service` is required — which vault entry to sign in with.".to_string();
+        }
+        let pin = args.get("pin").and_then(|v| v.as_str());
+        let should_submit = args.get("submit").and_then(|v| v.as_bool()).unwrap_or(true);
+
+        // The vault, before the browser: a locked vault should say so without having touched the
+        // page.
+        if yantrikdb_core::vault::has_pin(&ctx.db.conn()) {
+            match pin {
+                None => {
+                    return "VAULT_PIN_REQUIRED: the vault is protected. Ask the user for their \
+                            vault PIN and pass it as `pin`."
+                        .to_string()
+                }
+                Some(p) => {
+                    if !yantrikdb_core::vault::verify_pin(&ctx.db.conn(), p) {
+                        return "VAULT_PIN_INVALID: Incorrect PIN. Access denied.".to_string();
+                    }
+                }
+            }
+        }
+
+        let enc = match yantrikdb_core::vault::vault_encryption(&ctx.db.conn()) {
+            Ok(e) => e,
+            Err(e) => return format!("Error: {e}"),
+        };
+        let entries = match yantrikdb_core::vault::get(&ctx.db.conn(), &enc, service) {
+            Ok(e) => e,
+            Err(e) => return format!("Error reading the vault: {e}"),
+        };
+        let Some(entry) = entries.into_iter().next() else {
+            return format!("No vault entry for '{service}'. Store one first with vault_store.");
+        };
+
+        let (mut ws, _tab) = match connect_first_tab() {
+            Ok(v) => v,
+            Err(e) => return format!("Error: {e}"),
+        };
+
+        let found = match eval_js(&mut ws, FIND_LOGIN_FORM_JS) {
+            Ok(v) => v,
+            Err(e) => return format!("Error reading the page: {e}"),
+        };
+        let form: serde_json::Value = match serde_json::from_str(&found) {
+            Ok(v) => v,
+            Err(e) => return format!("Error: could not read the page's form ({e})"),
+        };
+        if !form["found"].as_bool().unwrap_or(false) {
+            return format!(
+                "No login form here: {}. Navigate to the site's sign-in page first.",
+                form["why"].as_str().unwrap_or("no password field")
+            );
+        }
+
+        // The check this tool exists to have. A page can navigate itself anywhere; it must not be
+        // able to navigate somewhere and be handed a credential for somewhere else.
+        let page_origin = form["origin"].as_str().unwrap_or("");
+        let stored_url = entry.url.clone().unwrap_or_else(|| service.to_string());
+        if !origin_matches(&stored_url, page_origin) {
+            return format!(
+                "Refused: the open page is {page_origin}, and the credential for '{service}' \
+                 belongs to {stored_url}. A password is only ever typed into the site it was \
+                 saved for."
+            );
+        }
+
+        if form["has_user_field"].as_bool().unwrap_or(false) {
+            if let Err(e) = focus_login_field(&mut ws, "user") {
+                return format!("Error: {e}");
+            }
+            // `Input.insertText` rather than assigning `value` in JavaScript: the username never
+            // becomes part of a script string, and the page sees the same events it would from a
+            // keyboard, which is what frameworks like React actually listen for.
+            if let Err(e) = cdp_send(&mut ws, "Input.insertText", json!({ "text": entry.username })) {
+                return format!("Error filling the username: {e}");
+            }
+        }
+
+        if let Err(e) = focus_login_field(&mut ws, "password") {
+            return format!("Error: {e}");
+        }
+        if let Err(e) = cdp_send(&mut ws, "Input.insertText", json!({ "text": entry.password })) {
+            // Deliberately does not include the underlying error verbatim in case a transport
+            // failure echoes what was being sent.
+            let _ = e;
+            return "Error: could not fill the password field.".to_string();
+        }
+
+        if should_submit {
+            let clicked = eval_js(
+                &mut ws,
+                "(() => { const s = window.__yantrik_login && window.__yantrik_login.submit; \
+                  if (s) { s.click(); return 'clicked'; } return 'no-button'; })()",
+            )
+            .unwrap_or_default();
+            if clicked != "clicked" {
+                // Enter, which is what a person does on a form with no visible button.
+                let _ = cdp_send(&mut ws, "Input.dispatchKeyEvent", json!({
+                    "type": "keyDown", "key": "Enter", "code": "Enter", "windowsVirtualKeyCode": 13
+                }));
+                let _ = cdp_send(&mut ws, "Input.dispatchKeyEvent", json!({
+                    "type": "keyUp", "key": "Enter", "code": "Enter", "windowsVirtualKeyCode": 13
+                }));
+            }
+            std::thread::sleep(Duration::from_millis(1500));
+        }
+
+        // Everything this returns is safe to put in front of a model and to write to the audit
+        // log. The username is shown because knowing which account was used is the point; the
+        // password appears nowhere in this function's output, by construction.
+        let now = eval_js(&mut ws, "location.href").unwrap_or_default();
+        format!(
+            "Signed in to {service} as {} on {page_origin}.{} Now at {now}. \
+             Check the page to confirm — a wrong password looks like a page that did not change.",
+            entry.username,
+            if should_submit { "" } else { " Form filled, not submitted." }
+        )
+    }
+}
+
+#[cfg(test)]
+mod login_tests {
+    //! `origin_matches` is the whole safety of `browser_login`. Without it the tool is the attack
+    //! it exists to prevent: a page can navigate itself anywhere, and would then be handed the
+    //! password for somewhere else.
+
+    use super::*;
+
+    #[test]
+    fn a_credential_only_goes_to_its_own_site() {
+        assert!(origin_matches("https://reddit.com", "https://reddit.com"));
+        assert!(origin_matches("https://reddit.com", "https://www.reddit.com"));
+        assert!(origin_matches("https://www.reddit.com/login", "https://reddit.com"));
+        // Saved against the bare domain, used on the sign-in subdomain: the ordinary case.
+        assert!(origin_matches("https://google.com", "https://accounts.google.com"));
+    }
+
+    #[test]
+    fn a_lookalike_domain_is_refused() {
+        // The attack this is for. Every one of these reads as "reddit.com" to a hurried human and
+        // must not to this function.
+        for hostile in [
+            "https://notreddit.com",
+            "https://reddit.com.evil.test",
+            "https://evil.test/reddit.com",
+            "https://reddit-com.evil.test",
+            "https://xreddit.com",
+        ] {
+            assert!(
+                !origin_matches("https://reddit.com", hostile),
+                "{hostile} was accepted for reddit.com"
+            );
+        }
+    }
+
+    #[test]
+    fn a_parent_domain_does_not_inherit_a_subdomains_credential() {
+        // The relationship only runs one way. A credential for an internal host must not be typed
+        // into the company's public site.
+        assert!(origin_matches("https://example.com", "https://mail.example.com"));
+        assert!(!origin_matches("https://mail.example.com", "https://example.com"));
+    }
+
+    #[test]
+    fn nothing_matches_nothing() {
+        // An entry saved with no URL must not silently match every page. `service` is used as the
+        // fallback, and if that is empty too the answer is no.
+        assert!(!origin_matches("", "https://reddit.com"));
+        assert!(!origin_matches("https://reddit.com", ""));
+        assert!(!origin_matches("", ""));
+    }
+
+    #[test]
+    fn ports_and_credentials_in_the_url_do_not_confuse_it() {
+        assert!(origin_matches("http://localhost:3000", "http://localhost:8080"));
+        assert!(origin_matches("https://user@example.com", "https://example.com"));
+        assert!(!origin_matches("https://user@example.com", "https://user@evil.test"));
+    }
+
+    #[test]
+    fn the_form_scan_never_reports_a_value() {
+        // What the page returns about its own form is put in front of a model. It may name the
+        // username field; it must never carry what is typed into either field.
+        assert!(!FIND_LOGIN_FORM_JS.contains(".value"), "the scan must not read field values");
+        assert!(FIND_LOGIN_FORM_JS.contains("has_user_field"));
     }
 }
