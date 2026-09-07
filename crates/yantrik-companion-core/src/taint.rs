@@ -133,6 +133,14 @@ fn classify(name: &str, category: &str) -> Sensitivity {
     Sensitivity::Ordinary
 }
 
+/// Whether this tool hands a secret back to its caller.
+///
+/// Used by the audit log, which records what every tool returned: for these it must record that
+/// something was returned and nothing of what it was.
+pub fn returns_secret(name: &str, category: &str) -> bool {
+    classify(name, category) == Sensitivity::ReturnsSecret
+}
+
 #[derive(Default)]
 struct Turn {
     /// The tool that first brought untrusted content in, kept so a refusal can name it. A refusal

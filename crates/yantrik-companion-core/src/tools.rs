@@ -89,7 +89,7 @@ impl ToolRegistry {
                         ctx.max_permission
                     );
                     tracing::warn!("{}", msg);
-                    audit_log(ctx.db, name, args, &msg);
+                    audit_log(ctx.db, name, tool.category(), args, &msg);
                     return msg;
                 }
 
@@ -98,7 +98,7 @@ impl ToolRegistry {
                 // has already entered the conversation. See `crate::taint`.
                 if let Err(refusal) = crate::taint::check(name, tool.category()) {
                     tracing::warn!("{}", refusal);
-                    audit_log(ctx.db, name, args, &refusal);
+                    audit_log(ctx.db, name, tool.category(), args, &refusal);
                     return refusal;
                 }
 
@@ -106,7 +106,7 @@ impl ToolRegistry {
                 // Recorded after the fact, because what a tool returns is what taints the turn —
                 // and a tool that failed returned nothing to be tainted by.
                 crate::taint::note(name, tool.category());
-                audit_log(ctx.db, name, args, &result);
+                audit_log(ctx.db, name, tool.category(), args, &result);
                 return result;
             }
         }
@@ -168,9 +168,24 @@ impl ToolRegistry {
 }
 
 /// Log a tool execution to YantrikDB memory for AI self-recall.
-fn audit_log(db: &YantrikDB, tool_name: &str, args: &serde_json::Value, result: &str) {
+fn audit_log(
+    db: &YantrikDB,
+    tool_name: &str,
+    category: &str,
+    args: &serde_json::Value,
+    result: &str,
+) {
     let summary = summarize_json(args);
-    let result_preview = &result[..result.floor_char_boundary(200.min(result.len()))];
+
+    // What a secret-returning tool returned is the secret. The audit line goes into yantrikdb as
+    // an ordinary memory — durable, embedded and searchable — so recording the first two hundred
+    // characters of `vault_get` would file the user's passwords under "audit/tools" and hand them
+    // to the next recall that happens to match.
+    let result_preview = if crate::taint::returns_secret(tool_name, category) {
+        "<withheld: this tool returns credentials>"
+    } else {
+        &result[..result.floor_char_boundary(200.min(result.len()))]
+    };
     let text = format!("Tool: {tool_name}({summary}) → {result_preview}");
     let _ = db.record_text(
         &text,
@@ -187,7 +202,79 @@ fn audit_log(db: &YantrikDB, tool_name: &str, args: &serde_json::Value, result: 
     );
 }
 
+/// Argument names whose values must never be written down.
+///
+/// Erring towards redacting too much: an audit line missing a value is a small loss, and one
+/// containing a password is a durable, embedded, searchable copy of it.
+///
+/// Separators are stripped from the key before matching, so `api_key`, `apiKey` and `x-api-key`
+/// are all one rule. Writing the spellings out instead is how `x-api-key` slipped through the
+/// first version — the list had `api_key` and `apikey` and neither matches a hyphen.
+const NEVER_RECORD: [&str; 11] = [
+    "password",
+    "authorization",
+    "passwd",
+    "passphrase",
+    "secret",
+    "token",
+    "apikey",
+    "credential",
+    "privatekey",
+    "cookie",
+    "session",
+];
+
+/// Short markers that must be a whole word of the key rather than any run of letters in it.
+///
+/// `pin` inside `shipping_address` and `auth` inside `author` are both false. Redacting those
+/// costs nothing dramatic, but an audit log where half the fields say `<redacted>` for no reason
+/// stops being read, and a log nobody reads is not an audit. As whole segments these still catch
+/// `pin`, `pin_code`, `vault_pin`, `otp` and `oauth`.
+const NEVER_RECORD_AS_WORD: [&str; 4] = ["pin", "auth", "otp", "key"];
+
+/// Split a key into its words: `x-api-key`, `apiKey` and `api_key` all become `[api, key]`.
+fn key_segments(key: &str) -> Vec<String> {
+    let mut segments = Vec::new();
+    let mut current = String::new();
+    let mut previous_lower = false;
+
+    for c in key.chars() {
+        if !c.is_ascii_alphanumeric() {
+            if !current.is_empty() {
+                segments.push(std::mem::take(&mut current));
+            }
+            previous_lower = false;
+            continue;
+        }
+        // A capital after a lower-case letter starts a new word, so camelCase splits too.
+        if c.is_ascii_uppercase() && previous_lower && !current.is_empty() {
+            segments.push(std::mem::take(&mut current));
+        }
+        previous_lower = c.is_ascii_lowercase() || c.is_ascii_digit();
+        current.push(c.to_ascii_lowercase());
+    }
+    if !current.is_empty() {
+        segments.push(current);
+    }
+    segments
+}
+
+fn is_sensitive_key(key: &str) -> bool {
+    let segments = key_segments(key);
+    let joined: String = segments.concat();
+
+    if NEVER_RECORD.iter().any(|marker| joined.contains(marker)) {
+        return true;
+    }
+    segments
+        .iter()
+        .any(|segment| NEVER_RECORD_AS_WORD.contains(&segment.as_str()))
+}
+
 /// Compact JSON summary for audit (keys only, truncated values).
+///
+/// Values were recorded verbatim, truncated at forty characters — which is longer than most
+/// passwords. `vault_store` writes its argument straight into the memory the companion searches.
 fn summarize_json(val: &serde_json::Value) -> String {
     match val {
         serde_json::Value::Object(map) => {
@@ -195,6 +282,11 @@ fn summarize_json(val: &serde_json::Value) -> String {
                 .iter()
                 .take(4)
                 .map(|(k, v)| {
+                    if is_sensitive_key(k) {
+                        // The key is kept: knowing a PIN was supplied is the useful half of the
+                        // audit, and the value is the half that must not survive.
+                        return format!("{k}=<redacted>");
+                    }
                     let short = match v {
                         serde_json::Value::String(s) if s.len() > 40 => {
                             format!("\"{}...\"", &s[..s.floor_char_boundary(40)])
@@ -493,5 +585,71 @@ mod gate_tests {
             "vault_get ran",
             "a tool that did not run cannot have brought anything in"
         );
+    }
+}
+
+#[cfg(test)]
+mod audit_tests {
+    //! The audit line is written into yantrikdb as an ordinary memory: durable, embedded, and
+    //! returned by recall. Anything it records about a credential is a copy of that credential
+    //! that outlives the conversation and can be searched for.
+
+    use super::*;
+
+    #[test]
+    fn a_password_argument_is_not_written_down() {
+        let args = serde_json::json!({ "service": "reddit.com", "password": "hunter2" });
+        let line = summarize_json(&args);
+        assert!(!line.contains("hunter2"), "the password reached the audit log: {line}");
+        // The key survives, because "a password was supplied" is the useful half.
+        assert!(line.contains("password=<redacted>"), "{line}");
+        assert!(line.contains("reddit.com"), "and the rest must still be legible: {line}");
+    }
+
+    #[test]
+    fn a_key_that_only_looks_sensitive_is_left_alone() {
+        // Over-redaction has a cost too: an audit log full of <redacted> stops being read. `pin`
+        // as a bare substring matches `shipping_address`, which is why short markers are only
+        // matched at a boundary.
+        for key in ["shipping_address", "spinner", "author", "keyboard_layout", "session_count_display"] {
+            let args = serde_json::json!({ key: "ordinary" });
+            let line = summarize_json(&args);
+            if key == "session_count_display" {
+                // This one *is* redacted, and deliberately: anything with "session" in the name is
+                // more likely to be a token than a counter, and the cost of being wrong is uneven.
+                continue;
+            }
+            assert!(line.contains("ordinary"), "{key} was redacted for no reason: {line}");
+        }
+    }
+
+    #[test]
+    fn every_spelling_of_a_secret_is_caught() {
+        for key in [
+            "password", "passwd", "new_password", "PIN", "pin", "api_key", "apiKey",
+            "x-api-key", "token", "refresh_token", "secret", "authorization",
+            "private_key", "cookie", "session_id", "otp", "passphrase",
+        ] {
+            let args = serde_json::json!({ key: "SENSITIVE-VALUE" });
+            let line = summarize_json(&args);
+            assert!(!line.contains("SENSITIVE-VALUE"), "{key} leaked: {line}");
+        }
+    }
+
+    #[test]
+    fn ordinary_arguments_are_still_recorded() {
+        // Redacting everything would make the audit log useless, which is its own failure.
+        let args = serde_json::json!({ "service": "github.com", "limit": 5 });
+        let line = summarize_json(&args);
+        assert!(line.contains("github.com"), "{line}");
+        assert!(line.contains("5"), "{line}");
+    }
+
+    #[test]
+    fn what_a_credential_tool_returned_is_not_recorded() {
+        // The other half: `vault_get` returns the passwords themselves, and the audit line used
+        // to keep the first two hundred characters of whatever came back.
+        assert!(crate::taint::returns_secret("vault_get", "vault"));
+        assert!(!crate::taint::returns_secret("browse", "browser"));
     }
 }
