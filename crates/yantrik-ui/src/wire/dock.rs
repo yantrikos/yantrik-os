@@ -957,6 +957,55 @@ pub fn spawn_app_in(app_id: &str, bin: &str, args: &[&str], dir: Option<&std::pa
     spawn_launch(app_id, bin, args, dir, None)
 }
 
+/// What the reaper makes of an app whose `child.wait()` has returned.
+#[derive(Debug, PartialEq, Eq)]
+enum ExitVerdict {
+    /// A second copy of a single-instance app, which exits at once and leaves the window already
+    /// open — raised here if it was on screen. Its adapter stays where it is.
+    SecondCopy,
+    /// The launch died before it could show a window: a non-zero exit or a signal inside the grace
+    /// period. This is what `describe shell` reports under `failed_launches`.
+    Failed,
+    /// The app ran and exited: past the grace period, or cleanly inside it. Not a failure.
+    Exited,
+}
+
+/// What an app's exit means, decided from the facts the reaper has. Pure, and kept apart from the
+/// wait, so the cases two issues turned on can be tested without spawning a process.
+///
+/// `brought_forward` is whether the app's window was on screen at the moment of exit and has just
+/// been raised — the `present_app` call, which asks the compositor, is I/O the caller does, and
+/// only for an exit that could be a handover.
+///
+/// A second copy of a single-instance app exits at once, on purpose. Three comments in this shell
+/// once said it "asks the window that is already open to show itself"; nothing did, so clicking
+/// the tile of an app that was open behind something did nothing a person could see, and after a
+/// shell restart — the registry no longer knowing the app was open — the same click was recorded
+/// as a failed launch and raised a notice about it. The handover is therefore recognised here,
+/// where the exit is seen: a clean exit inside the grace with the window on screen IS the
+/// handover, whoever the registry thought owned the record, and so is a clean exit inside the
+/// grace from a launch that never owned the record because a live window held it.
+///
+/// Inside the grace, only an exit that was NOT clean — a non-zero status or a signal — is a failed
+/// launch (#200, #168). A clean exit inside the grace is a window that was opened and then closed
+/// on purpose: a person closing Studio two seconds after opening it, `close_window` doing the
+/// same, or the browser check that opens a page, reads it and quits, all within about 2 s. Those
+/// used to be recorded as a launch that never showed a window, with status `exit status: 0`, so a
+/// caller reading `failed_launches` believed an app could not start when it had started and
+/// closed — and `release-check --tier rc` failed its last check on the browser's own clean close.
+/// An app that genuinely cannot reach the display panics before its event loop, and a panic is a
+/// non-zero exit, so status 0 inside the grace is evidence the app ran.
+fn exit_verdict(lived_ms: u64, status_success: bool, owns_window: bool, brought_forward: bool) -> ExitVerdict {
+    let inside_grace = lived_ms < crate::running::LAUNCH_GRACE_MS;
+    if brought_forward || (inside_grace && !owns_window && status_success) {
+        ExitVerdict::SecondCopy
+    } else if inside_grace && !status_success {
+        ExitVerdict::Failed
+    } else {
+        ExitVerdict::Exited
+    }
+}
+
 /// The body of every launch, with the adapter a `.desktop` file may declare for the app.
 ///
 /// `adapter` is `(surface, command)`: started once the app process exists, told which process it
@@ -1003,11 +1052,11 @@ fn spawn_launch(
             // is where the registry learns the window has closed.
             let id = app_id.to_string();
             let name = bin.to_string();
-            // A launch is not a window. Spawning succeeds for anything executable, so the only
-            // evidence that an app actually came up is that it is still there a moment later —
-            // and the only evidence it did not is the exit this thread is already waiting for.
-            // It used to be logged at info and discarded, which is how "accepted: true" and an
-            // empty screen could both be true at once.
+            // A launch is not a window. Spawning succeeds for anything executable, so an app that
+            // came up and one that did not both start, and the exit this thread waits for is what
+            // tells them apart. It used to be logged at info and discarded, which is how
+            // "accepted: true" and an empty screen could both be true at once. What an exit means
+            // is decided in `exit_verdict`, where the cases can be tested.
             crate::running::clear_launch_failure(&id);
             let started = std::time::Instant::now();
             std::thread::spawn(move || {
@@ -1016,43 +1065,39 @@ fn spawn_launch(
                 let mut second_copy = false;
                 match child.wait() {
                     Ok(status) => {
-                        let lived = started.elapsed();
-                        let lived_ms = lived.as_millis() as u64;
-                        // A second copy of a single-instance app exits at once, on purpose, and
-                        // three comments in this shell said it "asks the window that is already
-                        // open to show itself". Nothing did. The copy just exited, so clicking the
-                        // tile of an app that was open behind something — or asking `open_app`
-                        // for one — did nothing a person could see. And after a shell restart the
-                        // registry no longer knew the app was open, so the same click was also
-                        // recorded as a failed launch and raised a notice about it.
-                        //
-                        // The handover is done here, where the exit is seen: a clean exit inside
-                        // the grace period with the app's window on screen IS the handover,
-                        // whoever the registry thought owned the record.
-                        let handed_over = lived_ms < crate::running::LAUNCH_GRACE_MS
-                            && status.success()
+                        let lived_ms = started.elapsed().as_millis() as u64;
+                        let success = status.success();
+                        // Raising the window asks the compositor, so it is done only for the one
+                        // exit that could be a handover — a clean one inside the grace period —
+                        // and never for a crash or an app that lived its life.
+                        let brought_forward = lived_ms < crate::running::LAUNCH_GRACE_MS
+                            && success
                             && crate::windows::present_app(&id);
-                        if handed_over || (lived_ms < crate::running::LAUNCH_GRACE_MS
-                            && !owns_window
-                            && status.success())
-                        {
-                            second_copy = true;
-                            tracing::info!(
-                                app = %name, lived_ms, brought_forward = handed_over,
-                                "A second copy handed over to the window already open"
-                            );
-                        } else if lived_ms < crate::running::LAUNCH_GRACE_MS {
-                            tracing::warn!(
-                                app = %name, %status, lived_ms,
-                                "App exited immediately — it never showed a window"
-                            );
-                            crate::running::mark_launch_failed(
-                                &id, &name, &status.to_string(), lived_ms,
-                            );
-                            record_crash(&name, &status, lived_ms);
-                        } else {
-                            tracing::info!(app = %name, %status, "App exited");
-                            record_crash(&name, &status, lived_ms);
+                        match exit_verdict(lived_ms, success, owns_window, brought_forward) {
+                            ExitVerdict::SecondCopy => {
+                                second_copy = true;
+                                tracing::info!(
+                                    app = %name, lived_ms, brought_forward,
+                                    "A second copy handed over to the window already open"
+                                );
+                            }
+                            ExitVerdict::Failed => {
+                                tracing::warn!(
+                                    app = %name, %status, lived_ms,
+                                    "App exited immediately — it never showed a window"
+                                );
+                                crate::running::mark_launch_failed(
+                                    &id, &name, &status.to_string(), lived_ms,
+                                );
+                                record_crash(&name, &status, lived_ms);
+                            }
+                            ExitVerdict::Exited => {
+                                // A clean exit inside the grace period lands here too: the window
+                                // was opened and closed again, which the log says in so many
+                                // milliseconds rather than calling it a launch that never was.
+                                tracing::info!(app = %name, %status, lived_ms, "App exited");
+                                record_crash(&name, &status, lived_ms);
+                            }
                         }
                     }
                     Err(e) => tracing::warn!(app = %name, error = %e, "Could not wait for app"),
@@ -1554,6 +1599,65 @@ mod tests {
         // It is not a display.
         assert!(blender_display(Some("")).is_err());
         assert!(blender_display(Some("   ")).is_err());
+    }
+
+    // ── What an exit means ──
+
+    /// A window opened and closed again inside the launch grace, on purpose, is not a launch that
+    /// never arrived (#200, #168).
+    ///
+    /// The shapes this was found in: the rc-tier browser check opens Chromium, reads a page and
+    /// closes it at ~2.3 s, and `release-check` failed its last check on `{"app": "browser",
+    /// "status": "exit status: 0", "lived_ms": 2342}`; and a person closing Studio two seconds
+    /// after opening it left the same record, saying to any caller that Studio could not start.
+    /// In both the window was gone from the compositor by the time the reaper looked, so nothing
+    /// was brought forward and the launch owned its record — all that is left to go on is the
+    /// exit, and status 0 is an app that ran and was closed, not one that never came up.
+    #[test]
+    fn a_clean_close_inside_the_grace_is_not_a_failed_launch() {
+        assert_eq!(exit_verdict(2342, true, true, false), ExitVerdict::Exited);
+        assert_eq!(exit_verdict(2167, true, true, false), ExitVerdict::Exited);
+        assert_eq!(exit_verdict(1, true, true, false), ExitVerdict::Exited);
+    }
+
+    /// An app that dies inside the grace without ever showing a window is still a failed launch —
+    /// the reason the grace exists. #200: "one that exits 1 in 2 s still is"; #168: "a launch that
+    /// exits 1 at 500 ms is". A process killed by a signal has no exit code and is not a success
+    /// either, so it takes the same branch.
+    #[test]
+    fn a_non_clean_exit_inside_the_grace_is_a_failed_launch() {
+        assert_eq!(exit_verdict(500, false, true, false), ExitVerdict::Failed);
+        assert_eq!(exit_verdict(2000, false, true, false), ExitVerdict::Failed);
+        assert_eq!(
+            exit_verdict(crate::running::LAUNCH_GRACE_MS - 1, false, true, false),
+            ExitVerdict::Failed
+        );
+    }
+
+    /// Past the grace, an exit is an ordinary exit whatever its status: the app showed a window
+    /// and lived, so a later crash is a crash — `record_crash` writes it up — and not a launch
+    /// that never was.
+    #[test]
+    fn an_exit_past_the_grace_is_not_a_failed_launch() {
+        assert_eq!(
+            exit_verdict(crate::running::LAUNCH_GRACE_MS, false, true, false),
+            ExitVerdict::Exited
+        );
+        assert_eq!(exit_verdict(60_000, true, true, false), ExitVerdict::Exited);
+    }
+
+    /// The handover the fix must not disturb: a second copy of a single-instance app exits at once
+    /// and cleanly, either with the open window raised from here or without a record of its own to
+    /// keep — and a copy that could not exit cleanly is nobody's handover.
+    #[test]
+    fn a_second_copy_inside_the_grace_still_hands_over() {
+        // The window was on screen at the moment of exit and was brought forward.
+        assert_eq!(exit_verdict(120, true, true, true), ExitVerdict::SecondCopy);
+        // After a shell restart the registry did not know the app was open, so the copy never
+        // owned the record; its clean quick exit is the handover anyway.
+        assert_eq!(exit_verdict(120, true, false, false), ExitVerdict::SecondCopy);
+        // A second copy that crashed is still a failed launch.
+        assert_eq!(exit_verdict(120, false, false, false), ExitVerdict::Failed);
     }
 
     #[test]
