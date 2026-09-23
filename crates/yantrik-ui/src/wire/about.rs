@@ -116,6 +116,14 @@ fn populate_about_info(ui_weak: &slint::Weak<App>) {
         .unwrap_or_else(|| "unknown".to_string());
     ui.set_about_disk(disk.into());
 
+    // What the desktop draws with, and why: the GPU and the renderer Mesa named, or software
+    // and the reason — a probe that found none, a combination known to be broken, a person's
+    // override, or a GPU that failed in use here and was given up on. Decided before this screen
+    // existed and fixed for the life of the shell, so a startup read is the whole story.
+    let (graphics, why) = crate::render_backend::about_lines();
+    ui.set_about_graphics(graphics.into());
+    ui.set_about_graphics_detail(why.into());
+
     // Uptime from /proc/uptime — also re-read on a timer, see wire()
     ui.set_about_uptime(read_uptime().into());
 

@@ -3,16 +3,864 @@
 # yantrik-session — the desktop session
 # ═══════════════════════════════════════════════════════════════════════════════════════
 #
-# Started by yantrik-session.service on tty1. labwc supervises the shell; the shell is the
-# thing the user sees and the thing an agent acts on, and they are two views of one state
-# rather than two programs that happen to agree.
+# Started on tty1 by yantrik-session.service, or by .bash_profile on the ISO and on installed
+# machines. labwc supervises the shell; the shell is the thing the user sees and the thing an
+# agent acts on, and they are two views of one state rather than two programs that happen to
+# agree.
 #
 # This file used to exist only inside cloud-init's write_files, which meant it could be
 # written once at provision time and never corrected again: a machine deployed with a bad
 # session script stayed that way for life, because nothing in the update path could replace
 # it. It ships in the release payload now, so `yantrik-update` refreshes it like anything
 # else, and cloud-init no longer carries a copy to drift from.
+#
+#   yantrik-session             start the desktop (what the unit and .bash_profile run)
+#   yantrik-session graphics    what this machine would decide about the GPU right now, and why
+#   yantrik-session selftest    the graphics rule against recorded eglinfo output; needs no GPU
+#   yantrik-session shell       run the shell inside labwc; labwc -s is given this, not people
 set -eu
+
+PREFIX="${YANTRIK_PREFIX:-/opt/yantrik}"
+
+# ═══════════════════════════════════════════════════════════════════════════════════════
+# Graphics: the GPU when this machine has one that works, software when it does not
+# ═══════════════════════════════════════════════════════════════════════════════════════
+#
+# Decided here, once per session, before labwc starts: the compositor picks its renderer as it
+# starts and never again, and the shell does the same.
+#
+# Until this existed every install drew on the CPU, whatever it had. The image and the installer
+# wrote WLR_RENDERER=pixman and LIBGL_ALWAYS_SOFTWARE=1 into ~/.config/labwc/environment for
+# every machine, so a laptop with an Intel, AMD or NVIDIA GPU rasterised the whole desktop on its
+# processor, and the shell switched its ambient animation off to pay for it. The shell's own
+# guess was an allow-list of DRM driver names, and a name cannot say whether acceleration is
+# real: virtio-gpu makes a render node and then falls back to llvmpipe.
+#
+# The rule, first match wins:
+#
+#   1. A person's choice. `nomodeset` on the kernel command line (the Safe Mode entry: no GPU
+#      driver is loaded at all); `yantrik.graphics=gpu|software` on the kernel command line;
+#      YANTRIK_GRAPHICS=gpu|software, WLR_RENDERER=pixman|gles2|vulkan or
+#      LIBGL_ALWAYS_SOFTWARE=1 in ~/.config/labwc/environment or the session's environment. A
+#      WLR_RENDERER or SLINT_BACKEND a person set is never overwritten -- labwc and the shell
+#      read those themselves -- and an override is never second-guessed by the fallback below.
+#   2. Ask Mesa: `eglinfo -B -p gbm` under a short timeout, and read the OpenGL ES renderer.
+#      llvmpipe, softpipe, swrast, kms_swrast, or no answer at all, means software.
+#   3. Combinations known to be broken even when the renderer looks like hardware. vmwgfx on a
+#      hypervisor that is not VMware: VirtualBox's VMSVGA with 3D on reports
+#      "SVGA3D; build: RELEASE; LLVM;" and Mesa really does accelerate it, but labwc on gles2
+#      cannot import the shell's first frame ("importing the supplied dmabufs failed", with or
+#      without WLR_DRM_NO_MODIFIERS=1), the shell's event loop ends, and the kernel says vmwgfx
+#      "seems to be running on an unsupported hypervisor". And virtio-gpu without virgl.
+#      `yantrik.graphics=trial` (kernel command line) or YANTRIK_GRAPHICS=trial lifts this rule
+#      alone, to watch the fallback below work on such a machine.
+#   4. The GPU failed on this machine before, for this renderer and this build (below).
+#   5. Otherwise the GPU: labwc on its default renderer, and nothing sets LIBGL_ALWAYS_SOFTWARE.
+#
+# Rule 5 is a TRIAL, because "Mesa says hardware" is not proof either -- VirtualBox is the case
+# that says so. If labwc or the shell dies within GRAPHICS_TRIAL_WINDOW seconds of starting, the
+# failure is written to ~/.local/state/yantrik/graphics-fallback with its reason, the renderer
+# string and the build, and the session starts again at once, in software, from this same
+# process: the person is on a working desktop after that one restart, whatever supervises the
+# session. The second start is software by construction, so it cannot loop, and the GPU is not
+# tried again on this machine until the renderer string or the installed build differs from the
+# record. Delete the file to try sooner.
+#
+# The verdict is exported as YANTRIK_GRAPHICS=gpu|software with _SOURCE, _REASON and _RENDERER,
+# and written to $XDG_RUNTIME_DIR/yantrik/graphics, so the shell (render_backend.rs),
+# `describe shell`, Settings -> About and release-check all read the one answer.
+
+GRAPHICS_PROBE_TIMEOUT=5
+# How soon an ending counts against the GPU. The VirtualBox failure comes on the first frame, a
+# few seconds in, but the shell only exits after its 3-second wait to see whether the compositor
+# is still there and its own shutdown; this leaves room for all of that on a slow machine.
+GRAPHICS_TRIAL_WINDOW=45
+# yantrik-ui exits with this when its event loop fails while the compositor is still there --
+# how the VirtualBox failure ends. crates/yantrik-ui/src/main.rs uses the same number.
+SHELL_LOOP_FAILED=70
+# The first line of a labwc environment file this script has taken charge of. A file without it
+# was written by an older image, and its software lines were that image's, not the person's.
+GRAPHICS_ENV_MARK='# yantrik-graphics: yantrik-session decides the renderer'
+# What every older image and installer wrote into that file, word for word.
+GRAPHICS_LEGACY_LINES='WLR_RENDERER=pixman
+WLR_RENDERER_ALLOW_SOFTWARE=1
+LIBGL_ALWAYS_SOFTWARE=1
+SLINT_BACKEND=winit'
+
+graphics_lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+
+# The renderer string in `eglinfo -B` output on stdin. The OpenGL ES profile's, because that is
+# what labwc's gles2 renderer and the shell's femtovg both draw through; the desktop profile's
+# only when a driver offers no ES line at all. Empty when there is neither.
+graphics_renderer_from_eglinfo() {
+  awk '
+    function value(line) { sub(/^[^:]*:[ \t]*/, "", line); sub(/[ \t\r]+$/, "", line); return line }
+    /^[ \t]*OpenGL ES profile renderer:/ { if (es == "") es = value($0); next }
+    /^[ \t]*OpenGL (core|compatibility) profile renderer:/ { if (gl == "") gl = value($0) }
+    END { if (es != "") print es; else if (gl != "") print gl }
+  '
+}
+
+# Whether a renderer string names a software rasteriser. Empty counts: no answer is no GPU.
+graphics_is_software() {
+  case "$(graphics_lower "$1")" in
+    "" | *llvmpipe* | *softpipe* | *swrast* | *"software rasterizer"* | *lavapipe* | \
+      *swiftshader* | *"basic render driver"*) return 0 ;;
+  esac
+  return 1
+}
+
+# graphics_verdict RENDERER DRM_DRIVERS HYPERVISOR -> VERDICT|SOURCE|REASON
+#
+# Rules 2, 3 and 5, from the facts alone, so they can be tested against recorded output.
+graphics_verdict() {
+  gv_renderer=$1
+  gv_drivers=" $2 "
+  gv_virt=$(printf '%s' "$3" | tr -s ' \t\n' ' ' | sed 's/^ //; s/ $//')
+  if [ -z "$gv_renderer" ]; then
+    echo "software|probe|no GPU answered: eglinfo found no OpenGL ES renderer"
+    return 0
+  fi
+  if graphics_is_software "$gv_renderer"; then
+    echo "software|probe|Mesa's only renderer here is software ($gv_renderer)"
+    return 0
+  fi
+  gv_vmwgfx=0
+  case "$gv_drivers" in *" vmwgfx "*) gv_vmwgfx=1 ;; esac
+  case "$gv_renderer" in SVGA3D*) gv_vmwgfx=1 ;; esac
+  if [ "$gv_vmwgfx" = 1 ]; then
+    case "$(graphics_lower "$gv_virt")" in
+      *vmware*) ;;
+      *)
+        echo "software|known-broken|vmwgfx outside VMware (${gv_virt:-hypervisor unknown}): Mesa reports $gv_renderer, but labwc cannot import the shell's GPU buffers there"
+        return 0
+        ;;
+    esac
+  fi
+  case "$gv_drivers" in
+    *" virtio_gpu "* | *" virtio-gpu "*)
+      case "$(graphics_lower "$gv_renderer")" in
+        *virgl*) ;;
+        *)
+          echo "software|known-broken|virtio-gpu without virgl ($gv_renderer): the host passes no 3D through"
+          return 0
+          ;;
+      esac
+      ;;
+  esac
+  echo "gpu|probe|Mesa reports a hardware renderer: $gv_renderer"
+}
+
+# The value labwc would set for KEY from FILE: the last KEY= line, unquoted, as labwc reads it.
+graphics_file_value() {
+  [ -f "$1" ] || return 0
+  sed -n "s/^[[:space:]]*$2=//p" "$1" | tail -n 1 | sed 's/[[:space:]]*$//'
+}
+
+# graphics_override CMDLINE ENV_FILE -> VERDICT|override|REASON, or nothing when nobody chose.
+#
+# The environment file is read as well as the environment because labwc applies that file over
+# whatever it inherits, so a line there is what the compositor will actually run with.
+graphics_override() {
+  case " $1 " in
+    *" nomodeset "*)
+      echo "software|override|the kernel was started with nomodeset (the Safe Mode entry), so no GPU driver is loaded"
+      return 0
+      ;;
+  esac
+  go_boot=$(printf '%s\n' "$1" | tr ' ' '\n' | sed -n 's/^yantrik\.graphics=//p' | tail -n 1)
+  case "$go_boot" in
+    gpu | software)
+      echo "$go_boot|override|yantrik.graphics=$go_boot on the kernel command line"
+      return 0
+      ;;
+  esac
+  for go_key in YANTRIK_GRAPHICS WLR_RENDERER LIBGL_ALWAYS_SOFTWARE; do
+    go_value=$(graphics_file_value "$2" "$go_key")
+    go_where="in $2"
+    if [ -z "$go_value" ]; then
+      eval "go_value=\${$go_key:-}"
+      go_where="in the session's environment"
+    fi
+    case "$go_key=$go_value" in
+      YANTRIK_GRAPHICS=gpu | YANTRIK_GRAPHICS=software)
+        echo "$go_value|override|$go_key=$go_value $go_where"
+        return 0
+        ;;
+      WLR_RENDERER=pixman)
+        echo "software|override|$go_key=$go_value $go_where"
+        return 0
+        ;;
+      WLR_RENDERER= | WLR_RENDERER=auto) ;;
+      WLR_RENDERER=*)
+        echo "gpu|override|$go_key=$go_value $go_where"
+        return 0
+        ;;
+      LIBGL_ALWAYS_SOFTWARE=1 | LIBGL_ALWAYS_SOFTWARE=true)
+        echo "software|override|$go_key=$go_value $go_where"
+        return 0
+        ;;
+    esac
+  done
+  return 0
+}
+
+# graphics_trial_request CMDLINE ENV_FILE -> where `trial` was asked for, or nothing.
+#
+# `yantrik.graphics=trial` on the kernel command line, or YANTRIK_GRAPHICS=trial: try the GPU
+# even on a combination known to be broken, as a trial, so the fallback can be watched doing its
+# job -- on VirtualBox, say. It lifts rule 3 only. A software renderer is still software, and a
+# fallback record for this renderer and build still wins: delete it to try again.
+graphics_trial_request() {
+  case " $1 " in
+    *" yantrik.graphics=trial "*)
+      echo "yantrik.graphics=trial is on the kernel command line"
+      return 0
+      ;;
+  esac
+  gt_value=$(graphics_file_value "$2" YANTRIK_GRAPHICS)
+  if [ "$gt_value" = trial ]; then
+    echo "YANTRIK_GRAPHICS=trial in $2"
+  elif [ -z "$gt_value" ] && [ "${YANTRIK_GRAPHICS:-}" = trial ]; then
+    echo "YANTRIK_GRAPHICS=trial in the session's environment"
+  fi
+  return 0
+}
+
+# ── Facts about this machine. Each is one function so the selftest can replace it. ──
+
+# `eglinfo -B` for the platform labwc will render on, with a timeout: a wedged driver must not
+# hold the desktop hostage. LIBGL_ALWAYS_SOFTWARE is taken out of the question: a person who set
+# it gets software from rule 1 anyway, and the renderer reported should be the hardware's.
+# Exit 127 when eglinfo is missing, 124 when it did not finish.
+graphics_probe() {
+  command -v eglinfo >/dev/null 2>&1 || return 127
+  command -v timeout >/dev/null 2>&1 || return 127
+  if [ -e /dev/dxg ] && ! ls /dev/dri/card* >/dev/null 2>&1; then
+    # WSL: no DRM device for gbm, and Mesa reaches the GPU behind /dev/dxg only through its
+    # d3d12 driver, and only when told to.
+    env -u LIBGL_ALWAYS_SOFTWARE GALLIUM_DRIVER="${GALLIUM_DRIVER:-d3d12}" \
+      timeout -k 1 "$GRAPHICS_PROBE_TIMEOUT" eglinfo -B -p surfaceless 2>&1
+  else
+    env -u LIBGL_ALWAYS_SOFTWARE timeout -k 1 "$GRAPHICS_PROBE_TIMEOUT" eglinfo -B -p gbm 2>&1
+  fi
+}
+
+# The kernel drivers behind the DRM cards, e.g. "i915", "vmwgfx", "virtio_gpu".
+graphics_drm_drivers() {
+  for gd_card in /sys/class/drm/card[0-9]*; do
+    case "${gd_card##*/}" in *-*) continue ;; esac
+    [ -e "$gd_card/device/driver" ] || continue
+    gd_driver=$(readlink -f "$gd_card/device/driver" 2>/dev/null) || continue
+    printf '%s ' "${gd_driver##*/}"
+  done
+  return 0
+}
+
+# Which hypervisor, if any, in the words systemd and the firmware use ("oracle innotek GmbH",
+# "vmware VMware, Inc.", "kvm QEMU", "none ASUSTeK ...").
+graphics_hypervisor() {
+  gh_kind=""
+  if command -v systemd-detect-virt >/dev/null 2>&1; then
+    gh_kind=$(systemd-detect-virt --vm 2>/dev/null || true)
+  fi
+  gh_vendor=$(cat /sys/class/dmi/id/sys_vendor 2>/dev/null || true)
+  printf '%s %s' "$gh_kind" "$gh_vendor"
+}
+
+graphics_cmdline() { cat /proc/cmdline 2>/dev/null || true; }
+
+# The installed build: what the fallback record is keyed on, with the renderer string.
+graphics_build() {
+  gb_build=$(sed -n 's/^version=//p' "$PREFIX/BUILD" 2>/dev/null | head -n 1 | tr -d '\r')
+  if [ -z "$gb_build" ]; then
+    gb_build=$(stat -c 'yantrik-ui %Y %s' "$PREFIX/bin/yantrik-ui" 2>/dev/null || true)
+  fi
+  printf '%s' "$gb_build"
+}
+
+# ── The record of a GPU that failed here ──
+
+graphics_fallback_file() { printf '%s/yantrik/graphics-fallback' "${XDG_STATE_HOME:-$HOME/.local/state}"; }
+graphics_record_file() { printf '%s/yantrik/graphics' "$XDG_RUNTIME_DIR"; }
+graphics_trial_note() { printf '%s/yantrik/graphics-trial-failed' "$XDG_RUNTIME_DIR"; }
+
+graphics_fallback_field() {
+  if [ -f "$1" ]; then sed -n "s/^$2=//p" "$1" | head -n 1; fi
+  return 0
+}
+
+# 0 when FILE records a failure of RENDERER on BUILD.
+graphics_fallback_matches() {
+  [ -f "$1" ] || return 1
+  [ "$(graphics_fallback_field "$1" renderer)" = "$2" ] || return 1
+  [ "$(graphics_fallback_field "$1" build)" = "$3" ]
+}
+
+# graphics_write_fallback FILE RENDERER BUILD REASON
+graphics_write_fallback() {
+  mkdir -p "${1%/*}" 2>/dev/null || return 1
+  {
+    echo "# Written by yantrik-session: the desktop failed on this machine's GPU, so it draws in software."
+    echo "# The GPU is tried again by itself when the renderer or the build below changes."
+    echo "# To try it sooner, delete this file and log out (or reboot)."
+    echo "renderer=$2"
+    echo "build=$3"
+    echo "reason=$4"
+    echo "when=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  } >"$1.tmp" 2>/dev/null || return 1
+  mv -f "$1.tmp" "$1" 2>/dev/null
+}
+
+# ── Deciding ──
+
+# Sets G_VERDICT, G_SOURCE, G_REASON, G_RENDERER and G_BUILD. G_STALE_FALLBACK=1 when a
+# fallback record exists but is for another renderer or build, so the GPU is tried again.
+graphics_decide() {
+  G_STALE_FALLBACK=0
+  gdc_status=0
+  gdc_out=$(graphics_probe) || gdc_status=$?
+  G_RENDERER=$(printf '%s\n' "$gdc_out" | graphics_renderer_from_eglinfo)
+  G_BUILD=$(graphics_build)
+
+  gdc_line=$(graphics_override "$(graphics_cmdline)" "$HOME/.config/labwc/environment")
+  if [ -z "$gdc_line" ]; then
+    gdc_line=$(graphics_verdict "$G_RENDERER" "$(graphics_drm_drivers)" "$(graphics_hypervisor)")
+    gdc_trial=$(graphics_trial_request "$(graphics_cmdline)" "$HOME/.config/labwc/environment")
+    case "$gdc_line" in
+      software\|known-broken\|*)
+        if [ -n "$gdc_trial" ]; then
+          gdc_line="gpu|probe|${gdc_line#software|known-broken|}; tried anyway, with the fallback, because $gdc_trial"
+        fi
+        ;;
+    esac
+    if [ -z "$G_RENDERER" ]; then
+      case "$gdc_status" in
+        127) gdc_line="software|probe|no GPU could be asked: eglinfo (mesa-utils) is not installed" ;;
+        124 | 137) gdc_line="software|probe|no GPU answered: eglinfo did not finish within ${GRAPHICS_PROBE_TIMEOUT}s" ;;
+      esac
+    fi
+    case "$gdc_line" in
+      gpu\|*)
+        gdc_marker=$(graphics_fallback_file)
+        if graphics_fallback_matches "$gdc_marker" "$G_RENDERER" "$G_BUILD"; then
+          gdc_line="software|fallback|the GPU failed here before ($(graphics_fallback_field "$gdc_marker" reason)); software until the renderer or the build changes -- delete $gdc_marker to try it sooner"
+        elif [ -f "$gdc_marker" ]; then
+          G_STALE_FALLBACK=1
+        fi
+        ;;
+    esac
+  fi
+  G_VERDICT=${gdc_line%%|*}
+  gdc_rest=${gdc_line#*|}
+  G_SOURCE=${gdc_rest%%|*}
+  G_REASON=${gdc_rest#*|}
+}
+
+# Whether this session is a GPU trial: the probe's verdict, which the fallback may overturn.
+#
+# Its own variable rather than a reading of YANTRIK_GRAPHICS, because labwc applies
+# ~/.config/labwc/environment over what it inherits: a person's YANTRIK_GRAPHICS line there
+# reaches the shell's side as written, whatever this start decided.
+graphics_is_trial() { [ "${YANTRIK_GRAPHICS_TRIAL:-}" = 1 ]; }
+
+# graphics_trial_failed STATUS SECONDS -> 0 when a program that ended like this, this soon, is
+# taken for the GPU failing. A clean exit is not a failure, and nor is being stopped by someone
+# (HUP, INT, KILL, TERM): a logout or a shutdown in the first seconds must not blame the GPU.
+graphics_trial_failed() {
+  [ "$2" -lt "$GRAPHICS_TRIAL_WINDOW" ] || return 1
+  case "$1" in
+    0 | 129 | 130 | 137 | 143) return 1 ;;
+  esac
+  return 0
+}
+
+graphics_describe_status() {
+  case "$1" in
+    "$SHELL_LOOP_FAILED") echo "status $1: its event loop failed while the compositor was still running" ;;
+    101) echo "status 101: it panicked" ;;
+    *)
+      if [ "$1" -gt 128 ]; then
+        echo "killed by signal $(($1 - 128))"
+      else
+        echo "status $1"
+      fi
+      ;;
+  esac
+}
+
+# Export the verdict for labwc, the shell, and everything they start.
+graphics_export() {
+  export YANTRIK_GRAPHICS="$G_VERDICT" YANTRIK_GRAPHICS_SOURCE="$G_SOURCE"
+  export YANTRIK_GRAPHICS_REASON="$G_REASON" YANTRIK_GRAPHICS_RENDERER="$G_RENDERER"
+  if [ "${G_FALLBACK_NEW:-0}" = 1 ]; then
+    export YANTRIK_GRAPHICS_FALLBACK_NEW=1
+  else
+    unset YANTRIK_GRAPHICS_FALLBACK_NEW
+  fi
+  if [ "$G_VERDICT" = gpu ] && [ "$G_SOURCE" = probe ]; then
+    export YANTRIK_GRAPHICS_TRIAL=1
+  else
+    unset YANTRIK_GRAPHICS_TRIAL
+  fi
+  if [ "$G_VERDICT" = software ]; then
+    # labwc composites with pixman, and every OpenGL program in the session is told there is no
+    # GPU to reach for -- which is also what makes each of this OS's apps pick Slint's own
+    # rasteriser over femtovg on llvmpipe. A WLR_RENDERER the person set stays theirs.
+    export WLR_RENDERER="${WLR_RENDERER:-pixman}" WLR_RENDERER_ALLOW_SOFTWARE=1 LIBGL_ALWAYS_SOFTWARE=1
+  else
+    unset LIBGL_ALWAYS_SOFTWARE
+    if [ "$G_SOURCE" = probe ]; then
+      # On a trial wlroots is left to refuse a software GL context rather than composite through
+      # one: if its EGL lands on llvmpipe despite the probe, labwc exits, the trial fails, and the
+      # next start is pixman, which is cheaper than gles2 on llvmpipe.
+      unset WLR_RENDERER_ALLOW_SOFTWARE
+    fi
+    if [ -e /dev/dxg ] && [ -z "${GALLIUM_DRIVER:-}" ]; then
+      # WSL: see graphics_probe.
+      export GALLIUM_DRIVER=d3d12
+    fi
+  fi
+}
+
+graphics_write_record() {
+  gw_file=$(graphics_record_file)
+  mkdir -p "${gw_file%/*}" 2>/dev/null || return 0
+  {
+    echo "verdict=$G_VERDICT"
+    echo "source=$G_SOURCE"
+    echo "reason=$G_REASON"
+    echo "renderer=$G_RENDERER"
+    echo "build=$G_BUILD"
+    echo "compositor_renderer=${WLR_RENDERER:-default}"
+    echo "fallback_file=$(graphics_fallback_file)"
+    echo "started=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  } >"$gw_file.tmp" 2>/dev/null && mv -f "$gw_file.tmp" "$gw_file" 2>/dev/null
+  return 0
+}
+
+# Take charge of ~/.config/labwc/environment: drop the software lines an older image wrote into
+# it for every machine, keep everything else, and back the original up beside it. Returns 0 when
+# this was the first start under this rule (the file did not carry the mark yet).
+graphics_migrate_env_file() {
+  if [ -f "$1" ] && grep -qxF "$GRAPHICS_ENV_MARK" "$1"; then
+    return 1
+  fi
+  mkdir -p "${1%/*}"
+  if [ -f "$1" ]; then cp -f "$1" "$1.before-graphics" 2>/dev/null || true; fi
+  {
+    echo "$GRAPHICS_ENV_MARK"
+    echo "# yantrik-session chooses the GPU or software at every login; \`yantrik-session graphics\` says"
+    echo "# what it would choose and why. To force one, add a line: YANTRIK_GRAPHICS=software or"
+    echo "# YANTRIK_GRAPHICS=gpu. WLR_RENDERER (labwc's renderer) and SLINT_BACKEND (the shell's) are"
+    echo "# honoured as written here."
+    if [ -f "$1" ]; then
+      echo "# The software lines an older image wrote into this file are gone; the original is"
+      echo "# environment.before-graphics."
+      grep -vxF "$GRAPHICS_LEGACY_LINES" "$1" || true
+    fi
+  } >"$1.tmp"
+  mv -f "$1.tmp" "$1"
+  return 0
+}
+
+# ── After a start ends ──
+
+# After labwc ends on the first start: 0, with the G_ variables now saying software, when that
+# start was a GPU trial that failed. Records the failure so later starts go straight to software.
+graphics_fall_back_after() {
+  graphics_is_trial || return 1
+  gf_note=$(graphics_trial_note)
+  if [ -s "$gf_note" ]; then
+    gf_why=$(cat "$gf_note")
+  elif graphics_trial_failed "$1" "$2"; then
+    gf_why="the compositor exited ${2}s after it started ($(graphics_describe_status "$1"))"
+  else
+    return 1
+  fi
+  gf_marker=$(graphics_fallback_file)
+  if graphics_write_fallback "$gf_marker" "$G_RENDERER" "$G_BUILD" "$gf_why"; then
+    gf_kept="recorded in $gf_marker"
+  else
+    gf_kept="could not be recorded in $gf_marker, so the next login tries the GPU again"
+  fi
+  G_VERDICT=software
+  G_SOURCE=fallback
+  G_REASON="the GPU ($G_RENDERER) failed on this start: $gf_why; software until the renderer or the build changes -- delete $gf_marker to try it sooner"
+  G_FALLBACK_NEW=1
+  graphics_log "GPU trial failed: $gf_why. $gf_kept. Starting again in software."
+  return 0
+}
+
+graphics_log() {
+  printf 'yantrik-session: %s\n' "$*" >&2
+  if [ -n "${LOG_DIR:-}" ]; then
+    printf '%s yantrik-session: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >>"$LOG_DIR/yantrik-os.log" 2>/dev/null || true
+  fi
+}
+
+# `yantrik-session shell`: what labwc -s runs. The shell, and -- on a GPU trial -- the one thing
+# labwc -s will not do: end the compositor when the shell dies. Without that, the VirtualBox
+# failure left the person looking at an empty compositor, and nothing restarted anything.
+run_shell() {
+  rs_started=$(date +%s)
+  rs_status=0
+  "$PREFIX/bin/yantrik-ui" "$PREFIX/config.yaml" || rs_status=$?
+  rs_lived=$(($(date +%s) - rs_started))
+  if graphics_is_trial && graphics_trial_failed "$rs_status" "$rs_lived"; then
+    rs_why="the shell exited ${rs_lived}s after it started ($(graphics_describe_status "$rs_status"))"
+    mkdir -p "$XDG_RUNTIME_DIR/yantrik" 2>/dev/null || true
+    printf '%s\n' "$rs_why" >"$(graphics_trial_note)" 2>/dev/null || true
+    echo "yantrik-session: GPU trial failed: $rs_why; ending the compositor so the session starts again in software" >&2
+    if [ -n "${LABWC_PID:-}" ]; then
+      kill -TERM "$LABWC_PID" 2>/dev/null || true
+    fi
+  fi
+  exit "$rs_status"
+}
+
+# `yantrik-session graphics`: the decision this machine would make now, with the facts behind it.
+graphics_report() {
+  graphics_decide
+  echo "verdict=$G_VERDICT"
+  echo "source=$G_SOURCE"
+  echo "reason=$G_REASON"
+  echo "renderer=$G_RENDERER"
+  echo "build=$G_BUILD"
+  echo "drm_drivers=$(graphics_drm_drivers)"
+  echo "hypervisor=$(graphics_hypervisor)"
+  if [ -f "$(graphics_fallback_file)" ]; then
+    echo "fallback_record=$(graphics_fallback_file)"
+  else
+    echo "fallback_record=none"
+  fi
+}
+
+# ── `yantrik-session selftest` ──────────────────────────────────────────────────────────────
+#
+# The rule against recorded `eglinfo -B` output and hypervisor strings, the fallback record's
+# whole life, and the migration of an old environment file -- all in a scratch HOME, with the
+# machine's facts replaced, so it needs no GPU, no labwc and no root. CI runs it, and so does
+# `cargo test -p yantrik-ui` (render_backend's session_script_selftest_passes).
+graphics_selftest() {
+  st_pass=0
+  st_fail=0
+  st_check() {
+    if [ "$2" = "$3" ]; then
+      st_pass=$((st_pass + 1))
+    else
+      st_fail=$((st_fail + 1))
+      printf 'FAIL: %s\n  want: %s\n  got:  %s\n' "$1" "$2" "$3"
+    fi
+  }
+  st_scratch=$(mktemp -d "${TMPDIR:-/tmp}/yantrik-session-selftest.XXXXXX")
+  trap 'rm -rf "$st_scratch"' EXIT
+  export HOME="$st_scratch/home" XDG_RUNTIME_DIR="$st_scratch/run"
+  unset XDG_STATE_HOME YANTRIK_GRAPHICS YANTRIK_GRAPHICS_SOURCE YANTRIK_GRAPHICS_TRIAL WLR_RENDERER LIBGL_ALWAYS_SOFTWARE \
+    WLR_RENDERER_ALLOW_SOFTWARE GALLIUM_DRIVER LOG_DIR
+  PREFIX="$st_scratch/opt"
+  mkdir -p "$HOME/.config/labwc" "$XDG_RUNTIME_DIR" "$PREFIX"
+  echo "version=v0.2.0-1-gaaaaaaa" >"$PREFIX/BUILD"
+
+  # The machine, as the selftest says it is.
+  ST_EGL="" ST_PROBE_STATUS=0 ST_DRIVERS="" ST_VIRT="" ST_CMDLINE="BOOT_IMAGE=/vmlinuz quiet"
+  graphics_probe() {
+    printf '%s\n' "$ST_EGL"
+    return "$ST_PROBE_STATUS"
+  }
+  graphics_drm_drivers() { printf '%s' "$ST_DRIVERS"; }
+  graphics_hypervisor() { printf '%s' "$ST_VIRT"; }
+  graphics_cmdline() { printf '%s' "$ST_CMDLINE"; }
+
+  # ── Recorded `eglinfo -B -p gbm` (surfaceless for WSL), trimmed to the lines that vary ──
+  EGL_INTEL='GBM platform:
+EGL API version: 1.5
+EGL vendor string: Mesa Project
+EGL version string: 1.5
+EGL client APIs: OpenGL OpenGL_ES
+OpenGL core profile vendor: Intel
+OpenGL core profile renderer: Mesa Intel(R) UHD Graphics 620 (KBL GT2)
+OpenGL core profile version: 4.6 (Core Profile) Mesa 25.0.7-2
+OpenGL compatibility profile renderer: Mesa Intel(R) UHD Graphics 620 (KBL GT2)
+OpenGL ES profile vendor: Intel
+OpenGL ES profile renderer: Mesa Intel(R) UHD Graphics 620 (KBL GT2)
+OpenGL ES profile version: OpenGL ES 3.2 Mesa 25.0.7-2'
+  EGL_AMD='GBM platform:
+EGL vendor string: Mesa Project
+OpenGL core profile renderer: AMD Radeon RX 6600 (radeonsi, navi23, LLVM 19.1.7, DRM 3.61, 6.12.43+deb13-amd64)
+OpenGL ES profile vendor: AMD
+OpenGL ES profile renderer: AMD Radeon RX 6600 (radeonsi, navi23, LLVM 19.1.7, DRM 3.61, 6.12.43+deb13-amd64)
+OpenGL ES profile version: OpenGL ES 3.2 Mesa 25.0.7-2'
+  EGL_NVIDIA='GBM platform:
+EGL API version: 1.5
+EGL vendor string: NVIDIA
+EGL version string: 1.5
+OpenGL core profile vendor: NVIDIA Corporation
+OpenGL core profile renderer: NVIDIA GeForce RTX 3060/PCIe/SSE2
+OpenGL ES profile vendor: NVIDIA Corporation
+OpenGL ES profile renderer: NVIDIA GeForce RTX 3060/PCIe/SSE2
+OpenGL ES profile version: OpenGL ES 3.2 NVIDIA 550.163.01'
+  EGL_LLVMPIPE='GBM platform:
+EGL vendor string: Mesa Project
+OpenGL core profile renderer: llvmpipe (LLVM 19.1.7, 256 bits)
+OpenGL ES profile vendor: Mesa
+OpenGL ES profile renderer: llvmpipe (LLVM 19.1.7, 256 bits)
+OpenGL ES profile version: OpenGL ES 3.2 Mesa 25.0.7-2'
+  EGL_SVGA3D='GBM platform:
+EGL vendor string: Mesa Project
+OpenGL core profile renderer: SVGA3D; build: RELEASE;  LLVM;
+OpenGL ES profile vendor: VMware, Inc.
+OpenGL ES profile renderer: SVGA3D; build: RELEASE;  LLVM;
+OpenGL ES profile version: OpenGL ES 3.2 Mesa 25.0.7-2'
+  EGL_VIRGL='GBM platform:
+EGL vendor string: Mesa Project
+OpenGL ES profile vendor: Mesa
+OpenGL ES profile renderer: virgl (AMD Radeon RX 6600 (radeonsi, navi23, LLVM 19.1.7, DRM 3.61, 6.12.43+deb13-amd64))
+OpenGL ES profile version: OpenGL ES 3.2 Mesa 25.0.7-2'
+  EGL_VENUS='GBM platform:
+EGL vendor string: Mesa Project
+OpenGL ES profile renderer: zink Vulkan 1.3(Virtio-GPU Venus (Intel(R) UHD Graphics 620 (KBL GT2)) (MESA_VENUS))
+OpenGL ES profile version: OpenGL ES 3.2 Mesa 25.0.7-2'
+  EGL_D3D12='Surfaceless platform:
+EGL API version: 1.5
+EGL vendor string: Mesa Project
+OpenGL core profile vendor: Microsoft Corporation
+OpenGL core profile renderer: D3D12 (NVIDIA GeForce RTX 3090 Ti)
+OpenGL ES profile vendor: Microsoft Corporation
+OpenGL ES profile renderer: D3D12 (NVIDIA GeForce RTX 3090 Ti)
+OpenGL ES profile version: OpenGL ES 3.1 Mesa 25.2.8'
+  EGL_WARP='Surfaceless platform:
+OpenGL ES profile renderer: D3D12 (Microsoft Basic Render Driver)'
+  EGL_SOFTPIPE='GBM platform:
+OpenGL ES profile renderer: softpipe'
+  EGL_CORE_ONLY='GBM platform:
+OpenGL core profile renderer: Mesa Intel(R) HD Graphics 4000 (IVB GT2)'
+  EGL_FAILED='GBM platform:
+eglinfo: eglInitialize failed'
+
+  # The renderer line is the ES profile's, whole, trailing space and CR trimmed.
+  st_check "renderer: Intel" "Mesa Intel(R) UHD Graphics 620 (KBL GT2)" \
+    "$(printf '%s\n' "$EGL_INTEL" | graphics_renderer_from_eglinfo)"
+  st_check "renderer: SVGA3D keeps its inner spacing" "SVGA3D; build: RELEASE;  LLVM;" \
+    "$(printf '%s \r\n' "$EGL_SVGA3D" | graphics_renderer_from_eglinfo)"
+  st_check "renderer: no ES line falls back to the core profile" "Mesa Intel(R) HD Graphics 4000 (IVB GT2)" \
+    "$(printf '%s\n' "$EGL_CORE_ONLY" | graphics_renderer_from_eglinfo)"
+  st_check "renderer: a failed platform has none" "" \
+    "$(printf '%s\n' "$EGL_FAILED" | graphics_renderer_from_eglinfo)"
+
+  # ── The verdict table: eglinfo output, DRM drivers, hypervisor -> verdict|source ──
+  st_verdict() {
+    sv_line=$(graphics_verdict "$(printf '%s\n' "$2" | graphics_renderer_from_eglinfo)" "$3" "$4")
+    sv_rest=${sv_line#*|}
+    st_check "verdict: $1" "$5" "${sv_line%%|*}|${sv_rest%%|*}"
+  }
+  st_verdict "Intel on bare metal" "$EGL_INTEL" "i915" "none ASUSTeK COMPUTER INC." "gpu|probe"
+  st_verdict "Intel Xe" "$EGL_INTEL" "xe" "none LENOVO" "gpu|probe"
+  st_verdict "AMD" "$EGL_AMD" "amdgpu" "none Micro-Star International Co., Ltd." "gpu|probe"
+  st_verdict "NVIDIA proprietary" "$EGL_NVIDIA" "nvidia" "none Dell Inc." "gpu|probe"
+  st_verdict "hybrid laptop, Intel display + NVIDIA" "$EGL_INTEL" "i915 nvidia" "none HP" "gpu|probe"
+  st_verdict "llvmpipe (simpledrm, no GPU driver)" "$EGL_LLVMPIPE" "simple-framebuffer" "none" "software|probe"
+  st_verdict "softpipe" "$EGL_SOFTPIPE" "bochs-drm" "kvm QEMU" "software|probe"
+  st_verdict "SVGA3D on VirtualBox" "$EGL_SVGA3D" "vmwgfx" "oracle innotek GmbH" "software|known-broken"
+  st_verdict "SVGA3D on VirtualBox, DMI only" "$EGL_SVGA3D" "vmwgfx" " innotek GmbH" "software|known-broken"
+  st_verdict "SVGA3D with the driver unreadable" "$EGL_SVGA3D" "" "oracle innotek GmbH" "software|known-broken"
+  st_verdict "SVGA3D on VMware" "$EGL_SVGA3D" "vmwgfx" "vmware VMware, Inc." "gpu|probe"
+  st_verdict "virgl on QEMU/KVM" "$EGL_VIRGL" "virtio_gpu" "kvm QEMU" "gpu|probe"
+  st_verdict "virtio without virgl (Mesa falls back to llvmpipe)" "$EGL_LLVMPIPE" "virtio_gpu" "kvm QEMU" "software|probe"
+  st_verdict "virtio without virgl, hardware-looking renderer" "$EGL_VENUS" "virtio_gpu" "kvm QEMU" "software|known-broken"
+  st_verdict "d3d12 on WSL" "$EGL_D3D12" "" "microsoft Microsoft Corporation" "gpu|probe"
+  st_verdict "d3d12 on WARP, WSL with no GPU" "$EGL_WARP" "" "microsoft Microsoft Corporation" "software|probe"
+  st_verdict "no answer" "$EGL_FAILED" "i915" "none" "software|probe"
+  st_verdict "empty output" "" "" "" "software|probe"
+
+  # ── Deciding, end to end: overrides, the probe's exit status, the fallback record ──
+  st_decide() {
+    graphics_decide
+    st_check "decide: $1" "$2" "$G_VERDICT|$G_SOURCE"
+  }
+  ST_EGL=$EGL_INTEL ST_DRIVERS=i915 ST_VIRT="none LENOVO"
+  st_decide "a hardware renderer is a GPU trial" "gpu|probe"
+  st_check "decide: the renderer string is kept" "Mesa Intel(R) UHD Graphics 620 (KBL GT2)" "$G_RENDERER"
+  st_check "decide: the build is read from BUILD" "v0.2.0-1-gaaaaaaa" "$G_BUILD"
+
+  ST_CMDLINE="BOOT_IMAGE=/vmlinuz nomodeset quiet"
+  st_decide "nomodeset (Safe Mode) is software" "software|override"
+  ST_CMDLINE="BOOT_IMAGE=/vmlinuz yantrik.graphics=software"
+  st_decide "yantrik.graphics=software on the kernel line" "software|override"
+  ST_CMDLINE="BOOT_IMAGE=/vmlinuz yantrik.graphics=gpu" ST_EGL=$EGL_SVGA3D ST_DRIVERS=vmwgfx ST_VIRT="oracle innotek GmbH"
+  st_decide "yantrik.graphics=gpu beats a known-broken combination" "gpu|override"
+  ST_CMDLINE="BOOT_IMAGE=/vmlinuz quiet"
+  st_decide "VirtualBox is software up front" "software|known-broken"
+  ST_CMDLINE="BOOT_IMAGE=/vmlinuz yantrik.graphics=trial"
+  st_decide "yantrik.graphics=trial makes VirtualBox a trial, fallback and all" "gpu|probe"
+  ST_CMDLINE="BOOT_IMAGE=/vmlinuz quiet"
+  export YANTRIK_GRAPHICS=trial
+  st_decide "YANTRIK_GRAPHICS=trial does the same" "gpu|probe"
+  ST_EGL=$EGL_LLVMPIPE ST_DRIVERS=virtio_gpu ST_VIRT="kvm QEMU"
+  st_decide "trial does not make llvmpipe a GPU" "software|probe"
+  unset YANTRIK_GRAPHICS
+  ST_CMDLINE="BOOT_IMAGE=/vmlinuz quiet" ST_EGL=$EGL_INTEL ST_DRIVERS=i915 ST_VIRT="none LENOVO"
+
+  export YANTRIK_GRAPHICS=software
+  st_decide "YANTRIK_GRAPHICS=software in the environment" "software|override"
+  unset YANTRIK_GRAPHICS
+  export WLR_RENDERER=pixman
+  st_decide "a person's WLR_RENDERER=pixman" "software|override"
+  export WLR_RENDERER=gles2
+  st_decide "a person's WLR_RENDERER=gles2" "gpu|override"
+  unset WLR_RENDERER
+  export LIBGL_ALWAYS_SOFTWARE=1
+  st_decide "a person's LIBGL_ALWAYS_SOFTWARE=1" "software|override"
+  unset LIBGL_ALWAYS_SOFTWARE
+  st_env="$HOME/.config/labwc/environment"
+  printf '%s\n' "$GRAPHICS_ENV_MARK" "YANTRIK_GRAPHICS=software" >"$st_env"
+  export YANTRIK_GRAPHICS=gpu
+  st_decide "the labwc environment file beats the inherited environment, as in labwc" "software|override"
+  unset YANTRIK_GRAPHICS
+  printf '%s\n' "$GRAPHICS_ENV_MARK" "YANTRIK_GRAPHICS=auto" >"$st_env"
+  st_decide "YANTRIK_GRAPHICS=auto leaves it to the probe" "gpu|probe"
+  rm -f "$st_env"
+
+  ST_EGL="" ST_PROBE_STATUS=127
+  st_decide "eglinfo missing" "software|probe"
+  case "$G_REASON" in *"not installed"*) st_check "decide: says eglinfo is missing" ok ok ;; *) st_check "decide: says eglinfo is missing" "*not installed*" "$G_REASON" ;; esac
+  ST_PROBE_STATUS=124
+  st_decide "eglinfo timed out" "software|probe"
+  case "$G_REASON" in *"did not finish"*) st_check "decide: says eglinfo timed out" ok ok ;; *) st_check "decide: says eglinfo timed out" "*did not finish*" "$G_REASON" ;; esac
+  ST_PROBE_STATUS=1 ST_EGL=$EGL_INTEL
+  st_decide "a nonzero eglinfo exit with a renderer still counts" "gpu|probe"
+  ST_PROBE_STATUS=0
+
+  # ── A trial, and how it can end ──
+  st_trial() {
+    if graphics_trial_failed "$2" "$3"; then st_got=failed; else st_got=not-failed; fi
+    st_check "trial: $1" "$4" "$st_got"
+  }
+  st_trial "event loop failed (the VirtualBox case)" "$SHELL_LOOP_FAILED" 4 failed
+  st_trial "panic" 101 2 failed
+  st_trial "labwc could not start" 1 0 failed
+  st_trial "segfault" 139 8 failed
+  st_trial "clean exit" 0 3 not-failed
+  st_trial "stopped with TERM (shutdown, logout)" 143 3 not-failed
+  st_trial "hangup" 129 3 not-failed
+  st_trial "KILL" 137 3 not-failed
+  st_trial "failure after the window" 70 "$GRAPHICS_TRIAL_WINDOW" not-failed
+
+  # ── The fallback record, whole life ──
+  st_marker=$(graphics_fallback_file)
+  st_check "fallback: lives under ~/.local/state" "$HOME/.local/state/yantrik/graphics-fallback" "$st_marker"
+  ST_EGL=$EGL_INTEL ST_DRIVERS=i915 ST_VIRT="none LENOVO"
+  graphics_decide
+  graphics_export
+  st_check "export: a trial clears LIBGL_ALWAYS_SOFTWARE" "unset" "${LIBGL_ALWAYS_SOFTWARE-unset}"
+  st_check "export: a trial leaves labwc on its default renderer" "unset" "${WLR_RENDERER-unset}"
+  st_check "export: a trial lets wlroots refuse software GL" "unset" "${WLR_RENDERER_ALLOW_SOFTWARE-unset}"
+  st_check "export: the verdict reaches the shell" "gpu/probe" "$YANTRIK_GRAPHICS/$YANTRIK_GRAPHICS_SOURCE"
+  st_check "export: a probe's GPU is marked a trial" 1 "${YANTRIK_GRAPHICS_TRIAL:-}"
+  if graphics_fall_back_after 0 600 2>/dev/null; then st_got=fell-back; else st_got=kept; fi
+  st_check "fallback: a trial that ran for ten minutes and ended cleanly keeps the GPU" kept "$st_got"
+  mkdir -p "$XDG_RUNTIME_DIR/yantrik"
+  echo "the shell exited 3s after it started (status 70: its event loop failed while the compositor was still running)" >"$(graphics_trial_note)"
+  if graphics_fall_back_after 0 40 2>/dev/null; then st_got=fell-back; else st_got=kept; fi
+  st_check "fallback: the shell's note turns a clean labwc exit into a failed trial" fell-back "$st_got"
+  st_check "fallback: the start after it is software" "software|fallback" "$G_VERDICT|$G_SOURCE"
+  st_check "fallback: the record exists" yes "$([ -f "$st_marker" ] && echo yes || echo no)"
+  st_check "fallback: keyed on the renderer" "Mesa Intel(R) UHD Graphics 620 (KBL GT2)" "$(graphics_fallback_field "$st_marker" renderer)"
+  st_check "fallback: keyed on the build" "v0.2.0-1-gaaaaaaa" "$(graphics_fallback_field "$st_marker" build)"
+  case "$(graphics_fallback_field "$st_marker" reason)" in
+    *"status 70"*) st_check "fallback: says why" ok ok ;;
+    *) st_check "fallback: says why" "*status 70*" "$(graphics_fallback_field "$st_marker" reason)" ;;
+  esac
+  graphics_export
+  st_check "export: software puts labwc on pixman" pixman "${WLR_RENDERER:-}"
+  st_check "export: software tells every GL program" 1 "${LIBGL_ALWAYS_SOFTWARE:-}"
+  st_check "export: the shell is told the fallback is new" 1 "${YANTRIK_GRAPHICS_FALLBACK_NEW:-}"
+  st_check "export: a software start is not a trial" unset "${YANTRIK_GRAPHICS_TRIAL-unset}"
+  unset WLR_RENDERER LIBGL_ALWAYS_SOFTWARE WLR_RENDERER_ALLOW_SOFTWARE YANTRIK_GRAPHICS YANTRIK_GRAPHICS_SOURCE \
+    YANTRIK_GRAPHICS_TRIAL
+  G_FALLBACK_NEW=0
+  rm -f "$(graphics_trial_note)"
+
+  st_decide "the next login does not try the GPU again" "software|fallback"
+  graphics_export
+  if graphics_fall_back_after 1 0 2>/dev/null; then st_got=fell-back; else st_got=kept; fi
+  st_check "fallback: a software start is never a trial, so it cannot loop" kept "$st_got"
+  unset YANTRIK_GRAPHICS YANTRIK_GRAPHICS_SOURCE WLR_RENDERER LIBGL_ALWAYS_SOFTWARE WLR_RENDERER_ALLOW_SOFTWARE
+  echo "version=v0.2.0-2-gbbbbbbb" >"$PREFIX/BUILD"
+  st_decide "a new build tries the GPU again" "gpu|probe"
+  st_check "fallback: the old record is marked stale" 1 "$G_STALE_FALLBACK"
+  echo "version=v0.2.0-1-gaaaaaaa" >"$PREFIX/BUILD"
+  ST_EGL=$EGL_AMD ST_DRIVERS=amdgpu
+  st_decide "new hardware tries the GPU again" "gpu|probe"
+  ST_EGL=$EGL_INTEL ST_DRIVERS=i915
+  export YANTRIK_GRAPHICS=gpu
+  st_decide "a person's YANTRIK_GRAPHICS=gpu beats the record" "gpu|override"
+  unset YANTRIK_GRAPHICS
+  rm -f "$st_marker"
+  st_decide "deleting the record tries the GPU again" "gpu|probe"
+
+  export YANTRIK_GRAPHICS_TRIAL=1
+  if graphics_fall_back_after 1 2 2>/dev/null; then st_got=fell-back; else st_got=kept; fi
+  st_check "fallback: labwc dying at once on a trial falls back without any note" fell-back "$st_got"
+  case "$G_REASON" in
+    *"compositor exited 2s"*) st_check "fallback: says the compositor died" ok ok ;;
+    *) st_check "fallback: says the compositor died" "*compositor exited 2s*" "$G_REASON" ;;
+  esac
+  unset YANTRIK_GRAPHICS_TRIAL
+  rm -f "$st_marker"
+
+  # A record that cannot be written still gets the person onto a desktop now; it only costs one
+  # failed GPU start per login instead of none.
+  rm -rf "$HOME/.local/state/yantrik"
+  mkdir -p "$HOME/.local/state"
+  : >"$HOME/.local/state/yantrik"
+  export YANTRIK_GRAPHICS_TRIAL=1
+  if graphics_fall_back_after 70 3 2>/dev/null; then st_got=fell-back; else st_got=kept; fi
+  st_check "fallback: an unwritable state dir still falls back for this start" fell-back "$st_got"
+  unset YANTRIK_GRAPHICS_TRIAL
+  rm -f "$HOME/.local/state/yantrik"
+
+  # ── The environment file an older image wrote ──
+  printf '%s\n' "# Yantrik OS — Wayland environment" WLR_RENDERER_ALLOW_SOFTWARE=1 WLR_NO_HARDWARE_CURSORS=1 \
+    WLR_RENDERER=pixman XDG_SESSION_TYPE=wayland QT_QPA_PLATFORM=wayland MOZ_ENABLE_WAYLAND=1 \
+    SLINT_BACKEND=winit LIBGL_ALWAYS_SOFTWARE=1 YANTRIK_START_SCREEN=32 >"$st_env"
+  if graphics_migrate_env_file "$st_env"; then st_got=first; else st_got=again; fi
+  st_check "migrate: an old file is the first start" first "$st_got"
+  st_check "migrate: the software lines are gone" 0 "$(grep -cxE 'WLR_RENDERER=pixman|LIBGL_ALWAYS_SOFTWARE=1|WLR_RENDERER_ALLOW_SOFTWARE=1|SLINT_BACKEND=winit' "$st_env" || true)"
+  st_check "migrate: everything else stays" 5 "$(grep -cxE 'WLR_NO_HARDWARE_CURSORS=1|XDG_SESSION_TYPE=wayland|QT_QPA_PLATFORM=wayland|MOZ_ENABLE_WAYLAND=1|YANTRIK_START_SCREEN=32' "$st_env" || true)"
+  st_check "migrate: the original is kept beside it" 1 "$(grep -cx 'WLR_RENDERER=pixman' "$st_env.before-graphics" || true)"
+  st_decide "a migrated old install tries the GPU" "gpu|probe"
+  if graphics_migrate_env_file "$st_env"; then st_got=first; else st_got=again; fi
+  st_check "migrate: only once" again "$st_got"
+  echo "WLR_RENDERER=pixman" >>"$st_env"
+  st_decide "a WLR_RENDERER=pixman written after the migration is the person's" "software|override"
+  rm -f "$st_env" "$st_env.before-graphics"
+  if graphics_migrate_env_file "$st_env"; then st_got=first; else st_got=again; fi
+  st_check "migrate: a missing file is created, marked" "first/1" "$st_got/$(grep -cxF "$GRAPHICS_ENV_MARK" "$st_env")"
+
+  printf 'yantrik-session selftest: %d passed, %d failed\n' "$st_pass" "$st_fail"
+  [ "$st_fail" -eq 0 ]
+}
+
+case "${1:-}" in
+  "") ;;
+  selftest)
+    graphics_selftest
+    exit $?
+    ;;
+  graphics)
+    graphics_report
+    exit 0
+    ;;
+  shell)
+    export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+    run_shell
+    ;;
+  *)
+    echo "usage: yantrik-session [graphics | selftest]" >&2
+    exit 2
+    ;;
+esac
 
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 mkdir -p "$XDG_RUNTIME_DIR"
@@ -70,7 +918,7 @@ esac
 # For apps the answer is a themed frame rather than no frame. labwc reads its config from the
 # user's home, so this needs no root and re-applies on every start; a machine deployed before
 # the theme existed picks it up by rebooting. Both sources ride in the release payload.
-CHROME=/opt/yantrik/share
+CHROME="$PREFIX/share"
 if [ -d "$CHROME/labwc" ]; then
   mkdir -p "$HOME/.config/labwc" "$HOME/.local/share/themes/Yantrik/labwc"
   cp -f "$CHROME/labwc/rc.xml" "$HOME/.config/labwc/rc.xml"
@@ -103,9 +951,65 @@ fi
 # the desktop says the companion is online, every AI action in every app fails, and there is
 # no file anywhere that says why. Diagnosing it meant reading a log that had stopped being
 # written eight hours earlier and not noticing that it had.
-LOG_DIR=/opt/yantrik/logs
+LOG_DIR="$PREFIX/logs"
 mkdir -p "$LOG_DIR" 2>/dev/null || true
 # Rotate on start rather than growing without bound; one previous boot is enough to compare.
 [ -f "$LOG_DIR/yantrik-os.log" ] && mv -f "$LOG_DIR/yantrik-os.log" "$LOG_DIR/yantrik-os.log.1" 2>/dev/null
 
-exec labwc -s '/opt/yantrik/bin/yantrik-ui /opt/yantrik/config.yaml'   >>"$LOG_DIR/yantrik-os.log" 2>&1
+# ── Decide the graphics (see the top of this file) ──
+LABWC_ENV="$HOME/.config/labwc/environment"
+LABWC_ENV_WAS_THERE=0
+if [ -f "$LABWC_ENV" ]; then LABWC_ENV_WAS_THERE=1; fi
+if graphics_migrate_env_file "$LABWC_ENV"; then
+  # The first start under this rule. An older .bash_profile sourced that file before running
+  # this script -- or, without the file, exported the same software settings itself -- so these
+  # values came from the image, not from a person. After this start the file no longer carries
+  # them, and one found here again is a person's and is honoured.
+  [ "${WLR_RENDERER:-}" != pixman ] || unset WLR_RENDERER
+  [ "${LIBGL_ALWAYS_SOFTWARE:-}" != 1 ] || unset LIBGL_ALWAYS_SOFTWARE
+  [ "${SLINT_BACKEND:-}" != winit ] || unset SLINT_BACKEND
+  if [ "$LABWC_ENV_WAS_THERE" = 1 ]; then
+    graphics_log "took charge of $LABWC_ENV: removed the software settings an older image wrote for every machine (the original is $LABWC_ENV.before-graphics)"
+  fi
+fi
+graphics_decide
+if [ "$G_STALE_FALLBACK" = 1 ]; then
+  GRAPHICS_OLD_RECORD="$(graphics_fallback_file)"
+  graphics_log "the GPU failed here before on $(graphics_fallback_field "$GRAPHICS_OLD_RECORD" build) ($(graphics_fallback_field "$GRAPHICS_OLD_RECORD" renderer)); the build or the renderer has changed since, so it is tried again"
+  mv -f "$GRAPHICS_OLD_RECORD" "$GRAPHICS_OLD_RECORD.old" 2>/dev/null || rm -f "$GRAPHICS_OLD_RECORD"
+fi
+graphics_log "graphics: $G_VERDICT ($G_SOURCE) -- $G_REASON"
+
+# ── Start the compositor with the shell in it ──
+#
+# labwc is a child rather than exec'd, so that this script is still here when it ends: a GPU trial
+# that failed (above) starts again at once, in software, from here, and the person does not
+# depend on systemd's Restart= or on .bash_profile's crash guard -- which drops a fast failure
+# to a text prompt -- to reach a desktop. Anything else ends the script with labwc's own status,
+# exactly as the exec used to. A stop or a logout signals the whole session, this script
+# included, so nothing here runs on those.
+#
+# labwc -s runs `yantrik-session shell` rather than yantrik-ui directly: see run_shell.
+GRAPHICS_ATTEMPT=1
+while :; do
+  graphics_export
+  graphics_write_record
+  rm -f "$(graphics_trial_note)" 2>/dev/null || true
+  GRAPHICS_STARTED=$(date +%s)
+  GRAPHICS_STATUS=0
+  labwc -s "$PREFIX/bin/yantrik-session shell" >>"$LOG_DIR/yantrik-os.log" 2>&1 || GRAPHICS_STATUS=$?
+  GRAPHICS_LIVED=$(($(date +%s) - GRAPHICS_STARTED))
+  if [ "$GRAPHICS_ATTEMPT" = 1 ] && graphics_fall_back_after "$GRAPHICS_STATUS" "$GRAPHICS_LIVED"; then
+    GRAPHICS_ATTEMPT=2
+    # Let the seat and the VT settle between one compositor and the next.
+    sleep 1
+    continue
+  fi
+  if [ "$GRAPHICS_ATTEMPT" = 2 ] && graphics_trial_failed "$GRAPHICS_STATUS" "$GRAPHICS_LIVED"; then
+    # The software start died as fast, so the GPU was not what broke. Leaving the record would
+    # keep a working GPU unused until the next build for a fault that is somewhere else.
+    rm -f "$(graphics_fallback_file)"
+    graphics_log "the software start failed as quickly ($(graphics_describe_status "$GRAPHICS_STATUS")), so the GPU was not the cause; its failure record is removed"
+  fi
+  exit "$GRAPHICS_STATUS"
+done

@@ -62,12 +62,35 @@ const EPROTO: i32 = 71;
 ///
 /// See the module documentation for why the display is asked rather than the error read.
 pub fn run_until_closed(ui: &impl slint::ComponentHandle, program: &str) -> bool {
+    run_until_ended(ui, program) == LoopEnd::Closed
+}
+
+/// How a window's event loop ended, for a caller that does something different for each.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoopEnd {
+    /// The window was closed, or the program quit its own loop.
+    Closed,
+    /// The display went away and took the loop with it: a logout, a session restart.
+    DisplayGone,
+    /// The loop failed while the display was still there, and a problem record was written.
+    ///
+    /// The shell exits with a status of its own for this one, because it is how a GPU that Mesa
+    /// accelerates but the compositor cannot use shows itself: on VirtualBox labwc refused the
+    /// shell's first frame and dropped its connection, and the session reads that status to fall
+    /// back to software (deploy/yantrik-os/yantrik-session).
+    Failed,
+}
+
+/// [`run_until_closed`], saying which of the three endings it was.
+pub fn run_until_ended(ui: &impl slint::ComponentHandle, program: &str) -> LoopEnd {
     match ui.run() {
-        Ok(()) => true,
+        Ok(()) => LoopEnd::Closed,
         Err(error) => {
             let socket = wayland_socket();
-            ended_in_error(program, &error.to_string(), socket.as_deref(), GRACE, &problems::dir());
-            false
+            match ended_in_error(program, &error.to_string(), socket.as_deref(), GRACE, &problems::dir()) {
+                Ending::DisplayGone => LoopEnd::DisplayGone,
+                Ending::Failure => LoopEnd::Failed,
+            }
         }
     }
 }
@@ -328,7 +351,7 @@ mod tests {
             let flat: String = source.chars().filter(|c| !c.is_whitespace()).collect();
             if flat.contains(".run().unwrap()") || flat.contains(".run().expect(") {
                 wrong.push(format!("{name} unwraps its event loop; use run_until_closed"));
-            } else if !flat.contains("run_until_closed(") {
+            } else if !flat.contains("run_until_closed(") && !flat.contains("run_until_ended(") {
                 wrong.push(format!("{name} does not run its window through run_until_closed"));
             }
         }

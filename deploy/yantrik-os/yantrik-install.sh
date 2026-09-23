@@ -177,16 +177,26 @@ ok "User $USERNAME created"
 UHOME="$M/home/$USERNAME"
 mkdir -p "$UHOME/.config/labwc" "$UHOME/.yantrik"
 
-# The environment file stays: yantrik-session does not set the renderer, and this is where a
-# machine with no GPU is told to fall back to software rendering.
-printf "WLR_RENDERER_ALLOW_SOFTWARE=1\nWLR_NO_HARDWARE_CURSORS=1\nWLR_RENDERER=pixman\nXDG_SESSION_TYPE=wayland\nQT_QPA_PLATFORM=wayland\nMOZ_ENABLE_WAYLAND=1\nSLINT_BACKEND=winit\nLIBGL_ALWAYS_SOFTWARE=1\n" > "$UHOME/.config/labwc/environment"
+# The environment file carries no renderer. It used to force WLR_RENDERER=pixman and
+# LIBGL_ALWAYS_SOFTWARE=1 on every machine, GPU or not; yantrik-session decides at every login
+# now, and falls back to software by itself when a GPU fails in use. The first line is the
+# session's mark (GRAPHICS_ENV_MARK in yantrik-session): without it the session would take this
+# file for an older image's.
+printf '%s\n' \
+    "# yantrik-graphics: yantrik-session decides the renderer" \
+    "# To force one, add a line: YANTRIK_GRAPHICS=software or YANTRIK_GRAPHICS=gpu." \
+    "# \`yantrik-session graphics\` says what the session would choose and why." \
+    WLR_NO_HARDWARE_CURSORS=1 XDG_SESSION_TYPE=wayland QT_QPA_PLATFORM=wayland MOZ_ENABLE_WAYLAND=1 \
+    > "$UHOME/.config/labwc/environment"
 
 # No autostart and no rc.xml written here. yantrik-session copies the shipped ones out of
 # /opt/yantrik/share at every login, so a machine installed today picks up a theme fix
 # published tomorrow by rebooting. Writing them here would shadow that permanently.
 
 # .bash_profile — the same one the live image uses, minus the installer-mode branch.
-printf 'if [ "$(tty)" = "/dev/tty1" ] && [ -z "$WAYLAND_DISPLAY" ]; then\n    export XDG_RUNTIME_DIR="/run/user/$(id -u)"\n    mkdir -p "$XDG_RUNTIME_DIR"\n    if [ -f "$HOME/.config/labwc/environment" ]; then\n        set -a; . "$HOME/.config/labwc/environment"; set +a\n    fi\n    /opt/yantrik/bin/yantrik-session 2>>/opt/yantrik/logs/labwc.log\nfi\n' > "$UHOME/.bash_profile"
+# It does not source the labwc environment: labwc reads that itself, and sourcing it is how the
+# old software lines reached everything the session started.
+printf 'if [ "$(tty)" = "/dev/tty1" ] && [ -z "$WAYLAND_DISPLAY" ]; then\n    export XDG_RUNTIME_DIR="/run/user/$(id -u)"\n    mkdir -p "$XDG_RUNTIME_DIR"\n    /opt/yantrik/bin/yantrik-session 2>>/opt/yantrik/logs/labwc.log\nfi\n' > "$UHOME/.bash_profile"
 
 # Mark onboarding complete (boot to desktop, not wizard)
 touch "$UHOME/.yantrik/.onboarding_complete"

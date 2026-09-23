@@ -31,7 +31,7 @@ pub use yantrik_ipc_transport;
 
 pub use yantrik_ipc_transport::SyncRpcClient;
 
-pub use event_loop::run_until_closed;
+pub use event_loop::{run_until_closed, run_until_ended, LoopEnd};
 
 pub mod companion;
 pub mod control;

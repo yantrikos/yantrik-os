@@ -206,7 +206,12 @@ if [ "${YANTRIK_HEADLESS:-}" = "1" ] || ! grep -qs '^connected' /sys/class/drm/c
   export WLR_BACKENDS=headless
   export WLR_LIBINPUT_NO_DEVICES=1
 fi
+# Software, and said the way the shipped session says it, so the shell reports it honestly. This
+# launcher is for GPU-less test VMs and does not probe; the shipped yantrik-session decides per
+# machine (see "Graphics" there).
 export LIBGL_ALWAYS_SOFTWARE=1
+export YANTRIK_GRAPHICS=software YANTRIK_GRAPHICS_SOURCE=override
+export YANTRIK_GRAPHICS_REASON="deploy-to-vm.sh's development session draws in software; it is written for test VMs with no GPU"
 export PATH="/opt/yantrik/bin:$PATH"
 
 

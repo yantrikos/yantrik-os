@@ -534,65 +534,12 @@ fn create_user(mount_dir: &str, state: &InstallerState) -> Result<(), String> {
     let dst_home = format!("{mount_dir}/home/{username}");
 
     // .bash_profile — auto-start labwc on tty1
-    sudo_write(
-        &format!("{dst_home}/.bash_profile"),
-        r#"# Auto-start Yantrik desktop on tty1
-if [ "$(tty)" = "/dev/tty1" ] && [ -z "$WAYLAND_DISPLAY" ]; then
-    export XDG_RUNTIME_DIR="/run/user/$(id -u)"
-    mkdir -p "$XDG_RUNTIME_DIR"
+    sudo_write(&format!("{dst_home}/.bash_profile"), INSTALLED_BASH_PROFILE)?;
 
-    if [ -f "$HOME/.config/labwc/environment" ]; then
-        set -a
-        . "$HOME/.config/labwc/environment"
-        set +a
-    else
-        export WLR_RENDERER=pixman
-        export WLR_RENDERER_ALLOW_SOFTWARE=1
-        export SLINT_BACKEND=winit
-        export LIBGL_ALWAYS_SOFTWARE=1
-    fi
-
-    # Crash guard
-    CRASH_FILE="/tmp/.yantrik-labwc-crash"
-    if [ -f "$CRASH_FILE" ]; then
-        LAST_CRASH=$(cat "$CRASH_FILE" 2>/dev/null || echo 0)
-        NOW=$(date +%s)
-        if [ $((NOW - LAST_CRASH)) -lt 10 ]; then
-            echo "  Yantrik OS — Desktop failed to start"
-            echo "  Check: cat /opt/yantrik/logs/labwc.log"
-            exec /bin/bash --login
-        fi
-    fi
-
-    START_TIME=$(date +%s)
-    # The session every Yantrik machine runs, whatever installed it: the shipped compositor
-    # config, fullscreen, and the shell as the session client.
-    /opt/yantrik/bin/yantrik-session 2>>/opt/yantrik/logs/labwc.log
-    EXIT_TIME=$(date +%s)
-
-    if [ $((EXIT_TIME - START_TIME)) -lt 5 ]; then
-        echo "$EXIT_TIME" > "$CRASH_FILE"
-    else
-        rm -f "$CRASH_FILE"
-        # A session that ran and then ended (labwc crashed hours in, or was killed) ends the
-        # login, so tty1's autologin starts the desktop again. Left to fall through, it left a
-        # bash prompt on tty1 and no desktop until a reboot. A quick crash still falls through to
-        # the prompt, as it always has.
-        exit 0
-    fi
-fi
-"#,
-    )?;
-
-    // labwc environment — software rendering for VBox/headless
+    // labwc environment. No renderer in it: yantrik-session decides GPU or software per login.
     let labwc_dir = format!("{dst_home}/.config/labwc");
     let _ = run_cmd("mkdir", &["-p", &labwc_dir]);
-
-    // YANTRIK_START_SCREEN=32 boots to the graphical login screen
-    sudo_write(
-        &format!("{labwc_dir}/environment"),
-        "WLR_RENDERER=pixman\nWLR_RENDERER_ALLOW_SOFTWARE=1\nXDG_SESSION_TYPE=wayland\nQT_QPA_PLATFORM=wayland\nMOZ_ENABLE_WAYLAND=1\nSLINT_BACKEND=winit\nLIBGL_ALWAYS_SOFTWARE=1\nYANTRIK_START_SCREEN=32\n",
-    )?;
+    sudo_write(&format!("{labwc_dir}/environment"), INSTALLED_LABWC_ENVIRONMENT)?;
 
     // No autostart or rc.xml here. `yantrik-session` installs the shipped ones from
     // /opt/yantrik/share at every login. This installer used to write its own, and they drifted:
@@ -639,6 +586,69 @@ fi
 
     Ok(())
 }
+
+/// The installed person's `.bash_profile`: start the session on tty1, and do not loop if it
+/// cannot start.
+const INSTALLED_BASH_PROFILE: &str = r#"# Auto-start Yantrik desktop on tty1
+if [ "$(tty)" = "/dev/tty1" ] && [ -z "$WAYLAND_DISPLAY" ]; then
+    export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+    mkdir -p "$XDG_RUNTIME_DIR"
+
+    # Nothing about graphics here. yantrik-session decides GPU or software at every login, and
+    # labwc reads ~/.config/labwc/environment itself, before it chooses a renderer. This profile
+    # used to source that file and, without it, export WLR_RENDERER=pixman and
+    # LIBGL_ALWAYS_SOFTWARE=1 -- every installed machine drew on the CPU, GPU or not.
+
+    # Crash guard
+    CRASH_FILE="/tmp/.yantrik-labwc-crash"
+    if [ -f "$CRASH_FILE" ]; then
+        LAST_CRASH=$(cat "$CRASH_FILE" 2>/dev/null || echo 0)
+        NOW=$(date +%s)
+        if [ $((NOW - LAST_CRASH)) -lt 10 ]; then
+            echo "  Yantrik OS — Desktop failed to start"
+            echo "  Check: cat /opt/yantrik/logs/labwc.log"
+            exec /bin/bash --login
+        fi
+    fi
+
+    START_TIME=$(date +%s)
+    # The session every Yantrik machine runs, whatever installed it: the shipped compositor
+    # config, fullscreen, and the shell as the session client.
+    /opt/yantrik/bin/yantrik-session 2>>/opt/yantrik/logs/labwc.log
+    EXIT_TIME=$(date +%s)
+
+    if [ $((EXIT_TIME - START_TIME)) -lt 5 ]; then
+        echo "$EXIT_TIME" > "$CRASH_FILE"
+    else
+        rm -f "$CRASH_FILE"
+        # A session that ran and then ended (labwc crashed hours in, or was killed) ends the
+        # login, so tty1's autologin starts the desktop again. Left to fall through, it left a
+        # bash prompt on tty1 and no desktop until a reboot. A quick crash still falls through to
+        # the prompt, as it always has.
+        exit 0
+    fi
+fi
+"#;
+
+/// The installed person's `~/.config/labwc/environment`.
+///
+/// It used to carry `WLR_RENDERER=pixman` and `LIBGL_ALWAYS_SOFTWARE=1` for every machine, so an
+/// installed laptop with an Intel, AMD or NVIDIA GPU drew its whole desktop on the CPU.
+/// yantrik-session decides at every login now (deploy/yantrik-os/yantrik-session, "Graphics"),
+/// and the first line is its mark: a file that carries it is one the session has taken charge
+/// of, so a WLR_RENDERER a person adds later is theirs and is honoured. `YANTRIK_START_SCREEN=32`
+/// boots to the graphical login screen.
+const INSTALLED_LABWC_ENVIRONMENT: &str = "\
+# yantrik-graphics: yantrik-session decides the renderer
+# yantrik-session chooses the GPU or software at every login; `yantrik-session graphics` says
+# what it would choose and why. To force one, add a line: YANTRIK_GRAPHICS=software or
+# YANTRIK_GRAPHICS=gpu. WLR_RENDERER (labwc's renderer) and SLINT_BACKEND (the shell's) are
+# honoured as written here.
+XDG_SESSION_TYPE=wayland
+QT_QPA_PLATFORM=wayland
+MOZ_ENABLE_WAYLAND=1
+YANTRIK_START_SCREEN=32
+";
 
 /// Write AI provider config and user_name into the installed system's config.yaml.
 fn configure_ai(mount_dir: &str, state: &InstallerState) {
@@ -1120,4 +1130,47 @@ fn detect_disks_fallback() -> Vec<DiskInfo> {
         });
     }
     disks
+}
+
+#[cfg(test)]
+mod graphics_tests {
+    use super::*;
+
+    /// The session's mark, read out of the script that checks for it, so the two cannot drift.
+    fn session_mark() -> String {
+        let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../deploy/yantrik-os/yantrik-session");
+        let text = std::fs::read_to_string(&script).expect("the session script is in the tree");
+        let line = text
+            .lines()
+            .find_map(|l| l.strip_prefix("GRAPHICS_ENV_MARK='"))
+            .expect("yantrik-session defines GRAPHICS_ENV_MARK");
+        line.trim_end_matches('\'').to_string()
+    }
+
+    #[test]
+    fn an_installed_machine_is_not_told_to_draw_in_software() {
+        for line in INSTALLED_LABWC_ENVIRONMENT.lines().chain(INSTALLED_BASH_PROFILE.lines()) {
+            let line = line.trim();
+            if line.starts_with('#') {
+                continue;
+            }
+            for forced in ["WLR_RENDERER=", "LIBGL_ALWAYS_SOFTWARE=", "SLINT_BACKEND="] {
+                assert!(!line.contains(forced), "the installer still forces a renderer: {line}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_installed_environment_carries_the_sessions_mark() {
+        // Without it the session takes the file for an old image's and strips it, and a
+        // WLR_RENDERER the person later adds would be read as the image's on the first start.
+        assert_eq!(INSTALLED_LABWC_ENVIRONMENT.lines().next(), Some(session_mark().as_str()));
+    }
+
+    #[test]
+    fn the_installed_profile_still_starts_the_session_and_guards_against_a_crash_loop() {
+        assert!(INSTALLED_BASH_PROFILE.contains("/opt/yantrik/bin/yantrik-session"));
+        assert!(INSTALLED_BASH_PROFILE.contains("CRASH_FILE"));
+    }
 }

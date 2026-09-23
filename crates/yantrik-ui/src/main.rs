@@ -171,6 +171,10 @@ fn main() {
     // `wire_all` depends on the services being down.
     let service_manager = start_services();
 
+    // If the session had to give up on the GPU a moment ago, say so once, where the person will
+    // see it. The notifications service the send reaches was started just above.
+    render_backend::announce_fallback();
+
     // Anything in this process that needs an on-demand service can now start it directly.
     //
     // An app is a separate process and asks the shell over `app.act start_service`, which is
@@ -246,14 +250,27 @@ fn main() {
     // A logout ends this loop by taking the compositor away, which winit returns as an error. That
     // is an ending, not a crash: the helper logs it and returns, so the shutdown below runs on
     // every ending. Unwrapped, every logout filed a crash record and orphaned agents' commands (#196).
-    yantrik_app_runtime::run_until_closed(&ui, "yantrik-ui");
+    let ending = yantrik_app_runtime::run_until_ended(&ui, "yantrik-ui");
 
     // Clean shutdown
     tracing::info!("Yantrik OS shutting down");
     service_manager.stop_all();
     // Agents' commands belong to the shell and go with it: every process group, not one pid.
     control_agent_terminal::shutdown();
+
+    // A loop that failed while the compositor was still there is said in the exit status too, not
+    // only in the problem record: it is how a GPU that Mesa accelerates and the compositor cannot
+    // use ends (VirtualBox: labwc refused the first frame and dropped us), and yantrik-session
+    // reads this status to start the desktop again in software. See render_backend.
+    if ending == yantrik_app_runtime::LoopEnd::Failed {
+        std::process::exit(EXIT_LOOP_FAILED);
+    }
 }
+
+/// The shell's exit status when its event loop failed while the compositor was still running.
+/// EX_SOFTWARE from sysexits.h; deploy/yantrik-os/yantrik-session's SHELL_LOOP_FAILED is the same
+/// number, and a GPU trial that ends with it falls back to software.
+const EXIT_LOOP_FAILED: i32 = 70;
 
 /// Start background services via the ServiceManager.
 /// Discovers services from manifests in the services directory, falling back

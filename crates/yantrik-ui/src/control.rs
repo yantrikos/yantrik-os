@@ -512,6 +512,11 @@ pub fn publish(
                 // writing that report should be able to read the version off the same describe
                 // it reads everything else off, rather than knowing which file to trust.
                 .with("version", yantrik_version::version())
+                // What the desktop draws with and why: "gpu" or "software", who decided (the
+                // session's probe, a person's override, a fallback after the GPU failed in use),
+                // the renderer Mesa reported, and the fallback record if there is one. Without it
+                // "is this machine using its GPU" was a question for `ps` and /proc/PID/maps.
+                .with("graphics", crate::render_backend::for_describe())
                 .with("windows", serde_json::Value::Array(open))
                 .with("failed_launches", serde_json::Value::Array(failed))
                 // What is waiting on a person right now. Published so a second mind, or a

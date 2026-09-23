@@ -870,6 +870,9 @@ export component App inherits Window {
     in property <string> about-cpu: "";
     in property <string> about-ram: "";
     in property <string> about-disk: "";
+    // What the desktop draws with ("GPU · <renderer>" or "Software") and why — render_backend.
+    in property <string> about-graphics: "";
+    in property <string> about-graphics-detail: "";
     in property <string> about-uptime: "";
     in property <string> about-version: "";
     in property <string> about-build-date: "";
@@ -2413,6 +2416,8 @@ export component App inherits Window {
                 cpu-model: root.about-cpu;
                 ram-total: root.about-ram;
                 disk-info: root.about-disk;
+                graphics-text: root.about-graphics;
+                graphics-detail: root.about-graphics-detail;
                 uptime-text: root.about-uptime;
                 version-text: root.about-version;
                 build-date: root.about-build-date;

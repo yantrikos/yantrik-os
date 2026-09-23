@@ -84,7 +84,7 @@ This is the recommended way to meet it, and it is what the project develops agai
 | CPU | 4 vCPU (no passthrough, no host CPU features assumed) |
 | RAM | 8 GB |
 | Disk | 32 GB |
-| GPU | none — virtio-gpu, software rendering through Mesa's llvmpipe |
+| GPU | none — virtio-gpu without virgl, so the desktop draws in software |
 | Firmware | BIOS (SeaBIOS). The UEFI path is built into the image and is untested |
 
 CI's automated boot test is smaller and still works: QEMU with **4 GB of RAM, 4 CPUs** and
@@ -295,10 +295,36 @@ desktop through the same path a person uses. See [app-control.md](app-control.md
 
 ### Black screen after boot
 
-Boot the **Safe Mode** entry, which adds `nomodeset`. If you have installed to disk already,
-the renderer settings are in `~/.config/labwc/environment` —
-`WLR_RENDERER=pixman`, `LIBGL_ALWAYS_SOFTWARE=1` and `SLINT_BACKEND=winit` are what a machine
-with no usable GPU wants.
+Boot the **Safe Mode** entry, which adds `nomodeset`: no GPU driver loads, and the desktop
+draws in software.
+
+The desktop chooses between the GPU and software by itself at every login, and when a GPU
+fails in its first 45 seconds it starts again in software and says so — see
+[GPU](hardware-requirements.md#gpu) for the whole rule. To see what it decided and why:
+
+```bash
+yos describe shell | grep -A12 '"graphics"'   # what the shell draws with, and who decided
+/opt/yantrik/bin/yantrik-session graphics      # what this machine would decide right now
+cat ~/.local/state/yantrik/graphics-fallback   # present if a GPU failed here and was given up on
+```
+
+### Forcing the GPU or software
+
+Add one line to `~/.config/labwc/environment` and log out (or reboot):
+
+```bash
+YANTRIK_GRAPHICS=software    # compositor, shell and apps all draw on the CPU
+YANTRIK_GRAPHICS=gpu         # the GPU, even where the probe or an earlier failure says no
+```
+
+At the boot menu, `yantrik.graphics=software` or `yantrik.graphics=gpu` on the kernel command
+line does the same for one boot, which is the way in when the desktop will not start at all.
+`WLR_RENDERER` (the compositor's renderer) and `SLINT_BACKEND` (the shell's, e.g.
+`winit-software`) are honoured as you write them. A forced GPU is never undone by the automatic
+fallback: if it does not work, boot with `yantrik.graphics=software` and remove the line.
+
+To let a machine that fell back try its GPU again before the next update, delete
+`~/.local/state/yantrik/graphics-fallback`.
 
 ### Nothing answers when I type
 

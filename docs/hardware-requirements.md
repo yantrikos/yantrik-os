@@ -68,11 +68,12 @@ desktop is fully usable on it.
 - **Real hardware of any kind.** No published image has been booted on a physical machine by
   this project.
 - **The UEFI boot path.** It is built into every image and CI boots the BIOS path.
-- **Any GPU other than QEMU's virtio-vga.** NVIDIA, AMD and Intel hardware acceleration are
-  untested here.
+- **Any GPU other than QEMU's virtio-vga.** The desktop now uses NVIDIA, AMD and Intel GPUs
+  when Mesa reports them (see [GPU](#gpu)), and that path has not been run on real hardware
+  by this project yet.
 - **Wi-Fi on real adapters.**
-- **VirtualBox.** It should work — the image is an ordinary Debian live ISO — but nobody has
-  checked it against a current build.
+- **VirtualBox.** The image boots, but its VMSVGA 3D cannot be used by the desktop; it draws in
+  software there (see [VirtualBox](#virtualbox)).
 
 ---
 
@@ -132,12 +133,62 @@ anything, and keeps two.
 
 ## GPU
 
-The desktop does not need one. The shell renders through Slint's software rasteriser and the
-compositor through Mesa's llvmpipe; that is how the test machine and the CI boot test both
-run, and it is a deliberate trade rather than a fallback.
+The desktop does not need one, and uses one when it has one that works.
 
-Where a GPU matters is **inference**, and only if you choose to run the model on this machine.
-See below.
+At every login, before the compositor starts, `yantrik-session` decides between the GPU and
+software rendering, and the compositor (labwc), the shell and every app follow that one
+decision. The rule, first match wins:
+
+1. **A person's choice.** `nomodeset` on the kernel command line (the **Safe Mode** boot entry)
+   means software. So does `yantrik.graphics=software` on the kernel command line, and
+   `yantrik.graphics=gpu` means the GPU. After those, `YANTRIK_GRAPHICS=gpu|software`,
+   `WLR_RENDERER=…` or `LIBGL_ALWAYS_SOFTWARE=1` in `~/.config/labwc/environment` or in the
+   session's environment. A `WLR_RENDERER` or `SLINT_BACKEND` you set is never overwritten.
+2. **Ask Mesa.** `eglinfo -B -p gbm`, with a 5-second timeout, and read the OpenGL ES
+   renderer. llvmpipe, softpipe, swrast, kms_swrast, or no answer means software.
+3. **Combinations known to be broken**, whatever the renderer string says: **vmwgfx on a
+   hypervisor that is not VMware** (VirtualBox, below), and **virtio-gpu without virgl**.
+4. **The GPU failed on this machine before**, for this renderer string and this build.
+5. Otherwise, **the GPU**: labwc on its default renderer, the shell on femtovg, and nothing sets
+   `LIBGL_ALWAYS_SOFTWARE`.
+
+A GPU chosen by rule 5 is a trial. If the compositor or the shell dies within 45 seconds of
+starting, the session writes `~/.local/state/yantrik/graphics-fallback` (the reason, the
+renderer string, the build), starts the desktop again in software straight away, and shows a
+notification saying so. It does not try that GPU again until the renderer string or the
+installed build changes. Delete the file to try sooner.
+
+`yantrik-session graphics` prints what this machine would decide and why. What it did decide
+is in `yos describe shell` (`graphics`) and in Settings → About.
+
+### VirtualBox
+
+Found on 2026-09-23 with VirtualBox's VMSVGA adapter, 3D enabled, Debian 13, kernel 6.12:
+Mesa accelerates it (`eglinfo` reports `SVGA3D; build: RELEASE; LLVM;`), and the desktop
+still cannot use it. With labwc on its GL renderer, labwc fails with "importing the supplied
+dmabufs failed" on the shell's first frame (with or without `WLR_DRM_NO_MODIFIERS=1`), and the
+kernel logs that vmwgfx "seems to be running on an unsupported hypervisor". So on VirtualBox
+the desktop draws in software whatever the 3D setting says. This is also why rule 5 is a trial
+rather than a promise: a renderer string that looks like hardware is not proof that the
+compositor can use it.
+
+To watch the fallback do its job on a machine like this, boot once with `yantrik.graphics=trial`
+on the kernel command line (or put `YANTRIK_GRAPHICS=trial` in `~/.config/labwc/environment`).
+That lifts rule 3 alone: the GPU is tried, the first start fails, the session records it and
+comes back in software, and the notification and Settings → About say why. A record already on
+the machine still wins — delete `~/.local/state/yantrik/graphics-fallback` to watch it again.
+
+### Why software is the fallback and not software OpenGL
+
+Measured on WSLg, the shell on its animated desktop: **41 %** of a core on the GPU,
+**98 %** with Slint's own software rasteriser, and **576 %** — six cores — when it is pointed
+at OpenGL and Mesa answers with llvmpipe. Guessing "GPU" on a machine without one is the worst
+of the three, so every unknown lands on software. On software the shell also turns its ambient
+animation off, because a full-screen software frame costs about 96 ms however rarely it is
+asked for.
+
+Where a GPU matters beyond that is **inference**, and only if you choose to run the model on
+this machine. See below.
 
 ---
 

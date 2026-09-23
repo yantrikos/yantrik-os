@@ -80,6 +80,10 @@ export component AboutScreen inherits Rectangle {
     in property <string> cpu-model: "";
     in property <string> ram-total: "";
     in property <string> disk-info: "";
+    // "GPU · Mesa Intel(R) UHD Graphics 620 (KBL GT2)" or "Software", and the sentence that says
+    // why — including a GPU that failed in use and was given up on (render_backend::about_lines).
+    in property <string> graphics-text: "";
+    in property <string> graphics-detail: "";
     in property <string> uptime-text: "";
     // Empty until wire/about.rs fills it from yantrik-version. It used to default to "0.3.0",
     // which is a plausible-looking answer and was the wrong one on every machine.
@@ -380,6 +384,42 @@ export component AboutScreen inherits Rectangle {
                                     color: Theme.text-primary;
                                     font-size: Theme.font-body;
                                     vertical-alignment: center;
+                                }
+                            }
+                        }
+                        Rectangle { height: 1px; background: Theme.border-subtle; }
+
+                        // Graphics row: what draws, and underneath, why.
+                        Rectangle {
+                            height: graphics-col.preferred-height;
+                            graphics-col := VerticalLayout {
+                                padding-left: 4px;
+                                padding-right: 4px;
+                                padding-top: 12px;
+                                padding-bottom: 12px;
+                                spacing: 4px;
+                                HorizontalLayout {
+                                    Text {
+                                        text: "Graphics";
+                                        color: Theme.text-secondary;
+                                        font-size: Theme.font-body;
+                                        vertical-alignment: center;
+                                        horizontal-stretch: 1;
+                                    }
+                                    Text {
+                                        text: root.graphics-text;
+                                        color: Theme.text-primary;
+                                        font-size: Theme.font-small;
+                                        vertical-alignment: center;
+                                        overflow: elide;
+                                        max-width: 500px;
+                                    }
+                                }
+                                if root.graphics-detail != "": Text {
+                                    text: root.graphics-detail;
+                                    color: Theme.text-dim;
+                                    font-size: Theme.font-small;
+                                    wrap: word-wrap;
                                 }
                             }
                         }

@@ -744,18 +744,29 @@ step "[7/10] Configuring desktop session..."
 LABWC_DIR="$ROOTFS/home/yantrik/.config/labwc"
 sudo mkdir -p "$LABWC_DIR"
 
-# Environment — software rendering fallback ensures it always works
+# Environment — and no renderer in it.
+#
+# This used to set WLR_RENDERER=pixman and LIBGL_ALWAYS_SOFTWARE=1 for every machine, "so it
+# always works", and it did: by drawing every desktop on the CPU, a laptop with an Intel, AMD or
+# NVIDIA GPU included. yantrik-session decides GPU or software at every login now, with a probe,
+# a list of combinations known to be broken, and a fallback to software when the GPU fails in use
+# (see "Graphics" in deploy/yantrik-os/yantrik-session). The first line is its mark: a file
+# without it is an older image's, and the session strips that image's software lines from it.
+# The mark must match GRAPHICS_ENV_MARK in yantrik-session, byte for byte.
 sudo tee "$LABWC_DIR/environment" > /dev/null <<'ENV'
-# Yantrik OS — Wayland environment
-WLR_RENDERER_ALLOW_SOFTWARE=1
+# yantrik-graphics: yantrik-session decides the renderer
+# yantrik-session chooses the GPU or software at every login; `yantrik-session graphics` says
+# what it would choose and why. To force one, add a line: YANTRIK_GRAPHICS=software or
+# YANTRIK_GRAPHICS=gpu. WLR_RENDERER (labwc's renderer) and SLINT_BACKEND (the shell's) are
+# honoured as written here.
 WLR_NO_HARDWARE_CURSORS=1
-WLR_RENDERER=pixman
 XDG_SESSION_TYPE=wayland
 QT_QPA_PLATFORM=wayland
 MOZ_ENABLE_WAYLAND=1
-SLINT_BACKEND=winit
-LIBGL_ALWAYS_SOFTWARE=1
 ENV
+MARK_IN_SESSION="$(sed -n "s/^GRAPHICS_ENV_MARK='\(.*\)'$/\1/p" "$ROOTFS/opt/yantrik/bin/yantrik-session")"
+[ "$(sudo head -n 1 "$LABWC_DIR/environment")" = "$MARK_IN_SESSION" ] \
+    || fail "the labwc environment's first line is not yantrik-session's GRAPHICS_ENV_MARK ('$MARK_IN_SESSION') — the session would strip it as an old image's"
 
 # Autostart — Yantrik is the shell
 sudo tee "$LABWC_DIR/autostart" > /dev/null <<'AUTOSTART'
@@ -866,13 +877,9 @@ if [ "$(tty)" = "/dev/tty1" ] && [ -z "$WAYLAND_DISPLAY" ]; then
     export XDG_RUNTIME_DIR="/run/user/$(id -u)"
     mkdir -p "$XDG_RUNTIME_DIR"
 
-    # Source labwc environment (WLR_RENDERER=pixman etc.) so wlroots
-    # uses software rendering when nomodeset disables GPU/DRM
-    if [ -f "$HOME/.config/labwc/environment" ]; then
-        set -a
-        . "$HOME/.config/labwc/environment"
-        set +a
-    fi
+    # Nothing about graphics here. yantrik-session decides GPU or software at every login --
+    # the Safe Mode entry's nomodeset included -- and labwc reads ~/.config/labwc/environment
+    # itself, before it chooses a renderer. This used to source that file to force pixman.
 
     # Check if installer mode was requested via kernel param
     if grep -q 'yantrik.install=true' /proc/cmdline 2>/dev/null; then
@@ -896,7 +903,7 @@ if [ "$(tty)" = "/dev/tty1" ] && [ -z "$WAYLAND_DISPLAY" ]; then
             echo "  Common fixes:"
             echo "    1. Reboot and select 'Safe Mode' from the menu"
             echo "    2. Check GPU: lspci | grep -i vga"
-            echo "    3. Try: WLR_RENDERER_ALLOW_SOFTWARE=1 labwc"
+            echo "    3. Force software: echo YANTRIK_GRAPHICS=software >> ~/.config/labwc/environment"
             echo "    4. View logs: cat /opt/yantrik/logs/labwc.log"
             echo
             exec /bin/bash --login

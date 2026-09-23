@@ -158,6 +158,13 @@ jobs:
       - name: The updater agrees with itself about channel and version
         run: bash deploy/yantrik-os/yantrik-update selftest
 
+      # The session's graphics rule — GPU or software, and the fallback when a GPU fails in use —
+      # against recorded eglinfo output for Intel, AMD, NVIDIA, llvmpipe, SVGA3D on VirtualBox and
+      # on VMware, virgl, virtio without virgl and d3d12 on WSL, in a scratch HOME. Run by `sh`,
+      # which is dash here as it is on the image, because that is what runs it on a machine.
+      - name: The session decides GPU or software the way it says it does
+        run: sh deploy/yantrik-os/yantrik-session selftest
+
       # The harnesses that ship as source (harnesses/lib, harnesses/pi, harnesses/deepseek).
       # Same shape as the two above: stdlib-only Python over a fake of everything it talks to —
       # a fake desktop socket, a fake yos-mcp, a fake chat-completions API and a fake `pi` — so

@@ -9,7 +9,8 @@ desktop the way everything else does: through the control surfaces, via `yos`.
   ci   needs no network and no minds. It is what the nightly's QEMU boot can run: every app opens
        and answers, every surface a shipped .desktop file declares is listed and answers to its
        aliases, every screen shows, the permission gate refuses on every door, the ceiling
-       holds, nothing crashed, and the shell is idle when idle.
+       holds, nothing crashed, the shell is idle when idle, and it draws with the renderer the
+       session chose — a machine with a hardware renderer on software must say why.
   rc   a release candidate, on a real machine with its minds attached: adds every mind answering,
        the browser being drivable, and — with --interactive — the checks a person must take part
        in (press Allow on a card; watch a mind's command run in its own pane).
@@ -123,6 +124,84 @@ def _shell():
     BASELINE["problems"] = {p.get("id") or json.dumps(p) for p in st.get("problems", [])}
     BASELINE["mind"] = next((m.get("id") for m in st.get("minds", []) if m.get("active")), None)
     return "version %s, %d actions, screen %s" % (st.get("version"), len(d.get("actions", [])), st.get("screen"))
+
+
+# Words in a renderer string that mean Mesa is rasterising on the CPU. The session script's
+# graphics_is_software holds the same list.
+SOFTWARE_RENDERERS = ("llvmpipe", "softpipe", "swrast", "software rasterizer", "lavapipe",
+                      "swiftshader", "basic render driver")
+
+
+def key_values(path):
+    out = {}
+    with open(path, encoding="utf-8", errors="replace") as f:
+        for line in f:
+            line = line.rstrip("\n")
+            if line.lstrip().startswith("#") or "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            out.setdefault(k.strip(), v)
+    return out
+
+
+def llvmpipe_threads(pid):
+    """Mesa names its software rasteriser's workers llvmpipe-N. Any in the shell means OpenGL on
+    the CPU — the 576 % configuration render_backend.rs exists to avoid."""
+    n = 0
+    try:
+        for tid in os.listdir("/proc/%d/task" % pid):
+            try:
+                with open("/proc/%d/task/%s/comm" % (pid, tid)) as f:
+                    if f.read().startswith("llvmpipe"):
+                        n += 1
+            except OSError:
+                pass
+    except OSError:
+        pass
+    return n
+
+
+@check("the shell draws with what the session decided, and a GPU left unused says why")
+def _graphics():
+    g = state().get("graphics")
+    if not isinstance(g, dict) or g.get("drawing") not in ("gpu", "software"):
+        raise Failed("describe shell has no graphics section (%r): this build cannot say whether it "
+                     "is using the GPU" % (g,))
+    record = os.path.join(os.environ["XDG_RUNTIME_DIR"], "yantrik", "graphics")
+    if not os.path.exists(record):
+        raise Skipped("no %s: this desktop was not started by yantrik-session, so there is no verdict "
+                      "to hold the shell to (it draws with %s, decided by %s)"
+                      % (record, g["drawing"], g.get("decided_by")))
+    rec = key_values(record)
+    verdict, source, renderer = rec.get("verdict"), rec.get("source", ""), rec.get("renderer", "")
+    if verdict not in ("gpu", "software"):
+        raise Failed("%s says verdict=%r" % (record, verdict))
+    notes = []
+    if g["drawing"] != verdict:
+        if g.get("decided_by") != "SLINT_BACKEND":
+            raise Failed("the session decided %s (%s: %s) but the shell draws with %s (%s, decided by %s: %s)"
+                         % (verdict, source, rec.get("reason"), g["drawing"], g.get("backend"),
+                            g.get("decided_by"), g.get("reason")))
+        notes.append("SLINT_BACKEND=%s overrides the session's %s" % (g.get("backend"), verdict))
+    hardware = bool(renderer) and not any(w in renderer.lower() for w in SOFTWARE_RENDERERS)
+    if verdict == "software" and hardware and source not in ("fallback", "known-broken", "override"):
+        raise Failed("Mesa reports a hardware renderer (%s) but the session chose software (%s: %s) "
+                     "with no recorded fallback, known-broken combination or override"
+                     % (renderer, source, rec.get("reason")))
+    if source == "fallback":
+        marker = rec.get("fallback_file") or os.path.expanduser("~/.local/state/yantrik/graphics-fallback")
+        if not os.path.exists(marker):
+            raise Failed("the session says the GPU failed and it fell back, but the record %s is missing"
+                         % marker)
+        notes.append("fell back: %s" % key_values(marker).get("reason", "?"))
+    pid = shell_pid()
+    if pid and llvmpipe_threads(pid):
+        raise Failed("the shell has %d llvmpipe threads: it is drawing OpenGL on the CPU (%s, decided by "
+                     "%s), the configuration that costs six cores" % (llvmpipe_threads(pid),
+                                                                     g.get("backend"), g.get("decided_by")))
+    return "session %s (%s), shell %s via %s; renderer %r%s" % (
+        verdict, source, g["drawing"], g.get("backend"), renderer or "none",
+        "; " + "; ".join(notes) if notes else "")
 
 
 @check("the mind mode is published for every app to read")
