@@ -100,8 +100,9 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
         .action(
             // Opening a file leaves the Files screen for a viewer/editor/player, which is the
             // point; the result says where it went so a caller is not surprised the next describe
-            // is not the file browser.
-            Action::new("files_open", "Open a file in the current directory (image, text, audio)")
+            // is not the file browser. A web page, an SVG or a PDF leaves it for the browser
+            // window instead (#233), so the description names that too.
+            Action::new("files_open", "Open a file in the current directory (image, text, audio; a web page, SVG or PDF in the browser)")
                 .arg(Param::text("name").describe("A file name shown in the current listing")),
             move |args| {
                 let ui = up(&for_open)?;

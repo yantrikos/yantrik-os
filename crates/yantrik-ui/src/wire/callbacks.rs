@@ -233,6 +233,23 @@ fn wire_file_open(ui: &App, ctx: &AppContext) {
                     ui.invoke_navigate(13);
                 }
             }
+            FileAction::Browser => {
+                // The browser the Browser pin opens, with the file as its argument: the same
+                // launcher, so the registry and the reaper see the window, and Chromium gets the
+                // DevTools flags that let `yos web` drive the page a person just double-clicked.
+                match super::dock::find_browser() {
+                    Some((bin, flags)) => {
+                        let target = full.to_string_lossy().to_string();
+                        let mut argv: Vec<&str> = flags.to_vec();
+                        argv.push(&target);
+                        super::dock::spawn_app_with_args("browser", bin, &argv);
+                    }
+                    None => tracing::error!(
+                        path = %full.display(),
+                        "Cannot open the file in a browser: none is installed"
+                    ),
+                }
+            }
             FileAction::External(cmd) => {
                 // Same launcher as everywhere else, for the same reason: a bare Command hands
                 // the child SLINT_FULLSCREEN and it opens with no way to close it.
