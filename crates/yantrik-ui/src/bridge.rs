@@ -761,6 +761,59 @@ fn agreed_roles(
     Ok(agreed)
 }
 
+/// How a recipe's message reads where it is delivered: as it was said when it names its recipe
+/// ("Recipe completed: Council …"), and after the recipe's name when it does not — a Notify's or a
+/// question's own words would otherwise arrive from nowhere.
+fn recipe_message_text(msg: &yantrik_companion::recipe_executor::RecipeMessage) -> String {
+    if msg.recipe.is_empty() || msg.text.contains(&msg.recipe) {
+        msg.text.clone()
+    } else {
+        format!("{} recipe: {}", msg.recipe, msg.text)
+    }
+}
+
+/// Deliver one thing a recipe said, on its own (#187). The rule for a result the person is waiting
+/// on (`wire::notifications::deliver_result`, as a finished background task has): into the
+/// conversation when the built-in companion is the mind answering — with a notification when the
+/// Lens is closed — and otherwise a notification; never held while a mind answers.
+///
+/// Not the proactive path. Recipe messages went into the companion's one proactive slot, so a
+/// Notify and the completion right after it overwrote each other, and through its gates: a
+/// two-hour cooldown per key held back a recipe's second question, the similarity gate could drop
+/// a message that looked like the last, and deep-work hours hid a question the recipe was waiting
+/// on. A recipe says what the person set it going to say.
+fn deliver_recipe_message(
+    companion: &CompanionService,
+    ui_weak: &slint::Weak<App>,
+    msg: yantrik_companion::recipe_executor::RecipeMessage,
+) {
+    let text = recipe_message_text(&msg);
+    let title = if msg.recipe.is_empty() { "A recipe".to_string() } else { format!("{} recipe", msg.recipe) };
+    tracing::info!(recipe_id = %msg.recipe_id, title = %title, "Delivering a recipe's message");
+    let (shown, notif_text, weak) = (text.clone(), text.clone(), ui_weak.clone());
+    crate::wire::notifications::deliver_result(&text, move |_lens_was_closed| {
+        let _ = slint::invoke_from_event_loop(move || {
+            if let Some(ui) = weak.upgrade() {
+                let messages = ui.get_messages();
+                if let Some(model) = messages.as_any().downcast_ref::<VecModel<crate::MessageData>>() {
+                    model.push(crate::MessageData {
+                        role: SharedString::from("assistant"),
+                        content: SharedString::from(&shown),
+                        is_streaming: false,
+                        blocks: ModelRc::default(),
+                    });
+                }
+                crate::wire::notifications::companion_said(&ui, &title, &notif_text);
+            }
+        });
+    });
+    if companion.config.telegram.enabled && companion.config.telegram.forward_proactive {
+        if let Err(e) = yantrik_companion::telegram::send_message(&companion.config.telegram, &text) {
+            tracing::warn!(error = %e, "Failed to forward a recipe's message to Telegram");
+        }
+    }
+}
+
 /// Signal a recipe's next step — once. A recipe with a signal already queued is not signalled
 /// again: each signal runs a step and sends the next, so a second chain would double the steps
 /// queued ahead of a person's message, and the clock would start one every tick.
@@ -910,10 +963,20 @@ fn worker_loop(
         if std::mem::take(&mut recipes_dirty) {
             crate::recipes::publish(yantrik_companion::recipe_view::list(&companion.db.conn()));
         }
+        // What recipes said since the last command, each delivered on its own (#187).
+        for msg in companion.take_recipe_messages() {
+            deliver_recipe_message(&companion, &ui_weak, msg);
+        }
         // The mind panel: the worker has reached its loop, so the memory count it pushes is a count.
         crate::mind_panel::worker_up();
         if recipe_clock.elapsed() >= recipe_tick {
             recipe_clock = std::time::Instant::now();
+            // What starts on its own: the schedules that have come due, on the machine's clock
+            // (#187). They were stored and never fired. A run started here is unattended.
+            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs_f64();
+            if !yantrik_companion::recipe_triggers::fire_due(&companion.db.conn(), now).is_empty() {
+                recipes_dirty = true;
+            }
             let due = yantrik_companion::recipe_executor::due(&companion.db.conn());
             for rid in due {
                 signal_recipe(&cmd_tx, &mut recipe_signals, rid);
@@ -1362,11 +1425,16 @@ fn worker_loop(
                     tracing::warn!(error = %e, "Failed to record system event");
                 }
 
-                // Buffer event for automation matching in think cycle
+                // Buffer event for automation matching in think cycle — and start the recipes
+                // whose trigger waits on it (#187), taken by the executor at once.
                 companion.push_event(&safe_domain, serde_json::json!({
                     "text": safe_text,
                     "importance": safe_importance,
                 }));
+                for rid in yantrik_companion::recipe::RecipeStore::get_resumable(&companion.db.conn()) {
+                    signal_recipe(&cmd_tx, &mut recipe_signals, rid);
+                    recipes_dirty = true;
+                }
                 }
             }
             Ok(CompanionCommand::SetSystemContext { context }) => {
@@ -2396,10 +2464,19 @@ fn worker_loop(
                 // It says whether there is more to run now; a wait or a question ends the chain,
                 // and the clock or the answer starts it again. The signal goes to the back of the
                 // queue, so a person's message is taken between any two steps.
-                if yantrik_companion::recipe_executor::step(&mut companion, &recipe_id)
-                    == yantrik_companion::recipe_executor::Advance::Next
-                {
-                    signal_recipe(&cmd_tx, &mut recipe_signals, recipe_id);
+                match yantrik_companion::recipe_executor::step(&mut companion, &recipe_id) {
+                    yantrik_companion::recipe_executor::Advance::Next => {
+                        signal_recipe(&cmd_tx, &mut recipe_signals, recipe_id);
+                    }
+                    // Finished: what waits on it completing has started (`RecipeComplete`,
+                    // #187), and runs now rather than at the clock's next tick. Only running
+                    // recipes: one waiting on its agents is the clock's to ask.
+                    yantrik_companion::recipe_executor::Advance::Stopped => {
+                        for rid in yantrik_companion::recipe::RecipeStore::get_resumable(&companion.db.conn()) {
+                            signal_recipe(&cmd_tx, &mut recipe_signals, rid);
+                        }
+                    }
+                    yantrik_companion::recipe_executor::Advance::Blocked => {}
                 }
             }
             Ok(CompanionCommand::GetMorningBrief { reply_tx }) => {
@@ -2958,5 +3035,44 @@ mod bond_property_tests {
             waiting.contains("recv_timeout(") && waiting.contains("recipe_executor::due("),
             "the worker's wait for its next command is also the recipes' clock, so a timer fires on an idle desktop. Loop head as written:\n{waiting}"
         );
+    }
+
+    /// Triggers fire from the worker's clock (#187): a schedule every tick, before what is due is
+    /// signalled; an event as it is recorded; a completion as the recipe finishes, run at once.
+    #[test]
+    fn the_worker_fires_triggers_on_its_clock_and_on_events() {
+        let src = worker();
+        let head = between(&src, "Companion worker ready for commands", "Ok(CompanionCommand::RefreshRecipes)");
+        let fired = head.find("recipe_triggers::fire_due(").expect("the clock fires the schedules that have come due");
+        let signalled = head.rfind("recipe_executor::due(").expect("and signals what is due");
+        assert!(fired < signalled, "fired before what is due is signalled, so a run it started goes this tick");
+        let event = arm(&src, "RecordSystemEvent");
+        assert!(event.contains("companion.push_event(") && event.contains("get_resumable("), "{event}");
+        let step = arm(&src, "ProcessRecipeStep");
+        assert!(step.contains("Advance::Stopped") && step.contains("get_resumable("), "a chained run goes at once: {step}");
+    }
+
+    /// A recipe's messages are delivered one by one, each on its own (#187): taken at the top of
+    /// every turn of the loop and handed to the rule for a result the person is waiting on — never
+    /// the proactive slot, whose one message a second overwrote, nor its two-hour cooldown.
+    #[test]
+    fn the_worker_delivers_each_recipe_message_on_its_own() {
+        let src = worker();
+        let head = between(&src, "Companion worker ready for commands", "Ok(CompanionCommand::RefreshRecipes)");
+        assert!(head.contains("for msg in companion.take_recipe_messages() {") && head.contains("deliver_recipe_message("), "{head}");
+        let deliver = between(&src, "fn deliver_recipe_message(", "/// Signal a recipe's next step");
+        assert!(deliver.contains("deliver_result("), "{deliver}");
+        assert!(!deliver.contains("set_proactive_message") && !deliver.contains("delivered_cooldowns"), "{deliver}");
+
+        let said = |recipe: &str, text: &str| {
+            super::recipe_message_text(&yantrik_companion::recipe_executor::RecipeMessage {
+                recipe_id: "rcp_1".into(),
+                recipe: recipe.into(),
+                text: text.into(),
+                at: 0.0,
+            })
+        };
+        assert_eq!(said("Digest", "Which folder?\n1. Archive"), "Digest recipe: Which folder?\n1. Archive");
+        assert_eq!(said("Council", "Recipe completed: Council\n\nResult: ship"), "Recipe completed: Council\n\nResult: ship");
     }
 }

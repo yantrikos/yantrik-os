@@ -49,21 +49,25 @@ impl Tool for CreateRecipeTool {
                                 PREFER on_error={\"action\":\"Replan\"} for critical steps — it auto-diagnoses failures and generates new steps. \
                                 Think steps need: prompt (use {{var}} for variable references), store_as. \
                                 JumpIf steps need: condition (object with 'op' field), target_step (index). \
-                                WaitFor steps need: condition ({\"type\":\"Duration\",\"seconds\":N} or {\"type\":\"Time\",\"hour\":H,\"minute\":M} in UTC), timeout_secs (optional). \
+                                WaitFor steps need: condition ({\"type\":\"Duration\",\"seconds\":N} or {\"type\":\"Time\",\"hour\":H,\"minute\":M} on this machine's own clock), timeout_secs (optional). \
                                 Notify steps need: message (use {{var}} for variables). \
                                 AskUser steps need: question, store_as, choices (optional list). \
                                 Branch steps need: condition (a variable name: set and not empty, false or 0 takes then_steps), then_steps, else_steps (lists of steps). \
                                 Agent steps hand a turn to a role from the agent catalog and keep its answer: role (researcher, planner, coder, reviewer, red-team, writer, chair, scribe), prompt, store_as, context (optional). \
                                 Agent steps that do not read each other's answers work at the same time, and a step that reads one waits for it. \
+                                An Agent step goes at the top of a recipe, not inside a Branch's arm. \
                                 A recipe with Agent steps runs only when the person starts it: the Recipes screen, or the shell's run_recipe, which asks them. \
                                 A JumpIf back to an earlier step is a loop; one that never waits is stopped after 100 steps.",
                             "items": { "type": "object" }
                         },
                         "trigger": {
                             "type": "object",
-                            "description": "Optional trigger. Types: 'Manual' (default), \
-                                'Cron' (needs 'expression' like '0 9 * * *'), \
-                                'Event' (needs 'event_type' like 'email:new')."
+                            "description": "Optional trigger: what starts it on its own, with nobody at the desk — \
+                                so an Agent step in it asks the person on a card before any role above safe. \
+                                Types: 'Manual' (default), \
+                                'Cron' (needs 'expression' like '0 9 * * *', read on this machine's own clock), \
+                                'Event' (needs 'event_type', a type the desktop records like 'system/network' or its last part 'network'; optional 'filter' object whose keys must match), \
+                                'RecipeComplete' (needs 'recipe_id': another recipe's id or name; the run gets that recipe's variables as {{after_<name>}}, and {{after_result}})."
                         }
                     },
                     "required": ["name", "steps"]
@@ -94,6 +98,17 @@ impl Tool for CreateRecipeTool {
 
         if steps.is_empty() {
             return "Recipe must have at least one step".to_string();
+        }
+        if crate::recipe::agent_in_arm(&steps) {
+            return format!("Recipe not created: {}.", crate::recipe::IN_ARM_REFUSED);
+        }
+        if let Some((i, hour, minute)) = steps.iter().enumerate().find_map(|(i, s)| match s {
+            RecipeStep::WaitFor { condition: WaitCondition::Time { hour, minute }, .. } if *hour > 23 || *minute > 59 => {
+                Some((i, *hour, *minute))
+            }
+            _ => None,
+        }) {
+            return format!("Recipe not created: step {i} waits for {hour:02}:{minute:02}, which is no time of day.");
         }
 
         // Parse trigger

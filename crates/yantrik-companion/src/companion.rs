@@ -527,6 +527,9 @@ pub struct CompanionService {
     last_interaction_ts: f64,
     session_turn_count: usize,
     proactive_message: Option<ProactiveMessage>,
+    /// What recipes said to the person, oldest first, each to be delivered on its own
+    /// ([`Self::take_recipe_messages`]).
+    recipe_messages: Vec<crate::recipe_executor::RecipeMessage>,
 
     // Cached from last think()
     pending_triggers: Vec<serde_json::Value>,
@@ -874,6 +877,7 @@ impl CompanionService {
             last_interaction_ts: now_ts(),
             session_turn_count: 0,
             proactive_message: None,
+            recipe_messages: Vec::new(),
             pending_triggers: Vec::new(),
             active_patterns: Vec::new(),
             open_conflicts_count: 0,
@@ -1159,8 +1163,11 @@ impl CompanionService {
         }
     }
 
-    /// Buffer a system event for automation matching during think cycles.
+    /// Buffer a system event for automation matching during think cycles — and start the recipes
+    /// whose trigger waits on it (#187). Those runs are unattended; the executor's clock takes
+    /// them from here.
     pub fn push_event(&mut self, event_type: &str, event_data: serde_json::Value) {
+        crate::recipe_triggers::fire_event(&self.db.conn(), event_type, &event_data, now_ts());
         // Keep buffer bounded (last 50 events)
         if self.recent_events.len() >= 50 {
             self.recent_events.drain(0..25);
@@ -3353,6 +3360,25 @@ impl CompanionService {
     /// Set a proactive message (called by background cognition).
     pub fn set_proactive_message(&mut self, msg: ProactiveMessage) {
         self.proactive_message = Some(msg);
+    }
+
+    /// How many recipe messages wait for a host that never takes them before the oldest go.
+    const RECIPE_MESSAGES_KEPT: usize = 100;
+
+    /// Queue what a recipe said, after what it said before (`RecipeHost::notify`).
+    pub fn push_recipe_message(&mut self, msg: crate::recipe_executor::RecipeMessage) {
+        if self.recipe_messages.len() >= Self::RECIPE_MESSAGES_KEPT {
+            let dropped = self.recipe_messages.len() + 1 - Self::RECIPE_MESSAGES_KEPT;
+            tracing::warn!(dropped, "Recipe messages were not taken; the oldest are let go");
+            self.recipe_messages.drain(..dropped);
+        }
+        self.recipe_messages.push(msg);
+    }
+
+    /// Everything recipes have said since the last call, oldest first. Each is delivered on its
+    /// own: none replaces another, and none waits out a cooldown (#187).
+    pub fn take_recipe_messages(&mut self) -> Vec<crate::recipe_executor::RecipeMessage> {
+        std::mem::take(&mut self.recipe_messages)
     }
 
     // ---- Natural Communication helpers ----

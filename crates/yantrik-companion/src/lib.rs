@@ -56,6 +56,10 @@ pub mod interjection;
 pub mod recipe;
 pub mod recipe_executor;
 pub mod recipe_templates;
+/// The recipes' clock on the machine's own zone: times of day, schedules, and the text for both.
+pub mod recipe_time;
+/// What starts a recipe on its own: its schedule, an event, another recipe completing.
+pub mod recipe_triggers;
 /// Recipes as the desk shows them: the read side the Recipes screen, `describe shell` and the
 /// mind panel draw from, and the one door for a person's answer, pause, resume and cancel.
 pub mod recipe_view;

@@ -485,6 +485,9 @@ pub struct Answered {
     pub ok: bool,
     /// What it said in that turn.
     pub text: String,
+    /// Its final message in that turn — what it said after its last call ([`Turn::final_text`]):
+    /// what a recipe keeps as its answer (#194).
+    pub answer: String,
     /// A card it asked for in that turn that nobody answered, that was taken back, or that the
     /// person refused — said as a sentence. Its answer is then not the work asked for.
     pub unsettled: Option<String>,
@@ -712,6 +715,10 @@ pub fn start_for_recipe(host: &Host, catalog: &Catalog, call: &AgentCall<'_>, as
     })
 }
 
+/// What a card re-raised after a restart begins with.
+const ASKED_AGAIN: &str =
+    "The desktop restarted since this step first asked, and the card it showed then went with it, so it asks again. ";
+
 /// A run nobody started at the desk asks the person before a role above `safe`: a card naming the
 /// recipe and the role — its reach, its minds — bound to the role's definition, so an Allow for
 /// one definition starts no other. `Ok` once the Allow is spent; [`AgentRefusal::Ask`] while the
@@ -721,7 +728,22 @@ fn allowed_on_card(origin: &RecipeOrigin, call: &AgentCall<'_>, role: &catalog::
     let key = (origin.id.clone(), call.step);
     let task: String = call.task.chars().take(200).collect();
     let args = json!({ "role": role.id, "recipe": origin.id, "task": task, "definition": digest });
-    let waiting = format!("your Allow on the card: {} → {} (it may touch {})", origin.label(), role.name, role.reach.text());
+    // A card this step raised before, that this desktop no longer knows: it restarted, and cards
+    // live in memory. Asked again, saying so — on the card, and for as long as it waits (#194).
+    let again = match asks.get(&key) {
+        None => call.asked_before,
+        Some(id) => approvals::card(id).is_some_and(|c| c.purpose.starts_with(ASKED_AGAIN)),
+    };
+    let waiting = if again {
+        format!(
+            "your Allow on the card, asked again because the desktop restarted and the first card went with it: {} → {} (it may touch {})",
+            origin.label(),
+            role.name,
+            role.reach.text()
+        )
+    } else {
+        format!("your Allow on the card: {} → {} (it may touch {})", origin.label(), role.name, role.reach.text())
+    };
     if let Some(id) = asks.get(&key).cloned() {
         return match approvals::outcome(&id) {
             None => Err(AgentRefusal::Ask(waiting)),
@@ -751,9 +773,10 @@ fn allowed_on_card(origin: &RecipeOrigin, call: &AgentCall<'_>, role: &catalog::
         ..Default::default()
     };
     let purpose = format!(
-        "Hand work to the {} from the agent catalog, for the {} — which started with nobody at the \
+        "{}Hand work to the {} from the agent catalog, for the {} — which started with nobody at the \
          desk (a trigger or a timer), so nobody has agreed to this yet. The {} may touch {}, for up to \
          {} minutes, on {}.",
+        if again { ASKED_AGAIN } else { "" },
         role.name,
         origin.label(),
         role.name,
@@ -788,7 +811,8 @@ pub fn poll_for_recipe(host: Option<&Host>, recipe_id: &str, agent: &AgentId) ->
         Some((true, Some(answered))) if answered.unsettled.is_some() => {
             AgentPoll::Failed(answered.unsettled.unwrap_or_default())
         }
-        Some((true, Some(answered))) if answered.ok && !answered.text.trim().is_empty() => AgentPoll::Answered(answered.text),
+        // Its final message, not the whole turn: narration before its calls is not its answer.
+        Some((true, Some(answered))) if answered.ok && !answered.answer.trim().is_empty() => AgentPoll::Answered(answered.answer),
         Some((true, Some(answered))) if answered.ok => AgentPoll::Failed("it ended its turn without an answer".to_string()),
         Some((true, Some(answered))) => AgentPoll::Failed(if answered.text.is_empty() {
             "its turn ended without an answer".to_string()
@@ -880,7 +904,7 @@ pub fn wait_for_answer(agent: &AgentId, wait: Duration) -> Answered {
             return answered;
         }
         if Instant::now() >= deadline {
-            return Answered { done: false, ok: false, text: String::new(), unsettled: None };
+            return Answered { done: false, ok: false, text: String::new(), answer: String::new(), unsettled: None };
         }
         std::thread::sleep(Duration::from_millis(200));
     }
@@ -907,7 +931,7 @@ fn first_answer(agent: &Agent) -> Option<Answered> {
         },
         _ => None,
     });
-    Some(Answered { done: true, ok: first.ok == Some(true), text: turn_text(first), unsettled })
+    Some(Answered { done: true, ok: first.ok == Some(true), text: turn_text(first), answer: cut_text(&first.final_text()), unsettled })
 }
 
 /// What a turn said, in words: its text, and — for a turn that did not end well — the shell's
@@ -921,6 +945,11 @@ fn turn_text(turn: &Turn) -> String {
             _ => {}
         }
     }
+    cut_text(&text)
+}
+
+/// A turn's words cut at [`ANSWER_MOST_BYTES`], saying so.
+fn cut_text(text: &str) -> String {
     let text = text.trim();
     if text.len() <= ANSWER_MOST_BYTES {
         return text.to_string();
@@ -1204,7 +1233,10 @@ mod tests {
         };
         let answered = wait_for_answer(&handed.agent, Duration::from_secs(10));
         harness.join().unwrap();
-        assert_eq!(answered, Answered { done: true, ok: true, text: "Verdict — ship on Friday.".into(), unsettled: None });
+        assert_eq!(
+            answered,
+            Answered { done: true, ok: true, text: "Verdict — ship on Friday.".into(), answer: "Verdict — ship on Friday.".into(), unsettled: None }
+        );
         let answer = handed.answer(Some((Duration::from_secs(10), answered)));
         assert_eq!((answer["done"].clone(), answer["answer"].clone()), (json!(true), json!("Verdict — ship on Friday.")));
         let said = answer["said"].as_str().unwrap();
@@ -1397,6 +1429,7 @@ mod tests {
             attended: true,
             consented: Some(agreed(role)),
             asked_by: None,
+            asked_before: false,
             role,
             task,
             context: "",
@@ -1610,6 +1643,7 @@ mod tests {
             attended: false,
             consented: None,
             asked_by: None,
+            asked_before: false,
             role,
             task: "tidy the build cache",
             context: "",
@@ -1669,6 +1703,120 @@ mod tests {
         for agent in [started.agent, chair.agent] {
             let _ = stop_agent(&host, &Caller::NoAgent, &AgentId(agent));
         }
+    }
+
+    /// A card raised for an unattended run is lost when the shell restarts — cards live in memory —
+    /// and the step asks again. It says why, on the card and on the step, for as long as it waits,
+    /// rather than raising a second card that reads like the first (#194).
+    #[test]
+    fn a_card_lost_to_a_restart_is_asked_again_saying_why() {
+        use crate::approvals;
+        let host = Host::new(vec![]);
+        attach(&host, "pi", true);
+        let call = AgentCall {
+            recipe_id: "rcp_restarted",
+            recipe_name: "Nightly",
+            step: 4,
+            attended: false,
+            consented: None,
+            asked_by: None,
+            asked_before: true,
+            role: "coder",
+            task: "tidy the build cache",
+            context: "",
+        };
+        // A fresh hook: what the shell has after a restart.
+        let mut asks = Asks::default();
+        let key = ("rcp_restarted".to_string(), 4);
+        let mut said = None;
+        for _ in 0..50 {
+            match start_for_recipe(&host, &shipped(), &call, &mut asks) {
+                Err(AgentRefusal::Ask(why)) if asks.contains_key(&key) => {
+                    said = Some(why);
+                    break;
+                }
+                // The cards on screen are full for a moment: other tests ask too.
+                Err(AgentRefusal::Ask(_)) => std::thread::sleep(Duration::from_millis(100)),
+                other => panic!("{other:?}"),
+            }
+        }
+        let why = said.expect("a card was raised again");
+        assert!(why.starts_with("your Allow on the card, asked again because the desktop restarted"), "{why}");
+        let card = approvals::card(&asks[&key]).expect("the card");
+        assert!(card.purpose.starts_with("The desktop restarted since this step first asked"), "{}", card.purpose);
+        // Still waiting on it: the same card, and the same words.
+        match start_for_recipe(&host, &shipped(), &call, &mut asks) {
+            Err(AgentRefusal::Ask(again)) => assert_eq!(again, why),
+            other => panic!("{other:?}"),
+        }
+        approvals::deny(&asks[&key].clone()).unwrap();
+        assert!(matches!(start_for_recipe(&host, &shipped(), &call, &mut asks), Err(AgentRefusal::Fail(_))));
+        // Asked the first time, nothing is said of a restart. (Another run: the store will not put
+        // arguments the person has just denied in front of them again.)
+        let first = AgentCall { recipe_id: "rcp_restarted_first", asked_before: false, step: 5, ..call };
+        let mut asks = Asks::default();
+        for _ in 0..50 {
+            match start_for_recipe(&host, &shipped(), &first, &mut asks) {
+                Err(AgentRefusal::Ask(why)) if !asks.is_empty() => {
+                    assert!(why.starts_with("your Allow on the card: Nightly recipe → Coder"), "{why}");
+                    let card = approvals::card(asks.values().next().unwrap()).unwrap();
+                    assert!(!card.purpose.contains("restarted"), "{}", card.purpose);
+                    approvals::deny(&card.id).unwrap();
+                    return;
+                }
+                Err(AgentRefusal::Ask(_)) => std::thread::sleep(Duration::from_millis(100)),
+                other => panic!("{other:?}"),
+            }
+        }
+        panic!("no card was raised");
+    }
+
+    /// What a recipe keeps as an agent's answer is its final message — what it said after its last
+    /// call — not the narration it wrote on the way there (#194: the Council's Chair read "I'll
+    /// start by seeing what's on this desktop…" as the Researcher's answer). The whole session is
+    /// still the agent's, in its pane and in `read_agent`.
+    #[test]
+    fn a_recipe_keeps_the_agents_final_message_not_its_narration() {
+        use crate::agents::Provenance;
+        let agent = AgentId::new("deepseek", "c-recipe-final");
+        let mut meta = AgentMeta::new(agent.clone(), "deepseek");
+        meta.recipe = Some(RecipeOrigin { id: "rcp_final".into(), name: "Council".into() });
+        meta.role = shipped().find("researcher").map(|r| r.meta());
+        agents::store().upsert_agent(meta);
+        agents::store().open_turn(&agent, "Should we publish the nightly?");
+        let call = |n: &str, target: &str| {
+            agents::store().event(
+                &agent,
+                &agents::Event::ToolStart { call: n.into(), name: "os_act".into(), target: target.into(), args: json!({"app": "shell", "action": "open_app", "args": {"name": "chromium"}}) },
+                Provenance::Reported,
+            );
+            agents::store().event(&agent, &agents::Event::ToolEnd { call: n.into(), ok: true, summary: "done".into(), exit_code: None }, Provenance::Reported);
+        };
+        agents::store().text(&agent, "I'll start by seeing what's on this desktop…\n");
+        call("c1", "shell.open_app");
+        agents::store().text(&agent, "The release channel says the failing check is optional. Let me confirm.\n");
+        call("c2", "shell.show_screen");
+        agents::store().text(&agent, "## Answer\n\nPublish it, **without** the mind.\n\n- Evidence: the channel page\n");
+        agents::store().close_turn(&agent, true);
+        assert_eq!(
+            poll_for_recipe(None, "rcp_final", &agent),
+            AgentPoll::Answered("## Answer\n\nPublish it, **without** the mind.\n\n- Evidence: the channel page".into())
+        );
+        let session = agents::store().read(|s| s.transcript(&agent, 3)).unwrap_or_default();
+        assert!(session.contains("I'll start by seeing what's on this desktop"), "the whole session is kept: {session}");
+
+        // It ended on a call and said nothing after: the last thing it said before it.
+        let quiet = AgentId::new("deepseek", "c-recipe-ends-on-a-call");
+        let mut meta = AgentMeta::new(quiet.clone(), "deepseek");
+        meta.recipe = Some(RecipeOrigin { id: "rcp_final".into(), name: "Council".into() });
+        agents::store().upsert_agent(meta);
+        agents::store().open_turn(&quiet, "plan it");
+        agents::store().text(&quiet, "Looking first.");
+        agents::store().event(&quiet, &agents::Event::ToolStart { call: "a".into(), name: "read".into(), target: String::new(), args: json!({}) }, Provenance::Reported);
+        agents::store().text(&quiet, "Plan — one step: ship.");
+        agents::store().event(&quiet, &agents::Event::ToolStart { call: "b".into(), name: "read".into(), target: String::new(), args: json!({}) }, Provenance::Reported);
+        agents::store().close_turn(&quiet, true);
+        assert_eq!(poll_for_recipe(None, "rcp_final", &quiet), AgentPoll::Answered("Plan — one step: ship.".into()));
     }
 
     /// An agent waiting on the person in its own pane makes its recipe need the person; a card of

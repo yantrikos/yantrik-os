@@ -47,6 +47,43 @@ pub fn next_cron(expr: &str, after_ts: f64) -> Option<f64> {
     None
 }
 
+/// A 5-field expression, parsed: which minutes, hours, days, months and weekdays it names. What a
+/// caller with its own clock matches against — `recipe_time` reads it on the local clock.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CronSpec {
+    minutes: HashSet<u32>,
+    hours: HashSet<u32>,
+    days: HashSet<u32>,
+    months: HashSet<u32>,
+    weekdays: HashSet<u32>,
+}
+
+impl CronSpec {
+    /// None when the expression is not five valid fields.
+    pub fn parse(expr: &str) -> Option<CronSpec> {
+        let fields: Vec<&str> = expr.split_whitespace().collect();
+        if fields.len() != 5 {
+            return None;
+        }
+        Some(CronSpec {
+            minutes: parse_field(fields[0], 0, 59)?,
+            hours: parse_field(fields[1], 0, 23)?,
+            days: parse_field(fields[2], 1, 31)?,
+            months: parse_field(fields[3], 1, 12)?,
+            weekdays: parse_field(fields[4], 0, 6)?,
+        })
+    }
+
+    /// Whether a wall-clock minute is one it names. `weekday`: 0 = Sunday.
+    pub fn matches(&self, minute: u32, hour: u32, day: u32, month: u32, weekday: u32) -> bool {
+        self.minutes.contains(&minute)
+            && self.hours.contains(&hour)
+            && self.days.contains(&day)
+            && self.months.contains(&month)
+            && self.weekdays.contains(&weekday)
+    }
+}
+
 /// Parse a single cron field into a set of valid values.
 fn parse_field(field: &str, min: u32, max: u32) -> Option<HashSet<u32>> {
     let mut result = HashSet::new();

@@ -1008,7 +1008,9 @@ mod tests {
         // The question it waits on, not the step after it that the pointer names.
         assert_eq!(line("Plan the week").step, "step 1 of 2 · asking you: Which days are you travelling?");
         assert_eq!(line("Plan the week").status, "waiting");
-        assert_eq!(line("Remind me").step, "step 1 of 2 · waiting for 17:05 UTC");
+        // 17:05 on this machine's clock (#187), today's or tomorrow's as the clock stands.
+        let remind = line("Remind me").step;
+        assert!(remind.starts_with("step 1 of 2 · waiting for 17:05") && !remind.contains("UTC"), "{remind}");
         assert_eq!(line("Weekly backup").step, "step 2 of 2 · paused before run_command");
         assert_eq!(line("Weekly backup").status, "paused");
         assert_eq!(recipes_in_flight(&recipe_view::list(&conn), 2).len(), 2, "capped");

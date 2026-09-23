@@ -225,10 +225,30 @@ mode the person sees the card first — and the person with Start on the Recipes
 the run's leave for its agents, and it records the digest of each role's definition as it is at
 that moment: a role whose definition changes before its step (a file in `~/.config/yantrik/agents`
 replacing it, with another mind, brief or reach), or one the run names only later, is refused with
-a sentence, never run. The companion's own `run_recipe` tool, graded standard, refuses a
-formation. A run nobody started at the desk (a trigger or a timer, once #187 wires them) asks the
-person on a card naming the recipe and the role before any role above `safe`; denied or left to
-expire, the step fails.
+a sentence, never run. The Recipes screen's Start offers the formation's seats as roles from the
+catalog; `run_recipe` takes them as inputs (`"seat_2": "reviewer"`). The companion's own
+`run_recipe` tool, graded standard, refuses a formation. A run nobody started at the desk — its
+schedule, an event, another recipe completing — is unattended: it is given no leave, whatever its
+recipe had, and asks the person on a card naming the recipe and the role before any role above
+`safe`, bound to the role's definition; denied or left to expire, the step fails. A card lost to a
+shell restart is asked again, and says that is why.
+
+What a step keeps as an agent's answer is the agent's final message — what it said after its last
+call — not the narration before its calls; the whole session is one press away on the Recipes
+screen. An Agent step goes at the top of a recipe: one inside a Branch's arm is refused, with a
+sentence, before the recipe is made or started.
+
+Triggers fire from the companion worker's clock: a `Cron` schedule read on the machine's own clock
+(a time missed while the machine was off fires once on waking, if less than two hours old), an
+`Event` as the desktop records it, and `RecipeComplete` as another recipe finishes — which is what
+chains formations: the run it starts is given the finished run's variables as `{{after_<name>}}`
+(the Council's verdict as `{{after_verdict}}`) and `{{after_result}}`. One run of a recipe at a
+time; a chain is at most five long. Every time a recipe reads or shows — "wait until 09:00", "after
+18:00" — is the machine's own clock, kept as an absolute instant.
+
+A recipe's messages — a Notify, a question, its completion — are delivered one by one, each on
+its own, as a result the person is waiting on: never in the companion's one proactive slot, and
+never behind its cooldowns.
 
 The hand-off is from the recipe: each agent's row and its approval cards say "Council recipe →
 Reviewer", and every start without a card of its own is written to the record of unasked actions

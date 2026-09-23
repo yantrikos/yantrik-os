@@ -71,6 +71,10 @@ export struct AgentItemData {
     // and links, which one StyledText draws and a Text cannot.
     block: string,
     styled: styled-text,
+    // For a prompt: who sent it. "you" for the person; for the first prompt of an agent a recipe
+    // or another agent started, that sender as its row names it — "Council recipe",
+    // "deepseek:c-02be44" (#194).
+    who: string,
 }
 
 export struct AgentHeaderData {
@@ -324,28 +328,33 @@ component ItemView inherits Rectangle {
         // A list sits in from the paragraphs around it.
         padding-left: root.item.kind == "text" && root.item.block == "bullet" ? 8px : 0px;
 
+        // A prompt, and who sent it: "you", or — for the first prompt of an agent a recipe or
+        // another agent started — that sender (#194). Sized from the prompt's own wrapped height:
+        // a wrapping Text inside a nested layout is measured at its unwrapped width, and a long
+        // first prompt (a Council seat's) lost every line after the first.
         if root.item.kind == "prompt" : Rectangle {
             border-radius: 10px;
             background: Theme.bg-elevated;
             border-width: 1px;
             border-color: Theme.border-subtle;
-            HorizontalLayout {
-                padding: 8px;
-                padding-left: 12px;
-                spacing: 10px;
-                Text {
-                    text: "you";
-                    width: 30px;
-                    color: Theme.text-dim;
-                    font-size: Theme.fs-caption;
-                }
-                Text {
-                    text: root.item.text;
-                    color: Theme.text-primary;
-                    font-size: Theme.fs-body;
-                    wrap: word-wrap;
-                    horizontal-stretch: 1;
-                }
+            height: max(prompt-text.preferred-height, prompt-who.preferred-height) + 16px;
+            prompt-who := Text {
+                x: 12px;
+                y: 8px;
+                width: root.item.who == "" || root.item.who == "you" ? 30px : 110px;
+                text: root.item.who == "" ? "you" : root.item.who;
+                overflow: elide;
+                color: Theme.text-dim;
+                font-size: Theme.fs-caption;
+            }
+            prompt-text := Text {
+                x: prompt-who.x + prompt-who.width + 10px;
+                y: 8px;
+                width: parent.width - self.x - 12px;
+                text: root.item.text;
+                color: Theme.text-primary;
+                font-size: Theme.fs-body;
+                wrap: word-wrap;
             }
         }
 

@@ -13,13 +13,45 @@
 //
 // A formation (section 6) is a recipe whose steps are catalog agents: an Agent stage is called by
 // its role and the mind it runs on ("Chair · deepseek"), waits while its agent works, and is
-// ticked when the answer is in. A formation's built-in definition opens with a box for its input
-// and Start: the person's own press, which is their leave for its agents.
+// ticked when the answer is in. A formation's built-in definition opens with a box for its input,
+// its seats — each a role from the catalog, the default until the person picks another — and
+// Start: the person's own press, which is their leave for its agents.
+//
+// A run's opened steps show what the run has (#194): the role that took each seat, the question as
+// asked, a link to each answer a step reads, and the answer itself drawn from its markdown the way
+// the Agents pane draws a mind's text (#197) — with the agent's whole session one click away.
 
 import { Theme } from "theme.slint";
 import { Icon, Icons } from "components/icon.slint";
 import { YButton } from "components/y_button.slint";
 import { YInput } from "components/y_input.slint";
+
+// One block of an answer's head: a paragraph or a list as StyledText, a heading, a code block.
+export struct RecipeAnswerBlock {
+    block: string,         // text | heading | bullet | code
+    text: string,          // the block, its markers stripped
+    styled: styled-text,   // a paragraph's or a list's bold, italic, code and links
+}
+
+// An answer another step reads: its step and role, and the agent that gave it.
+export struct RecipeLinkData {
+    label: string,         // "Researcher · step 1"
+    agent: string,         // "deepseek:c-02be44"
+}
+
+// One seat of a formation's definition: the catalog role in it.
+export struct RecipeSeatData {
+    name: string,          // seat_2
+    label: string,         // "Seat 2"
+    role: string,          // red-team
+    role-name: string,     // "Red team"
+    changed: bool,         // the person chose it; otherwise the default
+}
+
+export struct RecipeRoleData {
+    id: string,
+    name: string,
+}
 
 export struct RecipeTabData {
     id: string,            // active | finished | not_run | all
@@ -47,7 +79,10 @@ export struct RecipeStepData {
     path: string,          // JumpIf / Branch: the way it went
     unbound: string,       // "{{topic}} has no value — it is sent as written"
     agent: string,         // an Agent step's agent: "the Chair on deepseek (deepseek:c-02be44)"
-    detail: string,        // its whole definition, a line per field
+    detail: string,        // its whole definition, a line per field — a run's values filled in
+    agent-id: string,      // that agent, whose whole session Open shows
+    answer: [RecipeAnswerBlock], // the head of the answer it kept, drawn from its markdown
+    reads: [RecipeLinkData],     // the answers of earlier steps it reads
 }
 
 export struct RecipeRowData {
@@ -72,6 +107,12 @@ export struct RecipeRowData {
     can-start: bool,       // a formation's built-in definition, startable here with its one input
     start-hint: string,    // what that input is: "The question the council is to answer"
     needs-you: bool,       // its agents need the person: a card to answer, a place to free
+    seats: [RecipeSeatData], // a formation's definition: its seats, each with its role
+    picking: string,       // the seat whose roles are offered now, or ""
+    picking-role: string,  // the role in it
+    opened: string,        // a finished formation: what its agents opened, left as it is
+    started-by: string,    // a run a trigger started: by what, and that nobody at the desk did
+    triggers: string,      // what starts it on its own
 }
 
 export global RecipesState {
@@ -100,6 +141,14 @@ export global RecipesState {
     callback cancel(string);
     // Start a run of a built-in formation with its one input: the person's leave for its agents.
     callback start(string, string);
+    // A formation's seats: offer the catalog's roles for one (recipe, seat), and choose one
+    // (recipe, seat, role).
+    in-out property <[RecipeRoleData]> roles: [];
+    in-out property <string> picking: "";
+    callback choose-seat(string, string);
+    callback pick-seat(string, string, string);
+    // An agent's whole session, on the Agents screen.
+    callback open-agent(string);
     callback dismiss-notice();
 }
 
@@ -308,6 +357,72 @@ component QuestionBox inherits Rectangle {
     }
 }
 
+// A small link: an answer, a session.
+component LinkChip inherits Rectangle {
+    in property <string> label;
+    in property <bool> lit: false;
+    callback clicked;
+    height: 20px;
+    width: chip.preferred-width;
+    border-radius: 10px;
+    border-width: 1px;
+    border-color: root.lit ? Theme.accent : Theme.border-subtle;
+    background: root.lit ? Theme.accent-glow : chip-ta.has-hover ? Theme.hover-fill : transparent;
+    chip-ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+    chip := HorizontalLayout {
+        padding-left: 9px;
+        padding-right: 9px;
+        Text {
+            text: root.label;
+            color: Theme.accent;
+            font-size: Theme.fs-micro;
+            font-weight: 600;
+            vertical-alignment: center;
+        }
+    }
+}
+
+// One block of an answer's head, drawn as the Agents pane draws a mind's text (agents.slint's
+// ItemView): a paragraph or a list as one StyledText with its bold, italic and code; a heading;
+// a code block. Each wrapping text is a direct child of this layout, as it must be there.
+component AnswerBlock inherits Rectangle {
+    in property <RecipeAnswerBlock> block;
+    VerticalLayout {
+        padding-left: root.block.block == "bullet" ? 8px : 0px;
+        if root.block.block == "text" || root.block.block == "bullet" : StyledText {
+            text: root.block.styled;
+            default-color: Theme.text-primary;
+            default-font-size: Theme.fs-caption;
+            link-color: Theme.accent;
+        }
+        if root.block.block == "heading" : Text {
+            text: root.block.text;
+            color: Theme.amber-light;
+            font-size: Theme.fs-body;
+            font-weight: 600;
+            wrap: word-wrap;
+        }
+        if root.block.block == "code" : Rectangle {
+            background: Theme.bg-surface;
+            border-radius: 4px;
+            height: answer-code.preferred-height + 12px;
+            answer-code := Text {
+                x: 8px;
+                y: 6px;
+                width: parent.width - 16px;
+                text: root.block.text;
+                color: Theme.cyan-light;
+                font-family: Theme.font-mono;
+                font-size: Theme.font-small;
+                wrap: word-wrap;
+            }
+        }
+    }
+}
+
 // One step of the opened recipe.
 component StepLine inherits Rectangle {
     in property <RecipeStepData> step;
@@ -362,12 +477,47 @@ component StepLine inherits Rectangle {
                 font-size: Theme.fs-micro;
                 wrap: word-wrap;
             }
-            if root.step.agent != "" : Text {
-                text: (root.step.state == "waiting" ? "at work: " : root.step.state == "done" ? "answered by " : "hands to ") + root.step.agent;
-                color: root.step.state == "waiting" ? Theme.amber : Theme.text-secondary;
-                font-size: Theme.fs-micro;
+            if root.step.agent != "" : HorizontalLayout {
+                spacing: 8px;
+                Text {
+                    text: (root.step.state == "waiting" ? "at work: " : root.step.state == "done" ? "answered by " : "hands to ") + root.step.agent;
+                    color: root.step.state == "waiting" ? Theme.amber : Theme.text-secondary;
+                    font-size: Theme.fs-micro;
+                    vertical-alignment: center;
+                }
+                // Its whole session — every call, the answer in full — on the Agents screen.
+                if root.step.agent-id != "" : LinkChip {
+                    label: "Open its session";
+                    clicked => { RecipesState.open-agent(root.step.agent-id); }
+                }
+                Rectangle { horizontal-stretch: 1; }
             }
-            if root.step.result != "" : Rectangle {
+            // The answers it reads, each a link to the agent that gave it.
+            if root.step.reads.length > 0 : HorizontalLayout {
+                spacing: 6px;
+                Text {
+                    text: "reads";
+                    color: Theme.text-dim;
+                    font-size: Theme.fs-micro;
+                    vertical-alignment: center;
+                }
+                for link in root.step.reads : LinkChip {
+                    label: link.label;
+                    clicked => { RecipesState.open-agent(link.agent); }
+                }
+                Rectangle { horizontal-stretch: 1; }
+            }
+            // The answer it kept, drawn from its markdown.
+            if root.step.answer.length > 0 : Rectangle {
+                background: Theme.bg-input;
+                border-radius: 6px;
+                VerticalLayout {
+                    padding: 8px;
+                    spacing: 4px;
+                    for block in root.step.answer : AnswerBlock { block: block; }
+                }
+            }
+            if root.step.result != "" && root.step.answer.length == 0 : Rectangle {
                 background: Theme.bg-input;
                 border-radius: 4px;
                 HorizontalLayout {
@@ -514,12 +664,64 @@ component RecipeCard inherits Rectangle {
             }
         }
         if root.recipe.can-answer : QuestionBox { recipe: root.recipe; }
+        if root.recipe.started-by != "" : Text {
+            text: root.recipe.started-by;
+            color: Theme.text-secondary;
+            font-size: Theme.fs-caption;
+            wrap: word-wrap;
+        }
+        if root.recipe.triggers != "" : Text {
+            text: root.recipe.triggers;
+            color: Theme.text-dim;
+            font-size: Theme.fs-caption;
+            wrap: word-wrap;
+        }
+        // A finished formation: what its agents opened, listed rather than closed under the person.
+        if root.recipe.opened != "" : Text {
+            text: root.recipe.opened;
+            color: Theme.text-secondary;
+            font-size: Theme.fs-caption;
+            wrap: word-wrap;
+        }
 
         if root.selected : VerticalLayout {
             spacing: 4px;
             Rectangle { height: 1px; background: Theme.separator; }
             for step in RecipesState.steps : StepLine { step: step; }
-            // A formation's definition: its one input, and Start — the person's own press.
+            // A formation's definition: its seats, each a role from the catalog — the default until
+            // the person picks another.
+            if root.recipe.can-start && root.recipe.seats.length > 0 : HorizontalLayout {
+                spacing: 6px;
+                padding-top: 4px;
+                Text {
+                    text: "Seats";
+                    color: Theme.text-secondary;
+                    font-size: Theme.fs-caption;
+                    vertical-alignment: center;
+                }
+                for seat in root.recipe.seats : LinkChip {
+                    label: seat.label + ": " + seat.role-name + " ▾";
+                    lit: seat.changed || root.recipe.picking == seat.name;
+                    clicked => { RecipesState.choose-seat(root.recipe.id, seat.name); }
+                }
+                Rectangle { horizontal-stretch: 1; }
+            }
+            if root.recipe.can-start && root.recipe.picking != "" : HorizontalLayout {
+                spacing: 6px;
+                Text {
+                    text: "for it:";
+                    color: Theme.text-dim;
+                    font-size: Theme.fs-micro;
+                    vertical-alignment: center;
+                }
+                for role in RecipesState.roles : LinkChip {
+                    label: role.name;
+                    lit: role.id == root.recipe.picking-role;
+                    clicked => { RecipesState.pick-seat(root.recipe.id, root.recipe.picking, role.id); }
+                }
+                Rectangle { horizontal-stretch: 1; }
+            }
+            // Its one input, and Start — the person's own press.
             if root.recipe.can-start : HorizontalLayout {
                 spacing: 8px;
                 padding-top: 4px;

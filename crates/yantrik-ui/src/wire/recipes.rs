@@ -11,6 +11,7 @@
 //! question's box survives another recipe moving on.
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
@@ -18,9 +19,14 @@ use slint::{ComponentHandle, Model, ModelRc, SharedString, Timer, TimerMode, Vec
 use yantrik_companion::recipe::Leave;
 use yantrik_companion::recipe_view::{self, RecipeOp, RecipeView, StepView};
 
+use crate::agents::model::{Card, CallState};
+use crate::agents::{AgentId, Store};
 use crate::app_context::AppContext;
 use crate::bridge::CompanionHandle;
-use crate::{App, RecipeRowData, RecipeStageData, RecipeStepData, RecipeTabData, RecipesState};
+use crate::{
+    AgentsState, App, RecipeAnswerBlock, RecipeLinkData, RecipeRoleData, RecipeRowData, RecipeSeatData, RecipeStageData,
+    RecipeStepData, RecipeTabData, RecipesState,
+};
 
 /// The screen id `app.slint` draws the Recipes screen at.
 pub const SCREEN: i32 = 35;
@@ -102,6 +108,15 @@ struct Screen {
     rows: Rc<VecModel<RecipeRowData>>,
     row_ids: Vec<String>,
     steps: Rc<VecModel<RecipeStepData>>,
+    /// The seats chosen on a formation's definition before its Start: (template, seat) → role id.
+    seats: HashMap<(String, String), String>,
+    /// The seat whose roles are offered now: (template, seat).
+    picking: Option<(String, String)>,
+    /// The catalog's roles, (id, name), as last read: what a seat offers.
+    roles: Vec<(String, String)>,
+    /// The run the notice on screen is about, and what it said: once that run finishes, the
+    /// notice says so instead (#194: "its agents are at work" stayed over a finished Council).
+    notice_about: Option<(String, String)>,
 }
 
 type Shared = Rc<RefCell<Screen>>;
@@ -119,6 +134,10 @@ pub fn wire(ui: &App, ctx: &AppContext) {
         rows: Rc::new(VecModel::default()),
         row_ids: Vec::new(),
         steps: Rc::new(VecModel::default()),
+        seats: HashMap::new(),
+        picking: None,
+        roles: catalog_roles(),
+        notice_about: None,
     }));
     let g = ui.global::<RecipesState>();
     g.set_rows(ModelRc::from(state.borrow().rows.clone()));
@@ -153,6 +172,42 @@ pub fn wire(ui: &App, ctx: &AppContext) {
         st.selected = Some(id);
     }));
 
+    // A seat of a formation's definition: its roles offered, then one chosen.
+    g.on_choose_seat({
+        let (weak, state) = (weak.clone(), state.clone());
+        move |recipe, seat| {
+            let Some(ui) = weak.upgrade() else { return };
+            let mut st = state.borrow_mut();
+            let key = (recipe.to_string(), seat.to_string());
+            st.picking = if st.picking.as_ref() == Some(&key) { None } else { Some(key) };
+            // Read again as it is offered: a role added under ~/.config/yantrik/agents shows.
+            st.roles = catalog_roles();
+            st.local += 1;
+            draw(&ui, &mut st);
+        }
+    });
+    g.on_pick_seat({
+        let (weak, state) = (weak.clone(), state.clone());
+        move |recipe, seat, role| {
+            let Some(ui) = weak.upgrade() else { return };
+            let mut st = state.borrow_mut();
+            st.seats.insert((recipe.to_string(), seat.to_string()), role.to_string());
+            st.picking = None;
+            st.local += 1;
+            draw(&ui, &mut st);
+        }
+    });
+    // An agent's whole session — its answer in full, every call — one click away: the Agents
+    // screen with that agent selected.
+    g.on_open_agent({
+        let weak = weak.clone();
+        move |agent| {
+            if let Some(ui) = weak.upgrade() {
+                ui.global::<AgentsState>().invoke_show_agent(agent);
+            }
+        }
+    });
+
     let press = |op: fn(String) -> RecipeOp| {
         let (weak, companion) = (weak.clone(), companion.clone());
         move |id: SharedString, arg: String| {
@@ -174,11 +229,12 @@ pub fn wire(ui: &App, ctx: &AppContext) {
     // Start, on a formation's definition: the person's own press, and so their leave for its
     // agents. The run is the worker's to make; what came of it comes back as the notice.
     g.on_start({
-        let (weak, companion) = (weak.clone(), companion.clone());
+        let (weak, companion, state) = (weak.clone(), companion.clone(), state.clone());
         move |id, text| {
             let Some(ui) = weak.upgrade() else { return };
             let g = ui.global::<RecipesState>();
-            match start_request(&crate::recipes::snapshot().views, &id, &text) {
+            let chosen = chosen_seats(&state.borrow().seats, &id);
+            match start_request(&crate::recipes::snapshot().views, &id, &text, &chosen) {
                 Ok((recipe, inputs)) => {
                     let leave = Leave::new("the person, from the Recipes screen", None);
                     match companion.start_recipe(recipe, inputs, Some(leave)) {
@@ -200,10 +256,11 @@ pub fn wire(ui: &App, ctx: &AppContext) {
         }
     });
     g.on_dismiss_notice({
-        let weak = weak.clone();
+        let (weak, state) = (weak.clone(), state.clone());
         move || {
             if let Some(ui) = weak.upgrade() {
                 ui.global::<RecipesState>().set_notice("".into());
+                state.borrow_mut().notice_about = None;
             }
         }
     });
@@ -226,12 +283,15 @@ pub fn wire(ui: &App, ctx: &AppContext) {
     std::mem::forget(timer);
 }
 
-/// What the Recipes screen's Start asks the worker for: the formation's definition, and its one
-/// input given as `text`. Refused here for anything the screen cannot start.
+/// What the Recipes screen's Start asks the worker for: the formation's definition, its one input
+/// given as `text`, and each seat the person chose (`seats`, seat → role id) — the rest take their
+/// defaults. Refused here for anything the screen cannot start, and for a seat the definition does
+/// not have.
 pub fn start_request(
     views: &[RecipeView],
     id: &str,
     text: &str,
+    seats: &HashMap<String, String>,
 ) -> Result<(String, serde_json::Map<String, serde_json::Value>), String> {
     let view = views.iter().find(|v| v.id == id).ok_or_else(|| format!("no recipe `{id}` any more"))?;
     if !can_start(view) {
@@ -244,7 +304,151 @@ pub fn start_request(
     }
     let mut inputs = serde_json::Map::new();
     inputs.insert(input.name.clone(), serde_json::Value::String(text.to_string()));
+    for (seat, role) in seats {
+        if !view.inputs.iter().any(|i| i.seat && &i.name == seat) {
+            return Err(format!("'{}' has no seat `{seat}`", view.name));
+        }
+        inputs.insert(seat.clone(), serde_json::Value::String(role.clone()));
+    }
     Ok((view.id.clone(), inputs))
+}
+
+/// The seats chosen for one definition, seat → role id.
+fn chosen_seats(all: &HashMap<(String, String), String>, recipe: &str) -> HashMap<String, String> {
+    all.iter().filter(|((r, _), _)| r == recipe).map(|((_, seat), role)| (seat.clone(), role.clone())).collect()
+}
+
+/// The catalog's roles as a seat offers them: (id, name).
+fn catalog_roles() -> Vec<(String, String)> {
+    crate::agents::catalog::Catalog::load().roles.into_iter().map(|r| (r.id, r.name)).collect()
+}
+
+/// A formation's seats as its definition's row offers them: each seat, the role in it — the one
+/// chosen, or its default — and that role's name from the catalog.
+pub fn seats_of(v: &RecipeView, chosen: &HashMap<String, String>, roles: &[(String, String)]) -> Vec<RecipeSeatData> {
+    if !can_start(v) {
+        return Vec::new();
+    }
+    v.inputs
+        .iter()
+        .filter(|i| i.seat)
+        .map(|i| {
+            let role = chosen.get(&i.name).cloned().or_else(|| i.default.clone()).unwrap_or_default();
+            let name = roles
+                .iter()
+                .find(|(id, _)| *id == role)
+                .map(|(_, name)| name.clone())
+                .unwrap_or_else(|| yantrik_companion::recipe::role_display(&role));
+            RecipeSeatData {
+                name: i.name.as_str().into(),
+                label: seat_label(&i.name).into(),
+                role: role.as_str().into(),
+                role_name: name.into(),
+                changed: chosen.contains_key(&i.name),
+            }
+        })
+        .collect()
+}
+
+/// "seat_2" → "Seat 2", "chair" → "Chair".
+fn seat_label(name: &str) -> String {
+    yantrik_companion::recipe::role_display(name)
+}
+
+/// What the notice about a run says once it has finished (#194), and whether it reads as good
+/// news: "Council finished — verdict from the Chair." None while it is still in flight.
+pub fn finished_notice(v: &RecipeView) -> Option<(String, bool)> {
+    match v.status.as_str() {
+        "done" => {
+            let last = v.steps.last();
+            let by = last
+                .filter(|s| s.kind == "agent")
+                .and_then(|s| v.agents.iter().find(|a| a.step == s.index))
+                .map(|a| a.role.clone());
+            let kept = last.and_then(|s| s.store_as.clone()).map(|k| k.replace('_', " "));
+            let line = match (by, kept) {
+                (Some(role), Some(kept)) => format!("{} finished — {kept} from the {role}. It is under the recipe's last step.", v.name),
+                _ => format!("{} finished.", v.name),
+            };
+            Some((line, true))
+        }
+        "failed" => Some((
+            format!("{} failed: {}", v.name, recipe_view::head(v.error.as_deref().unwrap_or("no error recorded"), 160)),
+            false,
+        )),
+        "cancelled" => Some((format!("{} was cancelled.", v.name), true)),
+        _ => None,
+    }
+}
+
+/// What a finished formation's agents opened on the desktop — an app, a screen, a browser tab —
+/// each with the agent that opened it, from their sessions' calls (#194).
+///
+/// Listed, not closed. The shell cannot tell a window the agent opened from one the person has
+/// since turned to (the same app, the same tab brought to the front), a browser tab is not a
+/// window the shell can close by itself — it would need the tab's DevTools id, which the agent's
+/// call does not carry — and a screen is where the person may now be. Closing any of those under
+/// the person would be worse than leaving them; naming them lets the person close what they are
+/// done with.
+pub fn opened_by_agents(v: &RecipeView, store: &Store) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for a in &v.agents {
+        let Some(agent) = store.agent(&AgentId(a.agent.clone())) else { continue };
+        for card in agent.cards() {
+            if let Some(what) = opened(card) {
+                let line = format!("{what} (the {})", a.role);
+                if !out.contains(&line) {
+                    out.push(line);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// What one call opened, if it opened something and did not fail: `os_act shell.open_app`,
+/// `open_app`, `show_screen`, or a call that opened a web address.
+fn opened(card: &Card) -> Option<String> {
+    if matches!(card.state, CallState::Failed | CallState::Interrupted) {
+        return None;
+    }
+    let args = &card.args;
+    let inner = args.get("args").filter(|a| a.is_object()).unwrap_or(args);
+    let field = |k: &str| inner.get(k).or_else(|| args.get(k)).and_then(|v| v.as_str()).map(str::trim).filter(|s| !s.is_empty());
+    let said = format!(
+        "{} {} {}.{}",
+        card.name,
+        card.target,
+        args.get("app").and_then(|v| v.as_str()).unwrap_or_default(),
+        args.get("action").and_then(|v| v.as_str()).unwrap_or_default()
+    )
+    .to_lowercase();
+    if said.contains("open_app") {
+        return field("name").or_else(|| field("app_id")).map(str::to_string);
+    }
+    if said.contains("show_screen") {
+        return field("screen").map(|screen| format!("the {screen} screen"));
+    }
+    let web = ["navigate", "open_url", "new_tab", "open_tab", "browse"].iter().any(|w| said.contains(w));
+    match field("url") {
+        Some(url) if web => Some(format!("a browser tab at {url}")),
+        _ => None,
+    }
+}
+
+/// The row's line for them: empty unless the formation has finished and its agents opened any.
+fn opened_line(v: &RecipeView, store: &Store) -> String {
+    if !v.formation || !matches!(v.status.as_str(), "done" | "failed" | "cancelled") {
+        return String::new();
+    }
+    let opened = opened_by_agents(v, store);
+    if opened.is_empty() {
+        return String::new();
+    }
+    format!(
+        "Its agents opened {}. They are left as they are — close what you are done with.",
+        opened.join(", ")
+    )
 }
 
 /// A formation's built-in definition with exactly one input a run must be given: the screen asks
@@ -291,7 +495,27 @@ fn draw(ui: &App, st: &mut Screen) {
     }
     let shown: Vec<&RecipeView> = snap.views.iter().filter(|v| st.tab.holds(v)).collect();
     let now = unix_now();
-    let rows: Vec<RecipeRowData> = shown.iter().map(|v| row_of(v, now)).collect();
+    let picking = st.picking.clone().map(|(recipe, seat)| format!("{recipe}/{seat}")).unwrap_or_default();
+    let rows: Vec<RecipeRowData> = crate::agents::store().read(|store| {
+        shown
+            .iter()
+            .map(|v| {
+                let mut row = row_of(v, now);
+                let seats = seats_of(v, &chosen_seats(&st.seats, &v.id), &st.roles);
+                if let Some((_, seat)) = st.picking.as_ref().filter(|(recipe, _)| *recipe == v.id) {
+                    row.picking = seat.as_str().into();
+                    row.picking_role = seats.iter().find(|s| s.name.as_str() == seat).map(|s| s.role.clone()).unwrap_or_default();
+                }
+                row.seats = ModelRc::new(VecModel::from(seats));
+                row.opened = opened_line(v, store).into();
+                row
+            })
+            .collect()
+    });
+    g.set_picking(picking.into());
+    g.set_roles(ModelRc::new(VecModel::from(
+        st.roles.iter().map(|(id, name)| RecipeRoleData { id: id.as_str().into(), name: name.as_str().into() }).collect::<Vec<_>>(),
+    )));
     let ids: Vec<String> = shown.iter().map(|v| v.id.clone()).collect();
     if ids == st.row_ids {
         // The same recipes in the same order: updated in place, so what is typed into a
@@ -316,8 +540,20 @@ fn draw(ui: &App, st: &mut Screen) {
     g.set_empty(if snap.loaded { st.tab.empty() } else { "Waiting for the companion to read its recipes…" }.into());
     if let Some(outcome) = snap.outcome.filter(|o| o.serial > st.notice_serial) {
         st.notice_serial = outcome.serial;
-        g.set_notice(outcome.text.into());
+        g.set_notice(outcome.text.as_str().into());
         g.set_notice_ok(outcome.ok);
+        st.notice_about = outcome.ok.then(|| (outcome.recipe.clone(), outcome.text.clone()));
+    }
+    // The notice about a run that has since finished says it finished — never "its agents are at
+    // work" over a done Council (#194). Only while that notice is still the one on screen.
+    if let Some((run, said)) = st.notice_about.clone() {
+        if let Some((line, ok)) = snap.views.iter().find(|v| v.id == run).and_then(finished_notice) {
+            if g.get_notice().as_str() == said {
+                g.set_notice(line.into());
+                g.set_notice_ok(ok);
+            }
+            st.notice_about = None;
+        }
     }
 }
 
@@ -429,6 +665,18 @@ pub fn row_of(v: &RecipeView, now: f64) -> RecipeRowData {
         can_start: can_start(v),
         start_hint: start_hint.into(),
         needs_you: v.needs_you.is_some(),
+        seats: ModelRc::default(),
+        picking: Default::default(),
+        picking_role: Default::default(),
+        opened: Default::default(),
+        // A run a trigger started: nobody at the desk did, so its agents ask on a card.
+        started_by: v
+            .started_by
+            .as_deref()
+            .map(|by| format!("Started on its own by {by} — nobody at the desk, so its agents ask before they start."))
+            .unwrap_or_default()
+            .into(),
+        triggers: if v.triggers.is_empty() { String::new() } else { format!("Starts on its own {}.", v.triggers.join("; ")) }.into(),
     }
 }
 
@@ -454,7 +702,33 @@ pub fn step_of(s: &StepView) -> RecipeStepData {
         unbound: unbound.into(),
         agent: s.agent.clone().unwrap_or_default().into(),
         detail: s.detail.join("\n").into(),
+        agent_id: s.agent_id.clone().unwrap_or_default().into(),
+        answer: ModelRc::new(VecModel::from(answer_blocks(s.answer.as_deref().unwrap_or_default()))),
+        reads: ModelRc::new(VecModel::from(
+            s.reads
+                .iter()
+                .map(|l| RecipeLinkData { label: l.label.as_str().into(), agent: l.agent.as_str().into() })
+                .collect::<Vec<_>>(),
+        )),
     }
+}
+
+/// An answer's head as the opened step draws it: a block per paragraph, heading, list or code, read
+/// by the Lens's own parser and drawn as the Agents pane draws them (`crate::markdown`, #197) — not
+/// the raw `## Verdict` and `**1.**` it came as (#194).
+pub fn answer_blocks(answer: &str) -> Vec<RecipeAnswerBlock> {
+    crate::markdown::parse_blocks(answer)
+        .iter()
+        .map(|block| RecipeAnswerBlock {
+            block: match block.block_type {
+                kind @ ("heading" | "bullet" | "code") => kind,
+                _ => "text",
+            }
+            .into(),
+            text: block.text.as_str().into(),
+            styled: crate::markdown::styled(block),
+        })
+        .collect()
 }
 
 fn state_label(state: &str, kind: &str) -> String {
@@ -684,10 +958,11 @@ mod tests {
         assert_eq!(drow.status_label, "formation, never run");
         assert_eq!(drow.start_hint, "The question the council is to answer…");
         let views = vec![dv.clone(), v.clone()];
-        let (id, inputs) = start_request(&views, formations::COUNCIL, "  Should we ship?  ").unwrap();
+        let none = HashMap::new();
+        let (id, inputs) = start_request(&views, formations::COUNCIL, "  Should we ship?  ", &none).unwrap();
         assert_eq!((id.as_str(), inputs["question"].as_str()), (formations::COUNCIL, Some("Should we ship?")));
-        assert!(start_request(&views, formations::COUNCIL, " ").unwrap_err().contains("needs the question"));
-        assert!(start_request(&views, "rcp_council", "x").unwrap_err().contains("is not started from here"));
+        assert!(start_request(&views, formations::COUNCIL, " ", &none).unwrap_err().contains("needs the question"));
+        assert!(start_request(&views, "rcp_council", "x", &none).unwrap_err().contains("is not started from here"));
         let recipes_slint = read("../yantrik-ui-slint/ui/recipes.slint");
         assert!(recipes_slint.contains("RecipesState.start(root.recipe.id, start-input.value);"), "Start sends the input");
         assert!(recipes_slint.contains("root.kind == \"agent\" ? Icons.people"), "a working agent's stage wears the agents mark");
@@ -703,6 +978,183 @@ mod tests {
         assert!(line.needs_you && line.step.starts_with("needs you: a place: the desktop is running 6 agents"), "{line:?}");
         assert!(!crate::mind_panel::recipe_line(&v).needs_you);
         assert_eq!(crate::mind_panel::recipe_line(&v).step, "step 2 of 4 · Red team · pi at work");
+    }
+
+    /// The Council's definition as its row offers it (#194): each seat with the role in it — the
+    /// default until one is chosen — and Start hands the worker the seats chosen with the question.
+    /// A seat the definition does not have is refused.
+    #[test]
+    fn a_formations_seats_are_chosen_on_the_screen_and_start_with_it() {
+        use yantrik_companion::recipe_templates::{self, formations};
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        yantrik_companion::recipe::RecipeStore::ensure_tables(&conn);
+        recipe_templates::register_all(&conn);
+        let views = recipe_view::list(&conn);
+        let council = views.iter().find(|v| v.id == formations::COUNCIL).unwrap();
+        let roles = vec![("researcher".to_string(), "Researcher".to_string()), ("reviewer".to_string(), "Reviewer".to_string())];
+        let shown = |chosen: &HashMap<String, String>| -> Vec<(String, String, String, bool)> {
+            seats_of(council, chosen, &roles)
+                .into_iter()
+                .map(|s| (s.label.to_string(), s.role.to_string(), s.role_name.to_string(), s.changed))
+                .collect()
+        };
+        assert_eq!(
+            shown(&HashMap::new()),
+            [
+                ("Seat 1".to_string(), "researcher".to_string(), "Researcher".to_string(), false),
+                ("Seat 2".to_string(), "red-team".to_string(), "Red team".to_string(), false),
+                ("Seat 3".to_string(), "planner".to_string(), "Planner".to_string(), false),
+                ("Chair".to_string(), "chair".to_string(), "Chair".to_string(), false),
+            ]
+        );
+        let chosen = HashMap::from([("seat_2".to_string(), "reviewer".to_string())]);
+        assert_eq!(shown(&chosen)[1], ("Seat 2".to_string(), "reviewer".to_string(), "Reviewer".to_string(), true));
+        let (id, inputs) = start_request(&views, formations::COUNCIL, "Ship on Friday?", &chosen).unwrap();
+        assert_eq!(id, formations::COUNCIL);
+        assert_eq!(inputs.get("seat_2").and_then(|v| v.as_str()), Some("reviewer"));
+        assert_eq!(inputs.get("seat_1"), None, "the rest take their defaults");
+        let wrong = HashMap::from([("question".to_string(), "reviewer".to_string())]);
+        assert!(start_request(&views, formations::COUNCIL, "q", &wrong).unwrap_err().contains("has no seat `question`"));
+        // Only a formation's definition offers seats; a Writers' room's cast is not one.
+        let room = views.iter().find(|v| v.id == formations::WRITERS_ROOM).unwrap();
+        assert!(seats_of(room, &HashMap::new(), &roles).is_empty());
+        let slint = read("../yantrik-ui-slint/ui/recipes.slint");
+        assert!(slint.contains("RecipesState.pick-seat(root.recipe.id, root.recipe.picking, role.id);"), "a role is chosen for its seat");
+    }
+
+    /// A finished run's banner says it finished (#194), and the answer head is drawn from its
+    /// markdown (#194), and the agent whose session holds it all is a click away.
+    #[test]
+    fn a_finished_council_says_so_and_draws_its_answer() {
+        use yantrik_companion::recipe::{AgentRun, AGENTS_VAR};
+        let mut v = fixture(RecipeStatus::Done, 3, &["done", "done", "done"], None);
+        assert_eq!(finished_notice(&v), Some(("Tidy downloads finished.".to_string(), true)));
+        v.status = "failed".into();
+        v.error = Some("Unknown tool: list_dir".into());
+        assert_eq!(finished_notice(&v), Some(("Tidy downloads failed: Unknown tool: list_dir".to_string(), false)));
+        v.status = "running".into();
+        assert_eq!(finished_notice(&v), None, "still in flight: the notice stands");
+
+        // A Council done: the Chair's verdict.
+        let template = yantrik_companion::recipe_templates::get_template(yantrik_companion::recipe_templates::formations::COUNCIL).unwrap();
+        let steps: Vec<StoredStep> = (template.steps)()
+            .into_iter()
+            .enumerate()
+            .map(|(i, step)| StoredStep { step_index: i, step, status: "done".into(), result: None })
+            .collect();
+        let run = |role: &str, n: u32, store_as: &str| AgentRun {
+            role: role.into(),
+            role_name: yantrik_companion::recipe::role_display(role),
+            mind: "deepseek".into(),
+            agent: format!("deepseek:c-00{n}"),
+            store_as: store_as.into(),
+            since: 0.0,
+            until: 9e9,
+            state: "answered".into(),
+            needs_you: None,
+        };
+        let agents: serde_json::Map<String, serde_json::Value> = [
+            ("0", run("researcher", 1, "answer_1")),
+            ("1", run("red-team", 2, "answer_2")),
+            ("2", run("planner", 3, "answer_3")),
+            ("3", run("chair", 4, "verdict")),
+        ]
+        .into_iter()
+        .map(|(k, r)| (k.to_string(), serde_json::to_value(r).unwrap()))
+        .collect();
+        let verdict = "## Verdict\n\nPublish, **but only** the build without the mind.\n\n- the check is optional\n- say so in the notes";
+        let vars = std::collections::HashMap::from([
+            ("question".to_string(), json!("Publish the nightly?")),
+            ("seat_1".to_string(), json!("researcher")),
+            ("seat_2".to_string(), json!("red-team")),
+            ("seat_3".to_string(), json!("planner")),
+            ("chair".to_string(), json!("chair")),
+            ("answer_1".to_string(), json!("Yes.")),
+            ("answer_2".to_string(), json!("No.")),
+            ("answer_3".to_string(), json!("Monday.")),
+            ("verdict".to_string(), json!(verdict)),
+            (AGENTS_VAR.to_string(), serde_json::Value::Object(agents)),
+        ]);
+        let recipe = Recipe {
+            id: "rcp_council_done".into(),
+            name: "Council".into(),
+            description: String::new(),
+            status: RecipeStatus::Done,
+            current_step: 4,
+            created_at: 0.0,
+            updated_at: 0.0,
+            enabled: true,
+            error_message: None,
+        };
+        let v = recipe_view::view(&recipe, &steps, &vars);
+        assert_eq!(finished_notice(&v).unwrap().0, "Council finished — verdict from the Chair. It is under the recipe's last step.");
+        let chair = step_of(&v.steps[3]);
+        let blocks: Vec<(String, String)> = chair.answer.iter().map(|b| (b.block.to_string(), b.text.to_string())).collect();
+        assert_eq!(
+            blocks,
+            [
+                ("heading".to_string(), "Verdict".to_string()),
+                ("text".to_string(), "Publish, but only the build without the mind.".to_string()),
+                ("bullet".to_string(), "\u{2022} the check is optional\n\u{2022} say so in the notes".to_string()),
+            ]
+        );
+        assert!(format!("{:?}", chair.answer.row_data(1).unwrap().styled).contains("Strong"), "drawn bold, not with asterisks");
+        assert_eq!(chair.agent_id, "deepseek:c-004", "its session, a click away");
+        let links: Vec<(String, String)> = chair.reads.iter().map(|l| (l.label.to_string(), l.agent.to_string())).collect();
+        assert_eq!(links[0], ("Researcher · step 1".to_string(), "deepseek:c-001".to_string()));
+        assert!(chair.detail.contains("[step 1: the Researcher's answer]") && !chair.detail.contains("{{"), "{}", chair.detail);
+        assert!(step_of(&v.steps[0]).detail.contains("The question: Publish the nightly?"));
+        let slint = read("../yantrik-ui-slint/ui/recipes.slint");
+        assert!(slint.contains("RecipesState.open-agent(root.step.agent-id);"), "Open its session");
+        assert!(slint.contains("for block in root.step.answer : AnswerBlock"), "the answer's blocks are drawn");
+    }
+
+    /// When a formation finishes, what its agents opened is listed under its row — an app, a
+    /// screen, a browser tab — with who opened it; a call that failed opened nothing (#194).
+    #[test]
+    fn what_a_formations_agents_opened_is_listed_when_it_ends() {
+        use crate::agents::{AgentMeta, Event, Provenance, RecipeOrigin};
+        let mut store = Store::new();
+        let researcher = AgentId("deepseek:c-opener".into());
+        let mut meta = AgentMeta::new(researcher.clone(), "deepseek");
+        meta.recipe = Some(RecipeOrigin { id: "rcp_opened".into(), name: "Council".into() });
+        store.upsert_agent(meta);
+        store.open_turn(&researcher, "Publish the nightly?");
+        let mut n = 0;
+        let mut call = |store: &mut Store, name: &str, args: serde_json::Value, ok: bool| {
+            n += 1;
+            let id = format!("c{n}");
+            store.event(&researcher, &Event::ToolStart { call: id.clone(), name: name.into(), target: String::new(), args }, Provenance::Reported);
+            store.event(&researcher, &Event::ToolEnd { call: id, ok, summary: String::new(), exit_code: None }, Provenance::Reported);
+        };
+        call(&mut store, "os_act", json!({"app": "shell", "action": "open_app", "args": {"name": "chromium"}}), true);
+        call(&mut store, "os_act", json!({"app": "shell", "action": "show_screen", "args": {"screen": "problems"}}), true);
+        call(&mut store, "browser_navigate", json!({"url": "https://example.org/releases"}), true);
+        call(&mut store, "os_act", json!({"app": "shell", "action": "open_app", "args": {"name": "terminal"}}), false);
+        call(&mut store, "os_act", json!({"app": "notes", "action": "list"}), true);
+        store.close_turn(&researcher, true);
+
+        let mut v = fixture(RecipeStatus::Done, 3, &["done", "done", "done"], None);
+        v.formation = true;
+        v.agents = vec![yantrik_companion::recipe_view::AgentView {
+            step: 0,
+            role: "Researcher".into(),
+            mind: "deepseek".into(),
+            agent: researcher.0.clone(),
+            state: "answered".into(),
+            needs_you: None,
+        }];
+        assert_eq!(
+            opened_by_agents(&v, &store),
+            [
+                "chromium (the Researcher)",
+                "the problems screen (the Researcher)",
+                "a browser tab at https://example.org/releases (the Researcher)",
+            ]
+        );
+        assert!(opened_line(&v, &store).starts_with("Its agents opened chromium (the Researcher), the problems screen"));
+        v.status = "running".into();
+        assert_eq!(opened_line(&v, &store), "", "listed when it ends, not while it works");
     }
 
     #[test]

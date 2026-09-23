@@ -318,18 +318,39 @@ pub enum WaitCondition {
 
 // ── Trigger Types ──
 
-/// What starts a recipe.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// What starts a recipe. A start by any of these but `Manual` is unattended: nobody at the desk
+/// agreed to it, so an Agent step of the run asks the person on a card before any role above
+/// `safe` ([`crate::recipe_executor::AgentCall::attended`]). The trigger clock is
+/// [`crate::recipe_triggers`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum TriggerType {
     /// User manually runs it.
     Manual,
-    /// Cron-like schedule.
+    /// A 5-field schedule (`0 8 * * *`), read on the machine's own clock.
     Cron { expression: String },
-    /// Fired by an event (email:new, file:created, etc.)
+    /// Fired by an event the desktop records (`system/network`, `perception`, …): the type, or
+    /// its last part (`network`), or a prefix ending in `*`. `filter`: every key must match the
+    /// event's own (a text contains it, anything else equals it).
     Event { event_type: String, filter: Option<serde_json::Value> },
-    /// Fired when another recipe completes.
+    /// Fired when another recipe completes — any run of it, by its id or its name. The run it
+    /// starts is given that run's variables (its answers among them), and `after_recipe`,
+    /// `after_run` and `after_result`: what its last step kept.
     RecipeComplete { recipe_id: String },
+}
+
+/// One stored trigger.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Trigger {
+    /// Its row's id.
+    pub id: i64,
+    /// The recipe it starts.
+    pub recipe_id: String,
+    pub kind: TriggerType,
+    /// When it last fired, or 0.
+    pub last_fired: f64,
+    /// When its recipe was made: a schedule counts from here until it first fires.
+    pub since: f64,
 }
 
 // ── Recipe Instance (runtime state) ──
@@ -424,6 +445,10 @@ pub const SINCE_WAIT_VAR: &str = "_since_wait";
 
 /// A recipe's own step budget, when it sets one; `recipe_executor::STEP_BUDGET` otherwise.
 pub const STEP_BUDGET_VAR: &str = "_step_budget";
+
+/// The recipe a run was started from ([`RecipeStore::start_run`]): its own id for a recipe that
+/// runs in place, the template's or the definition's for a copy.
+pub const FROM_VAR: &str = "_from";
 
 /// The agents a recipe's Agent steps handed work to ([`AgentRun`]), keyed by the step's index:
 /// the ones still working, and — so the Recipes screen can say who answered — the last one each
@@ -553,6 +578,23 @@ pub fn hands_off(steps: &[RecipeStep]) -> bool {
     steps.iter().any(step_hands_off)
 }
 
+/// Whether an Agent step sits inside a Branch's arm, at any depth. Refused before a recipe is made
+/// or started ([`IN_ARM_REFUSED`]): the executor tracks a recipe's agents by its top-level steps,
+/// and waits for their answers where a later step reads them; an agent a Branch's arm started would
+/// need tracking by arm and joining where the arm ends, which is not built (#194).
+pub fn agent_in_arm(steps: &[RecipeStep]) -> bool {
+    steps.iter().any(|s| match s {
+        RecipeStep::Branch { then_steps, else_steps, .. } => hands_off(then_steps) || hands_off(else_steps),
+        _ => false,
+    })
+}
+
+/// What a door says of a recipe with an Agent step inside a Branch's arm ([`agent_in_arm`]).
+pub const IN_ARM_REFUSED: &str = "it has an Agent step inside a Branch's arm, and an Agent step runs only at the \
+     top of a recipe: that is where the recipe keeps track of its agent and waits for its answer, and \
+     tracking the agents a Branch started — and joining them where the Branch ends — is not built. Put \
+     the Agent step before or after the Branch, and go round it with a JumpIf";
+
 /// Whether one step hands work to an agent, or holds one that does.
 pub fn step_hands_off(step: &RecipeStep) -> bool {
     match step {
@@ -632,6 +674,10 @@ pub struct WaitRecord {
     /// `recipe_executor::PUT_OFF_MOST_SECS`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub put_off: Option<String>,
+    /// That start was put off on a card ([`crate::recipe_executor::AgentRefusal::Ask`]): asked
+    /// again after a restart, the step says it re-asks because the desktop restarted.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub carded: bool,
 }
 
 /// What a waiting recipe waits on, read from what the store holds for it ([`waited_on`]).
@@ -652,6 +698,8 @@ pub struct Waited {
     /// An Agent step's start was put off, and why ([`WaitRecord::put_off`]): the person can
     /// resolve it — a card to answer, a place to free.
     pub put_off: Option<String>,
+    /// And a card was raised for it ([`WaitRecord::carded`]).
+    pub carded: bool,
 }
 
 impl Waited {
@@ -708,6 +756,7 @@ pub fn waited_on(
             until: record.until,
             agents: record.agents,
             put_off: record.put_off,
+            carded: record.carded,
         });
     }
     let before = recipe.current_step.checked_sub(1);
@@ -722,29 +771,26 @@ pub fn waited_on(
         }
         _ => None,
     };
-    Some(Waited { step: before.unwrap_or(0), inner: Vec::new(), on, since: recipe.updated_at, until, agents: false, put_off: None })
+    Some(Waited { step: before.unwrap_or(0), inner: Vec::new(), on, since: recipe.updated_at, until, agents: false, put_off: None, carded: false })
 }
 
-/// When a WaitFor that begins at `from` wakes: after its duration, or at the next time of day
-/// it names (UTC, as every clock in the engine is) — and no later than its timeout. None when it
-/// has nothing to wait for: a zero duration, or the very minute it names.
+/// When a WaitFor that begins at `from` wakes, as an absolute instant: after its duration, or at
+/// the next time of day it names on the machine's own clock (#187: "wait until 09:00" is nine in
+/// the person's zone, not UTC's) — and no later than its timeout. None when it has nothing to wait
+/// for: a zero duration, or the very minute it names.
 ///
 /// A time of day already gone by today is tomorrow's. It used to count as met, so "wait until
 /// 09:00" set at 10:00 went on at once, and a daily loop around it spun.
 pub fn wakes_at(condition: &WaitCondition, timeout_secs: Option<u64>, from: f64) -> Option<f64> {
+    wakes_at_in(&chrono::Local, condition, timeout_secs, from)
+}
+
+/// [`wakes_at`], with the zone the time of day is read in.
+pub fn wakes_at_in<Tz: chrono::TimeZone>(tz: &Tz, condition: &WaitCondition, timeout_secs: Option<u64>, from: f64) -> Option<f64> {
     let due = match condition {
         WaitCondition::Duration { seconds: 0 } => return None,
         WaitCondition::Duration { seconds } => from + *seconds as f64,
-        WaitCondition::Time { hour, minute } => {
-            let today = (from / 86_400.0).floor() * 86_400.0 + f64::from(*hour) * 3600.0 + f64::from(*minute) * 60.0;
-            if from < today {
-                today
-            } else if from < today + 60.0 {
-                return None;
-            } else {
-                today + 86_400.0
-            }
-        }
+        WaitCondition::Time { hour, minute } => crate::recipe_time::next_time_of_day_in(tz, *hour, *minute, from)?,
     };
     Some(match timeout_secs {
         Some(t) => due.min(from + t as f64),
@@ -752,10 +798,9 @@ pub fn wakes_at(condition: &WaitCondition, timeout_secs: Option<u64>, from: f64)
     })
 }
 
-/// A unix time as the engine's clock reads it: "08:15 UTC".
+/// A unix time as the machine's clock shows it: "08:15" — the zone the status bar's clock is in.
 pub fn clock_text(ts: f64) -> String {
-    let of_day = (ts.floor() as i64).rem_euclid(86_400);
-    format!("{:02}:{:02} UTC", of_day / 3600, (of_day % 3600) / 60)
+    crate::recipe_time::clock_text(ts)
 }
 
 /// What each step of a recipe did, run by run — `_trail`, keyed by the step's index: how many
@@ -1278,6 +1323,10 @@ impl RecipeStore {
                 recipe.status.as_str()
             ));
         }
+        let defined: Vec<RecipeStep> = Self::get_steps(conn, &recipe.id).into_iter().map(|s| s.step).collect();
+        if agent_in_arm(&defined) {
+            return Err(format!("'{}' is not started: {IN_ARM_REFUSED}.", recipe.name));
+        }
         let touched = Self::get_steps(conn, &recipe.id).iter().any(|s| s.status != "pending");
         let run = if recipe.id.starts_with("builtin_") || recipe.status != RecipeStatus::Pending || touched {
             Self::copy(conn, &recipe.id, false).ok_or_else(|| format!("Recipe '{}' could not be copied for a new run", recipe.name))?
@@ -1287,6 +1336,9 @@ impl RecipeStore {
         for (key, value) in variables.into_iter().flatten() {
             Self::set_var(conn, &run, key, value);
         }
+        // What it is a run of: a trigger waiting on "when the Council completes" hears each run
+        // of the Council by it, since every run is a recipe of its own.
+        Self::set_var(conn, &run, FROM_VAR, &serde_json::Value::String(recipe.id.clone()));
         // A template's inputs that have a default and were not given — a formation's seats.
         let given = |k: &str| variables.is_some_and(|v| v.get(k).is_some_and(|v| !v.is_null()));
         for (key, value, _) in crate::recipe_templates::defaults(&recipe.id) {
@@ -1482,38 +1534,50 @@ impl RecipeStore {
         .collect()
     }
 
-    /// Get all enabled triggers.
-    pub fn get_enabled_triggers(conn: &Connection) -> Vec<(String, TriggerType, f64)> {
-        let mut stmt = conn
-            .prepare(
-                "SELECT t.recipe_id, t.trigger_json, t.last_fired
-                 FROM recipe_triggers t
-                 JOIN recipes r ON r.id = t.recipe_id
-                 WHERE t.enabled = 1 AND r.enabled = 1 AND r.status IN ('pending', 'done')",
-            )
-            .expect("prepare triggers");
-
+    /// Every enabled trigger on an enabled recipe, whatever the recipe's status: a recipe that
+    /// failed once still starts on its schedule — each start is a run of its own — and one that
+    /// is itself in flight is passed over by the trigger clock ([`crate::recipe_triggers`]).
+    ///
+    /// This used to be `get_enabled_triggers`, which nothing called: triggers were stored and
+    /// never fired (#187).
+    pub fn triggers(conn: &Connection) -> Vec<Trigger> {
+        let Ok(mut stmt) = conn.prepare(
+            "SELECT t.id, t.recipe_id, t.trigger_json, t.last_fired, r.created_at
+             FROM recipe_triggers t
+             JOIN recipes r ON r.id = t.recipe_id
+             WHERE t.enabled = 1 AND r.enabled = 1
+             ORDER BY t.id",
+        ) else {
+            return Vec::new();
+        };
         stmt.query_map([], |row| {
-            let recipe_id: String = row.get(0)?;
-            let trigger_json: String = row.get(1)?;
-            let last_fired: f64 = row.get(2)?;
-            let trigger: TriggerType = serde_json::from_str(&trigger_json)
-                .unwrap_or(TriggerType::Manual);
-            Ok((recipe_id, trigger, last_fired))
+            let json: String = row.get(2)?;
+            Ok(Trigger {
+                id: row.get(0)?,
+                recipe_id: row.get(1)?,
+                kind: serde_json::from_str(&json).unwrap_or(TriggerType::Manual),
+                last_fired: row.get::<_, Option<f64>>(3)?.unwrap_or(0.0),
+                since: row.get(4)?,
+            })
         })
-        .expect("query triggers")
-        .filter_map(|r| r.ok())
-        .collect()
+        .map(|rows| rows.filter_map(|r| r.ok()).collect())
+        .unwrap_or_default()
     }
 
-    /// Record that a trigger fired.
-    pub fn record_trigger_fired(conn: &Connection, recipe_id: &str) {
-        let now = now_ts();
-        conn.execute(
-            "UPDATE recipe_triggers SET last_fired = ?1 WHERE recipe_id = ?2",
-            params![now, recipe_id],
-        )
-        .ok();
+    /// The triggers of one recipe.
+    pub fn triggers_of(conn: &Connection, recipe_id: &str) -> Vec<Trigger> {
+        Self::triggers(conn).into_iter().filter(|t| t.recipe_id == recipe_id).collect()
+    }
+
+    /// Record that a trigger fired, at `at`.
+    pub fn record_trigger_fired(conn: &Connection, trigger_id: i64, at: f64) {
+        conn.execute("UPDATE recipe_triggers SET last_fired = ?1 WHERE id = ?2", params![at, trigger_id]).ok();
+    }
+
+    /// Take away a run's leave for agents, if it had one: a run a trigger started is unattended,
+    /// whatever its recipe was given before.
+    pub fn forget_leave(conn: &Connection, recipe_id: &str) {
+        conn.execute("DELETE FROM recipe_agent_leave WHERE recipe_id = ?1", params![recipe_id]).ok();
     }
 
     /// Count running/waiting recipes.
@@ -1710,13 +1774,10 @@ fn now_ts() -> f64 {
         .as_secs_f64()
 }
 
-/// Get current hour and minute (local time).
+/// The hour and minute on the machine's own clock. It read UTC's, so "after 18:00" was six in the
+/// evening in London whatever zone the person was in (#187).
 fn chrono_now() -> (u8, u8) {
-    let secs = now_ts() as i64;
-    // Simple UTC-based time (good enough for single-user OS)
-    let hour = ((secs % 86400) / 3600) as u8;
-    let minute = ((secs % 3600) / 60) as u8;
-    (hour, minute)
+    crate::recipe_time::hour_minute(now_ts())
 }
 
 #[cfg(test)]
@@ -1776,13 +1837,12 @@ mod tests {
     #[test]
     fn a_time_of_day_already_gone_waits_for_tomorrow() {
         let conn = store();
-        let of_day = (now_ts() as i64).rem_euclid(86_400);
-        if of_day < 180 {
-            // The first minutes after midnight UTC: nothing today has gone by yet.
+        // Two minutes ago on the machine's clock, which is the clock the wait is read on.
+        let (hour, minute) = crate::recipe_time::hour_minute(now_ts() - 120.0);
+        if crate::recipe_time::hour_minute(now_ts()) < (hour, minute) {
+            // The first minutes after local midnight: nothing today has gone by yet.
             return;
         }
-        let gone = of_day - 120;
-        let (hour, minute) = ((gone / 3600) as u8, ((gone % 3600) / 60) as u8);
         let id = RecipeStore::create(
             &conn,
             "Daily digest",
@@ -1797,25 +1857,34 @@ mod tests {
         RecipeStore::update_status(&conn, &id, &RecipeStatus::Waiting, 1);
         assert!(
             RecipeStore::get_expired_waiting(&conn).is_empty(),
-            "{hour:02}:{minute:02} UTC has gone by today, so it waits for tomorrow's"
+            "{hour:02}:{minute:02} on this machine's clock has gone by today, so it waits for tomorrow's"
         );
     }
 
-    /// When a wait begun at a moment wakes, to the second.
+    /// When a wait begun at a moment wakes, to the second — here in a zone held still (UTC), and
+    /// in `recipe_time`'s tests across a daylight-saving change.
     #[test]
     fn a_wait_wakes_at_its_next_time() {
+        let utc = chrono::Utc;
         let day = 20_719.0 * 86_400.0; // 2026-09-23 00:00 UTC
         let at = |h: f64, m: f64, s: f64| day + h * 3600.0 + m * 60.0 + s;
         let nine = WaitCondition::Time { hour: 9, minute: 0 };
-        assert_eq!(wakes_at(&nine, None, at(8.0, 0.0, 0.0)), Some(at(9.0, 0.0, 0.0)), "later today");
-        assert_eq!(wakes_at(&nine, None, at(10.0, 0.0, 0.0)), Some(at(33.0, 0.0, 0.0)), "gone by: tomorrow's");
-        assert_eq!(wakes_at(&nine, None, at(9.0, 0.0, 30.0)), None, "this very minute: no wait");
-        assert_eq!(wakes_at(&nine, Some(600), at(8.0, 0.0, 0.0)), Some(at(8.0, 10.0, 0.0)), "no later than its timeout");
+        assert_eq!(wakes_at_in(&utc, &nine, None, at(8.0, 0.0, 0.0)), Some(at(9.0, 0.0, 0.0)), "later today");
+        assert_eq!(wakes_at_in(&utc, &nine, None, at(10.0, 0.0, 0.0)), Some(at(33.0, 0.0, 0.0)), "gone by: tomorrow's");
+        assert_eq!(wakes_at_in(&utc, &nine, None, at(9.0, 0.0, 30.0)), None, "this very minute: no wait");
+        assert_eq!(wakes_at_in(&utc, &nine, Some(600), at(8.0, 0.0, 0.0)), Some(at(8.0, 10.0, 0.0)), "no later than its timeout");
         let quarter = WaitCondition::Duration { seconds: 900 };
         assert_eq!(wakes_at(&quarter, None, at(8.0, 0.0, 0.0)), Some(at(8.0, 15.0, 0.0)));
         assert_eq!(wakes_at(&WaitCondition::Duration { seconds: 0 }, None, 5.0), None);
-        assert_eq!(clock_text(at(8.0, 15.0, 0.0)), "08:15 UTC");
-        assert_eq!(clock_text(at(33.0, 0.0, 0.0)), "09:00 UTC");
+        assert_eq!(crate::recipe_time::clock_text_in(&utc, at(8.0, 15.0, 0.0)), "08:15");
+        assert_eq!(crate::recipe_time::clock_text_in(&utc, at(33.0, 0.0, 0.0)), "09:00");
+
+        // In a zone with a change in it: set the evening before the clocks go forward, 09:00 is
+        // nine on the local clock the next morning — ten hours on.
+        use crate::recipe_time::tests::{central, Central};
+        let evening = central(2026, 3, 7, 22, 0);
+        assert_eq!(wakes_at_in(&Central, &nine, None, evening), Some(central(2026, 3, 8, 9, 0)));
+        assert_eq!(central(2026, 3, 8, 9, 0) - evening, 10.0 * 3600.0);
     }
 
     /// A new version's definition still reaches a built-in that has never run, and a copy of a

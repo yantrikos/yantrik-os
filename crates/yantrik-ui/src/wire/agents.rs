@@ -758,12 +758,15 @@ fn items_of(a: &Agent, expanded: &HashSet<String>, pending: &[crate::approvals::
             ..Default::default()
         });
     }
+    // The first prompt is the work it was handed, and it says who handed it (#194).
+    let first = a.turns.iter().find(|t| !t.prompt.is_empty()).map(|t| t.n);
     for turn in &a.turns[from..] {
         if !turn.prompt.is_empty() {
             out.push(AgentItemData {
                 kind: "prompt".into(),
                 key: format!("t{}", turn.n).into(),
                 text: turn.prompt.as_str().into(),
+                who: if Some(turn.n) == first { sent_by(a) } else { "you".to_string() }.into(),
                 ..Default::default()
             });
         }
@@ -799,6 +802,17 @@ fn items_of(a: &Agent, expanded: &HashSet<String>, pending: &[crate::approvals::
         }
     }
     out
+}
+
+/// Who sent an agent its first prompt, as its row names whom it works for: the recipe that
+/// handed it the work ("Council recipe"), the agent that started it (`deepseek:c-02be44`), or the
+/// person — "you". It read "you" whatever sent it (#194).
+pub(crate) fn sent_by(a: &Agent) -> String {
+    match (&a.meta.recipe, &a.meta.parent) {
+        (Some(recipe), _) => recipe.label(),
+        (None, Some(parent)) => parent.0.clone(),
+        (None, None) => "you".to_string(),
+    }
 }
 
 /// One block of the mind's text as the pane draws it, one item per block: a paragraph or a list
@@ -1010,6 +1024,7 @@ fn card_of(c: &Card, key: String, open: bool) -> AgentItemData {
         approval: Default::default(),
         block: Default::default(),
         styled: Default::default(),
+        who: Default::default(),
     }
 }
 
@@ -1690,6 +1705,36 @@ mod tests {
     /// reaches the pane as one item per block, read by the Lens's parser: a heading and a code block
     /// as themselves, a paragraph and a list as `StyledText` with their bold, italic and code. None
     /// of it arrives as asterisks and hashes.
+    #[test]
+    fn the_first_prompt_says_who_sent_it() {
+        use crate::agents::{AgentMeta, RecipeOrigin};
+        let mut s = Store::new();
+        let seat = AgentId("deepseek:c-seat01".into());
+        let mut meta = AgentMeta::new(seat.clone(), "deepseek");
+        meta.recipe = Some(RecipeOrigin { id: "rcp_council".into(), name: "Council".into() });
+        s.upsert_agent(meta);
+        s.open_turn(&seat, "Answer this question on your own…");
+        s.close_turn(&seat, true);
+        s.open_turn(&seat, "and one more thing");
+        let prompts = |s: &Store, id: &AgentId| -> Vec<String> {
+            items_of(s.agent(id).unwrap(), &HashSet::new(), &[]).iter().filter(|i| i.kind == "prompt").map(|i| i.who.to_string()).collect()
+        };
+        assert_eq!(prompts(&s, &seat), ["Council recipe", "you"], "the recipe handed it the work; the person wrote the next");
+
+        let child = AgentId("pi:c-child1".into());
+        let mut meta = AgentMeta::new(child.clone(), "pi");
+        meta.parent = Some(AgentId("deepseek:c-02be44".into()));
+        s.upsert_agent(meta);
+        s.open_turn(&child, "check the tests");
+        assert_eq!(prompts(&s, &child), ["deepseek:c-02be44"]);
+
+        let mine = AgentId("pi:c-mine01".into());
+        s.upsert_agent(AgentMeta::new(mine.clone(), "pi"));
+        s.open_turn(&mine, "tidy the photos");
+        assert_eq!(prompts(&s, &mine), ["you"]);
+        assert!(read("../yantrik-ui-slint/ui/agents.slint").contains("text: root.item.who == \"\" ? \"you\" : root.item.who;"));
+    }
+
     #[test]
     fn an_answers_markdown_is_drawn_as_blocks_with_their_styles() {
         let mut s = Store::new();

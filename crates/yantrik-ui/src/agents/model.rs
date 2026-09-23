@@ -972,6 +972,23 @@ impl Turn {
             _ => None,
         })
     }
+
+    /// The mind's final message in this turn: what it said after its last call — its answer, not
+    /// the narration it wrote on the way ("I'll start by seeing what's on this desktop…"). When it
+    /// said nothing after its last call, the last thing it said before it. Its thinking, the
+    /// shell's notes and approvals are not what it said. (#194: a recipe kept the whole turn, so
+    /// the Chair read each seat's narration as its answer.)
+    pub fn final_text(&self) -> String {
+        let mut runs: Vec<String> = vec![String::new()];
+        for item in &self.items {
+            match item {
+                Item::Text(t) => runs.last_mut().expect("never empty").push_str(&t.text()),
+                Item::Card(_) => runs.push(String::new()),
+                Item::Thinking(_) | Item::Note(_) | Item::Approval(_) => {}
+            }
+        }
+        runs.iter().rev().map(|r| r.trim()).find(|r| !r.is_empty()).unwrap_or_default().to_string()
+    }
 }
 
 /// What a turn cost, when the harness says.

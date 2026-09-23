@@ -141,6 +141,10 @@ pub struct AgentCall<'a> {
     /// The agent that asked for the run ([`crate::recipe::Leave::agent`]): the recipe's agents
     /// are its children, held to its rules. None when the person started the run.
     pub asked_by: Option<&'a str>,
+    /// This step's start was put off on a card before ([`AgentRefusal::Ask`]). A hook that no
+    /// longer knows that card — the desktop restarted, and its cards live in memory — asks again,
+    /// and says that is why (#194).
+    pub asked_before: bool,
     /// The role, its task and what it should read first, `{{var}}`s already filled in.
     pub role: &'a str,
     pub task: &'a str,
@@ -207,6 +211,20 @@ pub trait AgentHook: Send {
     /// Let `agent` go — its answer is taken, or the recipe no longer wants it — saying why in its
     /// pane. Only an agent `recipe_id` started; anything else is left alone.
     fn release(&mut self, recipe_id: &str, agent: &str, why: &str);
+}
+
+/// Something a recipe says to the person — a Notify, a question, its completion or its failure —
+/// delivered on its own, in the order it was said. Not a proactive message: the person set the
+/// recipe going, so what it says is a result they are waiting on, and none of the gates that keep
+/// the companion from nagging (a cooldown per key, the similarity and budget gate, deep-work
+/// hours, one message slot) apply to it (#187).
+#[derive(Debug, Clone, PartialEq)]
+pub struct RecipeMessage {
+    pub recipe_id: String,
+    /// Its name, for the notification's title: "Council recipe".
+    pub recipe: String,
+    pub text: String,
+    pub at: f64,
 }
 
 /// What came of one call to [`step`].
@@ -278,7 +296,7 @@ pub fn step<H: RecipeHost>(host: &mut H, recipe_id: &str) -> Advance {
                     }
                     let here = steps.iter().find(|s| s.step_index == w.step).map(|s| s.step.clone());
                     if let Some(here @ RecipeStep::Agent { .. }) = here {
-                        return agent_step(host, &recipe, w.step, &here, &vars, now, Some(w.since));
+                        return agent_step(host, &recipe, w.step, &here, &vars, now, Some((w.since, w.carded)));
                     }
                 }
                 if blocked_on_agents(&steps, w.step, &vars).is_some() {
@@ -304,7 +322,7 @@ pub fn step<H: RecipeHost>(host: &mut H, recipe_id: &str) -> Advance {
         begin_wait(
             host,
             recipe_id,
-            WaitRecord { step: cur, inner: Vec::new(), since: now, until: None, agents: true, put_off: None },
+            WaitRecord { step: cur, inner: Vec::new(), since: now, until: None, agents: true, put_off: None, carded: false },
             cur,
         );
         tracing::info!(recipe_id, step = cur, waits_on = ?block, "Recipe waits on its agents");
@@ -358,12 +376,12 @@ pub fn step<H: RecipeHost>(host: &mut H, recipe_id: &str) -> Advance {
         }
         Did::Sleep(until) => {
             host.with_conn(|c| RecipeStore::complete_step(c, recipe_id, cur, "waiting"));
-            begin_wait(host, recipe_id, WaitRecord { step: cur, inner: Vec::new(), since: now, until: Some(until), agents: false, put_off: None }, cur + 1);
+            begin_wait(host, recipe_id, WaitRecord { step: cur, inner: Vec::new(), since: now, until: Some(until), agents: false, put_off: None, carded: false }, cur + 1);
             Advance::Blocked
         }
         Did::Ask => {
             host.with_conn(|c| RecipeStore::complete_step(c, recipe_id, cur, "asked"));
-            begin_wait(host, recipe_id, WaitRecord { step: cur, inner: Vec::new(), since: now, until: None, agents: false, put_off: None }, cur + 1);
+            begin_wait(host, recipe_id, WaitRecord { step: cur, inner: Vec::new(), since: now, until: None, agents: false, put_off: None, carded: false }, cur + 1);
             Advance::Blocked
         }
         Did::Failed(err) => recover(host, &recipe, &steps, cur, &err, &on_error_of(&here), &vars),
@@ -396,8 +414,10 @@ pub fn due(conn: &Connection) -> Vec<String> {
 }
 
 /// Run what is due, a few steps each, for a host with no worker to signal
-/// (`background::run_think_cycle`). Returns the steps taken.
+/// (`background::run_think_cycle`) — the schedules that have come due first. Returns the steps
+/// taken.
 pub fn tick(service: &mut CompanionService) -> usize {
+    crate::recipe_triggers::fire_due(&service.db.conn(), now_ts());
     let due = due(&service.db.conn());
     let mut taken = 0;
     for id in due {
@@ -509,8 +529,8 @@ fn perform<H: RecipeHost>(host: &mut H, id: &str, step: &RecipeStep, vars: &Vars
 // ── Agent: a turn handed to a catalog role ──
 
 /// Start the Agent step's agent through the hook and go on; its answer is waited for where it is
-/// read ([`blocked_on_agents`]). `put_off_since`: asked again from a wait the shell put it in,
-/// since then.
+/// read ([`blocked_on_agents`]). `put_off`: asked again from a wait the shell put it in — since
+/// when, and whether a card was raised for it then.
 fn agent_step<H: RecipeHost>(
     host: &mut H,
     recipe: &Recipe,
@@ -518,7 +538,7 @@ fn agent_step<H: RecipeHost>(
     here: &RecipeStep,
     vars: &Vars,
     now: f64,
-    put_off_since: Option<f64>,
+    put_off: Option<(f64, bool)>,
 ) -> Advance {
     let RecipeStep::Agent { role, prompt, store_as, context } = here else {
         return fail(host, recipe, cur, "not an Agent step", "not an Agent step");
@@ -541,6 +561,7 @@ fn agent_step<H: RecipeHost>(
         attended: leave.is_some(),
         consented: leave.as_ref().and_then(|l| l.roles.get(&role)).map(String::as_str),
         asked_by: leave.as_ref().and_then(|l| l.agent.as_deref()),
+        asked_before: put_off.is_some_and(|(_, carded)| carded),
         role: &role,
         task: &task,
         context: &context,
@@ -576,15 +597,18 @@ fn agent_step<H: RecipeHost>(
             });
             Advance::Next
         }
-        Err(AgentRefusal::Wait(why) | AgentRefusal::Ask(why)) => {
+        Err(refusal @ (AgentRefusal::Wait(_) | AgentRefusal::Ask(_))) => {
+            let carded = matches!(refusal, AgentRefusal::Ask(_)) || put_off.is_some_and(|(_, carded)| carded);
+            let (AgentRefusal::Wait(why) | AgentRefusal::Ask(why)) = refusal else { unreachable!("matched above") };
             tracing::info!(recipe_id = id, step = cur, why = %why, "An Agent step's start was put off");
             let record = WaitRecord {
                 step: cur,
                 inner: Vec::new(),
-                since: put_off_since.unwrap_or(now),
+                since: put_off.map_or(now, |(since, _)| since),
                 until: None,
                 agents: true,
                 put_off: Some(why),
+                carded,
             };
             begin_wait(host, id, record, cur);
             Advance::Blocked
@@ -830,7 +854,7 @@ fn wait_in_arm<H: RecipeHost>(
     }
     save_trail(host, id, trail);
     set(host, id, BRANCH_VAR, json!(frames));
-    begin_wait(host, id, WaitRecord { step: cur, inner, since: now, until, agents: false, put_off: None }, cur);
+    begin_wait(host, id, WaitRecord { step: cur, inner, since: now, until, agents: false, put_off: None, carded: false }, cur);
     Advance::Blocked
 }
 
@@ -988,7 +1012,8 @@ fn wake<H: RecipeHost>(host: &mut H, recipe: &Recipe, waited: Option<&Waited>) {
     tracing::info!(recipe_id = id, "Recipe resumed: its wait is over");
 }
 
-/// Past the last step: done, and the person told, with what it came to.
+/// Past the last step: done, the person told, with what it came to — and whatever waits on it
+/// completing started ([`crate::recipe_triggers::fire_after`]), unattended.
 fn finish<H: RecipeHost>(host: &mut H, recipe: &Recipe, steps: &[StoredStep], vars: &Vars) {
     let id = recipe.id.as_str();
     host.with_conn(|c| RecipeStore::update_status(c, id, &RecipeStatus::Done, recipe.current_step));
@@ -1000,6 +1025,11 @@ fn finish<H: RecipeHost>(host: &mut H, recipe: &Recipe, steps: &[StoredStep], va
     };
     host.notify(id, &text);
     tracing::info!(recipe_id = id, name = %recipe.name, steps = steps.len(), "Recipe completed");
+    let now = host.now();
+    let chained = host.with_conn(|c| crate::recipe_triggers::fire_after(c, recipe, vars, &last, now));
+    if !chained.is_empty() {
+        tracing::info!(recipe_id = id, started = ?chained, "Its completion started the recipes waiting on it");
+    }
 }
 
 /// What a last step came to, for the completion message.
@@ -1200,12 +1230,14 @@ impl RecipeHost for CompanionService {
         self.llm.chat(&messages, &config, None).map(|r| r.text).map_err(|e| e.to_string())
     }
 
+    /// Queued as a message of its own ([`RecipeMessage`]), never in the proactive slot: that slot
+    /// holds one message, so a Notify and the completion right after it overwrote each other, and
+    /// its delivery is gated for unprompted musings — a two-hour per-key cooldown held back a
+    /// recipe's second question (#187). The host delivers each in turn
+    /// ([`CompanionService::take_recipe_messages`]).
     fn notify(&mut self, recipe_id: &str, text: &str) {
-        self.set_proactive_message(crate::types::ProactiveMessage {
-            text: text.to_string(),
-            urge_ids: vec![format!("recipe:{recipe_id}")],
-            generated_at: now_ts(),
-        });
+        let recipe = RecipeStore::get(&self.db.conn(), recipe_id).map(|r| r.name).unwrap_or_default();
+        self.push_recipe_message(RecipeMessage { recipe_id: recipe_id.to_string(), recipe, text: text.to_string(), at: now_ts() });
     }
 
     fn persona(&self) -> String {
@@ -1715,6 +1747,8 @@ mod tests {
         /// What each start was told the person agreed to, in order: attended, and the role's
         /// digest as agreed — refused ones included.
         told: Vec<(bool, Option<String>)>,
+        /// Whether each start was told a card had been raised for it before.
+        asked_before: Vec<bool>,
         /// What a role's agents come to, in turn, and the last one from then on. A role with no
         /// script answers "<role> answered: <the task's first line>".
         script: HashMap<String, VecDeque<AgentPoll>>,
@@ -1752,6 +1786,7 @@ mod tests {
     impl AgentHook for Hands {
         fn start(&mut self, call: &AgentCall<'_>) -> Result<AgentStarted, AgentRefusal> {
             self.told.push((call.attended, call.consented.map(str::to_string)));
+            self.asked_before.push(call.asked_before);
             if let Some(refusal) = self.refuse.clone() {
                 return Err(refusal);
             }
@@ -1960,7 +1995,8 @@ mod tests {
         let id = desk.start(&steps);
         run(&mut desk, &id, 20);
         assert_eq!(desk.status(&id), (RecipeStatus::Waiting, 2));
-        assert_eq!(desk.view(&id).waiting_for.as_deref(), Some("15m to pass, until 08:15 UTC"));
+        let quarter_past = crate::recipe_time::clock_text_from(EIGHT_AM + 900.0, EIGHT_AM);
+        assert_eq!(desk.view(&id).waiting_for, Some(format!("15m to pass, until {quarter_past}")));
         // A second chain's signal, or a chat turn's sweep, finds it still waiting.
         assert_eq!(step(&mut desk, &id), Advance::Blocked);
         assert_eq!(desk.status(&id), (RecipeStatus::Waiting, 2));
@@ -1978,7 +2014,7 @@ mod tests {
         run(&mut desk, &id, 20);
         assert_eq!(desk.status(&id).0, RecipeStatus::Done);
         assert!(desk.said.iter().any(|s| s == "Later."));
-        assert_eq!(desk.view(&id).steps[1].result.as_deref(), Some("waited until 08:15 UTC"));
+        assert_eq!(desk.view(&id).steps[1].result, Some(format!("waited until {}", clock_text(EIGHT_AM + 900.0))));
     }
 
     /// What the worker's clock moves: the recipes running, and the waits that are over — not a
@@ -2087,9 +2123,14 @@ mod tests {
         assert!(vars["listed"].as_str().is_some_and(|s| s.starts_with("Recipes (")), "{:?}", vars["listed"]);
         assert_eq!(vars["summary"], json!("Two recipes, both fine."), "the model's answer, its thinking stripped");
         assert_eq!(vars["head"], json!("Two recipes"), "Extract ran for real, not passed through");
-        let said = companion.take_proactive_message().expect("the companion tells the person");
-        assert_eq!(said.urge_ids, [format!("recipe:{id}")]);
-        assert!(said.text.contains("Two recipes: Two recipes, both fine."), "{}", said.text);
+        assert!(companion.take_proactive_message().is_none(), "not the proactive slot");
+        // Its Notify and its completion, both — the completion used to overwrite the Notify in the
+        // one proactive slot (#187).
+        let said = companion.take_recipe_messages();
+        assert_eq!(said.len(), 2, "{said:?}");
+        assert_eq!((said[0].recipe_id.as_str(), said[0].recipe.as_str()), (id.as_str(), "Recipe check"));
+        assert_eq!(said[0].text, "Two recipes: Two recipes, both fine.");
+        assert!(said[1].text.starts_with("Recipe completed: Recipe check"), "{}", said[1].text);
     }
 
     // ── Agent steps ──
@@ -2650,5 +2691,181 @@ mod tests {
             "{context}"
         );
         assert_eq!(desk.status(&id).0, RecipeStatus::Done);
+    }
+
+    // ── What starts a recipe on its own, and what a recipe says (#187) ──
+
+    use crate::recipe::TriggerType;
+
+    /// A run a trigger started is unattended — even when its recipe was given a leave before: its
+    /// Agent step reaches the hook as one nobody at the desk agreed to, which asks the person on a
+    /// card before any role above `safe`. The step waits at its place, needing them, and the next
+    /// ask tells the hook a card was raised for it before — which a hook that lost the card to a
+    /// restart says it is asking again for (#194).
+    #[test]
+    fn a_triggered_run_hands_work_to_agents_only_as_an_unattended_one() {
+        let mut desk = Desk::new();
+        let steps = [agent("reviewer", "Review last night's build", "review"), format("{{review}}", "out")];
+        let owner = RecipeStore::create(&desk.conn, "Nightly review", "", &steps, Some(&TriggerType::Cron { expression: "0 8 * * *".into() }));
+        desk.conn.execute("UPDATE recipes SET created_at = ?1 WHERE id = ?2", rusqlite::params![EIGHT_AM - 3600.0, owner]).unwrap();
+        RecipeStore::allow_agents(&desk.conn, &owner, &Leave::new("the person, from the Recipes screen", None));
+        let card = "your Allow on the card: Nightly review recipe → Reviewer (it may touch editor · at most standard)";
+        desk.hands().refuse = Some(AgentRefusal::Ask(card.into()));
+
+        assert!(crate::recipe_triggers::fire_due_in(&chrono::Utc, &desk.conn, EIGHT_AM - 1.0).is_empty(), "not before 08:00");
+        let started = crate::recipe_triggers::fire_due_in(&chrono::Utc, &desk.conn, EIGHT_AM + 3.0);
+        assert_eq!(started, [owner.clone()]);
+        desk.clock = EIGHT_AM + 3.0;
+        desk.tick();
+        assert_eq!(desk.hands().told, [(false, None)], "nobody at the desk agreed to it, and there is no digest to hold it to");
+        let v = desk.view(&owner);
+        assert_eq!(v.needs_you.as_deref(), Some(card));
+        assert_eq!(v.steps[0].state, "waiting");
+        assert!(v.started_by.as_deref().is_some_and(|s| s.starts_with("its schedule, `0 8 * * *`, at ")), "{:?}", v.started_by);
+        assert!(desk.var(&owner, "review").is_none(), "nothing ran without the person");
+
+        desk.clock += CLOCK_SECS as f64;
+        desk.tick();
+        assert_eq!(desk.hands().asked_before, [false, true], "asked again, and told a card was raised for it before");
+        assert!(desk.hands().started.is_empty());
+
+        desk.hands().refuse = None;
+        desk.clock += CLOCK_SECS as f64;
+        desk.tick();
+        assert_eq!(desk.hands().roles(), ["reviewer"], "allowed on its card: started");
+        assert_eq!(desk.status(&owner).0, RecipeStatus::Done);
+    }
+
+    /// `RecipeComplete` chains formations: the Council — started at the desk — completes, and the
+    /// recipe waiting on it starts with the verdict as `{{after_verdict}}`. That start is
+    /// unattended: its Agent step is told nobody agreed to it, whoever agreed to the Council.
+    #[test]
+    fn a_council_completing_starts_the_recipe_waiting_on_it_unattended() {
+        let mut desk = Desk::new();
+        let follow = RecipeStore::create(
+            &desk.conn,
+            "Attack the verdict",
+            "",
+            &[agent("red-team", "Attack this verdict: {{after_verdict}}", "attack")],
+            Some(&TriggerType::RecipeComplete { recipe_id: "Council".into() }),
+        );
+        let council = formation(&desk, formations::COUNCIL, json!({"question": "Ship on Friday?"}));
+        desk.tick();
+        assert_eq!(desk.status(&council).0, RecipeStatus::Done);
+        assert_eq!(desk.status(&follow).0, RecipeStatus::Running, "started by the Council's completion");
+        desk.tick();
+        assert_eq!(desk.hands().roles(), ["researcher", "red-team", "planner", "chair", "red-team"]);
+        let told = &desk.hands().told;
+        assert!(told[..4].iter().all(|(attended, _)| *attended), "the Council was started at the desk: {told:?}");
+        assert_eq!(told[4], (false, None), "the chained run was not");
+        let (_, task, _) = &desk.hands().started[4];
+        assert!(task.starts_with("Attack this verdict: chair answered: Three agents answered"), "{task}");
+        assert_eq!(desk.var(&follow, "after_question"), Some(json!("Ship on Friday?")));
+        assert!(desk.view(&follow).started_by.is_some_and(|s| s.starts_with("Council completing")));
+        // A recipe with an Agent step inside a Branch's arm is not started, and says why.
+        let arm = RecipeStore::create(
+            &desk.conn,
+            "Armed",
+            "",
+            &[RecipeStep::Branch { condition: "x".into(), then_steps: vec![agent("reviewer", "r", "r")], else_steps: vec![] }],
+            None,
+        );
+        let err = RecipeStore::start_run(&desk.conn, &arm, None).unwrap_err();
+        assert!(err.starts_with("'Armed' is not started: it has an Agent step inside a Branch's arm"), "{err}");
+        assert!(err.contains("is not built"), "{err}");
+    }
+
+    /// A recipe's messages are its own: a Notify and the completion right after it are two
+    /// messages, both kept, and a second question is said the moment it is asked — none of them in
+    /// the companion's one proactive slot, none held behind another's cooldown (#187).
+    #[test]
+    fn a_recipes_messages_are_each_kept_and_none_waits_on_another() {
+        use yantrik_ml::{LLMBackend, LLMResponse};
+        struct NoModel;
+        impl LLMBackend for NoModel {
+            fn chat(&self, _m: &[ChatMessage], _c: &GenerationConfig, _t: Option<&[serde_json::Value]>) -> anyhow::Result<LLMResponse> {
+                anyhow::bail!("no model in this test")
+            }
+            fn chat_streaming(
+                &self,
+                m: &[ChatMessage],
+                c: &GenerationConfig,
+                t: Option<&[serde_json::Value]>,
+                _on_token: &mut dyn FnMut(&str),
+            ) -> anyhow::Result<LLMResponse> {
+                self.chat(m, c, t)
+            }
+            fn count_tokens(&self, text: &str) -> anyhow::Result<usize> {
+                Ok(text.len())
+            }
+            fn backend_name(&self) -> &str {
+                "none"
+            }
+        }
+        let db = yantrikdb_core::YantrikDB::new(":memory:", 384).expect("in-memory database");
+        let mut config = crate::config::CompanionConfig::default();
+        config.tools.enabled = false;
+        let mut companion = CompanionService::new(db, std::sync::Arc::new(NoModel), config);
+        let steps = [
+            notify("Starting the digest."),
+            ask("Which folder?", &["Archive", "Trash"], "folder"),
+            ask("And which day?", &["Monday", "Friday"], "day"),
+            notify("{{folder}} on {{day}}"),
+        ];
+        let id = RecipeStore::create(&companion.db.conn(), "Digest", "", &steps, None);
+        RecipeStore::update_status(&companion.db.conn(), &id, &RecipeStatus::Running, 0);
+        let texts = |c: &mut CompanionService| c.take_recipe_messages().into_iter().map(|m| (m.recipe, m.text)).collect::<Vec<_>>();
+
+        run(&mut companion, &id, 20);
+        assert_eq!(
+            texts(&mut companion),
+            [("Digest".to_string(), "Starting the digest.".to_string()), ("Digest".to_string(), "Which folder?\n1. Archive\n2. Trash".to_string())],
+            "the Notify and the question, both"
+        );
+        recipe_view::apply(&companion.db.conn(), &id, &RecipeOp::Answer("Archive".into())).unwrap();
+        run(&mut companion, &id, 20);
+        assert_eq!(texts(&mut companion), [("Digest".to_string(), "And which day?\n1. Monday\n2. Friday".to_string())], "the second question, at once");
+        recipe_view::apply(&companion.db.conn(), &id, &RecipeOp::Answer("Monday".into())).unwrap();
+        run(&mut companion, &id, 20);
+        let last: Vec<String> = texts(&mut companion).into_iter().map(|(_, t)| t).collect();
+        assert_eq!(last, ["Archive on Monday", "Recipe completed: Digest\n\nResult: Archive on Monday"], "the Notify and the completion, neither over the other");
+        assert!(companion.take_proactive_message().is_none(), "nothing went through the proactive slot");
+    }
+
+    /// A step's view in a run shows what the run has, not the template's placeholders (#194): the
+    /// role that took a seat, the question as asked, a reference and a link to each answer it
+    /// reads, the answer's head with its lines for a view that draws markdown, and the agent whose
+    /// session holds all of it.
+    #[test]
+    fn a_runs_steps_show_their_values_and_link_their_answers() {
+        let mut desk = Desk::new();
+        desk.hands().says("chair", vec![AgentPoll::Answered("## Verdict\n\n**Ship on Monday.** Confidence: high.\n\n- the tests pass\n- nobody is on call Saturday".into())]);
+        let id = formation(&desk, formations::COUNCIL, json!({"question": "Ship on Friday?", "seat_2": "reviewer"}));
+        desk.tick();
+        let v = desk.view(&id);
+        assert_eq!(v.status, "done");
+        let seat = &v.steps[1];
+        assert!(seat.detail.contains(&"hands to: reviewer".to_string()), "{:?}", seat.detail);
+        assert!(seat.detail.iter().any(|d| d.ends_with("The question: Ship on Friday?")), "{:?}", seat.detail);
+        assert!(v.steps.iter().all(|s| s.detail.iter().all(|d| !d.contains("{{"))), "no placeholder left in a finished run");
+        let chair = &v.steps[3];
+        let reads_first = chair.detail.iter().find(|d| d.starts_with("reads first:")).unwrap();
+        assert_eq!(
+            reads_first,
+            "reads first: From the researcher:\n[step 1: the Researcher's answer]\n\nFrom the reviewer:\n[step 2: the Reviewer's answer]\n\nFrom the planner:\n[step 3: the Planner's answer]"
+        );
+        let links: Vec<(usize, &str, &str)> = chair.reads.iter().map(|l| (l.step, l.label.as_str(), l.agent.as_str())).collect();
+        assert_eq!(links, [(0, "Researcher · step 1", "pi:c-0001"), (1, "Reviewer · step 2", "pi:c-0002"), (2, "Planner · step 3", "pi:c-0003")]);
+        assert_eq!(chair.agent_id.as_deref(), Some("pi:c-0004"));
+        assert_eq!(chair.answer.as_deref(), Some("## Verdict\n\n**Ship on Monday.** Confidence: high.\n\n- the tests pass\n- nobody is on call Saturday"));
+        assert_eq!(chair.result.as_deref(), Some("## Verdict **Ship on Monday.** Confidence: high. - the tests pass - nobody is on call Saturday"));
+
+        // The definition keeps its placeholders, and says which inputs are seats.
+        let template = recipe_view::list(&desk.conn).into_iter().find(|v| v.id == formations::COUNCIL).unwrap();
+        assert!(template.steps[0].detail.contains(&"hands to: {{seat_1}}".to_string()));
+        let seats: Vec<(&str, bool)> = template.inputs.iter().map(|i| (i.name.as_str(), i.seat)).collect();
+        assert_eq!(seats, [("question", false), ("seat_1", true), ("seat_2", true), ("seat_3", true), ("chair", true)]);
+        let long = "x".repeat(recipe_view::ANSWER_HEAD * 2);
+        assert!(recipe_view::answer_head(&long).ends_with("\n\n…"));
     }
 }

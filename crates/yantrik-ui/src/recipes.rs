@@ -226,6 +226,10 @@ fn describe(snap: &Snapshot) -> serde_json::Value {
                 "agents": v.agents,
                 // What its agents need the person for, if anything: a card, a place.
                 "needs_you": v.needs_you,
+                // A run a trigger started — with nobody at the desk — and by what; and what
+                // starts this recipe on its own (#187).
+                "started_by": v.started_by,
+                "triggers": v.triggers,
                 "updated_at": v.updated_at as i64,
             })
         })
