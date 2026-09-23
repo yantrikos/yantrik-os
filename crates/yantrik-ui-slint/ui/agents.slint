@@ -15,6 +15,7 @@ import { YButton } from "components/y_button.slint";
 import { YInput } from "components/y_input.slint";
 import { ToolCallData, ToolCallCard } from "components/tool_call.slint";
 import { ApprovalRequest, ApprovalCard } from "components/intent_lens.slint";
+import { OverviewNode, OverviewEdge, AgentsOverview } from "agents_overview.slint";
 
 export struct AgentTabData {
     id: string,        // active | needs_you | complete | all
@@ -153,6 +154,12 @@ export global AgentsState {
     in-out property <string> notice: "";
     // Close, while work is running: the agent waiting for a yes.
     in-out property <string> confirm-close: "";
+    // List, or Overview: every mind and agent on this machine as one map (#226). The map is laid
+    // out by the shell for the size the map reports, from every agent, whatever the tab.
+    in-out property <string> view: "list";
+    in-out property <[OverviewNode]> overview-nodes: [];
+    in-out property <[OverviewEdge]> overview-edges: [];
+    in-out property <string> overview-summary: "";
 
     callback select-tab(string);
     callback select(string);
@@ -178,6 +185,38 @@ export global AgentsState {
     // Show one agent on the Agents screen — the Lens's "open in Agents", a notification's Open,
     // `show_agent`.
     callback show-agent(string);
+    // The map's size, whenever it changes.
+    callback overview-resized(length, length);
+}
+
+// List | Overview, beside New agent.
+component ViewSwitch inherits Rectangle {
+    height: 32px;
+    width: views.preferred-width;
+    border-radius: 8px;
+    border-width: 1px;
+    border-color: Theme.border-subtle;
+    views := HorizontalLayout {
+        padding: 2px;
+        spacing: 2px;
+        for view in [{ id: "list", label: "List" }, { id: "overview", label: "Overview" }] : Rectangle {
+            width: label.preferred-width + 20px;
+            border-radius: 6px;
+            background: AgentsState.view == view.id ? Theme.accent-glow : ta.has-hover ? Theme.hover-fill : transparent;
+            label := Text {
+                text: view.label;
+                color: AgentsState.view == view.id ? Theme.text-primary : Theme.text-secondary;
+                font-size: Theme.fs-caption;
+                font-weight: AgentsState.view == view.id ? 600 : 400;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+            ta := TouchArea {
+                mouse-cursor: pointer;
+                clicked => { AgentsState.view = view.id; }
+            }
+        }
+    }
 }
 
 component StateDot inherits Rectangle {
@@ -864,6 +903,7 @@ export component AgentsScreen inherits Rectangle {
                 clicked => { AgentsState.select-tab(tab.id); }
             }
             Rectangle { horizontal-stretch: 1; }
+            ViewSwitch { }
             YButton {
                 label: "New agent";
                 icon-path: Icons.plus;
@@ -886,55 +926,81 @@ export component AgentsScreen inherits Rectangle {
 
         if AgentsState.notice != "" : NoticeBar { }
 
-        HorizontalLayout {
-            spacing: Theme.sp-3;
+        // The list and one session, with the Overview's map laid over them when it is chosen. Over,
+        // not instead of: the list keeps its place and its scroll, so going back finds it as left.
+        Rectangle {
             vertical-stretch: 1;
 
-            Rectangle {
-                width: 270px;
-                border-radius: 12px;
-                background: Theme.bg-card;
-                border-width: 1px;
-                border-color: Theme.border-subtle;
-                clip: true;
-                list-area := TouchArea {
-                    VerticalLayout {
-                        padding: Theme.sp-2;
-                        spacing: 4px;
-                        if AgentsState.rows.length == 0 : Text {
-                            text: AgentsState.empty-note;
-                            color: Theme.text-secondary;
-                            font-size: Theme.fs-caption;
-                            wrap: word-wrap;
-                        }
-                        rows-flick := Flickable {
-                            vertical-stretch: 1;
-                            viewport-height: rows-col.preferred-height;
-                            // Not the layout directly, for the same reason as the session's.
-                            Rectangle {
-                                width: rows-flick.width;
-                                height: rows-col.preferred-height;
-                                rows-col := VerticalLayout {
-                                    spacing: 4px;
-                                    for row in AgentsState.rows : AgentRow {
-                                        data: row;
-                                        selected: row.id == AgentsState.selected;
-                                        clicked => { AgentsState.select(row.id); }
-                                        double-clicked => { AgentsState.pop-out(row.id); }
+            HorizontalLayout {
+                spacing: Theme.sp-3;
+
+                Rectangle {
+                    width: 270px;
+                    border-radius: 12px;
+                    background: Theme.bg-card;
+                    border-width: 1px;
+                    border-color: Theme.border-subtle;
+                    clip: true;
+                    list-area := TouchArea {
+                        VerticalLayout {
+                            padding: Theme.sp-2;
+                            spacing: 4px;
+                            if AgentsState.rows.length == 0 : Text {
+                                text: AgentsState.empty-note;
+                                color: Theme.text-secondary;
+                                font-size: Theme.fs-caption;
+                                wrap: word-wrap;
+                            }
+                            rows-flick := Flickable {
+                                vertical-stretch: 1;
+                                viewport-height: rows-col.preferred-height;
+                                // Not the layout directly, for the same reason as the session's.
+                                Rectangle {
+                                    width: rows-flick.width;
+                                    height: rows-col.preferred-height;
+                                    rows-col := VerticalLayout {
+                                        spacing: 4px;
+                                        for row in AgentsState.rows : AgentRow {
+                                            data: row;
+                                            selected: row.id == AgentsState.selected;
+                                            clicked => { AgentsState.select(row.id); }
+                                            double-clicked => { AgentsState.pop-out(row.id); }
+                                        }
                                     }
                                 }
                             }
                         }
                     }
                 }
+
+                AgentSession {
+                    horizontal-stretch: 1;
+                }
+
+                AgentDetailsColumn {
+                    width: 250px;
+                }
             }
 
-            AgentSession {
-                horizontal-stretch: 1;
-            }
-
-            AgentDetailsColumn {
-                width: 250px;
+            if AgentsState.view == "overview" : AgentsOverview {
+                nodes: AgentsState.overview-nodes;
+                edges: AgentsState.overview-edges;
+                summary: AgentsState.overview-summary;
+                selected: AgentsState.selected;
+                resized(w, h) => { AgentsState.overview-resized(w, h); }
+                // An agent opens in the list with its session, whatever tab it is under; the fold of
+                // finished agents opens the Complete tab. A mind or the machine is only a place.
+                pick(id, kind) => {
+                    if (kind == "agent") {
+                        AgentsState.select-tab("all");
+                        AgentsState.select(id);
+                        AgentsState.view = "list";
+                    } else if (kind == "more") {
+                        AgentsState.select-tab("complete");
+                        AgentsState.view = "list";
+                    }
+                }
+                open(id) => { AgentsState.pop-out(id); }
             }
         }
     }

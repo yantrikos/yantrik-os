@@ -13,6 +13,7 @@ run target/ui-validation/unused.png 800 600 verify-launcher
 run target/ui-validation/unused.png 1280 800 verify-apps
 run target/ui-validation/mind-panel.png 1280 800 verify-mind-panel
 run target/ui-validation/lens-answers.png 640 800 verify-lens-answers
+run target/ui-validation/agents-overview.png 1280 800 verify-agents-overview
 for scene in notes files settings desktop agent; do
     run "target/ui-validation/$scene.png" 1280 800 "$scene"
     run "target/ui-validation/$scene-compact.png" 800 600 "$scene"

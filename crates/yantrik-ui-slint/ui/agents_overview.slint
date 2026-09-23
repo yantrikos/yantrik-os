@@ -1,0 +1,203 @@
+// The Agents Overview (#226): every mind and agent at work on this machine, as one map.
+//
+// The machine in the middle, each attached mind on the first ring, each agent hung off the mind
+// it runs on — or off the agent that started it, so a formation reads as a tree. The one state
+// that asks something of the person is amber, and so is every link on the way to it, so it can be
+// found from the middle out.
+//
+// Only drawing lives here. Where each node and label sits is worked out by the shell, in
+// crates/yantrik-ui/src/agents_overview.rs, from the same rows the list shows: this component
+// reports the pixels it has, and draws what comes back. It reads no global, so the Agents screen
+// can put it over its list without the two importing each other.
+//
+// Nothing here runs a timer. A node that changes state fades to its new colour and stops; a map
+// in which nothing changes costs nothing to leave on screen (#68).
+
+import { Theme } from "theme.slint";
+
+export struct OverviewNode {
+    id: string,
+    kind: string,          // hub | mind | agent | more
+    x: float,              // the centre, in the map's own pixels
+    y: float,
+    size: float,
+    state: string,         // an agent's state; mind | harness_gone for a mind; hub
+    title: string,
+    sub: string,
+    label-x: float,
+    label-y: float,
+    label-w: float,
+    label-h: float,
+}
+
+export struct OverviewEdge {
+    d: string,             // SVG path data, in the map's own pixels
+    state: string,         // the state of the node it leads to
+    hot: bool,             // leads to something waiting on the person
+    leader: bool,          // a label's leader line
+}
+
+// A state's colour: the list's StateDot's, so the two views of one agent agree.
+global MapColour {
+    public pure function of(node-kind: string, state: string) -> color {
+        return node-kind == "hub" ? Theme.accent
+            : node-kind == "mind" ? (state == "harness_gone" ? Theme.text-dim : Theme.cyan-light)
+            : state == "waiting_for_you" ? Theme.amber
+            : state == "thinking" || state == "running_tool" ? Theme.accent
+            : state == "done" ? Theme.color-success
+            : state == "failed" ? Theme.color-danger
+            : Theme.text-dim;
+    }
+}
+
+component MapNode inherits Rectangle {
+    in property <OverviewNode> node;
+    in property <bool> selected;
+    callback clicked;
+    callback double-clicked;
+    property <color> tint: MapColour.of(root.node.kind, root.node.state);
+
+    x: (root.node.x - root.node.size / 2) * 1px;
+    y: (root.node.y - root.node.size / 2) * 1px;
+    width: root.node.size * 1px;
+    height: root.node.size * 1px;
+    border-radius: self.width / 2;
+    background: Theme.bg-surface;
+    border-width: root.node.kind == "mind" ? 3px : 2px;
+    border-color: root.tint;
+    drop-shadow-blur: root.node.state == "waiting_for_you" || root.selected ? 10px : 0px;
+    drop-shadow-color: root.node.state == "waiting_for_you" ? Theme.amber-glow-strong : Theme.accent-glow;
+    animate border-color { duration: 300ms; }
+
+    Rectangle {
+        width: parent.width * 0.4;
+        height: self.width;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        border-radius: self.width / 2;
+        background: root.tint;
+        animate background { duration: 300ms; }
+    }
+
+    TouchArea {
+        mouse-cursor: root.node.kind == "agent" || root.node.kind == "more" ? MouseCursor.pointer : MouseCursor.default;
+        clicked => { root.clicked(); }
+        double-clicked => { root.double-clicked(); }
+    }
+}
+
+component MapLabel inherits Rectangle {
+    in property <OverviewNode> node;
+    in property <bool> selected;
+    callback clicked;
+    callback double-clicked;
+    property <bool> waiting: root.node.state == "waiting_for_you";
+
+    // The hub has no label: the machine's name leads the summary.
+    visible: root.node.label-w > 0;
+    x: root.node.label-x * 1px;
+    y: root.node.label-y * 1px;
+    width: root.node.label-w * 1px;
+    height: root.node.label-h * 1px;
+    border-radius: 6px;
+    background: Theme.bg-elevated;
+    border-width: 1px;
+    border-color: root.selected ? Theme.accent : root.waiting ? Theme.amber-dim : Theme.border-subtle;
+
+    VerticalLayout {
+        padding-left: 8px;
+        padding-right: 8px;
+        alignment: center;
+
+        Text {
+            text: root.node.title;
+            color: Theme.text-primary;
+            font-size: Theme.fs-caption;
+            font-weight: root.node.kind == "agent" ? 400 : 600;
+            overflow: elide;
+        }
+        if root.node.sub != "" : Text {
+            text: root.node.sub;
+            color: root.waiting ? Theme.amber-light : Theme.text-dim;
+            font-size: Theme.fs-micro;
+            overflow: elide;
+        }
+    }
+
+    TouchArea {
+        mouse-cursor: root.node.kind == "agent" || root.node.kind == "more" ? MouseCursor.pointer : MouseCursor.default;
+        clicked => { root.clicked(); }
+        double-clicked => { root.double-clicked(); }
+    }
+}
+
+export component AgentsOverview inherits Rectangle {
+    in property <[OverviewNode]> nodes;
+    in property <[OverviewEdge]> edges;
+    in property <string> summary;
+    in property <string> selected;
+    // The map's size in pixels, whenever it changes: the shell lays the map out for it.
+    callback resized(length, length);
+    // A node was pressed: its id and kind. Double-pressed: its id.
+    callback pick(string, string);
+    callback open(string);
+
+    background: Theme.bg-card;
+    border-radius: 12px;
+    border-width: 1px;
+    border-color: Theme.border-subtle;
+    clip: true;
+    // Takes the pointer, so nothing under the map (the list it covers) reacts to it.
+    TouchArea { }
+
+    VerticalLayout {
+        padding: Theme.sp-3;
+        spacing: Theme.sp-2;
+
+        Text {
+            text: root.summary;
+            color: Theme.text-secondary;
+            font-size: Theme.fs-caption;
+            overflow: elide;
+        }
+
+        map := Rectangle {
+            vertical-stretch: 1;
+            property <length> map-w: self.width;
+            property <length> map-h: self.height;
+            changed map-w => { root.resized(self.width, self.height); }
+            changed map-h => { root.resized(self.width, self.height); }
+            init => { root.resized(self.width, self.height); }
+
+            for edge in root.edges : Path {
+                x: 0;
+                y: 0;
+                width: map.width;
+                height: map.height;
+                viewbox-x: 0;
+                viewbox-y: 0;
+                viewbox-width: map.width / 1px;
+                viewbox-height: map.height / 1px;
+                commands: edge.d;
+                stroke: edge.leader ? Theme.border-default
+                    : edge.hot ? Theme.amber
+                    : MapColour.of("agent", edge.state).with-alpha(0.45);
+                stroke-width: edge.leader ? 1px : edge.hot ? 2px : 1.4px;
+            }
+
+            for node in root.nodes : MapNode {
+                node: node;
+                selected: node.id == root.selected;
+                clicked => { root.pick(node.id, node.kind); }
+                double-clicked => { root.open(node.id); }
+            }
+
+            for node in root.nodes : MapLabel {
+                node: node;
+                selected: node.id == root.selected;
+                clicked => { root.pick(node.id, node.kind); }
+                double-clicked => { root.open(node.id); }
+            }
+        }
+    }
+}
