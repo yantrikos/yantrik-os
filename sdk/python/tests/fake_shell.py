@@ -1,5 +1,7 @@
 """A stand-in for the desktop's shell, for the tests: the three approval actions `yos` and the
-dispatch call on `app-shell`, granting every request at once and spending each grant once.
+dispatch call on `app-shell`, granting every request at once and spending each grant once — and
+`agent.reach`, which a door asks about an agent token: a Reader held to `hello.look` at `safe`
+(`tok-reader`), a live agent with no role (`tok-plain`), and no other live agent.
 
 `support.ShellStandIn` runs this under a copy of the Python interpreter named `yantrik-ui`, so
 the kernel's account of the listener (`SO_PEERCRED` → `/proc/<pid>/exe`) passes the shell-peer
@@ -7,11 +9,37 @@ rule exactly as the real shell does — nothing in the rule is patched. That the
 file name is the protocol's own caveat: anything running as the person can do this.
 """
 
-from yantrik_surface import Refusal, Surface
+from yantrik_surface import Refusal, Surface, reach
 
 requests = {}
 spent = []
-shell = Surface("shell", summary=lambda: "stand-in shell, %d granted" % len(requests))
+AGENTS = {
+    reach.token_digest("tok-reader"): (
+        reach.HELD, reach.Reach("pi:c-read", "reader", "Reader", ["hello.look"], "safe")),
+    reach.token_digest("tok-plain"): (reach.PLAIN, None),
+}
+
+
+def standing(digest):
+    return AGENTS.get(digest, (reach.UNKNOWN, None))
+
+
+class Shell(Surface):
+    """Answers `agent.reach` beside `app.describe` and `app.act`, as the shell's dispatch does:
+    from what it keeps, by the token's digest."""
+
+    def handle_from(self, method, params, peer):
+        if method == reach.ASK:
+            kind, held = standing(params.get("token_sha256") if isinstance(params, dict) else None)
+            answer = {"standing": kind}
+            if held is not None:
+                answer["reach"] = dict(held._asdict())
+            return answer
+        return super().handle_from(method, params, peer)
+
+
+shell = Shell("shell", summary=lambda: "stand-in shell, %d granted" % len(requests),
+              reach_of=lambda token: standing(reach.token_digest(token)))
 
 
 @shell.view

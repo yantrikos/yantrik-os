@@ -156,9 +156,9 @@ machine's ceiling and the person's mode, spending a grant, who is calling (`call
 which agent (`agent_token()`). The Python SDK replays the vectors generated from the Rust dispatch
 in its own tests ([Checking your surface](checking.md#the-vectors)).
 
-One difference to know: the Rust dispatch holds a call carrying an agent's token to that agent's
-**reach** (step 3 of the protocol's order); the Python SDK does not yet ([Choosing a
-grade](grades.md#an-agents-reach)).
+A call carrying an agent's token is held to that agent's **reach** as the Rust dispatch holds it
+(step 3 of the protocol's order; [Choosing a grade](grades.md#an-agents-reach)), and the reach's
+own vectors are replayed too.
 
 ## Test it in-process
 

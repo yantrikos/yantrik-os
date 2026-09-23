@@ -138,7 +138,7 @@ Whoever sends it — a mind's tools, `yos act`, the MCP bridge, a raw client on 
 ([the protocol](../surface-protocol.md#5-appact), §5):
 
 1. the action exists;
-2. **the agent's reach**, if the call carries an agent's token (Rust dispatch; see below);
+2. **the agent's reach**, if the call carries an agent's token (see below);
 3. the arguments: an object, none missing, none undeclared, each of its declared type or converting
    to it without loss — so a person's Allow is never used up on a call that was never going to run;
 4. **the ceiling**, on the grade;
@@ -201,17 +201,18 @@ desktop's own shell process. You do nothing to support grants; the SDK does it.
 
 A person can start an agent from a role — a Reviewer, a Coder, a Planner — and a role carries a
 **reach**: the surfaces it may act on and a ceiling of its own, narrower than the machine's. A call
-made for such an agent carries its token beside the arguments, and the Rust dispatch holds it to
-the reach before anything else is looked at:
+made for such an agent carries its token beside the arguments, and the dispatch — Rust or
+Python — holds it to the reach before anything else is looked at:
 
 ```text
 REACH: counter.reset is outside the Counter's reach, so it was not run. …
 ```
 
 A reach only takes away: nothing in it lets a call past the machine's ceiling or the person's
-mode. **The Python SDK does not check reach yet** — a Python surface (Blender's, LibreOffice's)
-runs a role's call that is outside its reach if the grade and the mode allow it. Until it does,
-grade Python surfaces as if any agent might call them, which is what a grade is for anyway.
+mode. The shell keeps every agent's reach, and the dispatch asks it what a token is; a token no
+live agent carries, or any token while the shell does not answer, is refused. You do nothing to
+support this; the SDK does it. Grade your surface as if any agent might call it anyway, which is
+what a grade is for.
 
 ## Where to go next
 

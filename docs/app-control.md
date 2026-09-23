@@ -223,12 +223,31 @@ hand work to catalog roles through `hand_off` (see [harness.md](harness.md), For
 An agent started from a role in the agent catalog (`shell.hand_off`) is also held to the role's
 **reach** — the surfaces it may touch (`notes`, `shell.agent_run`, `shell.agent_*`) and a grade
 ceiling narrower than the machine's. Every door that lifts a token checks it before any grant is
-spent and before the handler runs: a window's dispatch here, a service through
-`yantrik_service_sdk::reach::permits` before `gate::permit`. The shell publishes each such agent's
-reach in `~/.config/yantrik/agent-reach.json`, keyed by the SHA-256 of its token (never the token),
-and an act outside it is refused with `REACH:` and a sentence naming the role
-(`yantrik_ipc_transport::reach`). A token with no reach is not held; a call with no token is the
-person's.
+spent and before the handler runs: a window's dispatch here, a service's through the same
+`yantrik-surface` dispatch (`yantrik_service_sdk::reach::permits` for one that answers `app.act`
+itself). An act outside it is refused with `REACH:` and a sentence naming the role, what it may
+touch and what it may open (`yantrik_ipc_transport::reach`).
+
+A role may **open the apps its reach names**: `shell.open_app name=notes` (and `show_app`, which
+brings an open one forward) is within a reach that names `notes`, `notes.<action>` or
+`notes.<prefix>*`, whatever the role's ceiling — opening a window is not an act on the app's data,
+and a Planner held to `calendar, notes · safe` must be able to read them while they are closed.
+The name is resolved the way `open_app` opens it and the catalog names apps, so an alias works
+(`text-editor` is the Editor), and nothing else is opened on a reach's say-so: not another app,
+not a screen, not the launcher, not the browser. Inside the app the role is held to its ceiling as
+before, and the machine's ceiling and the person's mode still decide the opening itself. The role's
+first turn says which apps it may open.
+
+The **shell keeps every agent's reach**, as it keeps grants. A door in another process asks it
+what a token is — `agent.reach {token_sha256}` on `app-shell.sock`, by the token's SHA-256, never
+the token, answered on the shell's RPC thread and only by a `yantrik-ui` process — and is told
+`held` (with the reach), `plain` (a live agent with no role, which only the gate decides for) or
+`unknown`. It fails closed: a token no live agent carries — its agent stopped, or the shell
+restarted since it was handed out — is refused, and so is every token-carrying call while the
+shell does not answer. A call with no token is the person's own and asks nothing. (The reach used
+to be a file, `~/.config/yantrik/agent-reach.json`, that each door read; a missing file meant no
+reach for anyone, so anything running as the person could delete it and lift every reach (#189).
+The shell now removes a file an older build left.)
 
 The rule lives in `yantrik_ipc_transport::gate` (re-exported as `yantrik_app_runtime::control`), so
 a service that answers `app.act` in its own handler meets it too, without linking Slint. System

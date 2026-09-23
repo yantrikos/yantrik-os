@@ -198,17 +198,27 @@ mod over_a_socket {
             // Nothing else in this crate's tests reads the files; the socket is the only door that
             // meets `Authority::now()`.
             std::env::set_var("HOME", root.join("home"));
-            // One agent with a role: it may count, and read who it is, and nothing above
-            // `standard`. Installed as the shell installs its own registry.
-            yantrik_ipc_transport::reach::read_reach_with(|token| {
-                (token == "tok-counter-role").then(|| yantrik_ipc_transport::reach::Reach {
-                    agent: "pi:c-count1".into(),
-                    role: "counter".into(),
-                    name: "Counter".into(),
-                    surfaces: vec!["counter.increment".into(), "counter.who".into()],
-                    ceiling: "standard".into(),
-                })
-            });
+            // The shell's store of agents, installed as the shell installs its own: one agent
+            // with a role — it may count, and read who it is, and nothing above `standard` — two
+            // live agents with none, and every other token no live agent's.
+            {
+                use yantrik_ipc_transport::reach::{keep_reach_with, token_digest, Reach, Standing};
+                keep_reach_with(|digest| {
+                    if digest == token_digest("tok-counter-role") {
+                        Standing::Held(Reach {
+                            agent: "pi:c-count1".into(),
+                            role: "counter".into(),
+                            name: "Counter".into(),
+                            surfaces: vec!["counter.increment".into(), "counter.who".into()],
+                            ceiling: "standard".into(),
+                        })
+                    } else if digest == token_digest("tok-no-role") || digest == token_digest("tok-7f3a") {
+                        Standing::Plain
+                    } else {
+                        Standing::Unknown
+                    }
+                });
+            }
 
             let count = Arc::new(AtomicI64::new(0));
             let surface = Surface::new("counter")
@@ -460,10 +470,20 @@ mod over_a_socket {
         let kept = call("app.act", json!({ "action": "reset", "args": {}, "grant": "fresh-held" }));
         assert_eq!(kept["result"]["accepted"], true, "{kept}");
 
-        // A token with no reach is not held; the mode still is (reset is `sensitive`, and this
-        // machine is in ask mode).
+        // A live agent with no role is not held; the mode still is (reset is `sensitive`, and
+        // this machine is in ask mode).
         let (_, message) = refused(&with("reset", "tok-no-role", None));
         assert!(message.starts_with("GRANT:"), "{message}");
+
+        // A token no live agent carries is refused, whatever it asks — even an action this
+        // surface does not have — and a grant it carried is still whole afterwards.
+        stand_in::allow("fresh-stopped", "counter", "increment", json!({}));
+        for (action, grant) in [("increment", None), ("increment", Some("fresh-stopped")), ("wipe", None)] {
+            let (code, message) = refused(&with(action, "tok-stopped", grant));
+            assert_eq!(code, -32602);
+            assert!(message.starts_with("REACH: the agent token this call carries names no live agent"), "{action}: {message}");
+        }
+        assert!(!stand_in::spent("fresh-stopped"));
     }
 
     /// A person's Allow is not used up on a call its own arguments refuse, on a service's door as

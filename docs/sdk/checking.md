@@ -114,7 +114,7 @@ In this repository CI runs `yos check` against `examples/hello-surface` (Rust), 
 
 ## The vectors
 
-Two files hold the dispatch's behaviour as data, generated from the Rust code, so an
+Three files hold the dispatch's behaviour as data, generated from the Rust code, so an
 implementation in another language can prove it decides the same way.
 
 - **[`surface-vectors.json`](../../deploy/yantrik-os/surface-vectors.json)** — the decision: grade ×
@@ -128,6 +128,11 @@ implementation in another language can prove it decides the same way.
   what each call answered and which grants were spent after it. Generated from the
   `yantrik-surface` crate by
   `YANTRIK_WRITE_VECTORS=1 cargo test -p yantrik-surface --lib dispatch_vectors_write`.
+- **[`reach-vectors.json`](../../deploy/yantrik-os/reach-vectors.json)** — an agent's reach:
+  `within`, calls held to a role's surfaces and ceiling (and the apps it may open); and `standing`,
+  what the shell answered about a token and what a door decides from it. Generated from
+  `yantrik_ipc_transport::reach` by
+  `YANTRIK_WRITE_VECTORS=1 cargo test -p yantrik-ipc-transport --lib reach_vectors_write`.
 
 A row of `coerce` — an integer sent for a text parameter is its digits:
 

@@ -151,6 +151,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use yantrik_ipc_contracts::email::ServiceError;
+use yantrik_ipc_transport::reach;
 use yantrik_ipc_transport::server::{PeerCred, RpcServer, ServiceHandler};
 use yantrik_surface::{
     finish_later, next_action_id, refusal, ActCall, AgentTokenScope, CallerScope, Later, LaterScope,
@@ -509,11 +510,19 @@ impl ControlRpc {
         match method {
             "app.describe" => on_ui_thread(who, |reg| reg.describe()).map_err(unanswered),
 
+            // Agents catalog: a door in another process asking what an agent token is
+            // (`yantrik_ipc_transport::reach::ASK`, by the token's digest). Only the process that
+            // keeps the agents' reach answers — the shell — and it answers here, on this thread,
+            // from memory: never through the UI thread, because every token-carrying act on every
+            // other door waits on this answer.
+            reach::ASK if reach::keeps_reach() => reach::answer(&params).map_err(refusal),
+
             "app.act" => {
                 let call = ActCall::parse(&params)?;
                 // Agents catalog: the calling agent's reach (`yantrik_ipc_transport::reach`) —
                 // read here, where IO belongs, and held to below before any grant is spent and
-                // before the handler runs. No token, or a token with no reach, is not held.
+                // before the handler runs. No token, or a live agent with no role, is not held; a
+                // token no live agent carries, or a shell that does not answer, is refused.
                 let reach = call.reach()?;
                 let action_id = next_action_id(&self.service_id);
 
@@ -532,7 +541,7 @@ impl ControlRpc {
                 call.spend_grant(&mut authority, &self.app_id, || {
                     let (name, args, reach) = (call.action.clone(), call.args.clone(), reach.clone());
                     on_ui_thread(who, move |reg| {
-                        reg.within_reach(reach.as_ref(), &name).and_then(|()| reg.check_call(&name, &args))
+                        reg.within_reach(reach.as_ref(), &name, &args).and_then(|()| reg.check_call(&name, &args))
                     })
                     .map_err(unanswered)?
                     .map_err(refusal)
@@ -543,7 +552,7 @@ impl ControlRpc {
                 on_ui_thread(who, move |reg| {
                     let _agent = AgentTokenScope::enter(agent_token);
                     // The reach, on the grade this surface publishes now — the one `act` decides on.
-                    reg.within_reach(reach.as_ref(), &action).and_then(|()| {
+                    reg.within_reach(reach.as_ref(), &action, &args).and_then(|()| {
                         reg.act(&action, &args, expect_revision.as_deref(), &action_id, &authority)
                     })
                 })
@@ -1315,6 +1324,28 @@ mod tests {
             std::fs::create_dir_all(&runtime).expect("a runtime dir of our own");
             std::env::set_var("XDG_RUNTIME_DIR", &runtime);
 
+            // The shell's store of agents, as the shell installs its own: one Reviewer, held to
+            // `echo` and `nuke` here at `safe`; two live agents with no role; every other token
+            // no live agent's. Installed before anything is served, so every test below that
+            // carries a token meets the same store, and this process — the stand-in shell —
+            // answers `agent.reach` for any door that asks.
+            use yantrik_ipc_transport::reach::{keep_reach_with, token_digest, Reach, Standing};
+            keep_reach_with(|digest| {
+                if digest == token_digest("tok-reach-reviewer") {
+                    Standing::Held(Reach {
+                        agent: "deepseek:c-reach1".into(),
+                        role: "reviewer".into(),
+                        name: "Reviewer".into(),
+                        surfaces: vec!["caller-test.echo".into(), "caller-test.nuke".into()],
+                        ceiling: "safe".into(),
+                    })
+                } else if digest == token_digest("tok-no-reach") || digest == token_digest("tok-7f3a") {
+                    Standing::Plain
+                } else {
+                    Standing::Unknown
+                }
+            });
+
             test_ui_thread::start(Box::new(|| {
                 registry(
                     APP,
@@ -1389,6 +1420,14 @@ mod tests {
             }
             panic!("nothing ever bound {address}");
         })
+    }
+
+    /// Held by the tests that time an answer against the UI stand-in, so one of them keeping the
+    /// stand-in busy on purpose cannot be what another one measures.
+    #[cfg(unix)]
+    fn timed_alone() -> std::sync::MutexGuard<'static, ()> {
+        static TIMED: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        TIMED.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// One JSON-RPC line out, one back, on a connection of its own.
@@ -1486,24 +1525,14 @@ mod tests {
     }
 
     /// Agents catalog: an agent started from a role is held to the role's reach on the real
-    /// dispatch — its token names a reach (here through an installed reader, as the shell installs
-    /// its own registry), an act on its surfaces runs, one off them is refused in the reach's words
-    /// before the handler and before any grant is spent, and a token with no reach is not held.
+    /// dispatch — its token names a reach (here through the stand-in shell's store, installed as
+    /// the shell installs its own), an act on its surfaces runs, one off them is refused in the
+    /// reach's words before the handler and before any grant is spent; a live agent with no role
+    /// is not held, and a token no live agent carries is refused whatever it asks for.
     #[cfg(unix)]
     #[test]
     fn an_agent_is_held_to_its_reach_on_the_socket_before_any_grant_is_spent() {
-        use yantrik_ipc_transport::reach;
-
         spend_through_a_stand_in_shell();
-        reach::read_reach_with(|token| {
-            (token == "tok-reach-reviewer").then(|| reach::Reach {
-                agent: "deepseek:c-reach1".into(),
-                role: "reviewer".into(),
-                name: "Reviewer".into(),
-                surfaces: vec!["caller-test.echo".into(), "caller-test.nuke".into()],
-                ceiling: "safe".into(),
-            })
-        });
         let act = |action: &str, token: &str, grant: Option<&str>| {
             let mut params = serde_json::json!({ "action": action, "args": {}, "agent_token": token });
             if let Some(grant) = grant {
@@ -1519,6 +1548,7 @@ mod tests {
         let err = reply["error"]["message"].as_str().unwrap_or_default();
         assert!(err.starts_with("REACH: caller-test.who is outside the Reviewer's reach"), "{reply}");
         assert!(err.contains("`deepseek:c-reach1` is the Reviewer"), "{err}");
+        assert!(err.contains("and may open caller-test (`shell.open_app name=<app>`)"), "it is told what it may open: {err}");
         assert_eq!(reply["error"]["code"], -32602, "a policy answer, not a transport fault");
 
         // A grade off the ladder is refused by the reach before the machine's ceiling is asked.
@@ -1531,11 +1561,59 @@ mod tests {
         spend_for_render(open(), "fresh-reach", &serde_json::json!({"out": "x.png"}))
             .expect("the reach's refusal spent nothing");
 
-        // Another agent's token, with no reach, is not held; and the person's call has none.
+        // A live agent with no role is not held; and the person's call has no token at all.
         let reply = act("who", "tok-no-reach", None);
         assert!(reply["error"].is_null(), "{reply}");
         let reply = call(r#"{"jsonrpc":"2.0","id":9,"method":"app.act","params":{"action":"who","args":{}}}"#);
         assert!(reply["error"].is_null(), "{reply}");
+
+        // A token no live agent carries — a stopped agent's — is refused, whatever it asks, and
+        // its grant is left whole.
+        allow("window-stopped", "caller-test", "who", serde_json::json!({}));
+        for grant in [None, Some("window-stopped")] {
+            let reply = act("who", "tok-stopped", grant);
+            let err = reply["error"]["message"].as_str().unwrap_or_default();
+            assert!(err.starts_with("REACH: the agent token this call carries names no live agent"), "{reply}");
+        }
+        assert!(!spent("window-stopped"), "refused before any grant was looked at");
+    }
+
+    /// The shell answers a door's question about a token by digest, over its socket, and never
+    /// through the UI thread: every token-carrying act on every other door waits on this answer.
+    /// Asked of the dispatch while the UI stand-in is busy for a second and a half, it answers at
+    /// once. (Asked over the socket it can still queue behind two workers that are themselves
+    /// waiting on a busy UI thread — at most `UI_ROUNDTRIP`, inside the door's `ASK_ROUNDTRIP`.)
+    #[cfg(unix)]
+    #[test]
+    fn the_shell_answers_what_a_token_is_off_the_ui_thread_and_by_digest() {
+        use yantrik_ipc_transport::reach::{token_digest, Standing, ASK};
+        let ask = |digest: &str| {
+            call(&serde_json::json!({ "jsonrpc": "2.0", "id": 1, "method": ASK, "params": { "token_sha256": digest } }).to_string())
+        };
+        let standing = |reply: serde_json::Value| Standing::from_json(&reply["result"]);
+        let held = standing(ask(&token_digest("tok-reach-reviewer"))).expect("held");
+        assert!(matches!(held, Standing::Held(ref r) if r.name == "Reviewer"), "{held:?}");
+        assert_eq!(standing(ask(&token_digest("tok-no-reach"))), Ok(Standing::Plain));
+        assert_eq!(standing(ask(&token_digest("tok-stopped"))), Ok(Standing::Unknown));
+        let reply = ask("tok-reach-reviewer");
+        assert!(reply["error"]["message"].as_str().unwrap_or_default().contains("never the token"), "{reply}");
+
+        let _timed = timed_alone();
+        let busy = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let started = busy.clone();
+        post_to_ui(Box::new(move || {
+            started.wait();
+            std::thread::sleep(Duration::from_millis(1500));
+        }))
+        .expect("the stand-in UI thread takes work");
+        busy.wait();
+        let rpc = ControlRpc { service_id: service_id_for("caller-test"), app_id: "caller-test".into() };
+        let asked = std::time::Instant::now();
+        let answer = rpc
+            .handle_from(ASK, serde_json::json!({ "token_sha256": token_digest("tok-no-reach") }), None)
+            .expect("answered");
+        assert_eq!(Standing::from_json(&answer), Ok(Standing::Plain));
+        assert!(asked.elapsed() < Duration::from_millis(500), "waited on the UI thread: {:?}", asked.elapsed());
     }
 
     /// See `test_ui_thread` for why the hop is a channel.
@@ -1570,6 +1648,7 @@ mod tests {
     fn an_answer_that_takes_time_is_finished_off_the_ui_thread_and_holds_up_nobody() {
         use std::time::Instant;
 
+        let _timed = timed_alone();
         served_test_surface();
         let asked = Instant::now();
         let slow = std::thread::spawn(|| {

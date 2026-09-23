@@ -147,8 +147,10 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
 
                 // ── Agents catalog: an agent held to a role's reach is never shown asking for an
                 // act its reach refuses — its door would refuse it whatever the person pressed.
+                // With the arguments, as the door decides it: opening an app its reach names is
+                // within it.
                 if let Some(Ok(agent)) = crate::control_agent_terminal::calling_agent() {
-                    crate::control_agents::within_reach(&agent, &app, &action, &grade)?;
+                    crate::control_agents::within_reach(&agent, &app, &action, &grade, &parsed)?;
                 }
 
                 // Whether the app's own sentence says this cannot be taken back. `auto` asks

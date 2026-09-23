@@ -114,7 +114,9 @@ impl Surface {
     /// the socket is [`Authority::now`] and for a test is whatever it pins.
     ///
     /// The steps a window's dispatch takes, in its order: the call read (and its agent token
-    /// lifted off the arguments, and the reach that token carries read); any grant spent — once
+    /// lifted off the arguments, and the reach that token carries asked of the shell — refused
+    /// here, whatever the action, for a token no live agent carries or a shell that does not
+    /// answer); any grant spent — once
     /// the action, the reach, the arguments and the ceiling have passed, and against the
     /// arguments as sent; then the reach ([`Registry::within_reach`]) and [`Registry::act`] —
     /// unknown action, arguments, ceiling, mode, revision guard, the arguments converted to their
@@ -133,7 +135,7 @@ impl Surface {
         // Before a grant is spent: the action, the agent's reach, the arguments as sent.
         call.spend_grant(&mut authority, self.registry.app_id(), || {
             self.registry
-                .within_reach(reach.as_ref(), &call.action)
+                .within_reach(reach.as_ref(), &call.action, &call.args)
                 .and_then(|()| self.registry.check_call(&call.action, &call.args))
                 .map_err(refusal)
         })?;
@@ -144,7 +146,7 @@ impl Surface {
             let _caller = CallerScope::enter(who);
             let _token = AgentTokenScope::enter(agent_token);
             let later = LaterScope::enter();
-            let answer = self.registry.within_reach(reach.as_ref(), &action).and_then(|()| {
+            let answer = self.registry.within_reach(reach.as_ref(), &action, &args).and_then(|()| {
                 self.registry.act(&action, &args, expect_revision.as_deref(), &action_id, &authority)
             });
             (answer, later.take())

@@ -162,17 +162,20 @@ impl<D: ?Sized, H: ?Sized> Registry<D, H> {
     }
 
     /// Hold a call from an agent to its reach (`yantrik_ipc_transport::reach`), on the grade this
-    /// surface publishes for the action now: an act outside the role's surfaces, or above its
-    /// ceiling, is refused with `REACH:` before the machine's ceiling is asked and before the
-    /// handler. `None` — no token, or no reach for it — holds nothing. An action this surface does
-    /// not have is answered as that.
+    /// surface publishes for the action now and the arguments as sent: an act outside the role's
+    /// surfaces, or above its ceiling, is refused with `REACH:` before the machine's ceiling is
+    /// asked and before the handler. `None` — no token, or a live agent with no role — holds
+    /// nothing. An action this surface does not have is answered as that.
+    ///
+    /// The arguments matter to one rule: an opening act (`shell.open_app name=notes`) is within a
+    /// reach that names the app, whatever the reach's ceiling (`reach::within_call`).
     ///
     /// A second rule beside the gate's, not part of it, so it is called beside [`Registry::act`]
     /// rather than inside it: the gate asks whether the machine and the person allow an act, this
     /// asks whether this agent was given it, and both must say yes.
-    pub fn within_reach(&self, reach: Option<&Reach>, name: &str) -> Result<(), String> {
+    pub fn within_reach(&self, reach: Option<&Reach>, name: &str, args: &Value) -> Result<(), String> {
         let Some(reach) = reach else { return Ok(()) };
-        reach::within(reach, &self.app_id, name, self.grade_of(name)?)
+        reach::within_call(reach, &self.app_id, name, self.grade_of(name)?, args)
     }
 
     /// Everything about a call that must hold before a person's grant is spent on it: the action
@@ -1053,6 +1056,86 @@ mod tests {
                 assert_eq!(view.revision(), v["revision"].as_str().unwrap(), "{key}: {v}");
             }
         }
+    }
+
+    // ── An agent's reach ──
+
+    /// #195, through the dispatch every door runs. The Planner — `calendar, notes · safe` — opens
+    /// Notes and Calendar and brings Notes forward, acts graded `standard`, above its ceiling; it
+    /// opens no other app and no screen; and once Notes is open it reads there and writes nothing.
+    /// The reach only narrows: the machine's ceiling still decides the opening.
+    #[test]
+    fn a_role_opens_the_apps_its_reach_names_and_is_held_inside_them() {
+        // What the shell's `open_app` opens for a name, told to this process as the shell tells
+        // itself (`agents::reaches::opened_app` there): apps by the ids they publish, an alias by
+        // its app's, and a screen, the launcher and the browser as no app at all.
+        reach::resolve_opened_apps_with(|name| match name.to_lowercase().as_str() {
+            app @ ("notes" | "calendar" | "terminal") => Some(app.to_string()),
+            "text-editor" | "editor" => Some("editor".to_string()),
+            _ => None,
+        });
+        let planner = Reach {
+            agent: "deepseek:c-p1an".into(),
+            role: "planner".into(),
+            name: "Planner".into(),
+            surfaces: vec!["calendar".into(), "notes".into()],
+            ceiling: "safe".into(),
+        };
+        let opened = Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
+        let shell = surface(
+            "shell",
+            None,
+            vec![
+                (Action::new("open_app", "Launch an app, or focus it").arg(Param::text("name")).defers(), {
+                    let opened = opened.clone();
+                    Box::new(move |args| {
+                        opened.borrow_mut().push(args["name"].as_str().unwrap_or_default().to_string());
+                        Ok(json!({ "launching": args["name"].clone() }))
+                    })
+                }),
+                (
+                    Action::new("show_app", "Bring an open app to the front").arg(Param::text("name")).defers(),
+                    Box::new(|args| Ok(json!({ "showing": args["name"].clone() }))),
+                ),
+                (Action::new("show_screen", "Show a screen").arg(Param::text("screen")), Box::new(|_| Ok(Value::Null))),
+            ],
+        );
+        let notes = surface(
+            "notes",
+            None,
+            vec![
+                (Action::new("list_notes", "List the notes").risk("safe"), Box::new(|_| Ok(json!([])))),
+                (Action::new("new_note", "Start a new note"), Box::new(|_| Ok(Value::Null))),
+            ],
+        );
+        let act = |reg: &Registry, name: &str, args: Value, authority: &Authority| {
+            reg.within_reach(Some(&planner), name, &args).and_then(|()| reg.act(name, &args, None, "t#1", authority))
+        };
+        let ask = in_mode("ask", false);
+
+        for app in ["notes", "calendar"] {
+            let answer = act(&shell, "open_app", json!({ "name": app }), &ask).unwrap_or_else(|e| panic!("{app}: {e}"));
+            assert_eq!(answer["accepted"], true);
+        }
+        assert!(act(&shell, "show_app", json!({ "name": "notes" }), &ask).is_ok());
+        for name in ["terminal", "settings", "problems", "browser", "launchpad", "text-editor"] {
+            let err = act(&shell, "open_app", json!({ "name": name }), &ask).unwrap_err();
+            assert!(err.starts_with(&format!("REACH: shell.open_app `{name}` is outside the Planner's reach")), "{err}");
+            assert!(err.contains("and may open calendar and notes"), "{err}");
+        }
+        let err = act(&shell, "show_screen", json!({ "screen": "settings" }), &ask).unwrap_err();
+        assert!(err.starts_with("REACH: shell.show_screen is outside the Planner's reach"), "{err}");
+        assert_eq!(*opened.borrow(), ["notes", "calendar"], "only the apps its reach names were opened");
+
+        // Open, Notes is held to the reach's ceiling like anything else.
+        assert!(act(&notes, "list_notes", json!({}), &ask).is_ok());
+        let err = act(&notes, "new_note", json!({}), &ask).unwrap_err();
+        assert!(err.starts_with("REACH: notes.new_note is graded `standard`, above the Planner's `safe` ceiling"), "{err}");
+
+        // The machine's ceiling still refuses the opening; the reach stepped aside, nothing more.
+        let err = act(&shell, "open_app", json!({ "name": "notes" }), &under("safe")).unwrap_err();
+        assert!(err.starts_with("CEILING:"), "{err}");
+        assert_eq!(opened.borrow().len(), 2, "the ceiling's refusal opened nothing");
     }
 
     /// A service's registry is the same dispatch with shareable closures: same sentences.

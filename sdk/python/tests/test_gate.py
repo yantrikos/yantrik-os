@@ -258,7 +258,9 @@ class Shell:
 
 
 def sysmon(shell):
-    s = Surface("system-monitor", spend_grant=shell)
+    # The shell's answer about the one token these tests carry: a live agent with no role, so the
+    # gate alone decides for it (`test_reach` holds the rest).
+    s = Surface("system-monitor", spend_grant=shell, reach_of=lambda token: ("plain", None))
     seen = {}
 
     @s.action("kill_process", grade="dangerous")

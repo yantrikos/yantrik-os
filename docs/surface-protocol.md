@@ -243,7 +243,7 @@ refusal of the act itself is error `-32602`, whose `message` is the sentence giv
 | --- | --- | --- |
 | 1 | an `action` | `` act needs a non-empty `action` `` |
 | 2 | the action exists | `` unknown action `<name>`; this app offers: <a>, <b>, … `` (every action, in declaration order) |
-| 3 | the calling agent's reach, when the call carries an `agent_token` whose role has one (`yantrik_ipc_transport::reach`) | `REACH: …` — the act is outside the role's surfaces, or above its ceiling; a reach file that cannot be read refuses every token-carrying call |
+| 3 | the calling agent's reach, when the call carries an `agent_token` (`yantrik_ipc_transport::reach`): the door asks the shell what the token is (`agent.reach`, by its SHA-256) as it reads the call, and holds a role's agent to the role's surfaces and ceiling — `shell.open_app` and `shell.show_app` naming an app the reach names are within it whatever its ceiling | `REACH: …` — the act is outside the role's surfaces, or above its ceiling; or, for any action, the token names no live agent, or the shell did not answer |
 | 4 | `args` is an object (absent or `null` is none) | `` `<action>` takes its arguments as an object of named values, and <kind> arrived `` |
 | 5 | every required argument is present | `` `<action>` needs argument `<param>` `` (the first missing, in declaration order) |
 | 6 | no argument the action does not declare | `` `<action>` has no argument `<key>`; it takes: <p1>, <p2>, … `` — or, for an action with none, `` `<action>` takes no arguments, but `<key>` was given `` (the first undeclared key in sorted order; the list in declaration order) |
@@ -497,3 +497,14 @@ protocol:
   else is refused in step 7's sentence, as before. Handlers keep the strictness; callers — a model
   sending `which: 1` — are not bounced. The Rust dispatch and the Python SDK convert identically,
   held by `deploy/yantrik-os/dispatch-vectors.json`.
+- **1, extended: the reach fails closed** (#189, #195): a door no longer reads the reach from
+  `~/.config/yantrik/agent-reach.json`, which anything running as the person could delete or
+  rewrite; it asks the shell, which keeps every agent's standing, with `agent.reach
+  {token_sha256}` on `app-shell.sock` — answered on the shell's RPC thread, and only by a
+  `yantrik-ui` process — and gets `held` with the reach, `plain` (a live agent with no role), or
+  `unknown`. A token no live agent carries, and every token-carrying call while the shell does not
+  answer, is refused with `REACH:` in step 3, whatever the action; a call with no token asks
+  nothing and is unchanged. And a role may open the apps its reach names: `shell.open_app` and
+  `shell.show_app` with `name` resolving to one of them are within the reach whatever its ceiling,
+  and nothing else is opened on a reach's say-so. `deploy/yantrik-os/reach-vectors.json` holds
+  both rules; the Python SDK replays it.

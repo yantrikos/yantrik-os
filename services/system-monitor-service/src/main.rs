@@ -926,6 +926,19 @@ mod tests {
     fn spend_through_a_stand_in_shell() {
         static ONCE: std::sync::Once = std::sync::Once::new();
         ONCE.call_once(|| {
+            // The shell's store of agents, as the shell keeps it: the one token these tests carry
+            // is a live agent's with no role, so the gate alone decides for it. Any other token
+            // is no live agent's, and is refused.
+            {
+                use yantrik_service_sdk::reach::{keep_reach_with, token_digest, Standing};
+                keep_reach_with(|digest| {
+                    if digest == token_digest("tok-7f3a") {
+                        Standing::Plain
+                    } else {
+                        Standing::Unknown
+                    }
+                });
+            }
             let spent = std::sync::Mutex::new(std::collections::HashSet::<String>::new());
             gate::spend_grants_with(move |id, app, action, args| {
                 let Some(pid) = id.strip_prefix("ok-kill-").and_then(|p| p.parse::<u64>().ok()) else {

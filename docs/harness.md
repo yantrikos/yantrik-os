@@ -204,9 +204,15 @@ standing instructions, the task and the context as its first turn. `describe she
 under `catalog`. The same rules as `new_agent` apply, and the role's **reach** caps it further: its
 agent is held to the role's surfaces and grade ceiling on every door that carries its token, and
 anything else is refused with `REACH:` (the bridge relays that as a policy answer, and never puts a
-question outside the reach to the person). With `wait_seconds` the call waits for the role's
-answer and hands it back — which counts as reading private state — so a client allows
-`wait_seconds` more, as for `run_command`.
+question outside the reach to the person). It may open the apps its reach names —
+`os_act shell open_app name=notes`, and `show_app` — whatever its ceiling, because opening a
+window is not an act on the app's data: a Planner held to `calendar, notes · safe` opens both and
+reads them, writes nothing in them, and opens nothing else (no other app, no screen, not the
+browser). Its first turn says so. The shell keeps every agent's reach, and each door asks it; a
+token no live agent carries — the agent stopped, or the shell restarted — is refused, and so is
+every call carrying a token while the shell does not answer ([app-control.md](app-control.md)).
+With `wait_seconds` the call waits for the role's answer and hands it back — which counts as
+reading private state — so a client allows `wait_seconds` more, as for `run_command`.
 
 ### Formations
 

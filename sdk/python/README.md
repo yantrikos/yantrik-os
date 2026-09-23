@@ -150,7 +150,8 @@ Say in the description what cannot be undone ("It is not recoverable", "cannot b
 every mode but `bypass`, whatever its grade above `safe` — and no session rule covers it.
 
 What happens to a call, in order — the same order every door uses (docs/surface-protocol.md
-§5). First its arguments: a missing one, one the action does not take, and one of the wrong type
+§5). First, for a call carrying an agent token, the agent's reach (see *Who is calling*). Then its
+arguments: a missing one, one the action does not take, and one of the wrong type
 are refused before anything else is asked, so a person's Allow is never used up on a call that was
 never going to run. Then:
 
@@ -237,9 +238,15 @@ The `Surface` subclass at the end of `apps/blender/addon/yantrik_blender/surface
 ## Who is calling
 
 Inside a handler, `caller()` is the peer's `PeerCred(pid, uid, gid)` as the kernel reports it,
-and `agent_token()` the agent token the call carried beside its `args`. Both are facts, not
-verdicts: nothing here refuses on them. A token put inside `args` is removed before anything
-reads them, and not used.
+and `agent_token()` the agent token the call carried beside its `args`. A token put inside `args`
+is removed before anything reads them, and not used.
+
+A call that carries a token is asked about before anything else (`yantrik_surface.reach`, the
+port of `yantrik_ipc_transport::reach`): the dispatch asks the shell what the token is —
+`agent.reach` on `app-shell.sock`, by its SHA-256, only of a `yantrik-ui` process — and an agent
+started as a catalog role is held to the role's surfaces and ceiling, refused with `REACH:`. It
+fails closed: a token no live agent carries, and every token while the shell does not answer, is
+refused. A live agent with no role meets only the gate, and a call with no token asks nothing.
 
 ## Names
 
@@ -259,7 +266,9 @@ or a batch is answered as a parse error, as the Rust transport answers it.
 In-process, with no socket: `surface.describe_json()` and `surface.act({"action": "add",
 "args": {"text": "x"}})` return the envelopes or raise `RpcError` with the refusal. Point `HOME`
 at a temporary directory (or pass `settings_path=` and `mode_path=`) to pin the ceiling and the
-mode, and `spend_grant=` to stand in for the shell. Over the socket, set `XDG_RUNTIME_DIR`,
+mode, `spend_grant=` to stand in for the shell, and `reach_of=` for its answer about an agent
+token (a function of the token returning `("plain", None)`, `("held", reach.Reach(...))` or
+`("unknown", None)`). Over the socket, set `XDG_RUNTIME_DIR`,
 `serve_in_thread()`, and drive it with `yos describe <id>` and `yos act <id> <action> key=value`.
 
 This package's own conformance suite — envelopes, revision vectors produced by serde_json,

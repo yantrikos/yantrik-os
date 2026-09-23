@@ -230,10 +230,15 @@ fn specs() -> [Action; 6] {
 pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
     let [new, send, stop, read, show, hand] = specs();
     let show_ui = ui.as_weak();
-    // ── Agents catalog: this shell's own dispatch holds a role's agent to its reach from the
-    // registry, in-process, as it spends grants in-process; and nothing an earlier run published
-    // is held any more — those tokens are gone.
-    yantrik_ipc_transport::reach::read_reach_with(reaches::lookup);
+    // ── Agents catalog: the shell is where every agent's reach is kept. Its own dispatch reads
+    // the registry in-process, as it spends grants in-process, and it answers every other door's
+    // `agent.reach` from the same place — what the harness host says is live, and the reach each
+    // was started with. Nothing from an earlier run is held: those tokens are gone. And a role may
+    // open the apps its reach names, resolved as `open_app` opens them.
+    yantrik_ipc_transport::reach::keep_reach_with(|digest| {
+        reaches::standing(crate::wire::harness::host(), digest)
+    });
+    yantrik_ipc_transport::reach::resolve_opened_apps_with(reaches::opened_app);
     reaches::reset();
     surface
         .action(new, |args| new_agent(host()?, &caller()?, &text(args, "mind"), &text(args, "task")))
@@ -980,12 +985,13 @@ impl Handed {
     }
 }
 
-/// Whether `agent` may be shown asking for `app.action`, graded `grade`: an agent held to a
+/// Whether `agent` may be shown asking for `app.action(args)`, graded `grade`: an agent held to a
 /// role's reach is refused, in the reach's words, before a card for an act its reach refuses
 /// would reach the person — the act itself would be refused on its door whatever they pressed.
-pub fn within_reach(agent: &AgentId, app: &str, action: &str, grade: &str) -> Result<(), String> {
+/// With the arguments, because an opening act is within a reach by the app it names.
+pub fn within_reach(agent: &AgentId, app: &str, action: &str, grade: &str, args: &Value) -> Result<(), String> {
     match reaches::of(agent) {
-        Some(reach) => yantrik_ipc_transport::reach::within(&reach, app, action, grade),
+        Some(reach) => yantrik_ipc_transport::reach::within_call(&reach, app, action, grade, args),
         None => Ok(()),
     }
 }
@@ -1090,8 +1096,11 @@ mod tests {
 
         let held = reaches::lookup(&token).expect("the shell's own dispatch holds it");
         assert_eq!(held.agent, handed.agent.0);
-        assert_eq!(reaches::read_as_a_door(&token).unwrap(), Some(held.clone()), "and so does every other door");
-        assert!(!std::fs::read_to_string(reaches::path()).unwrap().contains(&token), "the file keeps a digest, never the token");
+        // Every other door asks the shell by the token's digest, and is told it is held.
+        use yantrik_ipc_transport::reach::{token_digest, Standing};
+        let digest = token_digest(&token);
+        assert_eq!(reaches::standing(Some(&host), &digest), Standing::Held(held.clone()), "and so does every other door");
+        assert!(!Standing::Held(held.clone()).to_json().to_string().contains(&token), "what a door is told never holds the token");
 
         use yantrik_ipc_transport::reach::within;
         assert!(within(&held, "notes", "list_notes", "safe").is_ok(), "in reach");
@@ -1102,9 +1111,9 @@ mod tests {
         let err = within(&held, "shell", "agent_run", "sensitive").unwrap_err();
         assert!(err.starts_with("REACH: shell.agent_run is outside"), "a reviewer runs no commands: {err}");
         // Asking the person about an act its reach refuses is refused too, in the same words.
-        let err = within_reach(&handed.agent, "files", "move", "sensitive").unwrap_err();
+        let err = within_reach(&handed.agent, "files", "move", "sensitive", &json!({})).unwrap_err();
         assert!(err.starts_with("REACH:"), "{err}");
-        assert!(within_reach(&AgentId("pi:c-noreach".into()), "files", "move", "sensitive").is_ok(), "an agent with no role has no reach");
+        assert!(within_reach(&AgentId("pi:c-noreach".into()), "files", "move", "sensitive", &json!({})).is_ok(), "an agent with no role has no reach");
 
         let answer = handed.answer(None);
         let said = answer["said"].as_str().unwrap();
@@ -1114,7 +1123,7 @@ mod tests {
 
         stop_agent(&host, &Caller::NoAgent, &handed.agent).unwrap();
         assert_eq!(reaches::lookup(&token), None, "stopped, it is let go");
-        assert_eq!(reaches::read_as_a_door(&token).unwrap(), None);
+        assert_eq!(reaches::standing(Some(&host), &digest), Standing::Unknown, "and its token is refused on every door");
     }
 
     /// Down its list to the first mind attached that can give it a conversation of its own; a
@@ -1152,6 +1161,12 @@ mod tests {
         let parent = AgentId(started["agent"].as_str().unwrap().to_string());
         let parent_token = handed_out(&host, &session)[parent.conversation()]["agent_token"].as_str().unwrap().to_string();
         let as_parent = Caller::Agent(parent.clone());
+        // A plain agent — started on a mind, with no role — is live and held to nothing: every
+        // door is told so, and only the gate decides for it.
+        use yantrik_ipc_transport::reach::{token_digest, Standing};
+        assert_eq!(reaches::standing(Some(&host), &token_digest(&parent_token)), Standing::Plain);
+        assert_eq!(reaches::standing(Some(&host), &token_digest("0123456789abcdef0123456789abcdef")), Standing::Unknown);
+        assert_eq!(reaches::standing(None, &token_digest(&parent_token)), Standing::Unknown, "no host, no live agent");
 
         let kids: Vec<Handed> = ["researcher", "writer", "scribe"]
             .iter()
@@ -1172,6 +1187,11 @@ mod tests {
         }
         let stopped = stop_agent(&host, &Caller::NoAgent, &parent).unwrap();
         assert_eq!(stopped["children_stopped"].as_array().map(Vec::len), Some(3), "{stopped}");
+        assert_eq!(
+            reaches::standing(Some(&host), &token_digest(&parent_token)),
+            Standing::Unknown,
+            "stopped, its token is no live agent's, and every door refuses it"
+        );
 
         // A Reviewer (safe) the person started: it may hand work to the Red team (safe), not to the
         // Coder (sensitive), and it may not start a plain agent.

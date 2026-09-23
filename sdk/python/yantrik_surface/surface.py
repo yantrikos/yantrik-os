@@ -6,12 +6,15 @@ built on this package from one built on the Rust runtime. The order, as `Control
 and `Registry::act` run it:
 
   0. an empty `action`;
-  1. `agent_token` lifted off the call and stripped out of `args`; a grant, if one rides
-     along, spent through the shell once the ceiling has passed (an unknown action is
-     answered as unknown first, and nothing is spent on it);
-  2. on the app's thread, in one turn: the unknown action; the ceiling and the mode (see
-     `gate`); the arguments (an object, none missing, none undeclared, each of its declared
-     type — the `yantrik-surface` crate's checks and sentences); STALE, when
+  1. `agent_token` lifted off the call and stripped out of `args`, and what it is asked of the
+     shell (see `reach`): a token no live agent carries, or a shell that does not answer, ends
+     the call here, whatever it asks for; a grant, if one rides along, spent through the shell
+     once the reach, the arguments and the ceiling have passed (an unknown action is answered as
+     unknown first, and nothing is spent on it);
+  2. on the app's thread, in one turn: the unknown action; the calling agent's reach; the
+     arguments (an object, none missing, none undeclared, each of its declared
+     type — the `yantrik-surface` crate's checks and sentences); the ceiling and the mode (see
+     `gate`); STALE, when
      `expect_revision` is not the revision the app is at; the handler, given the declared
      defaults for what was left out; and the view read back, so the answer carries the world
      the action left.
@@ -34,7 +37,7 @@ import threading
 import types
 import typing
 
-from . import gate, wire
+from . import gate, reach, wire
 
 PROTOCOL = 1
 SETTLES = ("on return", "later")
@@ -519,15 +522,16 @@ class Surface:
 
     `summary` is the one line a person could read (text, or a function returning it); the
     view is the structured state. `aliases` are other names the surface answers to, linked
-    beside its socket. `settings_path`, `mode_path` and `spend_grant` exist for tests: they
-    pin the ceiling and mode files and stand in for the shell's grant store.
+    beside its socket. `settings_path`, `mode_path`, `spend_grant` and `reach_of` exist for
+    tests: they pin the ceiling and mode files and stand in for the shell's grant store and for
+    the shell's answer about an agent token (`reach.standing_of`).
     """
 
     describe_timeout = DESCRIBE_TIMEOUT
     act_timeout = ACT_TIMEOUT
 
     def __init__(self, app_id, summary=None, *, aliases=(), settings_path=None, mode_path=None,
-                 spend_grant=None, socket_path=None):
+                 spend_grant=None, socket_path=None, reach_of=None):
         if not isinstance(app_id, str) or not app_id or any(
                 c.isspace() or c in "/\0" for c in app_id):
             raise ValueError("an app id is one word of text with no slash, like `hello` or "
@@ -544,6 +548,7 @@ class Surface:
         self._settings_path = settings_path
         self._mode_path = mode_path
         self._spend_grant = spend_grant
+        self._reach_of = reach_of
         self._socket_path = socket_path
         self._lock = threading.RLock()
         self._ids = itertools.count(1)
@@ -725,17 +730,31 @@ class Surface:
         expect = params.get("expect_revision")
         expect = expect if isinstance(expect, str) else None
         grant = gate.grant_of(params)
+        # What the token is, asked of the shell as the call is read (IO, beside the ceiling and
+        # the mode): a role's reach to hold the call to, nothing for a live agent with no role,
+        # or the refusal — a token no live agent carries, or a shell that did not answer — that
+        # ends the call here, whatever it asks for. No token asks nothing.
+        held = None
+        if token is not None:
+            held, refusal = reach.reach_of(token, self._reach_of)
+            if refusal is not None:
+                raise wire.RpcError(wire.RPC_INVALID_PARAMS, refusal)
         action_id = self._next_action_id()
         authority = gate.Authority(self.configured_ceiling(), self.configured_mode())
 
         spec = self._find(name)
         if grant:
             # Spent only once everything that could still refuse the call without asking anybody
-            # has passed — the action exists, its arguments are right, and the ceiling allows its
-            # grade (#154) — or a person's Allow is used up on an act that never runs. Spent
-            # against the arguments as sent: what the card showed, not what the handler will read.
+            # has passed — the action exists, the agent's reach covers it, its arguments are
+            # right, and the ceiling allows its grade (#154) — or a person's Allow is used up on
+            # an act that never runs. Spent against the arguments as sent: what the card showed,
+            # not what the handler will read.
             if spec is None:
                 raise wire.RpcError(wire.RPC_INVALID_PARAMS, self._unknown(name))
+            if held is not None:
+                refusal = reach.within_call(held, self.app_id, name, self._grade(spec), args)
+                if refusal is not None:
+                    raise wire.RpcError(wire.RPC_INVALID_PARAMS, refusal)
             refusal = check_arguments(spec, args)
             if refusal is not None:
                 raise wire.RpcError(wire.RPC_INVALID_PARAMS, refusal)
@@ -746,7 +765,7 @@ class Surface:
 
         def turn():
             with _Scope(peer, token):
-                return self._dispatch(name, args, expect, authority)
+                return self._dispatch(name, args, expect, authority, held)
 
         timeout = (spec.timeout if spec is not None and spec.timeout else self.act_timeout)
         outcome = self._turn(turn, timeout)
@@ -774,11 +793,18 @@ class Surface:
             "state": state,
         }
 
-    def _dispatch(self, name, args, expect, authority):
+    def _dispatch(self, name, args, expect, authority, held=None):
         """One act, on the app's thread: every check, the handler, and the view read back."""
         spec = self._find(name)
         if spec is None:
             raise Refusal(self._unknown(name))
+
+        # The calling agent's reach, on the grade this surface publishes now: a second rule
+        # beside the gate's, which only ever takes away.
+        if held is not None:
+            refusal = reach.within_call(held, self.app_id, name, self._grade(spec), args)
+            if refusal is not None:
+                raise Refusal(refusal)
 
         # The arguments first: a malformed call is refused for what is wrong with it, before
         # anything about who may make it — as a grant is never spent on one.

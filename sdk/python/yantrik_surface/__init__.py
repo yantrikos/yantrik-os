@@ -23,9 +23,11 @@ port of the Rust runtime's dispatch, not an opinion of its own. Standard library
 Python 3.11 or newer.
 
 The pieces: `surface` (the dispatch: actions, parameters, envelopes, refusals), `gate` (the
-ceiling, the mode, the grant), `wire` (the socket, the framing, the revision hash).
+ceiling, the mode, the grant), `reach` (what an agent started as a catalog role may touch, asked
+of the shell), `wire` (the socket, the framing, the revision hash).
 """
 
+from . import reach
 from .gate import (
     DEFAULT_CEILING,
     DEFAULT_MODE,
@@ -81,6 +83,7 @@ __all__ = [
     "decide",
     "grant_refusal",
     "mode_from",
+    "reach",
     "revision",
     "socket_dir",
     "unrecoverable",

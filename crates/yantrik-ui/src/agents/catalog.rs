@@ -285,14 +285,27 @@ impl Role {
     }
 
     /// What its agent is started with: who it is, its standing instructions, what to hand back,
-    /// its reach and budget in words, then the task and anything given to read first.
+    /// its reach and budget in words — and the apps its reach names, which it may open (#195) —
+    /// then the task and anything given to read first.
     pub fn first_turn(&self, task: &str, context: &str) -> String {
+        let apps = reach::apps_named(&self.reach.surfaces);
+        let opens = if apps.is_empty() {
+            String::new()
+        } else {
+            format!(
+                " You may open {apps} when closed (`shell.open_app name=<app>`), whatever your \
+                 ceiling; inside them you are still held to `{ceiling}`.",
+                apps = reach::surfaces_text(&apps),
+                ceiling = self.reach.ceiling,
+            )
+        };
         let mut text = format!(
             "You are the {name} on this desktop, started to do one piece of work and hand it back. \
              {purpose}\n\n{brief}\n\nWhat you hand back: {returns}\n\nYour reach: {surfaces}, at \
-             most `{ceiling}`. The desktop refuses anything else you try, so do not try it; say in \
-             your answer what else needs doing.\nYour budget: {turns} turns and {minutes} minutes. \
-             After that you are stopped, so hand back what you have before then.\n\nThe task:\n{task}",
+             most `{ceiling}`.{opens} The desktop refuses anything else you try, so do not try it; \
+             say in your answer what else needs doing.\nYour budget: {turns} turns and {minutes} \
+             minutes. After that you are stopped, so hand back what you have before then.\n\nThe \
+             task:\n{task}",
             name = self.name,
             purpose = self.purpose,
             brief = self.brief,
@@ -599,7 +612,9 @@ minutes = 5
             "Reviews a change for bugs and risks; reads only.",
             "Find what is wrong with a change",
             "What you hand back: A verdict",
-            "Your reach: editor, documents and notes, at most `safe`",
+            "Your reach: editor, documents and notes, at most `safe`. You may open editor, documents \
+             and notes when closed (`shell.open_app name=<app>`), whatever your ceiling; inside them \
+             you are still held to `safe`. The desktop refuses anything else you try",
             "Your budget: 4 turns and 15 minutes",
             "The task:\nreview the change in ~/src/app",
             "Read this first:\ndiff --git a/x b/x",
@@ -608,5 +623,13 @@ minutes = 5
         }
         assert!(!reviewer.first_turn("x", "  ").contains("Read this first"));
         assert_eq!(reviewer.meta().reach, "editor, documents and notes · at most safe");
+
+        // The Planner is told it may open what it reads; the Coder, the one app among the shell's
+        // actions it may use; the Red team, which names nothing, is offered nothing to open.
+        let catalog = shipped();
+        let turn = |role: &str| catalog.find(role).unwrap().first_turn("do it", "");
+        assert!(turn("planner").contains("You may open calendar and notes when closed"), "{}", turn("planner"));
+        assert!(turn("coder").contains("You may open editor when closed"), "{}", turn("coder"));
+        assert!(!turn("red-team").contains("You may open"), "{}", turn("red-team"));
     }
 }

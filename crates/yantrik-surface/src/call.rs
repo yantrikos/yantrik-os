@@ -82,16 +82,15 @@ impl ActCall {
     }
 
     /// The reach the call's agent token carries (`yantrik_ipc_transport::reach`): what the role
-    /// the agent was started from may touch. `None` for a call with no token, or a token with no
-    /// reach — this rule only ever narrows. IO, read beside the ceiling and the mode; a reach file
-    /// that is there and cannot be read refuses the call rather than let it through unheld.
+    /// the agent was started from may touch. `None` for a call with no token — the person's own,
+    /// which asks nothing — or for a live agent with no role: this rule only ever narrows.
+    ///
+    /// IO, beside the ceiling and the mode: the shell keeps every agent's standing, and a door in
+    /// any other process asks it, by the token's digest. It fails closed: a token no live agent
+    /// carries, or a shell that does not answer, refuses the call with `REACH:` and why.
     pub fn reach(&self) -> Result<Option<Reach>, ServiceError> {
         match self.agent_token.as_deref() {
-            Some(token) => reach::reach_of(token).map_err(|why| {
-                refusal(format!(
-                    "REACH: {why}, so no act carrying an agent token runs until it can be. Nothing was run."
-                ))
-            }),
+            Some(token) => reach::reach_of(token).map_err(refusal),
             None => Ok(None),
         }
     }
@@ -216,7 +215,7 @@ mod tests {
         };
         call.spend_grant(&mut authority, "notes", || panic!("asked for a grade with no grant to spend"))
             .unwrap();
-        assert!(call.reach().unwrap().is_none(), "no token, no reach, no file read");
+        assert!(call.reach().unwrap().is_none(), "no token, no reach, and the shell is not asked");
         assert!(!authority.granted);
     }
 
