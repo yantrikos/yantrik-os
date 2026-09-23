@@ -242,6 +242,14 @@ fn main() {
     // in app.slint.
     ui.invoke_focus_global_keys();
 
+    // The desktop is left by logging out, never by a request to close its window. To the
+    // compositor this shell is one ordinary fullscreen window, and labwc's Alt+F4 closes whichever
+    // window has focus: after a click on the desktop, the taskbar or the status bar, that is this
+    // one. Answered with the default, the window hid, this loop ended and the session went with
+    // it — Alt+F4 meant for an app logged the person out (#229). A logout takes the compositor
+    // away instead, which ends the loop without asking.
+    ui.window().on_close_requested(refuse_close);
+
     // Run
     tracing::info!("Starting Yantrik OS desktop shell");
     // A logout ends this loop by taking the compositor away, which winit returns as an error. That
@@ -254,6 +262,13 @@ fn main() {
     service_manager.stop_all();
     // Agents' commands belong to the shell and go with it: every process group, not one pid.
     control_agent_terminal::shutdown();
+}
+
+/// What the shell answers a request to close its window: no. Logged, so a close that was refused
+/// can be told from one that never arrived.
+fn refuse_close() -> slint::CloseRequestResponse {
+    tracing::info!("Refused a request to close the desktop; it closes by logging out (#229)");
+    slint::CloseRequestResponse::KeepWindowShown
 }
 
 /// Start background services via the ServiceManager.
@@ -312,5 +327,22 @@ fn load_config(path: Option<PathBuf>) -> CompanionConfig {
             tracing::info!("Using default config");
             CompanionConfig::default()
         }
+    }
+}
+
+#[cfg(test)]
+mod close_tests {
+    /// Alt+F4 with the shell focused ended the session (#229). The desktop refuses a close, and
+    /// the refusal is in place before the loop a close request would end starts running.
+    #[test]
+    fn the_desktop_refuses_to_be_closed_from_before_it_runs() {
+        assert!(matches!(super::refuse_close(), slint::CloseRequestResponse::KeepWindowShown));
+        // Split, so this test's own text is not what the search finds.
+        let installed = concat!("ui.window().on_close_", "requested(refuse_close);");
+        let runs = concat!("yantrik_app_runtime::run_until_", "closed(&ui");
+        let source = include_str!("main.rs");
+        let installed = source.find(installed).expect("main installs the refusal");
+        let runs = source.find(runs).expect("main runs the loop");
+        assert!(installed < runs, "the refusal is installed before the loop starts");
     }
 }
