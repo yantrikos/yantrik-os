@@ -306,6 +306,42 @@ export component LensAgentsProbe inherits Window {
     }
 }
 
+// A mind's finished turn as the Lens draws it: the production bubble on its own, so the test can
+// read how tall it laid itself out, and the whole Lens with the same turn, for the picture (#211).
+// Filled with fixture data by src/lens_tests.rs.
+export { MessageData, ContentBlock } from "components/message_bubble.slint";
+import { MessageData, MessageBubble } from "components/message_bubble.slint";
+export component MessageBubbleProbe inherits Window {
+    width: 640px;
+    height: 800px;
+    default-font-family: Theme.font-ui;
+    background: Theme.bg-deep;
+    in property <MessageData> data;
+    out property <length> bubble-height: bubble.height;
+    bubble := MessageBubble {
+        x: 0;
+        y: 0;
+        width: 100%;
+        data: root.data;
+    }
+}
+
+export component LensAnswerProbe inherits Window {
+    width: 1280px;
+    height: 800px;
+    default-font-family: Theme.font-ui;
+    background: Theme.bg-deep;
+    in property <[MessageData]> messages;
+    IntentLens {
+        width: 100%;
+        height: 100%;
+        is-open: true;
+        chat-mode: true;
+        mind-name: "pi";
+        messages: root.messages;
+    }
+}
+
 export component AgentsProbe inherits Window {
     in property <length> canvas-width: 1280px;
     in property <length> canvas-height: 800px;

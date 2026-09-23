@@ -70,34 +70,48 @@ export component MessageBubble inherits Rectangle {
                     property <bool> is-tool: block.block-type == "tool";
                     property <bool> is-code: block.block-type == "code";
 
-                    height: self.preferred-height;
-                    background: is-code ? Theme.bg-card : transparent;
-                    border-radius: is-code ? 6px : 0;
-                    border-width: is-code ? 1px : 0;
-                    border-color: is-code ? Theme.border-subtle : transparent;
+                    // Every kind of block sits in this layout, not straight in the Rectangle: a
+                    // Rectangle takes no size from an `if` child, so with them bare (#125) every
+                    // block measured zero high. The Lens drew a turn's tool cards on top of one
+                    // another and gave its answer a box with no height (#211).
+                    VerticalLayout {
+                        // A list sits in from the paragraphs around it.
+                        padding-left: block.block-type == "bullet" ? 8px : 0px;
 
-                    // A tool call: the card every view of a mind's calls shares — one line with
-                    // the arguments on it, the whole of them on a click.
-                    if is-tool : ToolCallCard {
-                        call: block.call;
-                    }
+                        // A tool call: the card every view of a mind's calls shares — one line
+                        // with the arguments on it, the whole of them on a click.
+                        if is-tool : ToolCallCard {
+                            call: block.call;
+                        }
 
-                    if !is-tool : HorizontalLayout {
-                        padding: block.block-type == "code" ? 8px : 0;
-                        padding-left: block.block-type == "code" ? 10px
-                            : block.block-type == "bullet" ? 8px : 0;
-
-                        Text {
+                        // A direct child of the layout, as in the Agents pane: a wrapping text
+                        // inside a nested layout is measured at its unwrapped width, and every
+                        // line past the first is cut off.
+                        if !is-tool && !is-code : Text {
                             text: block.text;
-                            color: block.block-type == "code" ? Theme.cyan-light
-                                : block.block-type == "heading" ? Theme.amber-light
-                                : Theme.text-primary;
-                            font-size: block.block-type == "heading" ? Theme.font-title
-                                : block.block-type == "code" ? Theme.font-small
-                                : Theme.font-body;
+                            color: block.block-type == "heading" ? Theme.amber-light : Theme.text-primary;
+                            font-size: block.block-type == "heading" ? Theme.font-title : Theme.font-body;
                             font-weight: block.block-type == "heading" ? 600 : 400;
                             wrap: word-wrap;
-                            horizontal-stretch: 1;
+                        }
+
+                        // Sized from its own text, for the same reason.
+                        if is-code : Rectangle {
+                            background: Theme.bg-card;
+                            border-radius: 6px;
+                            border-width: 1px;
+                            border-color: Theme.border-subtle;
+                            height: code.preferred-height + 16px;
+
+                            code := Text {
+                                x: 10px;
+                                y: 8px;
+                                width: parent.width - 20px;
+                                text: block.text;
+                                color: Theme.cyan-light;
+                                font-size: Theme.font-small;
+                                wrap: word-wrap;
+                            }
                         }
                     }
                 }
