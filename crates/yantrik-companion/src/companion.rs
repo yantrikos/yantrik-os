@@ -4441,14 +4441,26 @@ fn query_workflow_hints(conn: &rusqlite::Connection) -> Vec<serde_json::Value> {
     .unwrap_or_default()
 }
 
-/// Count interactions in the last hour from bond events.
+/// Count the person's interactions in the last hour from bond events.
+///
+/// Only `event_type = 'interaction'` rows count: the table also holds the humor and milestone
+/// rows the machine writes itself, which are not the person talking. The time column is
+/// `created_at` — this query used to ask for a `timestamp` column `bond_events` does not have,
+/// and `.unwrap_or(0)` turned the SQLite error into a silent 0 on every machine, so the
+/// instincts always saw an idle person. A count that still cannot be read is reported as 0,
+/// but now it says so in the log.
 fn count_recent_interactions(conn: &rusqlite::Connection, since_ts: f64) -> u32 {
-    conn.query_row(
-        "SELECT COUNT(*) FROM bond_events WHERE timestamp > ?1",
+    match conn.query_row(
+        "SELECT COUNT(*) FROM bond_events WHERE event_type = 'interaction' AND created_at > ?1",
         rusqlite::params![since_ts],
         |row| row.get::<_, u32>(0),
-    )
-    .unwrap_or(0)
+    ) {
+        Ok(count) => count,
+        Err(e) => {
+            tracing::error!(error = %e, "recent interaction count could not be read; the instincts see 0");
+            0
+        }
+    }
 }
 
 /// Query recent maintenance log entries (last 24h, unreported first).
@@ -5182,5 +5194,54 @@ mod bond_scoring_tests {
             "`last_interaction_ts` may be bumped in one place, `score_conversation_turn`; \
              found {bumps}"
         );
+    }
+}
+
+#[cfg(test)]
+mod recent_interaction_count_tests {
+    //! The count that tells the instincts whether the person is busy asked `bond_events` for a
+    //! `timestamp` column the table does not have, and the SQLite error became a silent 0 — so
+    //! `interactions_last_hour` read 0 on every machine, however much the person had been
+    //! talking. Pure in-memory SQLite: no model, no embedder, no files.
+
+    use super::*;
+
+    /// A bond store with the given (event_id, event_type, created_at) rows already written.
+    fn store_with_events(events: &[(&str, &str, f64)]) -> rusqlite::Connection {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        BondTracker::ensure_tables(&conn);
+        for (id, kind, ts) in events {
+            conn.execute(
+                "INSERT INTO bond_events (event_id, event_type, delta, context, created_at)
+                 VALUES (?1, ?2, 0.01, '{}', ?3)",
+                rusqlite::params![id, kind, ts],
+            )
+            .unwrap();
+        }
+        conn
+    }
+
+    #[test]
+    fn three_interactions_in_the_last_hour_count_three() {
+        let now = now_ts();
+        let conn = store_with_events(&[
+            ("e1", "interaction", now - 60.0),
+            ("e2", "interaction", now - 1800.0),
+            ("e3", "interaction", now - 3500.0),
+            // Two hours ago: real, but outside the window the count is named for.
+            ("e4", "interaction", now - 7200.0),
+        ]);
+        assert_eq!(count_recent_interactions(&conn, now - 3600.0), 3);
+    }
+
+    #[test]
+    fn rows_the_machine_wrote_itself_are_not_the_person_talking() {
+        let now = now_ts();
+        let conn = store_with_events(&[
+            ("e1", "interaction", now - 60.0),
+            ("e2", "humor_success", now - 60.0),
+            ("e3", "milestone", now - 60.0),
+        ]);
+        assert_eq!(count_recent_interactions(&conn, now - 3600.0), 1);
     }
 }
