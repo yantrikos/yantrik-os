@@ -80,7 +80,16 @@ pub fn run_updater(args: &[&str]) -> Result<Run, String> {
 /// Detached in its own session with `setsid`, because the very next thing it does is kill this
 /// shell. A child in the shell's process group would die with it, mid swap, which is the one way
 /// this operation could brick the machine.
-pub fn spawn_apply(channel: Option<&str>, force: bool) -> Result<(), String> {
+///
+/// `force` and `allow_downgrade` are two different permissions and stay two arguments. `force`
+/// means "this is the same build, install it anyway"; `allow_downgrade` means "I know the
+/// channel's build is older than what is here". The updater refuses a downgrade without the
+/// second one, so a caller cannot get a rollback out of a flag that never said rollback.
+pub fn spawn_apply(
+    channel: Option<&str>,
+    force: bool,
+    allow_downgrade: bool,
+) -> Result<(), String> {
     let bin = update_bin();
     if !bin.exists() {
         return Err(format!(
@@ -95,6 +104,9 @@ pub fn spawn_apply(channel: Option<&str>, force: bool) -> Result<(), String> {
     }
     if force {
         cmd.arg("--force");
+    }
+    if allow_downgrade {
+        cmd.arg("--allow-downgrade");
     }
     cmd.stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
@@ -155,7 +167,9 @@ pub fn parse_kv(text: &str) -> HashMap<String, String> {
 /// The point of this type is the thing it cannot express: there is no variant that means
 /// "something went wrong, call it current". `up_to_date` is reachable only from an explicit
 /// `result=up_to_date` on exit 0, and every other shape of input lands in an error variant
-/// carrying the script's own sentence.
+/// carrying the script's own sentence. `Ahead` is reachable only from an explicit
+/// `result=ahead_of_channel` for the same reason: two builds the updater cannot put in order
+/// are offered as an update, never reported as being behind this machine.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CheckOutcome {
     /// The installed build is the channel's build.
@@ -164,6 +178,18 @@ pub enum CheckOutcome {
     UpdateAvailable {
         from: String,
         to: String,
+        reason: String,
+    },
+    /// The channel's build is OLDER than what is installed: a developer deploy from main, a beta
+    /// tester moved back to nightly, a bundle that arrived from a mirror behind the one this
+    /// machine follows. There is nothing to install, and this variant is why the screen can say
+    /// so — before it existed, any difference between two commits read as an update, so the
+    /// About screen offered a build 150 commits older as one and put an Install button under it.
+    /// Moving to it anyway is a downgrade, which `apply_update` needs telling about explicitly.
+    Ahead {
+        installed: String,
+        channel_build: String,
+        channel: String,
         reason: String,
     },
     /// The server answered and has nothing on this channel. The person can act on this: it is
@@ -199,13 +225,29 @@ impl CheckOutcome {
                     format!("Update available — {from} → {to}")
                 }
             }
+            Self::Ahead { installed, channel_build, channel, reason } => {
+                // The sentence names both builds. "Nothing to update" on its own is what a
+                // machine that could not be checked used to sound like, and the interesting
+                // fact here is the direction: the channel is behind, not level with, this one.
+                if reason.is_empty() {
+                    format!(
+                        "Nothing to update — this machine is ahead of channel '{channel}': \
+                         installed {installed}, the channel has {channel_build}"
+                    )
+                } else {
+                    format!("Nothing to update — {reason}")
+                }
+            }
             Self::NotPublished { reason, .. } => format!("Could not check — {reason}"),
             Self::Unreachable { reason } => format!("Could not check — {reason}"),
             Self::Error { reason } => format!("Could not check — {reason}"),
         }
     }
 
-    /// Is there something to install? Only ever true from an explicit update_available.
+    /// Is there something to install? Only ever true from an explicit update_available — and
+    /// notably false for a channel that is behind this machine, where the Install button this
+    /// drives used to appear as well, and pressing it rolled the machine back to an older build
+    /// while calling that an update.
     pub fn can_install(&self) -> bool {
         matches!(self, Self::UpdateAvailable { .. })
     }
@@ -215,6 +257,10 @@ impl CheckOutcome {
         match self {
             Self::UpToDate { .. } => "up-to-date",
             Self::UpdateAvailable { .. } => "available",
+            // Its own word rather than "up-to-date", because the machine is not on the
+            // channel's build; it is past it. Same consequence on screen — no Install button —
+            // and a different fact.
+            Self::Ahead { .. } => "ahead",
             Self::NotPublished { .. } => "not-published",
             Self::Unreachable { .. } => "failed",
             Self::Error { .. } => "failed",
@@ -258,6 +304,12 @@ pub fn parse_check(code: i32, stdout: &str, stderr: &str) -> CheckOutcome {
             } else {
                 reason
             },
+        },
+        Some("ahead_of_channel") => CheckOutcome::Ahead {
+            installed: build_label(&get("installed_version"), &get("installed_git")),
+            channel_build: build_label(&get("channel_version"), &get("channel_git")),
+            channel: get("channel"),
+            reason,
         },
         Some("not_published") => CheckOutcome::NotPublished {
             channel: get("channel"),
@@ -316,15 +368,22 @@ pub struct UpdateStatus {
     pub conf_writable: bool,
 }
 
+/// "0.4.2 (deadbee)", or whatever part of that is known, or "unknown". One function because
+/// both ends of a comparison are labelled the same way, and a screen showing "0.4.2 (deadbee)"
+/// next to "deadbee" would make two builds of the same commit look like two different things.
+pub fn build_label(version: &str, git: &str) -> String {
+    match (version.is_empty(), git.is_empty()) {
+        (true, true) => "unknown".to_string(),
+        (false, true) => version.to_string(),
+        (true, false) => git.to_string(),
+        (false, false) => format!("{version} ({git})"),
+    }
+}
+
 impl UpdateStatus {
     /// "0.4.2 (deadbee)", or whatever part of that is known.
     pub fn installed_label(&self) -> String {
-        match (self.version.is_empty(), self.git.is_empty()) {
-            (true, true) => "unknown".to_string(),
-            (false, true) => self.version.clone(),
-            (true, false) => self.git.clone(),
-            (false, false) => format!("{} ({})", self.version, self.git),
-        }
+        build_label(&self.version, &self.git)
     }
 }
 
@@ -437,6 +496,19 @@ pub fn actions(surface: ControlSurface, _ui: &App) -> ControlSurface {
                         obj.insert("to".into(), to.clone().into());
                         Ok(base)
                     }
+                    // An answer, not a failure: the caller asked what the channel has, and the
+                    // channel is behind this machine. `up_to_date` stays false, because this
+                    // build did not come from that channel — the true part is that there is
+                    // nothing to install, and `apply_update` refuses to install it anyway
+                    // without an explicit allow_downgrade.
+                    CheckOutcome::Ahead { channel_build, .. } => {
+                        obj.insert("result".into(), "ahead_of_channel".into());
+                        obj.insert("update_available".into(), false.into());
+                        obj.insert("up_to_date".into(), false.into());
+                        obj.insert("ahead_of_channel".into(), true.into());
+                        obj.insert("channel_build".into(), channel_build.clone().into());
+                        Ok(base)
+                    }
                     // An unpublished channel is a fact about the server, not a failure of the
                     // call: the caller asked what the channel has, and the answer is nothing.
                     // Returned as an answer so an agent can act on it — the fix is
@@ -510,16 +582,49 @@ pub fn actions(surface: ControlSurface, _ui: &App) -> ControlSurface {
                 Param::flag("force")
                     .describe("Reinstall even if the channel build matches what is installed")
                     .optional(),
+            )
+            .arg(
+                // Not folded into `force`. That flag says "the same build, again"; this one says
+                // "an older build, on purpose", and a caller that has to name the second thing
+                // cannot do it by reaching for the first. Without it the updater refuses a
+                // channel build that is behind this machine, which is what stopped a machine
+                // ahead of its channel from being rolled back by its own update button.
+                Param::flag("allow_downgrade")
+                    .describe(
+                        "Install the channel's build even though it is OLDER than what is \
+                         installed — a deliberate rollback of this machine to the channel",
+                    )
+                    .optional(),
             ),
             move |args| {
                 let channel = args["channel"]
                     .as_str()
                     .filter(|c| !c.trim().is_empty())
                     .map(|c| c.trim().to_string());
-                spawn_apply(channel.as_deref(), args["force"].as_bool() == Some(true))?;
+                let allow_downgrade = args["allow_downgrade"].as_bool() == Some(true);
+                // `spawn_apply` detaches with its output thrown away, because the first thing
+                // the updater does is stop this shell — so anything it refuses on the far side
+                // of that is invisible here, and this action would answer "applying" about an
+                // install that was never going to happen. The one refusal that can be seen
+                // coming is checked first: a channel behind this machine is a downgrade, and
+                // the updater will not do one that was not asked for by name.
+                if !allow_downgrade {
+                    if let CheckOutcome::Ahead { reason, .. } = check_now(channel.as_deref()) {
+                        return Err(format!(
+                            "nothing to apply — {reason}. Installing the channel's build would \
+                             roll this machine back; pass allow_downgrade to do that on purpose"
+                        ));
+                    }
+                }
+                spawn_apply(
+                    channel.as_deref(),
+                    args["force"].as_bool() == Some(true),
+                    allow_downgrade,
+                )?;
                 Ok(serde_json::json!({
                     "applying": true,
                     "channel": channel.unwrap_or_else(|| "configured".to_string()),
+                    "downgrade": allow_downgrade,
                     "watch": "the shell will restart; reconnect and `describe shell`, or run `yantrik-update status`, to see the new build. A shell that fails to come up is rolled back automatically.",
                 }))
             },
@@ -556,6 +661,21 @@ installed_git=0000001
 channel_version=0.4.2
 channel_git=deadbee
 reason=0000001 → deadbee
+";
+
+    // The machine this was found on: a developer deploy from main, and a nightly channel about
+    // 150 commits behind it.
+    const AHEAD: &str = "\
+result=ahead_of_channel
+channel=nightly
+channel_source=BUILD
+host=releases.yantrikos.com
+scheme=https
+installed_version=v0.1.0-456-gca376be-dev
+installed_git=ca376be
+channel_version=v0.1.0-304
+channel_git=7bc7d6b
+reason=installed v0.1.0-456-gca376be-dev (a developer deploy) is ahead of channel 'nightly' (v0.1.0-304)
 ";
 
     const NOT_PUBLISHED: &str = "\
@@ -613,6 +733,49 @@ reason=cannot reach releases.yantrikos.com over https (Name or service not known
         );
         assert!(out.can_install());
         assert!(out.headline().contains("0000001 → deadbee"));
+    }
+
+    /// A channel that is BEHIND this machine is not an update, and this is the shape that used
+    /// to be read as one: the same porcelain with `result=update_available` on it produced
+    /// "Update available — ca376be → 7bc7d6b" and an Install button that rolled the machine back
+    /// a day of fixes. The comparison is the script's; what is held here is that the answer it
+    /// gives for it arrives intact, offers nothing, and does not read as a failure.
+    #[test]
+    fn a_channel_behind_this_machine_offers_nothing_to_install() {
+        let out = parse_check(13, AHEAD, "");
+        match &out {
+            CheckOutcome::Ahead { installed, channel_build, channel, reason } => {
+                assert_eq!(installed, "v0.1.0-456-gca376be-dev (ca376be)");
+                assert_eq!(channel_build, "v0.1.0-304 (7bc7d6b)");
+                assert_eq!(channel, "nightly");
+                assert!(reason.contains("ahead of channel 'nightly'"), "{reason}");
+            }
+            other => panic!("wanted Ahead, got {other:?}"),
+        }
+        assert!(!out.can_install(), "a machine ahead of its channel was offered an install");
+        assert_eq!(out.state(), "ahead");
+        let headline = out.headline();
+        assert!(headline.starts_with("Nothing to update"), "{headline}");
+        assert!(!headline.contains("Could not check"), "{headline}");
+    }
+
+    /// The fallback sentence, for a script that sends the result without its own reason. It
+    /// still has to say which way round the two builds are — "nothing to update" on its own is
+    /// indistinguishable from a check that quietly failed.
+    #[test]
+    fn ahead_with_no_reason_still_names_both_builds() {
+        let out = parse_check(
+            13,
+            "result=ahead_of_channel\nchannel=beta\ninstalled_version=v0.2.0-3-gaaa1111\n\
+             installed_git=aaa1111\nchannel_version=v0.1.0-468-gbbb2222\nchannel_git=bbb2222\n",
+            "",
+        );
+        assert_eq!(
+            out.headline(),
+            "Nothing to update — this machine is ahead of channel 'beta': installed \
+             v0.2.0-3-gaaa1111 (aaa1111), the channel has v0.1.0-468-gbbb2222 (bbb2222)"
+        );
+        assert!(!out.can_install());
     }
 
     #[test]

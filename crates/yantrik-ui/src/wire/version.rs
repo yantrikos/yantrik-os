@@ -88,6 +88,11 @@ fn show_outcome(ui: &App, outcome: &CheckOutcome) {
         CheckOutcome::UpdateAvailable { to, .. } => {
             ui.set_about_update_latest(to.clone().into());
         }
+        // The channel's build is still a fact worth showing, and it is the fact that explains
+        // the sentence: this is what the machine is ahead OF.
+        CheckOutcome::Ahead { channel_build, .. } => {
+            ui.set_about_update_latest(channel_build.clone().into());
+        }
         // The channel has nothing to report, so the field says nothing rather than keeping
         // whatever the last successful check left there.
         _ => ui.set_about_update_latest("".into()),
@@ -171,10 +176,16 @@ pub fn wire(ui: &App, _ctx: &AppContext) {
     // The same call the control surface's `apply_update` makes: the updater, detached, because
     // the next thing it does is stop this shell. There is no progress to show here — the shell
     // this screen is drawn by goes away and comes back as the new build.
+    //
+    // Neither flag is ever set from this screen, and there is deliberately no control here that
+    // sets them. The button only exists while a check has answered "the channel is newer", so a
+    // machine ahead of its channel never sees one — and a downgrade, which is what installing
+    // the channel's build on such a machine would be, stays something a person asks for by
+    // name: `yantrik-update apply --allow-downgrade`, or `apply_update` with allow_downgrade.
     let weak = ui.as_weak();
     ui.on_about_install_update(move || {
         let Some(ui) = weak.upgrade() else { return };
-        match control_update::spawn_apply(None, false) {
+        match control_update::spawn_apply(None, false, false) {
             Ok(()) => {
                 ui.set_about_update_state("applying".into());
                 ui.set_about_update_status(

@@ -255,7 +255,8 @@ yantrik-update status       # channel, host, current build, backups on disk
 yantrik-update set-channel nightly|beta|stable
 ```
 
-`apply` takes `--force` (reinstall the same build), `--reboot` (instead of restarting the
+`apply` takes `--force` (reinstall the same build), `--allow-downgrade` (install the channel's
+build even though it is older than the one here), `--reboot` (instead of restarting the
 session) and `--no-restart`. `check` and `status` take `--porcelain`, which is what the
 desktop's About screen reads.
 
@@ -268,6 +269,12 @@ desktop comes back exactly as it does on boot.
 Again: `nightly` is the only channel with builds on it. `set-channel stable` will succeed and
 then `check` will tell you the channel is not published, which is the honest answer rather
 than an error.
+
+A machine can be *ahead* of its channel: a developer deploy from `main`, or a beta build on a
+machine moved back to nightly. `check` compares where the two builds sit rather than whether
+their commits differ, so it says the machine is ahead and offers nothing to install — an older
+build is not an update, and the About screen shows no Install button for one. Moving to it
+anyway is a downgrade, and `apply` only does that when `--allow-downgrade` says so out loud.
 
 `yantrik-update` is not an app updater. Software you install with `apt` is yours to update
 with `apt`.

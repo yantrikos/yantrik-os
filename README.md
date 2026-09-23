@@ -226,6 +226,12 @@ respawning the shell, so it comes back exactly as it does on boot.
 published, which is the honest answer rather than an error. Machines default to `nightly`
 because it is the only one with builds on it.
 
+A machine can also be *ahead* of its channel — a developer deploy from `main`, or a beta build
+on a machine moved back to nightly. `check` compares the two builds' positions rather than
+their commit hashes, says the machine is ahead, and offers nothing: an older build is not an
+update. Installing one is a downgrade, which `apply` refuses unless `--allow-downgrade` names
+it as one.
+
 ## Driving it from a terminal or an agent
 
 ```bash

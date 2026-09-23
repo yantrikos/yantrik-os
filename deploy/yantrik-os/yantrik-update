@@ -18,7 +18,7 @@
 #
 # Usage:
 #   yantrik-update check       [--channel C] [--porcelain]  installed vs what the channel has
-#   yantrik-update apply       [--channel C] [--force] [--reboot] [--no-restart]
+#   yantrik-update apply       [--channel C] [--force] [--allow-downgrade] [--reboot] [--no-restart]
 #   yantrik-update rollback                                  restore the most recent backup
 #   yantrik-update status      [--porcelain]                 channel, host, build, backups
 #   yantrik-update set-channel nightly|beta|stable           change the channel, once, here
@@ -35,8 +35,13 @@
 # answer "up to date" because every failure path in it returned the success value.
 #
 # check exits: 0 up to date · 10 update available · 11 channel not published · 12 server
-# unreachable · 1 anything else. The porcelain `result=` line says the same thing in words;
-# both are emitted so neither has to be inferred from the other.
+# unreachable · 13 this machine is ahead of the channel · 1 anything else. The porcelain
+# `result=` line says the same thing in words; both are emitted so neither has to be inferred
+# from the other.
+#
+# 13 is not a failure and not 0 either: there is nothing to install, but "up to date" would say
+# this machine is on the channel's build, and it is not — it is past it. A caller that only
+# reads exit codes sees "no update to apply", which is the true part.
 
 set -uo pipefail
 
@@ -263,12 +268,152 @@ same_build() {
   return 0
 }
 
+# ── Ordering two builds, not only comparing them ──────────────────────────────────────────
+#
+# Both sides of a check carry a `git describe` string: the tag, the number of commits since
+# that tag, and the commit -- v0.1.0-456-gca376be, with -dev or -dirty appended when the build
+# says anything about the tree it came from. That is an ordering, and `check` used to throw it
+# away: it compared the two git hashes for EQUALITY and called any difference an update. So a
+# machine that was AHEAD of its channel -- a developer deploy from main, a beta tester moved
+# back to nightly, a nightly that arrived from a mirror behind the one this machine followed --
+# was offered the channel's older build as an update, and one click on Install rolled it back a
+# day of fixes and called that an update. On the machine this was found on: v0.1.0-456-gca376be
+# installed, v0.1.0-304 on the channel, and the screen said "Update available — ca376be →
+# 7bc7d6b" with the Install button under it.
+#
+# The four functions below are that ordering. They read nothing and write nothing, so the
+# selftest can put a whole table of version pairs through them.
+
+# Drop the leading `v` and the tree qualifiers a build appends after the commit. Those say what
+# the tree looked like when it was built, not where the build sits in history.
+version_core() {
+  local s="$1"
+  s="${s#v}"
+  while :; do
+    case "$s" in
+      *-dev)   s="${s%-dev}" ;;
+      *-dirty) s="${s%-dirty}" ;;
+      *) break ;;
+    esac
+  done
+  printf '%s' "$s"
+}
+
+# Compare two dotted-number strings: prints -1, 0 or 1. Returns 1, printing nothing, when
+# either side is not dotted numbers -- so a caller cannot mistake "cannot compare" for "equal",
+# which is the mistake this whole section exists to stop making.
+cmp_dotted() {
+  local a="$1" b="$2"
+  case "$a" in ''|*[!0-9.]*) return 1 ;; esac
+  case "$b" in ''|*[!0-9.]*) return 1 ;; esac
+  local -a ap bp
+  IFS=. read -r -a ap <<< "$a"
+  IFS=. read -r -a bp <<< "$b"
+  local n=${#ap[@]} i x y
+  [ "${#bp[@]}" -gt "$n" ] && n="${#bp[@]}"
+  for ((i = 0; i < n; i++)); do
+    x="${ap[i]:-0}"; y="${bp[i]:-0}"
+    case "$x" in ''|*[!0-9]*) return 1 ;; esac
+    case "$y" in ''|*[!0-9]*) return 1 ;; esac
+    if ((10#$x < 10#$y)); then printf '%s' -1; return 0; fi
+    if ((10#$x > 10#$y)); then printf '%s' 1; return 0; fi
+  done
+  printf '%s' 0
+}
+
+# The describe count: the number between the tag and the -g<hash>. A version with no count is
+# the tag itself, which sits zero commits past it. Returns 1 when what follows the tag is not a
+# number, because inventing a count is how an ordering becomes a lie.
+describe_count() {
+  local v="$1" rest
+  rest="${v#*-}"
+  [ "$rest" = "$v" ] && { printf '%s' 0; return 0; }
+  rest="${rest%%-*}"
+  case "$rest" in ''|*[!0-9]*) return 1 ;; esac
+  printf '%s' "$((10#$rest))"
+}
+
+# Where build $1 sits against build $2: newer, older, same or unknown.
+#
+# "unknown" is the honest answer for anything that is not a describe of a tagged commit -- a
+# bare hash from a tree with no tags, an empty version, a string somebody typed into a BUILD
+# file -- and a caller must not read it as either order. "same" means the same tag the same
+# number of commits past it, which two different commits can both be: a force-pushed main, or a
+# build off a branch. Neither is provably newer, and neither is called one.
+version_order() {
+  local a b c an bn
+  a="$(version_core "$1")"; b="$(version_core "$2")"
+  [ -n "$a" ] && [ -n "$b" ] || { printf 'unknown'; return 0; }
+  c="$(cmp_dotted "${a%%-*}" "${b%%-*}")" || { printf 'unknown'; return 0; }
+  if [ "$c" != 0 ]; then
+    [ "$c" = 1 ] && printf 'newer' || printf 'older'
+    return 0
+  fi
+  an="$(describe_count "$a")" && bn="$(describe_count "$b")" || { printf 'unknown'; return 0; }
+  if ((an > bn)); then printf 'newer'
+  elif ((an < bn)); then printf 'older'
+  else printf 'same'
+  fi
+}
+
 # ── check ───────────────────────────────────────────────────────────────────────────────
 #
 # One decision, two renderings. The result is worked out once into $result/$reason and then
 # printed either as prose or as porcelain — so the About screen and the terminal cannot reach
 # different conclusions about the same machine, which is exactly what they did before: the
 # desktop had a second checker of its own that answered "up to date" on every failure.
+
+# The decision itself, apart from the probe that feeds it and the two renderings of it: given
+# what this machine has and what the channel has, say which of the three answers applies — up to
+# date, an update, or a channel this machine is ahead of. It reads no file and opens no socket,
+# so the selftest can hold a table of version pairs against it, including the one this machine
+# got wrong: a channel behind the build installed here.
+#
+# Prints three key=value lines: result=, code=, reason=.
+decide_check() { # <local_git> <local_ver> <remote_git> <remote_ver> <channel>
+  local local_git="$1" local_ver="$2" remote_git="$3" remote_ver="$4" channel="$5"
+
+  if [ -z "$local_git" ]; then
+    printf 'result=update_available\ncode=10\nreason=this machine has no build marker, so it cannot prove it is current\n'
+    return 0
+  fi
+  if [ "$local_git" = "$remote_git" ]; then
+    if same_build "$local_git" "$remote_git" "$local_ver" "$remote_ver"; then
+      printf "result=up_to_date\ncode=0\nreason=installed build matches channel '%s'\n" "$channel"
+    else
+      # Same commit, one of the two built from a modified tree. This branch used to `return 0`,
+      # and 0 is the code every caller reads as "up to date" — so the one case the dirty-tree
+      # check exists to catch printed "update available" and reported success.
+      printf 'result=update_available\ncode=10\nreason=same commit, but one of the two was built from a modified tree\n'
+    fi
+    return 0
+  fi
+
+  case "$(version_order "$remote_ver" "$local_ver")" in
+    older)
+      # The channel is behind this machine. That is not an update and there is nothing to
+      # install; saying so is the whole fix, and the sentence names both builds so a person can
+      # see the distance rather than take it on trust.
+      local gloss=""
+      case "$local_ver" in *-dev*) gloss=" (a developer deploy)" ;; esac
+      printf "result=ahead_of_channel\ncode=13\nreason=installed %s%s is ahead of channel '%s' (%s)\n" \
+        "${local_ver:-unknown}" "$gloss" "$channel" "${remote_ver:-unknown}"
+      ;;
+    newer)
+      printf 'result=update_available\ncode=10\nreason=%s → %s\n' \
+        "${local_git:-unknown}" "${remote_git:-unknown}"
+      ;;
+    *)
+      # Two builds this script cannot put in order: a bare hash on one side, a version nobody
+      # described from a tag, or the same describe count with different commits behind it.
+      # Offered, because refusing every build it cannot order would strand a machine that has
+      # no tags — but the reason says the order is not proven rather than implying it is.
+      printf 'result=update_available\ncode=10\nreason=%s → %s (neither build is provably newer: %s vs %s)\n' \
+        "${local_git:-unknown}" "${remote_git:-unknown}" "${local_ver:-unknown}" "${remote_ver:-unknown}"
+      ;;
+  esac
+}
+
 cmd_check() {
   need python3
   parse_channel "$@"
@@ -282,7 +427,7 @@ cmd_check() {
   detail="$(probe_field "$probe" detail)"
   local_ver="$(installed_version)"; local_git="$(installed_git)"
 
-  local result reason code
+  local result reason code decision
   case "$pstatus" in
     unreachable)
       result="unreachable"; code=12
@@ -294,22 +439,15 @@ cmd_check() {
       [ -n "$published" ] && reason="$reason (published: $published)"
       ;;
     ok)
-      if [ -z "$local_git" ]; then
-        result="update_available"; code=10
-        reason="this machine has no build marker, so it cannot prove it is current"
-      elif [ "$local_git" = "$remote_git" ] \
-           && ! same_build "$local_git" "$remote_git" "$local_ver" "$remote_ver"; then
-        # Same commit, one of the two built from a modified tree. This branch used to
-        # `return 0`, and 0 is the code every caller reads as "up to date" — so the one case
-        # the dirty-tree check exists to catch printed "update available" and reported success.
-        result="update_available"; code=10
-        reason="same commit, but one of the two was built from a modified tree"
-      elif [ "$local_git" = "$remote_git" ]; then
-        result="up_to_date"; code=0
-        reason="installed build matches channel '$CHANNEL'"
-      else
-        result="update_available"; code=10
-        reason="${local_git:-unknown} → ${remote_git:-unknown}"
+      decision="$(decide_check "$local_git" "$local_ver" "$remote_git" "$remote_ver" "$CHANNEL")"
+      result="$(probe_field "$decision" result)"
+      code="$(probe_field "$decision" code)"
+      reason="$(probe_field "$decision" reason)"
+      # No decision at all is an error, not an answer to render: an empty $code would also make
+      # the `return` below fail, and the caller would read the exit status of the last command.
+      if [ -z "$result" ] || [ -z "$code" ]; then
+        result="error"; code=1
+        reason="the updater could not work out an answer for channel '$CHANNEL'"
       fi
       ;;
     *)
@@ -342,11 +480,21 @@ cmd_check() {
   esac
   info "installed: ${local_ver:-unknown}${local_git:+ ($local_git)}"
   info "channel:   ${remote_ver:-unknown}${remote_git:+ ($remote_git)}"
-  if [ "$result" = "up_to_date" ]; then
-    printf '%sup to date%s\n' "$c_grn" "$c_off"
-  else
-    printf '%supdate available%s — %s\n' "$c_bold" "$c_off" "$reason"
-  fi
+  case "$result" in
+    up_to_date)
+      printf '%sup to date%s\n' "$c_grn" "$c_off"
+      ;;
+    ahead_of_channel)
+      printf '%snothing to update%s — %s\n' "$c_grn" "$c_off" "$reason"
+      # Named here rather than left to be discovered: the only way this machine moves to the
+      # channel's build is a downgrade, and a downgrade is something you ask for by name.
+      info "installing the channel's older build would roll this machine back. On purpose:"
+      info "  yantrik-update apply --allow-downgrade"
+      ;;
+    *)
+      printf '%supdate available%s — %s\n' "$c_bold" "$c_off" "$reason"
+      ;;
+  esac
   return "$code"
 }
 
@@ -394,10 +542,11 @@ cmd_apply() {
   trap give_back_to_owner EXIT
   need python3; need curl; need sha256sum; need tar
   parse_channel "$@"
-  local force=0 reboot=0 restart=1
+  local force=0 reboot=0 restart=1 allow_downgrade=0
   for a in "$@"; do
     case "$a" in
       --force) force=1 ;;
+      --allow-downgrade) allow_downgrade=1 ;;
       --reboot) reboot=1 ;;
       --no-restart) restart=0 ;;
     esac
@@ -427,6 +576,24 @@ from it. Change it with: yantrik-update set-channel nightly" ;;
   if [ "$force" = 0 ] && same_build "$local_git" "$remote_git" "$local_ver" "$remote_ver"; then
     say "Already on $remote_git — nothing to do (use --force to reinstall)"
     return 0
+  fi
+
+  # ── An older build is a downgrade, and a downgrade is asked for by name ──
+  #
+  # `check` no longer offers one as an update, but `apply` is reachable without a check — from a
+  # terminal, and from the control surface's apply_update — so the guard lives here too, or the
+  # door the About screen closed stays open behind it.
+  #
+  # --force does not open it. That flag means "I know this is the SAME build, install it
+  # anyway", and a flag that also means "roll this machine back" is a flag nobody can read.
+  local order; order="$(version_order "$remote_ver" "$local_ver")"
+  if [ "$order" = older ]; then
+    if [ "$allow_downgrade" = 0 ]; then
+      fail "channel '$CHANNEL' has ${remote_ver:-unknown}, which is OLDER than the \
+${local_ver:-unknown} installed here. Installing it would roll this machine back, so it is not \
+done by accident — to do it on purpose: yantrik-update apply --allow-downgrade"
+    fi
+    warn "downgrading on purpose: ${local_ver:-unknown} → ${remote_ver:-unknown}"
   fi
 
   ensure_writable_tree
@@ -993,8 +1160,10 @@ and this is running as $(id -un). Run: sudo yantrik-update set-channel $new"
 #
 # No network, no /opt, no machine. It runs THIS script against a scratch $YANTRIK_PREFIX and
 # checks the things that had more than one answer between them: where the channel comes from
-# when update.conf is silent, that set-channel rewrites only the line it owns, and that the
-# one-line `.version` file is written from the same string as the BUILD marker.
+# when update.conf is silent, that set-channel rewrites only the line it owns, that the
+# one-line `.version` file is written from the same string as the BUILD marker, and which of
+# two builds is newer — the last one against a table of version pairs, because the decision
+# `check` makes is a pure function of them and a wrong one installs an older OS.
 cmd_selftest() {
   local fails=0 root
   # Not `local`: the EXIT trap runs after this function has returned, in global scope, and
@@ -1076,6 +1245,67 @@ cmd_selftest() {
     printf '  %sok%s   a bogus channel is an error\n' "$c_grn" "$c_off"
   fi
 
+  # 7. Which of two builds is newer — the table `check` walks, and the row it used to get wrong.
+  #
+  #    The comparison was equality of two git hashes, so ANY difference read as "the channel has
+  #    something you do not". A machine ahead of its channel — a developer deploy from main, a
+  #    beta tester moved back to nightly — was offered the channel's older build as an update:
+  #    v0.1.0-456-gca376be installed, v0.1.0-304 published, and the screen said "Update
+  #    available — ca376be → 7bc7d6b" with an Install button that would have rolled it back a
+  #    day of fixes and called that an update.
+  local d
+  d="$(decide_check 7bc7d6b v0.1.0-304 67c52cb v0.1.0-468-g67c52cb nightly)"
+  t "a newer channel build is an update"  "result=update_available" "$d"
+  t "and exits 10"                        "code=10"                 "$d"
+
+  d="$(decide_check ca376be v0.1.0-456-gca376be 7bc7d6b v0.1.0-304 nightly)"
+  t "an older channel build is not an update" "result=ahead_of_channel" "$d"
+  t "and exits 13"                            "code=13"                 "$d"
+  t "and says which side is ahead"            "is ahead of channel"     "$d"
+
+  d="$(decide_check deadbee 0.4.2 deadbee 0.4.2 nightly)"
+  t "the same build on both sides is up to date" "result=up_to_date" "$d"
+  t "and exits 0"                                "code=0"           "$d"
+
+  #    A developer deploy: the -dev suffix says what the tree was, not where the build sits, so
+  #    it must not change the ordering in either direction.
+  d="$(decide_check ca376be v0.1.0-456-gca376be-dev 7bc7d6b v0.1.0-304 nightly)"
+  t "a dev deploy ahead of the channel is still ahead" "result=ahead_of_channel" "$d"
+  t "and says it is a developer deploy"                "a developer deploy"      "$d"
+  d="$(decide_check ca376be v0.1.0-456-gca376be-dev 67c52cb v0.1.0-468-g67c52cb nightly)"
+  t "a dev deploy behind the channel is still an update" "result=update_available" "$d"
+  d="$(decide_check deadbee v0.1.0-456-gdeadbee-dirty deadbee v0.1.0-456-gdeadbee nightly)"
+  t "a dirty tree is still not the same build" "result=update_available" "$d"
+
+  #    A different channel's builds sit on a different tag, so the tag is compared first and the
+  #    commits past it second: 3 commits past v0.2.0 is later than 468 past v0.1.0.
+  d="$(decide_check aaa1111 v0.2.0-3-gaaa1111 bbb2222 v0.1.0-468-gbbb2222 nightly)"
+  t "a build past a later tag is ahead of an earlier tag's channel" "result=ahead_of_channel" "$d"
+  d="$(decide_check aaa1111 v0.1.0-468-gaaa1111 bbb2222 v0.2.0-3-gbbb2222 beta)"
+  t "and behind a later tag is an update" "result=update_available" "$d"
+
+  #    Nothing to order by. Offered rather than refused — a machine with no tags must still be
+  #    able to update — but never told that the channel's build is newer than it is.
+  d="$(decide_check '' '' 7bc7d6b v0.1.0-304 nightly)"
+  t "no build marker cannot prove it is current" "result=update_available" "$d"
+  d="$(decide_check ca376be ca376be 7bc7d6b 7bc7d6b nightly)"
+  t "two bare hashes claim no order" "neither build is provably newer" "$d"
+
+  #    The ordering every row above rests on.
+  t "468 commits past a tag is newer than 456" "newer" \
+    "$(version_order v0.1.0-468-g67c52cb v0.1.0-456-gca376be)"
+  t "a channel at 304 is older than a machine at 456" "older" \
+    "$(version_order v0.1.0-304 v0.1.0-456-gca376be)"
+  t "a tag is older than any commit past it" "older" \
+    "$(version_order v0.1.0 v0.1.0-1-gaaaaaaa)"
+  t "0.10.0 is newer than 0.9.0, numerically not as text" "newer" \
+    "$(version_order v0.10.0 v0.9.0)"
+  t "the same distance past the same tag is same, whatever the commit" "same" \
+    "$(version_order v0.1.0-456-gca376be v0.1.0-456-gfffffff)"
+  t "a version that is not a describe is unknown" "unknown" \
+    "$(version_order nightly-2026-09-23 v0.1.0-456-gca376be)"
+  t "and so is no version at all" "unknown" "$(version_order '' v0.1.0-456-gca376be)"
+
   if [ "$fails" = 0 ]; then
     printf '%sall selftest checks passed%s\n' "$c_grn" "$c_off"
     return 0
@@ -1089,14 +1319,14 @@ usage() {
     "yantrik-update — check for, apply and roll back Yantrik OS updates" \
     "" \
     "  check       [--channel C] [--porcelain]   installed vs what the channel has" \
-    "  apply       [--channel C] [--force] [--reboot] [--no-restart]" \
+    "  apply       [--channel C] [--force] [--allow-downgrade] [--reboot] [--no-restart]" \
     "  rollback                                  restore the most recent backup" \
     "  status      [--porcelain]                 channel, host, build, backups" \
     "  set-channel nightly|beta|stable           change the channel (writes $CONF)" \
     "  selftest                                  offline checks, no network" \
     "" \
     "check exits 0 up to date · 10 update available · 11 channel not published ·" \
-    "12 server unreachable · 1 anything else."
+    "12 server unreachable · 13 this machine is ahead of the channel · 1 anything else."
 }
 
 # ── dispatch ────────────────────────────────────────────────────────────────────────────

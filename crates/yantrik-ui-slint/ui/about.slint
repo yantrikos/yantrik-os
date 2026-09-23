@@ -102,7 +102,10 @@ export component AboutScreen inherits Rectangle {
     in property <string> update-installed: "";       // 0.4.2 (deadbee)
     in property <string> update-latest: "";          // what the channel has, blank if unknown
     in property <string> update-status: "";          // the updater's own sentence
-    // idle | checking | up-to-date | available | not-published | failed | applying
+    // idle | checking | up-to-date | ahead | available | not-published | failed | applying
+    // "ahead" is its own state and not a flavour of up-to-date: this machine is past the
+    // channel's build rather than on it, and the distinction is the one that keeps an older
+    // build from being offered here as an update.
     in property <string> update-state: "idle";
     in property <bool> update-busy: false;
     // False when update.conf is not writable by the user the desktop runs as. The picker then
@@ -838,14 +841,22 @@ export component AboutScreen inherits Rectangle {
                         Rectangle { height: 1px; background: Theme.border-subtle; }
 
                         // The result, in the updater's own words. "up to date", "update
-                        // available", "channel 'beta' is not published", "cannot reach
-                        // releases.yantrikos.com" — four different sentences, where this screen
+                        // available", "nothing to update — this machine is ahead of the
+                        // channel", "channel 'beta' is not published", "cannot reach
+                        // releases.yantrikos.com" — five different sentences, where this screen
                         // used to have one.
+                        //
+                        // "ahead" is the one that used to arrive dressed as "available": a
+                        // channel behind this machine was offered as an update, with the Install
+                        // button under it. It is coloured like up-to-date, because like
+                        // up-to-date it asks nothing of anyone — and the button below stays
+                        // hidden, because there is nothing to install.
                         if root.update-status != "" : Rectangle {
                             height: upd-status.preferred-height + 20px;
                             upd-status := Text {
                                 text: root.update-status;
                                 color: root.update-state == "up-to-date" ? Theme.color-reminder
+                                     : root.update-state == "ahead" ? Theme.color-reminder
                                      : root.update-state == "available" ? Theme.holo-blue
                                      : root.update-state == "failed" ? Theme.color-emotional
                                      : root.update-state == "not-published" ? Theme.amber
