@@ -9,6 +9,14 @@ publish = false
 [dependencies]
 slint = { version = "=1.17.1", features = ["renderer-femtovg", "renderer-software"] }
 png = "0.18"
+# Only with `--features skia`: Slint's own Skia renderer, driven headlessly (src/sharp.rs).
+i-slint-renderer-skia = { version = "=1.17.1", optional = true }
+i-slint-core = { version = "=1.17.1", optional = true }
+
+[features]
+# Opt-in, off by default: draw the `sharp` scenes with Skia's CPU raster as well as with the
+# software renderer, to compare the two (desk/sharpness-spike). Nothing in the OS build uses it.
+skia = ["slint/renderer-skia", "dep:i-slint-renderer-skia", "dep:i-slint-core"]
 
 [build-dependencies]
 slint-build = "=1.17.1"

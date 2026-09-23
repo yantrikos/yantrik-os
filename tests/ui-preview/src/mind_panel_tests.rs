@@ -8,7 +8,7 @@ use super::*;
 use slint::{ModelRc, VecModel};
 use std::cell::RefCell;
 
-fn fill(ui: &App) {
+pub(crate) fn fill(ui: &App) {
     ui.set_clock_text("10:24".into());
     ui.set_date_text("Wednesday, September 23".into());
     ui.set_greeting_text("Good morning".into());

@@ -140,3 +140,28 @@ Finished tab with the failed recipe opened, and the light theme beside the outpu
 ```sh
 cargo run --manifest-path tests/ui-preview/Cargo.toml --profile fast -- target/recipes.png 1280 1000 verify-recipes
 ```
+
+## Renderer, scale and typeface measurements (`sharp`)
+
+`sharp` draws the whole shell (app.slint's `App`, filled like `verify-mind-panel`) on the desktop,
+on Files at home (maximized, or `files-window`: floating, so its frame and drop shadow are drawn)
+or on Agents, at any logical size and scale factor, in either theme, and times full repaints. It
+asserts nothing; it prints one `SHARP ...` line with the first frame, the median of the timed
+frames and the process's peak RSS, and writes the last frame.
+
+```sh
+# Slint's software renderer, as the no-GPU VM draws today
+cargo run --manifest-path tests/ui-preview/Cargo.toml --profile fast -- \
+  sharp software files target/files.png 1920 1080 1 dark 25
+# Skia's CPU raster (the same pairing winit-skia-software makes), headless: opt-in feature
+cargo run --manifest-path tests/ui-preview/Cargo.toml --profile fast --features skia -- \
+  sharp skia files target/files-skia.png 1440 900 2 light 25
+```
+
+The `skia` feature is off by default and nothing in the OS build uses it; the first build
+downloads Skia's prebuilt static library (~20 MB) from rust-skia's releases.
+
+`PREVIEW_THEME_DIR=<dir>` compiles every scene against `<dir>/theme.slint` instead of the
+tokens' own — another typeface or other sizes, side by side, without touching the tokens. Use a
+target directory per value: the build script reruns when it changes, and the generated crate is
+the expensive part.

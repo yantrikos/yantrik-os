@@ -64,6 +64,12 @@ yantrik-image-core = { workspace = true }
 
 [features]
 default = ["claude-cli"]
+# Opt-in, off by default (desk/sharpness-spike): compile Slint's Skia renderer in beside femtovg
+# and the software renderer, so SLINT_BACKEND=winit-skia-software can be measured on the real
+# shell. Nothing selects it: render_backend.rs still chooses femtovg or software, and its
+# Renderer::from_backend would count any "skia" backend as a GPU. Needs network at build time:
+# skia-bindings downloads Skia's prebuilt static library (~20 MB) from rust-skia's releases.
+renderer-skia = ["slint/renderer-skia"]
 claude-cli = ["yantrik-ml/claude-cli"]
 llamacpp = ["yantrik-ml/llamacpp"]
 llamacpp-cuda = ["llamacpp", "yantrik-ml/llamacpp-cuda"]

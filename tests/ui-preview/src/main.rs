@@ -6,6 +6,7 @@ mod agents_tests;
 mod mind_panel_tests;
 mod recipes_tests;
 mod formations_tests;
+mod sharp;
 use slint::{
     platform::{
         software_renderer::{MinimalSoftwareWindow, RepaintBufferType},
@@ -25,6 +26,8 @@ impl Platform for Headless {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
+    // Picks its own platform (software or Skia), so it runs before the headless one is set.
+    if args.get(1).map(String::as_str) == Some("sharp") { return sharp::run(&args); }
     let output = args.get(1).map(String::as_str).unwrap_or("preview.png");
     let width: u32 = args.get(2).map(|s| s.parse()).transpose()?.unwrap_or(1280);
     let height: u32 = args.get(3).map(|s| s.parse()).transpose()?.unwrap_or(800);
