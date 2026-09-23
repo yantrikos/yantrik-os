@@ -219,10 +219,13 @@ pub fn run_think_cycle(service: &mut CompanionService) {
 
         // Memory graph weaving — proactive idle-time linking
         if cfg.weaving_enabled && memory_evolution::should_weave(conn, cfg) {
-            // Only weave when system is idle (>15 min since last interaction)
-            let idle = service.idle_seconds();
-            if idle > cfg.weaving_interval_hours.min(0.25) * 3600.0 {
-                memory_evolution::run_weaving_cycle(&service.db, &*service.llm, cfg);
+            // Only weave when system is idle (>15 min since last interaction).
+            // An unset clock (#156) is no established absence: there is nobody
+            // whose conversations weaving would serve, so it waits.
+            if let Some(idle) = service.idle_seconds() {
+                if idle > cfg.weaving_interval_hours.min(0.25) * 3600.0 {
+                    memory_evolution::run_weaving_cycle(&service.db, &*service.llm, cfg);
+                }
             }
         }
     }
@@ -297,7 +300,10 @@ pub fn run_think_cycle(service: &mut CompanionService) {
     // 10. CK-5 Generative Understanding — cognitive primitives
     {
         use crate::ck5_integration;
-        let idle = service.idle_seconds();
+        // An unset clock (#156) is no absence: run CK-5 at its lightest,
+        // "active" intensity — a person who was never here left no episodes
+        // for the deep-idle machinery to chew on anyway.
+        let idle = service.idle_seconds().unwrap_or(0.0);
         let ck5_report = ck5_integration::run_ck5_cycle(
             &service.db,
             idle,
@@ -334,7 +340,10 @@ pub fn run_think_cycle(service: &mut CompanionService) {
     }
 
     // 12. Record workflow observation (Phase 2: Predictive Workflow)
-    if !service.incognito && service.idle_seconds() < 300.0 {
+    // Recording assumes the person is at the keyboard; only a scored turn
+    // proves that recently, and an unset clock (#156) proves the opposite of
+    // "just here" — never met — so nothing is recorded.
+    if !service.incognito && service.idle_seconds().is_some_and(|idle| idle < 300.0) {
         record_workflow_observation(service);
     }
 
@@ -359,7 +368,11 @@ pub fn expire_urges(service: &mut CompanionService) {
 /// Get the adaptive think interval based on idle time.
 pub fn get_think_interval(service: &CompanionService) -> u64 {
     let config = &service.config.cognition;
-    let idle = service.idle_seconds();
+    // No absence known (#156): nobody has ever been here to stay responsive
+    // to, so poll at the idle rate until the first scored turn.
+    let Some(idle) = service.idle_seconds() else {
+        return config.idle_think_interval_minutes * 60;
+    };
 
     if idle < config.think_interval_active_minutes as f64 * 60.0 {
         config.think_interval_active_minutes * 60

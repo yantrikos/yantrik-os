@@ -67,6 +67,8 @@ mod cultural_radar;
 mod pattern_breaker;
 mod opportunity_scout;
 mod open_loops_guardian;
+#[cfg(test)]
+mod test_util;
 
 use yantrik_companion_core::config::InstinctSettings;
 use yantrik_companion_core::types::{CompanionState, UrgeSpec};

@@ -116,10 +116,13 @@ fn test_instinct_evaluation() {
     let companion = build_companion();
     let state = companion.build_state();
 
-    // With fresh state, no instincts should fire (recently interacted)
+    // A fresh store holds no interaction events, so the companion has never heard the
+    // person and the absence clock stays unset (#156 — it used to be stamped with the
+    // boot time). No interaction yet means no absence to measure: you cannot be away
+    // from someone the companion never met. The absence-driven instincts (check-in,
+    // the weaver and curiosity idle gates, idle maintenance) therefore stay silent,
+    // and the rest have no triggers, patterns or memories to work on.
     let urges = companion.evaluate_instincts(&state);
-    // Check-in won't fire because we just created (last_interaction_ts is now)
-    // Others won't fire because no triggers/patterns/conflicts
     assert!(
         urges.is_empty(),
         "no instincts should fire on fresh state, got {:?}",

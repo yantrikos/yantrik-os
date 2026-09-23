@@ -197,6 +197,31 @@ pub struct CompanionState {
     pub model_tier: ModelTier,
 }
 
+impl CompanionState {
+    /// How long the person has been away, in seconds — or `None` if they have
+    /// never been here.
+    ///
+    /// Shorthand for `absence_seconds(self.last_interaction_ts, self.current_ts)`;
+    /// every reader that measures absence should go through it.
+    pub fn absence_seconds(&self) -> Option<f64> {
+        absence_seconds(self.last_interaction_ts, self.current_ts)
+    }
+}
+
+/// How long the person has been away, in seconds, measured at `now` — or `None`
+/// if there is no absence to measure.
+///
+/// The bond store's last-interaction clock stays unset (`<= 0.0`) until the first
+/// scored conversation turn (#156: it used to be stamped with the boot time, and
+/// a store nobody ever wrote to loads nothing). An unset clock must not read as
+/// "away since 1970": you cannot be away from someone you have never met. Every
+/// absence-driven behavior — the check-in, memory-weaver and curiosity gates,
+/// idle logs, the status endpoint — has to stay quiet on `None` and wait for the
+/// person's first turn to give the clock a real value.
+pub fn absence_seconds(last_interaction_ts: f64, now: f64) -> Option<f64> {
+    (last_interaction_ts > 0.0).then_some(now - last_interaction_ts)
+}
+
 /// Response from handle_message().
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentResponse {
@@ -233,4 +258,25 @@ pub struct ProactiveMessage {
     pub text: String,
     pub urge_ids: Vec<String>,
     pub generated_at: f64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::absence_seconds;
+
+    /// A plausible "now" (September 2026): read as an absence, an unset clock
+    /// would be this many seconds since the epoch — the fifty-odd years no
+    /// reader may report (#156).
+    const NOW: f64 = 1_790_000_000.0;
+
+    #[test]
+    fn an_unset_clock_reports_no_absence_not_five_decades() {
+        assert_eq!(absence_seconds(0.0, NOW), None);
+    }
+
+    #[test]
+    fn a_real_last_interaction_measures_the_absence_from_it() {
+        let two_days = 2.0 * 86400.0;
+        assert_eq!(absence_seconds(NOW - two_days, NOW), Some(two_days));
+    }
 }

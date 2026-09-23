@@ -141,6 +141,25 @@ impl BondTracker {
         }
     }
 
+    /// When the person was last here: the newest `interaction` event in the store.
+    ///
+    /// `None` when there has never been one — the two have not spoken yet, and no caller
+    /// may invent a time. The shell reads this at startup to set the clock the proactive
+    /// engine answers "how long has the person been away" from; a startup is not the
+    /// person having been around (#156). Only `interaction` events count: the store also
+    /// holds events the machine wrote by itself (humor attempts, milestones), and those
+    /// are not the person talking.
+    pub fn last_interaction_at(conn: &Connection) -> Option<f64> {
+        // MAX over an empty set is NULL, read as None; a missing table reads as None too.
+        conn.query_row(
+            "SELECT MAX(created_at) FROM bond_events WHERE event_type = 'interaction'",
+            [],
+            |row| row.get::<_, Option<f64>>(0),
+        )
+        .ok()
+        .flatten()
+    }
+
     /// Score an interaction and update bond state. Returns the new bond level
     /// and whether the level changed.
     pub fn score_interaction(
@@ -452,6 +471,35 @@ mod tests {
             )
             .unwrap();
         assert_eq!(logged, 1, "scored through the same path as the built-in, so it is logged like one");
+    }
+
+    #[test]
+    fn the_newest_interaction_event_is_when_the_person_was_last_here() {
+        let conn = conn_with_first_interaction(None);
+        assert_eq!(
+            BondTracker::last_interaction_at(&conn),
+            None,
+            "a store nobody has spoken into says so instead of naming a time"
+        );
+
+        // An event the machine wrote by itself is not the person talking, even when
+        // it is newer than the last turn: the humor row stays at "now" while the
+        // interaction row below is backdated two days.
+        BondTracker::record_humor(&conn, true);
+        assert_eq!(BondTracker::last_interaction_at(&conn), None);
+
+        BondTracker::score_conversation_turn(&conn, "goodnight");
+        let two_days_ago = now_ts() - 2.0 * 86400.0;
+        conn.execute(
+            "UPDATE bond_events SET created_at = ?1 WHERE event_type = 'interaction'",
+            params![two_days_ago],
+        )
+        .unwrap();
+        let last = BondTracker::last_interaction_at(&conn).expect("one interaction now");
+        assert!(
+            (last - two_days_ago).abs() < 1.0,
+            "the last interaction was two days ago and reads as two days ago, got {last}"
+        );
     }
 
     #[test]

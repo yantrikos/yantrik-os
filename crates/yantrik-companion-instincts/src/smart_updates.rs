@@ -37,7 +37,10 @@ impl Instinct for SmartUpdatesInstinct {
         let mut urges = Vec::new();
 
         // Phase A: Idle maintenance (>30 min idle)
-        if state.idle_seconds > 1800.0 {
+        // "Idle" is the person's absence, measured from the bond clock; unset
+        // (#156) is no absence at all, not the five decades the raw field reads
+        // as — maintenance waits for an absence that actually started somewhere.
+        if state.absence_seconds().is_some_and(|idle| idle > 1800.0) {
             let mut last_ts = self.last_idle_task_ts.lock().unwrap();
             // One task per idle period (fire once then wait for next idle)
             if state.current_ts - *last_ts > 3600.0 {
@@ -86,7 +89,10 @@ impl Instinct for SmartUpdatesInstinct {
         }
 
         // Phase B: Return report (user came back from idle)
-        if state.idle_seconds < 60.0 && state.conversation_turn_count <= 1 {
+        // Same clock: nobody came back who never left (#156).
+        if state.absence_seconds().is_some_and(|idle| idle < 60.0)
+            && state.conversation_turn_count <= 1
+        {
             let unreported: Vec<_> = state
                 .maintenance_report
                 .iter()
@@ -128,5 +134,28 @@ impl Instinct for SmartUpdatesInstinct {
         }
 
         urges
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_util::state_idle_for;
+
+    #[test]
+    fn an_unset_clock_does_not_start_idle_maintenance() {
+        let instinct = SmartUpdatesInstinct::new();
+        // The idle field reads as the decades since 1970 (#156); "idle for over
+        // 30 minutes" must not be concluded from a meeting that never happened.
+        assert!(instinct.evaluate(&state_idle_for(None)).is_empty());
+    }
+
+    #[test]
+    fn a_real_two_day_absence_still_runs_maintenance() {
+        let instinct = SmartUpdatesInstinct::new();
+        let urges = instinct.evaluate(&state_idle_for(Some(2.0 * 86400.0)));
+        assert_eq!(urges.len(), 1, "the first maintenance task runs");
+        assert_eq!(urges[0].instinct_name, "smart_updates");
+        assert_eq!(urges[0].context["phase"], "idle");
     }
 }

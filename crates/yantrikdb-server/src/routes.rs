@@ -42,7 +42,10 @@ pub struct StatusResponse {
     uptime_seconds: f64,
     memory_count: i64,
     pending_urges: usize,
-    last_interaction_ago_seconds: f64,
+    /// Seconds since the person was last here; `null` until their first scored
+    /// turn — before that the bond clock is unset and there is no absence to
+    /// report (#156).
+    last_interaction_ago_seconds: Option<f64>,
     session_active: bool,
     session_turns: usize,
 }

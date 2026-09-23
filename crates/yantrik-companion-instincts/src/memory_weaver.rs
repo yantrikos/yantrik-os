@@ -97,7 +97,14 @@ impl Instinct for MemoryWeaverInstinct {
         }
 
         // --- Standard weaving mode ---
-        let idle_secs = state.current_ts - state.last_interaction_ts;
+        // The idle gate measures the person's absence from the bond clock; unset
+        // (#156) means they have never been here — weaving waits for an absence
+        // that actually started somewhere. Any "On This Day" urge found above is
+        // returned as-is: that mode is driven by memories and the calendar, not
+        // by the absence.
+        let Some(idle_secs) = state.absence_seconds() else {
+            return urges;
+        };
         if idle_secs >= self.idle_threshold_secs && state.memory_count >= self.min_memories {
             let idle_factor = ((idle_secs - self.idle_threshold_secs) / 3600.0).min(1.0);
             let urgency = 0.2 + idle_factor * 0.2;
@@ -149,5 +156,36 @@ impl Instinct for MemoryWeaverInstinct {
         }
 
         urges
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_util::state_idle_for;
+
+    fn state_with_memories(ago: Option<f64>) -> CompanionState {
+        let mut state = state_idle_for(ago);
+        // Weaving would be worthwhile — if an absence were known. Kept below the
+        // 20 memories "On This Day" needs, so only the weaving gate can fire.
+        state.memory_count = 10;
+        state
+    }
+
+    #[test]
+    fn an_unset_clock_does_not_start_weaving() {
+        let instinct = MemoryWeaverInstinct::new(30.0, 5);
+        // The derived idle reads as the decades since 1970 (#156); there is no
+        // absence to weave in and nobody's conversations to weave together.
+        assert!(instinct.evaluate(&state_with_memories(None)).is_empty());
+    }
+
+    #[test]
+    fn a_real_two_day_absence_still_weaves() {
+        let instinct = MemoryWeaverInstinct::new(30.0, 5);
+        let urges = instinct.evaluate(&state_with_memories(Some(2.0 * 86400.0)));
+        assert_eq!(urges.len(), 1);
+        assert_eq!(urges[0].cooldown_key, "weaver:digest");
+        assert_eq!(urges[0].context["mode"], "weaving");
     }
 }

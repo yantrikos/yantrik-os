@@ -1846,7 +1846,12 @@ fn worker_loop(
                     }
                 }
 
-                let idle_hrs = (state.current_ts - state.last_interaction_ts) / 3600.0;
+                // An unset bond clock (#156) means the person was never here —
+                // the log says so instead of reporting the decades since 1970.
+                let idle_hrs = match state.absence_seconds() {
+                    Some(secs) => format!("{:.1}", secs / 3600.0),
+                    None => "never".to_string(),
+                };
 
                 // Emit instinct evaluation events for significant firings
                 for spec in &urge_specs {
@@ -1866,7 +1871,7 @@ fn worker_loop(
                     urge_count = urge_specs.len(),
                     triggers = state.pending_triggers.len(),
                     patterns = state.active_patterns.len(),
-                    idle_hours = %format!("{idle_hrs:.1}"),
+                    idle_hours = %idle_hrs,
                     "Instinct evaluation complete"
                 );
 

@@ -850,6 +850,16 @@ impl CompanionService {
         // Load current bond state
         let bond_state = BondTracker::get_state(&db.conn());
 
+        // When the person was last here, from the newest `interaction` event in the bond
+        // store. This used to be `now_ts()` — the boot time — so after every restart,
+        // update or reboot the proactive engine read idle ≈ 0 and concluded the person
+        // had just been around, whether they had or not: a person away for two days came
+        // back to a companion that thought they had only just spoken (#156). When there
+        // is no event there is nothing to load and the clock stays unset (0.0) — the
+        // companion has never heard the person, and a startup must not stand in for a
+        // meeting that never happened.
+        let last_interaction_ts = BondTracker::last_interaction_at(&db.conn()).unwrap_or(0.0);
+
         // Load user interests and location from memory (before db moves)
         let user_interests = load_user_interests(&db.conn());
         let user_location = load_user_location(&db.conn());
@@ -871,7 +881,7 @@ impl CompanionService {
             urge_queue,
             instincts,
             conversation_history: Vec::new(),
-            last_interaction_ts: now_ts(),
+            last_interaction_ts,
             session_turn_count: 0,
             proactive_message: None,
             pending_triggers: Vec::new(),
@@ -3608,9 +3618,13 @@ impl CompanionService {
         );
     }
 
-    /// Seconds since last interaction.
-    pub fn idle_seconds(&self) -> f64 {
-        now_ts() - self.last_interaction_ts
+    /// Seconds since the person was last here — or `None` if they have never been.
+    ///
+    /// The bond clock stays unset until the first scored turn (#156); `None` is
+    /// the only honest reading of that. Callers must neither report the decades
+    /// since 1970 nor mistake "never met" for "just here".
+    pub fn idle_seconds(&self) -> Option<f64> {
+        crate::types::absence_seconds(self.last_interaction_ts, now_ts())
     }
 
     /// Count one conversation turn: the person said something and was answered.
@@ -3684,7 +3698,12 @@ impl CompanionService {
     }
 
     fn check_session_timeout(&mut self) {
-        let idle = self.idle_seconds();
+        // No absence known (#156): the clock is unset until a turn is scored, so
+        // a session whose turns never scored (incognito, bond off) or a fresh
+        // install has nothing to time out against — the history stays.
+        let Some(idle) = self.idle_seconds() else {
+            return;
+        };
         let timeout = self.config.conversation.session_timeout_minutes as f64 * 60.0;
 
         if idle > timeout && self.session_turn_count > 0 {
@@ -5090,6 +5109,59 @@ mod bond_scoring_tests {
         assert_eq!(interactions, before.1 + 1, "and is one interaction");
         assert!(clock > before.2, "and is when the person was last around");
         assert_eq!(c.bond_score(), score, "the cached score the status bar reads follows the store");
+    }
+
+    /// A companion started over a store whose last interaction was `ago` seconds ago — the
+    /// restart case from #156: the shell went down and came back up over the bond store the
+    /// person's own turns were written to. `None` is a store the person never wrote to.
+    fn companion_over_store(ago: Option<f64>) -> CompanionService {
+        let db = YantrikDB::new(":memory:", 384).expect("in-memory database");
+        if let Some(ago) = ago {
+            // One scored turn, as the shell records it where a conversation ends, then
+            // backdated. The guard goes out of scope before `new` locks again.
+            let conn = db.conn();
+            BondTracker::ensure_tables(&conn);
+            BondTracker::score_conversation_turn(&conn, "goodnight");
+            conn.execute(
+                "UPDATE bond_events SET created_at = created_at - ?1 WHERE event_type = 'interaction'",
+                rusqlite::params![ago],
+            )
+            .unwrap();
+        }
+        let mut config = CompanionConfig::default();
+        config.tools.enabled = false;
+        CompanionService::new(db, std::sync::Arc::new(Echo), config)
+    }
+
+    #[test]
+    fn a_restart_reports_when_the_person_was_last_here_not_that_they_just_left() {
+        // #156: `new` stamped the boot time into `last_interaction_ts`, so after every
+        // restart the proactive engine's clock read ~0 and it concluded the person had
+        // just been around, whether they had or not.
+        let two_days = 2.0 * 86400.0;
+        let c = companion_over_store(Some(two_days));
+        let idle = c
+            .idle_seconds()
+            .expect("the store holds the person's turn, so there is an absence to measure");
+        assert!(
+            (idle - two_days).abs() < 60.0,
+            "a person away for two days reads as two days after a restart, got {idle:.0}s"
+        );
+    }
+
+    #[test]
+    fn a_store_the_person_never_wrote_to_leaves_the_clock_unset() {
+        // The other half of #156: with no interaction event there is nothing to load,
+        // and the boot time must not stand in for a meeting that never happened.
+        let c = companion_over_store(None);
+        assert_eq!(
+            c.last_interaction_ts, 0.0,
+            "no interaction event means no last-interaction time"
+        );
+        assert!(
+            c.idle_seconds().is_none(),
+            "and the idle clock reports no absence to measure, not the decades since 1970"
+        );
     }
 
     /// The property, pinned where it lives: no handler in this file scores. The defect was a

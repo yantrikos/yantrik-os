@@ -51,7 +51,12 @@ impl Instinct for CuriosityInstinct {
 
     fn evaluate(&self, state: &CompanionState) -> Vec<UrgeSpec> {
         let now = state.current_ts;
-        let idle_secs = now - state.last_interaction_ts;
+        // The idle gate measures the person's absence from the bond clock; unset
+        // (#156) means they have never been here — there is no established idle
+        // to research in, so the rate limiter below is never even reached.
+        let Some(idle_secs) = state.absence_seconds() else {
+            return vec![];
+        };
 
         // Only fire when sufficiently idle
         if idle_secs < self.idle_threshold_secs {
@@ -116,5 +121,41 @@ impl Instinct for CuriosityInstinct {
             "idle_seconds": idle_secs,
             "research_type": "interest_based",
         }))]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_util::{TEST_NOW, state_at, state_idle_for};
+
+    /// 30 minutes of idle opens the gate; 6 hours separate research sessions.
+    fn instinct() -> CuriosityInstinct {
+        CuriosityInstinct::new(30.0, 6.0)
+    }
+
+    #[test]
+    fn an_unset_clock_never_reaches_research() {
+        let instinct = instinct();
+        // Two evaluations far enough apart to clear the rate limit: were the
+        // decades-since-1970 idle a real absence (#156), the second would fire.
+        assert!(instinct.evaluate(&state_idle_for(None)).is_empty());
+        let later = state_at(TEST_NOW + 7.0 * 3600.0, None);
+        assert!(
+            instinct.evaluate(&later).is_empty(),
+            "nobody was ever here, so there is no idle to research in"
+        );
+    }
+
+    #[test]
+    fn a_real_two_day_absence_still_triggers_research() {
+        let instinct = instinct();
+        // The first evaluation warms the rate limiter (cold-start guard)...
+        assert!(instinct.evaluate(&state_idle_for(Some(2.0 * 86400.0))).is_empty());
+        // ...and once the interval has passed, the absence fires it.
+        let later = state_at(TEST_NOW + 7.0 * 3600.0, Some(2.0 * 86400.0));
+        let urges = instinct.evaluate(&later);
+        assert_eq!(urges.len(), 1);
+        assert_eq!(urges[0].instinct_name, "Curiosity");
     }
 }
