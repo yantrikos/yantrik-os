@@ -156,33 +156,30 @@ impl Program {
     /// `hermes_cli.main` for `python -m hermes_cli.main gateway run`, `forge.py` for
     /// `python3 forge.py`, `deploy.sh` for `bash deploy.sh`. Empty when nothing was established,
     /// so the caller decides what to say about that rather than this inventing a word.
+    ///
+    /// A title a daemon rewrote over its own argv — `sshd-session: yantrik@notty` — names which
+    /// session a call arrived through, never which program made it, so a peer that has a name
+    /// of its own wins over it (issue #151).
     pub fn name(&self) -> String {
         let Some(found) = self.found() else {
             return String::new();
         };
-        let binary = basename(&found.exe);
-        let mut tokens = found.short_cmdline.split_whitespace();
-        let argv0 = basename(tokens.next().unwrap_or("").trim_start_matches('-'));
-        // When even the executable could not be read, the command line is what is left.
-        let own = if binary.is_empty() { argv0 } else { binary };
-        if !is_interpreter(binary) && !is_interpreter(argv0) {
-            return own.to_string();
+        // `ssh yantrik@vm 'yos notify …'` was filed under `sshd-session:` (#151): everything
+        // above the peer was plumbing, so the walk ended at the session title sshd rewrites
+        // into its own argv[0] — and on the VM even the user's own `sshd-session` refuses
+        // `/proc/<pid>/exe`, so all that was left of it was that title, colon included. The
+        // peer is `python3 /opt/yantrik/bin/yos`, an interpreter running a script, and the
+        // script is a program name; the session the call arrived through is not one.
+        if is_rewritten_title(found) {
+            if let Some(direct) = &self.direct {
+                if direct.pid != found.pid {
+                    if let Some(script) = script_of(direct) {
+                        return script;
+                    }
+                }
+            }
         }
-        let mut module_next = false;
-        for token in tokens {
-            if module_next {
-                return token.to_string();
-            }
-            if token == "-m" {
-                module_next = true;
-                continue;
-            }
-            if token.starts_with('-') {
-                continue;
-            }
-            return basename(token).to_string();
-        }
-        own.to_string()
+        name_of(found)
     }
 
     /// Nothing was knowable. Kept as a named constructor so the "no pid at all" path and the
@@ -298,6 +295,62 @@ fn is_bare_shell(facts: &ProcessFacts) -> bool {
 /// A binary that runs what it is handed rather than being the program itself.
 fn is_interpreter(name: &str) -> bool {
     name.starts_with("python") || INTERPRETERS.contains(&name) || SHELLS.contains(&name)
+}
+
+/// One process's own name: what an interpreter was given to run, else the binary's basename,
+/// else — when even the executable could not be read — the first word of the command line.
+fn name_of(found: &ProcessFacts) -> String {
+    let binary = basename(&found.exe);
+    let argv0 = basename(
+        found.short_cmdline.split_whitespace().next().unwrap_or("").trim_start_matches('-'),
+    );
+    let own = if binary.is_empty() {
+        // The command line is what is left, and a title the daemon rewrote is cut at its
+        // punctuation: the name is `sshd-session`, never `sshd-session:` (#151). A space
+        // needs no cutting; the first word already stopped at it.
+        match argv0.split_once(':') {
+            Some((head, _)) => head,
+            None => argv0,
+        }
+    } else {
+        binary
+    };
+    script_of(found).unwrap_or_else(|| own.to_string())
+}
+
+/// What an interpreter was given to run: `hermes_cli.main` for
+/// `python -m hermes_cli.main gateway run`, `forge.py` for `python3 forge.py`. `None` when
+/// this process is not an interpreter or was given nothing to run — an interpreter with
+/// nothing to run is still only itself, and so is anything that is not one.
+fn script_of(found: &ProcessFacts) -> Option<String> {
+    let binary = basename(&found.exe);
+    let mut tokens = found.short_cmdline.split_whitespace();
+    let argv0 = basename(tokens.next().unwrap_or("").trim_start_matches('-'));
+    if !is_interpreter(binary) && !is_interpreter(argv0) {
+        return None;
+    }
+    let mut module_next = false;
+    for token in tokens {
+        if module_next {
+            return Some(token.to_string());
+        }
+        if token == "-m" {
+            module_next = true;
+            continue;
+        }
+        if token.starts_with('-') {
+            continue;
+        }
+        return Some(basename(token).to_string());
+    }
+    None
+}
+
+/// A process title a daemon rewrote over its own argv: `sshd-session: yantrik@notty`,
+/// `postgres: writer process`, `nginx: worker process`. The `name: detail` shape is the
+/// daemon describing itself; it says which session or which role, not which program called.
+fn is_rewritten_title(facts: &ProcessFacts) -> bool {
+    facts.short_cmdline.split_whitespace().next().is_some_and(|argv0| argv0.contains(':'))
 }
 
 /// pid 1, or the user's session manager. The walk stops here and never names it.
@@ -695,6 +748,51 @@ mod tests {
         assert_eq!(choose(vec![facts(5, "", "curl --unix-socket x")]).name(), "curl");
         // An interpreter given nothing to run is still only itself.
         assert_eq!(choose(vec![facts(6, "/usr/bin/python3", "python3")]).name(), "python3");
+    }
+
+    #[test]
+    fn a_call_that_arrived_over_ssh_is_named_by_the_script_that_made_it() {
+        // Found on the VM right after #139 was deployed (#151): `ssh yantrik@vm 'yos notify …'`
+        // was filed under `sshd-session:`. Everything above the peer was plumbing — a bare
+        // shell, then the session title sshd rewrites into its own argv[0] — and the walk
+        // named the title. The session is how the call arrived, not the program that made it:
+        // the peer is `python3 /opt/yantrik/bin/yos`, and the script it runs is the name.
+        // On the VM even the user's own `sshd-session` refuses `/proc/<pid>/exe`
+        // (Permission denied), so all that is left of it is the command line, colon and all.
+        let chain = vec![
+            facts(52590, "/usr/bin/python3.11", "python3 yos notify Deploy check today=build"),
+            facts(52589, "/usr/bin/bash", "bash"),
+            facts(52584, "", "sshd-session: yantrik@notty"),
+        ];
+        assert_eq!(choose(chain).name(), "yos");
+
+        // The same when the daemon's binary is readable: a rewritten title still says which
+        // session, never which program.
+        let readable = vec![
+            facts(52590, "/usr/bin/python3.11", "python3 yos notify Deploy check"),
+            facts(52589, "/usr/bin/bash", "bash"),
+            facts(52584, "/usr/lib/openssh/sshd-session", "sshd-session: yantrik@notty"),
+        ];
+        assert_eq!(choose(readable).name(), "yos");
+    }
+
+    #[test]
+    fn a_daemons_rewritten_title_is_a_name_without_its_punctuation() {
+        // When there is nothing better than the title itself — the daemon's process is the
+        // peer, or the peer was given nothing to run — the name is the title cut at its
+        // first punctuation: `sshd-session`, never `sshd-session:`.
+        assert_eq!(
+            choose(vec![facts(52584, "", "sshd-session: yantrik@notty")]).name(),
+            "sshd-session"
+        );
+        assert_eq!(choose(vec![facts(300, "", "postgres: writer process")]).name(), "postgres");
+        // A peer that is a bare shell is not a program name either, so the title still wins
+        // there — cut, as always.
+        let bare_peer = vec![
+            facts(52589, "/usr/bin/bash", "bash"),
+            facts(52584, "", "sshd-session: yantrik@notty"),
+        ];
+        assert_eq!(choose(bare_peer).name(), "sshd-session");
     }
 
     // ── The walk itself ──
