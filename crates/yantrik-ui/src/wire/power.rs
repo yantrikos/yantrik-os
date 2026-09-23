@@ -13,8 +13,9 @@ pub fn wire(ui: &App, ctx: &AppContext) {
         let Some(ui) = ui_weak.upgrade() else { return };
         match action.as_str() {
             "lock" => {
-                ui.set_current_screen(3);
-                ui.set_lock_error("".into());
+                // Through the one way in, so the vault's key goes with it: this path used to set
+                // the screen and leave the key in memory.
+                crate::lock::engage(&ui, crate::lock::LOCK_SCREEN);
                 tracing::info!("Screen locked via power menu");
             }
             "suspend" => {

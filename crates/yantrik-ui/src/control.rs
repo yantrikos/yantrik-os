@@ -503,7 +503,11 @@ pub fn publish(
                     .collect()
             };
 
-            View::new(summary)
+            // Through the lock: whole when the desktop is unlocked, and while it is locked only
+            // where the shell is and the policy a mind reads before acting — no conversation, no
+            // notifications, no window titles, no agents' tasks, and nothing added below later.
+            // See `lock::DESCRIBED_WHILE_LOCKED`.
+            crate::lock::describe(View::new(summary)
                 .with("screen", screen_name(screen))
                 .with("conversation", serde_json::Value::Array(conversation))
                 .with("screen_id", screen)
@@ -683,7 +687,7 @@ pub fn publish(
                     ),
                 )
                 .with("incognito", ui.get_settings_incognito_mode())
-                .with("settings", serde_json::json!({"category":ui.get_settings_category(),"query":ui.get_settings_query().to_string(),"dark":ui.get_settings_dark_mode(),"accent":ui.get_settings_accent_color().to_string(),"wallpaper":ui.get_wallpaper_path().to_string(),"save_error":ui.get_settings_save_error(),"save_status":ui.get_settings_save_status().to_string(),"auto_lock_secs":ui.get_settings_auto_lock_secs()}))
+                .with("settings", serde_json::json!({"category":ui.get_settings_category(),"query":ui.get_settings_query().to_string(),"dark":ui.get_settings_dark_mode(),"accent":ui.get_settings_accent_color().to_string(),"wallpaper":ui.get_wallpaper_path().to_string(),"save_error":ui.get_settings_save_error(),"save_status":ui.get_settings_save_status().to_string(),"auto_lock_secs":ui.get_settings_auto_lock_secs()})))
         }
     };
 
@@ -703,7 +707,11 @@ pub fn publish(
     let panel_ui = ui_for.clone();
     let lock_ui = ui_for;
 
-    let surface = ControlSurface::new("shell")
+    // Held to the lock before anything else is said about it: while the desktop is locked, every
+    // act on this surface that `lock::WHILE_LOCKED` does not name is refused in the dispatch,
+    // before its arguments, its grade or its handler — the actions below, the modules' actions
+    // added after them, and any action anybody adds later (#203).
+    let surface = crate::lock::guard(ControlSurface::new("shell"))
         .describe(describe)
         .action(
             Action::new(
@@ -1384,12 +1392,28 @@ pub fn publish(
         )
         .action(
             // Locking is not a view change: the person has to type their way back in. It gets its
-            // own action and its own risk rather than hiding inside `show_screen`.
-            Action::new("lock", "Lock the session").risk("sensitive"),
+            // own action rather than hiding inside `show_screen`.
+            //
+            // `safe`, because locking only takes access away (#215). It was `sensitive`, so in
+            // Ask mode Super+L put an approval card up and the screen stayed open until somebody
+            // clicked Allow — a person who pressed it and walked away left the desktop unlocked
+            // with a card on it. It works while locked too (`lock::WHILE_LOCKED`), and nothing on
+            // this surface can do the reverse: only the lock screen's own PIN check, or the login
+            // screen's password check, releases the lock.
+            Action::new(
+                "lock",
+                "Lock the screen now. Only the person can unlock it, with their PIN on the lock \
+                 screen; nothing on this surface can",
+            )
+            .risk("safe"),
             move |_| {
                 let ui = lock_ui()?;
                 ui.invoke_lock_screen();
-                Ok(serde_json::json!({ "locked": true }))
+                // What is so now, not what was asked for.
+                Ok(serde_json::json!({
+                    "locked": crate::lock::is_locked(),
+                    "screen": screen_name(ui.get_current_screen()),
+                }))
             },
         );
 

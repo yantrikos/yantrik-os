@@ -626,6 +626,52 @@ def _windows():
     return "%d windows, none twice, none of the run's left open, no failed launch" % len(titles)
 
 
+# After everything, because it leaves the desktop locked. Nothing on the control surface can unlock
+# it — that is what this checks — and the run does not know the person's PIN, so the person unlocks
+# it at the machine (with --interactive the check waits for them to). The nightly's boot test only
+# runs commands on the serial console after release-check, which a locked desktop does not touch.
+@check("locking takes effect at once, and a locked desktop opens nothing whoever asks")
+def _locked():
+    """#215 and #203, on the machine. `yos act shell lock --no-ask` locks at once — no card in any
+    mode, because `lock` only takes access away. Then the doors #203 walked through are asked, the
+    way any process running as the person could ask them, and each must be refused with LOCKED;
+    the screen stays `lock`, and `describe shell` says locked and carries no conversation, window
+    titles, notifications or agents' tasks."""
+    code, out = sh("yos act shell lock --no-ask")
+    if code != 0 or "accepted: True" not in out:
+        raise Failed("`yos act shell lock --no-ask` did not lock: %s" % out[-240:])
+    if not wait(lambda: state().get("locked") is True, 5, 0.5):
+        raise Failed("locked, and describe shell does not say so: %s" % json.dumps(state())[:240])
+    opened = []
+    for door in ("open_lens", "show_screen screen=desktop"):
+        code, out = sh("yos act shell %s" % door)
+        if code == 0 or "LOCKED:" not in out:
+            opened.append("%s -> %s" % (door, out.strip()[-160:] or "exit %d" % code))
+    st = state()
+    leaked = [k for k in ("conversation", "windows", "notifications", "agents", "agent_jobs", "lens")
+              if k in st]
+    problems = []
+    if opened:
+        problems.append("not refused while locked: %s" % "; ".join(opened))
+    if st.get("screen") != "lock":
+        problems.append("the screen is %r, not `lock`, after the refusals" % st.get("screen"))
+    if leaked:
+        problems.append("describe shell still carries %s while locked" % leaked)
+    if problems:
+        raise Failed("; ".join(problems))
+    said = "locked at once; open_lens and show_screen desktop refused with LOCKED; screen still lock"
+    if not ARGS.interactive:
+        return said + ". Left LOCKED: only the person can unlock it, with their PIN on the lock screen"
+    print("\n   >>> The desktop is locked. Unlock it with your PIN on the lock screen (120 s).", flush=True)
+    if not wait(lambda: state().get("locked") is False, 120, 2):
+        raise Failed(said + ", but it was not unlocked within 120 s")
+    code, out = sh("yos act shell open_lens")
+    if code != 0:
+        raise Failed(said + "; unlocked, and open_lens still refused: %s" % out[-160:])
+    act("shell", "show_screen", screen="desktop", timeout=15)
+    return said + "; unlocked with the PIN, and the desktop answers again"
+
+
 MANUAL = [
     "Desktop: the greeting names the person; the wallpaper and theme look as intended in dark and light.",
     "Lens: ask a question; the reply streams; a tool call shows as a card with its arguments a click away.",

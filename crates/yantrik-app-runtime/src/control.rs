@@ -350,7 +350,7 @@ fn post_to_ui(job: Box<dyn FnOnce() + Send>) -> Result<(), String> {
     // In tests there is no Slint event loop and no window. The stand-in is a plain worker
     // thread fed by a channel — the same shape as the real hop (the closure crosses a thread
     // boundary, and the caller has to cross with it), which is the property under test.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-standin"))]
     let job = match test_ui_thread::post(job) {
         Ok(()) => return Ok(()),
         Err(unrun) => unrun,
@@ -370,7 +370,11 @@ fn post_to_ui(job: Box<dyn FnOnce() + Send>) -> Result<(), String> {
 ///
 /// One stand-in per test binary, because [`REGISTRY`] is a thread-local and the stand-in is the
 /// thread that holds it.
-#[cfg(test)]
+///
+/// Also built for another crate's tests under the `test-standin` feature (a dev-dependency only —
+/// no shipped binary has it), so the shell can put its own rule on this real dispatch and reach it
+/// through a socket: see [`serve_on_a_standin`].
+#[cfg(any(test, feature = "test-standin"))]
 mod test_ui_thread {
     use std::sync::mpsc::{self, Sender};
     use std::sync::{Mutex, OnceLock};
@@ -413,6 +417,51 @@ mod test_ui_thread {
         let tx = tx.lock().unwrap_or_else(|e| e.into_inner());
         tx.send(job).map_err(|e| e.0)
     }
+}
+
+/// For another crate's tests: serve the surface `build` makes on a real socket, answered through
+/// this module's own dispatch (`ControlRpc`: the call read, the grant, the hop, `Registry::act`) on
+/// a stand-in for the UI thread instead of a window. Returns the socket's address once something
+/// can connect to it.
+///
+/// `build` runs on the stand-in, because an app's closures are not `Send`. The socket is bound in
+/// `runtime_dir`, which the environment points at only until the bind: the address is a path after
+/// that. One per test binary, like the stand-in itself.
+#[cfg(all(unix, feature = "test-standin"))]
+pub fn serve_on_a_standin(
+    build: impl FnOnce() -> App + Send + 'static,
+    runtime_dir: &std::path::Path,
+) -> String {
+    use std::os::unix::net::UnixStream;
+
+    let (tx, rx) = mpsc::channel::<(String, usize)>();
+    test_ui_thread::start(Box::new(move || {
+        let app = build();
+        let _ = tx.send((app.registry.app_id().to_string(), app.registry.action_count()));
+        app.registry
+    }));
+    let (app_id, actions) = rx.recv().expect("the stand-in built the surface");
+
+    let _env = crate::env_lock();
+    let before = std::env::var_os("XDG_RUNTIME_DIR");
+    std::fs::create_dir_all(runtime_dir).expect("a runtime dir for the test socket");
+    std::env::set_var("XDG_RUNTIME_DIR", runtime_dir);
+    let address = RpcServer::default_address(&service_id_for(&app_id));
+    serve_rpc(&app_id, actions);
+    let mut bound = false;
+    for _ in 0..1000 {
+        if UnixStream::connect(&address).is_ok() {
+            bound = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(30));
+    }
+    match before {
+        Some(dir) => std::env::set_var("XDG_RUNTIME_DIR", dir),
+        None => std::env::remove_var("XDG_RUNTIME_DIR"),
+    }
+    assert!(bound, "nothing ever bound {address}");
+    address
 }
 
 /// Ask the UI thread to run `job` and wait for its answer.
@@ -588,6 +637,16 @@ impl App {
         f: impl Fn(&serde_json::Value) -> Result<serde_json::Value, String> + 'static,
     ) -> Self {
         self.registry.add(spec, Box::new(f));
+        self
+    }
+
+    /// Hold every act on this surface to a rule of the app's own, asked in the dispatch before
+    /// anything else about the call — its arguments, the ceiling, the mode, any grant, the handler.
+    /// `Err` is the caller's refusal, word for word. The shell holds its surface while the desktop
+    /// is locked (`crate::lock` in yantrik-ui): one rule, in the one function every `app.act`
+    /// crosses, rather than a check in each action that the next action would forget.
+    pub fn hold(mut self, rule: impl Fn(&str) -> Result<(), String> + Send + Sync + 'static) -> Self {
+        self.registry.hold_with(Box::new(rule));
         self
     }
 
@@ -903,6 +962,36 @@ mod tests {
             reg.act("nope", &serde_json::json!({}), None, "app-notes#4", &open()).unwrap_err(),
             "unknown action `nope`; this app offers: rename"
         );
+    }
+
+    /// A rule an app declares with [`App::hold`] is asked by the dispatch itself, before the
+    /// arguments, the ceiling and the handler — the shell's `LOCKED:` is one of these — and what
+    /// it lets through runs as before.
+    #[test]
+    fn a_hold_the_app_declares_is_asked_by_the_dispatch() {
+        let ran = Rc::new(Cell::new(false));
+        let app = App::new("shell")
+            .action(Action::new("show_screen", "Switch screens").arg(Param::text("screen")), {
+                let ran = ran.clone();
+                move |_| {
+                    ran.set(true);
+                    Ok(serde_json::json!({ "showing": "desktop" }))
+                }
+            })
+            .action(Action::new("lock", "Lock the session").risk("safe"), |_| {
+                Ok(serde_json::json!({ "locked": true }))
+            })
+            .hold(|name| match name {
+                "lock" => Ok(()),
+                _ => Err("LOCKED: held".to_string()),
+            });
+        let reg = app.registry;
+        let screen = serde_json::json!({ "screen": "desktop" });
+        assert_eq!(reg.act("show_screen", &screen, None, "app-shell#1", &open()).unwrap_err(), "LOCKED: held");
+        assert_eq!(reg.act("show_screen", &serde_json::json!({}), None, "app-shell#2", &under("safe")).unwrap_err(), "LOCKED: held");
+        assert_eq!(reg.check_call("show_screen", &screen).unwrap_err(), "LOCKED: held", "before a grant is spent");
+        assert!(!ran.get(), "held, and the handler ran anyway");
+        assert_eq!(reg.act("lock", &serde_json::json!({}), None, "app-shell#3", &open()).unwrap()["result"]["locked"], true);
     }
 
     #[test]

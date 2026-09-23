@@ -771,6 +771,14 @@ pub fn wire(ui: &App, ctx: &AppContext) {
 
     ui.on_launch_app(move |app_id| {
         let app = app_id.to_string();
+
+        // Nothing opens while the desktop is locked: an app window comes up in front of the lock
+        // screen. This callback is reached by a tile, a pin, a notification and
+        // `invoke_launch_app` from anywhere in the shell, so it is the last gate before a spawn.
+        if crate::lock::is_locked() {
+            tracing::info!(app = %app, "Not launched: the desktop is locked");
+            return;
+        }
         tracing::info!(app = %app, "Launching app");
 
         // The shelf, before anything that could run a program. `check_launchable` already

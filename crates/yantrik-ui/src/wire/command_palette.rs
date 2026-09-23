@@ -180,6 +180,14 @@ fn wire_selected(ui: &App, ctx: &AppContext) {
         // Close palette
         ui.set_command_palette_open(false);
 
+        // Nothing from the palette while the desktop is locked. It is drawn on the desktop screen
+        // only, so a person cannot reach it from the lock screen; this is for anything that
+        // invokes it anyway, and `navigate` would refuse the screen change on its own.
+        if crate::lock::is_locked() {
+            tracing::info!(action = %action, "Command palette: not run, the desktop is locked");
+            return;
+        }
+
         // Navigation first, from the one table a test can read. It used to be a chain of `else
         // if` arms holding screen ids inline — which is how ten of them came to point at screens
         // app.slint no longer draws without anything noticing.

@@ -36,6 +36,16 @@ pub fn wire(ui: &App, ctx: &AppContext) {
     ui.on_navigate(move |screen| {
         tracing::debug!(screen, "Navigate to screen");
 
+        // Every path that shows a screen ends here — the control surface, the command palette,
+        // a notification, the Lens, cross-app requests and app.slint's own buttons all set the
+        // screen and then call this. While the desktop is locked none of them is shown and
+        // nothing is loaded for it: the lock's screen is put back. See `crate::lock`.
+        if let Some(ui) = ui_weak.upgrade() {
+            if crate::lock::refuse_screen(&ui, screen) {
+                return;
+            }
+        }
+
         match screen {
             // Desktop — load pending urges
             1 => {

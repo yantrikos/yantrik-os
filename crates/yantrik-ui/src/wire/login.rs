@@ -69,9 +69,9 @@ pub fn wire(ui: &App, ctx: &AppContext) {
                         tracing::info!(user = %username, "Login successful");
                         fails.store(0, Ordering::Relaxed);
                         ui.set_login_error("".into());
-                        // Navigate to desktop
-                        ui.set_current_screen(1);
-                        ui.invoke_navigate(1);
+                        // The other place the desktop's lock is released, and only once the
+                        // system has agreed to the password. See `crate::lock::release`.
+                        crate::lock::release(&ui, crate::lock::LOGIN_SCREEN);
                     } else {
                         let count = fails.fetch_add(1, Ordering::Relaxed) + 1;
                         tracing::warn!(user = %username, attempts = count, "Login failed");

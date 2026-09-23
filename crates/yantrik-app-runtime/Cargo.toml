@@ -19,3 +19,9 @@ yantrik-ipc-transport = { workspace = true }
 yantrik-surface = { workspace = true }
 # One version string for every app binary's --version, resolved from what is installed.
 yantrik-version = { workspace = true }
+
+[features]
+# The stand-in for the UI thread that this crate's own socket tests answer on, offered to another
+# crate's tests (`control::serve_on_a_standin`) — yantrik-ui reaches the shell's `LOCKED:` rule
+# through the real dispatch with it. A dev-dependency feature only: no shipped binary enables it.
+test-standin = []

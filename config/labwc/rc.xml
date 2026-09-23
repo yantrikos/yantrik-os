@@ -121,9 +121,12 @@
     </keybind>
 
     <!-- ── The shell, through its own control surface ──────────────────────────────────── -->
+    <!-- Locks at once: `lock` is graded safe, and yos is told never to ask, so anything but a
+         lock comes back as a refusal rather than an approval card. Locking must never wait for
+         somebody to press Allow (#215). -->
     <keybind key="W-l">
       <action name="Execute">
-        <command>/opt/yantrik/bin/yos act shell lock</command>
+        <command>/opt/yantrik/bin/yos act shell lock --no-ask</command>
       </action>
     </keybind>
     <keybind key="W-e">

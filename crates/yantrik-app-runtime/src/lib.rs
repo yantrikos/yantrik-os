@@ -50,10 +50,10 @@ pub mod theme;
 /// pointed *now*. On GitHub's runners that lost the race on four pull requests in one night,
 /// none of which touched this crate, and passed on every rerun. A poisoned lock is fine to
 /// take: whatever the last holder panicked about was its own business.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-standin"))]
 pub(crate) static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-standin"))]
 pub(crate) fn env_lock() -> std::sync::MutexGuard<'static, ()> {
     ENV_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }

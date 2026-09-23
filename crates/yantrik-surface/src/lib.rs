@@ -83,7 +83,8 @@
 //!
 //! # Codes
 //!
-//! Every refusal — unknown action, argument, `STALE:`, `CEILING:`, `GRANT:`, a handler's own
+//! Every refusal — unknown action, argument, `STALE:`, `CEILING:`, `GRANT:`, a surface's own hold
+//! (the shell's `LOCKED:`, see [`Registry::hold_with`]), a handler's own
 //! `Err` — is `-32602` ([`REFUSED`]), an application answer rather than a transport failure. An
 //! unknown method is `-32601`; a window whose UI thread did not answer in time, `-32000`.
 
@@ -108,7 +109,7 @@ pub use context::{
     LaterScope,
 };
 pub use registry::{
-    check_grade, Describer, Handler, LocalRegistry, Registry, SharedDescriber, SharedHandler,
+    check_grade, Describer, Handler, Hold, LocalRegistry, Registry, SharedDescriber, SharedHandler,
     SharedRegistry,
 };
 pub use surface::Surface;

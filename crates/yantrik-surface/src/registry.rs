@@ -18,6 +18,15 @@ pub type SharedDescriber = dyn Fn() -> View + Send + Sync;
 /// One action's handler, for a surface shared across threads (a service).
 pub type SharedHandler = dyn Fn(&Value) -> Result<Value, String> + Send + Sync;
 
+/// A rule of a surface's own that every act must pass before anything else about it is looked at:
+/// `Err` is the caller's refusal, word for word, and the action does not run.
+///
+/// The shell holds its surface while the desktop is locked (`LOCKED: …`): the ceiling, the mode and
+/// the grant say what a caller may do to the machine, and none of them knows that nobody is at it.
+/// Given the action's name only, and asked once per call, so a rule it states is the same for an
+/// action added tomorrow as for every action there is today.
+pub type Hold = dyn Fn(&str) -> Result<(), String> + Send + Sync;
+
 /// A registry whose closures may capture anything — a window's, which live on its UI thread.
 pub type LocalRegistry = Registry<Describer, Handler>;
 /// A registry whose closures are `Send + Sync` — a service's, dispatched on any worker.
@@ -41,6 +50,8 @@ pub struct Registry<D: ?Sized = Describer, H: ?Sized = Handler> {
     /// which borrowed the whole registry mutably, panicked with "RefCell already borrowed" the
     /// first time an action called it and took the app down.
     overrides: Mutex<Vec<(String, &'static str)>>,
+    /// The surface's own rule, asked before every act — see [`Hold`]. `None` holds nothing.
+    hold: Option<Box<Hold>>,
 }
 
 impl<D: ?Sized, H: ?Sized> Registry<D, H> {
@@ -50,6 +61,23 @@ impl<D: ?Sized, H: ?Sized> Registry<D, H> {
             describe: None,
             actions: Vec::new(),
             overrides: Mutex::new(Vec::new()),
+            hold: None,
+        }
+    }
+
+    /// Hold every act on this surface to `rule`, asked as soon as the action is known to exist and
+    /// before its arguments, the ceiling, the mode, any grant or the handler — so a call the rule
+    /// refuses is refused whatever else is true of it, and a person's Allow is never spent on it.
+    /// One rule per surface; a second call replaces the first.
+    pub fn hold_with(&mut self, rule: Box<Hold>) {
+        self.hold = Some(rule);
+    }
+
+    /// The surface's own rule, for one action.
+    fn held(&self, name: &str) -> Result<(), String> {
+        match &self.hold {
+            Some(rule) => rule(name),
+            None => Ok(()),
         }
     }
 
@@ -186,6 +214,8 @@ impl<D: ?Sized, H: ?Sized> Registry<D, H> {
     /// checked here, ahead of the ceiling and the spend, and again in [`Registry::act`].
     pub fn check_call(&self, name: &str, args: &Value) -> Result<&'static str, String> {
         let grade = self.grade_of(name)?;
+        // The surface's own rule, before the arguments: a held act is refused for being held.
+        self.held(name)?;
         if let Some((spec, _)) = self.actions.iter().find(|(a, _)| a.name == name) {
             check_arguments(spec, args)?;
         }
@@ -236,7 +266,8 @@ where
     ///
     /// The order, which every door keeps (docs/surface-protocol.md, §5): the action exists; the
     /// calling agent's reach, when it carries a token ([`Registry::within_reach`], called just
-    /// before this); the arguments as sent; the ceiling; any grant, spent against the arguments as
+    /// before this); the surface's own hold, when it has one ([`Registry::hold_with`]); the
+    /// arguments as sent; the ceiling; any grant, spent against the arguments as
     /// sent (before this, see [`crate::ActCall::spend_grant`]); the mode; the revision guard; and
     /// only then the arguments converted to their declared types and the handler.
     ///
@@ -262,6 +293,10 @@ where
         let Some((spec, run)) = self.actions.iter().find(|(a, _)| a.name == name) else {
             return Err(self.unknown(name));
         };
+
+        // The surface's own rule — the shell's `LOCKED:` — before anything else about the call:
+        // what it holds is refused whatever its arguments, its grade or the person's mode.
+        self.held(name)?;
 
         // Present, known, and of the declared type or losslessly converted to it — see `args`.
         // First, and before any grant is spent: a malformed call is refused for what is wrong with
@@ -1073,5 +1108,57 @@ mod tests {
             );
         }
         assert_eq!(shared.act("nope", &json!({}), None, "n#1", &open()), local.act("nope", &json!({}), None, "n#1", &open()));
+    }
+
+    /// A surface's own hold is asked before everything but the action's existence: a held act is
+    /// refused in the hold's words whatever its arguments, its grade or the mode, the handler does
+    /// not run, and `check_call` — what is asked before a grant is spent — refuses it too, so an
+    /// Allow is never used up on it. What the hold lets through meets every other check as before.
+    #[test]
+    fn a_held_act_is_refused_before_its_arguments_its_grade_or_its_handler() {
+        let ran = Rc::new(Cell::new(false));
+        let mut reg = surface(
+            "shell",
+            None,
+            vec![
+                (
+                    Action::new("show_screen", "Switch screens").arg(Param::text("screen")),
+                    Box::new({
+                        let ran = ran.clone();
+                        move |_| {
+                            ran.set(true);
+                            Ok(json!({"shown": true}))
+                        }
+                    }),
+                ),
+                (
+                    Action::new("wipe", "Erase everything").risk("dangerous"),
+                    Box::new(|_| Ok(json!("never reached"))),
+                ),
+                (Action::new("lock", "Lock").risk("safe"), Box::new(|_| Ok(json!({"locked": true})))),
+            ],
+        );
+        reg.hold_with(Box::new(|name| match name {
+            "lock" => Ok(()),
+            _ => Err("LOCKED: held".to_string()),
+        }));
+
+        for args in [json!({"screen": "desktop"}), json!({}), json!({"screen": 7, "extra": true})] {
+            assert_eq!(reg.act("show_screen", &args, None, "s#1", &open()).unwrap_err(), "LOCKED: held", "{args}");
+            assert_eq!(reg.check_call("show_screen", &args).unwrap_err(), "LOCKED: held", "{args}");
+        }
+        assert!(!ran.get(), "held, and the handler ran anyway");
+        // Before the ceiling and the mode: a caller is told it is held, not that it needs a card.
+        assert_eq!(reg.act("wipe", &json!({}), None, "s#2", &under("safe")).unwrap_err(), "LOCKED: held");
+        assert_eq!(reg.act("wipe", &json!({}), None, "s#3", &in_mode("ask", false)).unwrap_err(), "LOCKED: held");
+        // An action the surface does not have is still answered as that.
+        assert!(reg.act("nope", &json!({}), None, "s#4", &open()).unwrap_err().starts_with("unknown action `nope`"));
+        // What the hold lets through runs, and meets the argument checks as before.
+        assert_eq!(reg.act("lock", &json!({}), None, "s#5", &open()).unwrap()["result"]["locked"], true);
+        assert_eq!(reg.act("lock", &json!({"x": 1}), None, "s#6", &open()).unwrap_err(), "`lock` takes no arguments, but `x` was given");
+
+        // And a surface with no hold holds nothing.
+        let free = surface("shell", None, vec![(Action::new("lock", "Lock").risk("safe"), Box::new(|_| Ok(json!(1))))]);
+        assert!(free.act("lock", &json!({}), None, "s#7", &open()).is_ok());
     }
 }

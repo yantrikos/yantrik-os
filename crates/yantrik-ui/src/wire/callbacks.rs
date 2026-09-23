@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use slint::{ComponentHandle, Model, ModelRc, SharedString, Timer, TimerMode, VecModel};
 
-use crate::app_context::{self, AppContext};
+use crate::app_context::AppContext;
 use crate::mime_dispatch::{self, FileAction};
 use crate::app_context::FileClipOp;
 use crate::{
@@ -40,9 +40,12 @@ fn wire_lock(ui: &App, ctx: &AppContext) {
         let pin = pin.to_string();
         if lock::check_pin(&pin) {
             if let Some(ui) = ui_weak.upgrade() {
-                ui.set_current_screen(1);
+                // One of the two places the desktop's lock is released, and only once the PIN has
+                // been checked. See `lock::release`.
                 ui.set_lock_error("".into());
-                tracing::info!("Screen unlocked");
+                if lock::release(&ui, lock::LOCK_SCREEN) {
+                    tracing::info!("Screen unlocked");
+                }
             }
             // The screen is open; now see whether the same keystrokes also open the vault.
             //
@@ -65,17 +68,12 @@ fn wire_lock(ui: &App, ctx: &AppContext) {
 
     let ui_weak_lock = ui.as_weak();
     ui.on_lock_screen(move || {
-        // Before the screen goes dark, not after: the key is zeroed while this is still the
-        // person's own action. A locked screen with the vault's key still in memory protects a
-        // screen — anything already running as this user could read every credential out of the
-        // process for as long as the machine stayed on.
-        crate::vault_unlock::on_screen_lock();
+        // The lock is a state, and `lock::engage` is the one way into it: the dispatch refuses,
+        // the screen follows, the vault's key is zeroed before the screen goes dark (a locked
+        // screen with the key still in memory protects a screen), and the shell comes in front of
+        // whatever app window was. See `crate::lock`.
         if let Some(ui) = ui_weak_lock.upgrade() {
-            ui.set_current_screen(3);
-            ui.set_lock_error("".into());
-            ui.set_lock_date_text(app_context::current_date_text().into());
-            ui.set_lock_greeting(ui.get_greeting_text());
-            tracing::info!("Screen locked — the vault's key was zeroed with it");
+            lock::engage(&ui, lock::LOCK_SCREEN);
         }
     });
 }

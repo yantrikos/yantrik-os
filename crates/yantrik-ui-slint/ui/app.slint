@@ -101,12 +101,16 @@ export component App inherits Window {
     // written a body for and the machine sat at 100% with four ticks and no desktop.
     callback boot-complete();
     boot-complete => {
-        if root.onboarding-step > 0 {
-            root.current-screen = 2;
-            root.navigate(2);
-        } else {
-            root.current-screen = 1;
-            root.navigate(1);
+        // Not past a lock. An installed machine starts on the login screen (32) and the boot
+        // stages finish behind it; this used to take it straight to the desktop two seconds later.
+        if root.locked-on == 0 {
+            if root.onboarding-step > 0 {
+                root.current-screen = 2;
+                root.navigate(2);
+            } else {
+                root.current-screen = 1;
+                root.navigate(1);
+            }
         }
     }
 
@@ -440,6 +444,13 @@ export component App inherits Window {
     callback end-focus-mode();
 
     // Lock screen state
+    //
+    // Whether the desktop is locked, and by which screen: 0 when it is not, otherwise the screen
+    // holding it — 3, the lock screen, or 32, the login screen. Set by Rust (`crate::lock`) and by
+    // nothing here. Locked is a state, not a screen (#203): the screen follows it, so the keys, the
+    // boot handoff and the overlays below all stand down while it is set, and the `changed
+    // current-screen` handler at the end puts the lock's screen back if anything moves off it.
+    in property <int> locked-on: 0;
     in property <string> lock-error: "";
     in property <string> lock-date-text: "";
     in property <string> lock-greeting: "";
@@ -1265,6 +1276,12 @@ export component App inherits Window {
             focus-on-tab-navigation: false;
 
             capture-key-pressed(event) => {
+                // None of the shell's shortcuts while the desktop is locked: Ctrl+K on the lock
+                // screen went to the desktop and opened the conversation (#203). The key goes on
+                // to whatever has focus — the PIN field.
+                if root.locked-on != 0 {
+                    return reject;
+                }
                 // Ctrl+K — the ask bar, advertised on the desktop in two places and until now
                 // wired to nothing at all. The Lens lives on the desktop screen, so summoning it
                 // from elsewhere goes there first; opening it any other way (the ask bar, the
@@ -1282,6 +1299,10 @@ export component App inherits Window {
             }
 
             key-pressed(event) => {
+                // Not while locked: voice would answer over the lock screen.
+                if root.locked-on != 0 {
+                    return reject;
+                }
                 // Ctrl+Space as voice hotkey (more reliable than Super across platforms)
                 if event.modifiers.control && event.text == " " {
                     root.voice-hotkey-pressed();
@@ -2942,8 +2963,8 @@ export component App inherits Window {
             }
         }
 
-        // Voice overlay
-        if voice-active : VoiceOverlay {
+        // Voice overlay. Never over a lock: what it transcribes and answers is the person's.
+        if voice-active && root.locked-on == 0 : VoiceOverlay {
             width: 100%; height: 100%;
             voice-state: root.voice-state;
             transcribed-text: root.voice-transcribed;
@@ -2963,7 +2984,7 @@ export component App inherits Window {
         //
         // The fast path, deliberately: Settings > Harnesses is where you read about a mind, and
         // this is where you change to one without leaving what you were doing.
-        if root.ai-quick-switcher-open : Rectangle {
+        if root.ai-quick-switcher-open && root.locked-on == 0 : Rectangle {
             width: 100%;
             height: 100%;
 
@@ -3091,8 +3112,10 @@ export component App inherits Window {
             }
         }
 
-        // Toast notification banners (top-right, stacking)
-        if toast-queue.length > 0 : ToastBanner {
+        // Toast notification banners (top-right, stacking). None over a lock: a toast is what
+        // somebody sent the person, and locking clears them (`lock::engage`); this is the
+        // back-stop for one that arrives after.
+        if toast-queue.length > 0 && root.locked-on == 0 : ToastBanner {
             width: 100%; height: 100%;
             toasts: root.toast-queue;
             overflow: root.toast-overflow;
@@ -3283,6 +3306,19 @@ export component App inherits Window {
     /// five places, one of which is Rust setting the property directly.
     changed lens-open => {
         if (!root.lens-open) { global-keys.focus(); }
+    }
+
+    /// The lock's back-stop: while the desktop is locked, the screen is the one holding the lock.
+    ///
+    /// Every path that navigates is refused on its own — the control surface's dispatch, Rust's
+    /// `navigate` (`lock::refuse_screen`), the boot handoff and the keys above — but a path that
+    /// sets the screen without asking anybody is exactly what #203 was, so this puts the lock's
+    /// screen back whatever set it. Change handlers run before the next frame is drawn, so the
+    /// screen that was asked for is never shown.
+    changed current-screen => {
+        if (root.locked-on != 0 && root.current-screen != root.locked-on) {
+            root.current-screen = root.locked-on;
+        }
     }
 
     /// Give the shell's shortcut scope the keyboard, so there is a focus chain to deliver to.

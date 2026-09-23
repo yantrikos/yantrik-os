@@ -223,12 +223,20 @@ fn main() {
     // desktop right now" was answerable only by photographing a status bar we wrote ourselves.
     control::publish(&ui, &ctx, service_manager.clone());
 
-    // Debug: navigate to specific screen on startup via env var
+    // The screen to start on, from the session's environment. An installed machine starts on the
+    // login screen (`YANTRIK_START_SCREEN=32`, written by the installer), and that is a lock, not a
+    // screen: it goes through `lock::engage` so the dispatch refuses and the boot handoff stays
+    // behind it until the password is checked. Anything else is a debug aid.
     if let Ok(screen_str) = std::env::var("YANTRIK_START_SCREEN") {
         if let Ok(screen) = screen_str.parse::<i32>() {
-            tracing::info!(screen, "Debug: navigating to startup screen");
-            ui.set_current_screen(screen);
-            ui.invoke_navigate(screen);
+            if screen == lock::LOGIN_SCREEN || screen == lock::LOCK_SCREEN {
+                tracing::info!(screen, "Starting locked");
+                lock::engage(&ui, screen);
+            } else {
+                tracing::info!(screen, "Debug: navigating to startup screen");
+                ui.set_current_screen(screen);
+                ui.invoke_navigate(screen);
+            }
         }
     }
 

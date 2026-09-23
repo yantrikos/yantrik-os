@@ -59,6 +59,13 @@ impl Surface {
         self
     }
 
+    /// Hold every act to a rule of this surface's own, asked before anything else about the call
+    /// — see [`Registry::hold_with`].
+    pub fn hold(mut self, rule: impl Fn(&str) -> Result<(), String> + Send + Sync + 'static) -> Surface {
+        self.registry.hold_with(Box::new(rule));
+        self
+    }
+
     /// The id this surface publishes.
     pub fn app_id(&self) -> &str {
         self.registry.app_id()

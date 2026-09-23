@@ -74,3 +74,8 @@ cuda = ["yantrik-ml/cuda"]
 metal = ["yantrik-ml/metal"]
 accelerate = ["yantrik-ml/accelerate"]
 
+
+[dev-dependencies]
+# The control surface's real dispatch on a stand-in for the UI thread, so a test reaches the
+# shell's `LOCKED:` rule through a socket as `yos` does (src/lock.rs). Tests only.
+yantrik-app-runtime = { workspace = true, features = ["test-standin"] }

@@ -14,7 +14,7 @@ use slint::{ModelRc, VecModel};
 // contract is what keeps the two ends of this wire from drifting.
 use yantrik_ipc_contracts::network::{method as network_method, NetworkStatus};
 
-use crate::app_context::{self, AppContext};
+use crate::app_context::AppContext;
 use crate::{cards, features, lock, system_context, windows, App, ProcessData, WindowItem};
 
 /// What a row shows when the reading behind it has not been taken yet. A
@@ -279,10 +279,7 @@ pub fn wire(ui: &App, ctx: &AppContext) {
                 && snap.idle_seconds >= lock_timeout
                 && ui.get_current_screen() == 1
             {
-                ui.set_current_screen(3);
-                ui.set_lock_error("".into());
-                ui.set_lock_date_text(app_context::current_date_text().into());
-                ui.set_lock_greeting(ui.get_greeting_text());
+                crate::lock::engage(&ui, crate::lock::LOCK_SCREEN);
                 tracing::info!(idle_secs = snap.idle_seconds, "Auto-locked due to idle");
             }
         }
@@ -429,10 +426,7 @@ fn handle_keybind(ui: &App, action: &str) {
             }
         }
         "lock-screen" => {
-            ui.set_current_screen(3);
-            ui.set_lock_error("".into());
-            ui.set_lock_date_text(app_context::current_date_text().into());
-            ui.set_lock_greeting(ui.get_greeting_text());
+            crate::lock::engage(ui, crate::lock::LOCK_SCREEN);
             tracing::info!("Screen locked via hotkey");
         }
         "open-terminal" => {
