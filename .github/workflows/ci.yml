@@ -72,6 +72,64 @@ jobs:
       - name: Test
         run: cargo test --workspace --locked
 
+  arm64-cross:
+    name: arm64 cross-build
+    # #270's Pi 5 image and general ARM64 image are built from an aarch64 build of the
+    # whole workspace, which for a while existed only as a recipe somebody ran by hand on
+    # a Debian machine. This job is that recipe kept green: the same setup script and the
+    # same env file a real machine uses, run on GitHub's x86 ubuntu-24.04 runner.
+    #
+    # It builds; it does not run the tests. The binaries are arm64 and the runner is x86 —
+    # running them would need an arm64 machine or qemu-user, and this job sets up neither.
+    # A workspace that compiles and links for aarch64 is what green means here.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    env:
+      # The same warning suppression the machine-local .cargo/config.toml gives an aarch64
+      # build: the rustc 1.93.x lint-emitter ICEs it guards against do not care which
+      # target is being linted. That file is gitignored — it carries a mold line for x86_64
+      # that would break runners, which have no mold — so CI cannot read it and the flag
+      # travels here instead, as the target-specific variable. Not RUSTFLAGS: a bare
+      # RUSTFLAGS replaces every target's flags instead of adding to them. No mold for
+      # aarch64 either; setup-arm64-cross.sh does not install it.
+      CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS: -A warnings
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Make room
+        # The release target directory of this workspace is ~13 GB and a runner arrives
+        # with ~14 GB free — the arithmetic the ISO job already does. These are toolchains
+        # this build never touches.
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          sudo docker image prune --all --force > /dev/null 2>&1 || true
+          df -h / | tail -1
+
+      - name: Cross-build environment
+        # Installs the cross gcc, the arm64 libraries the -sys crates link against, and —
+        # on Ubuntu, which this runner is — points apt at ports.ubuntu.com for arm64 while
+        # pinning the existing mirrors to amd64. Idempotent; the pure half of what it does
+        # to apt sources is held by the selftest in the shell-scripts job below.
+        run: sudo bash deploy/yantrik-os/setup-arm64-cross.sh
+
+      - name: Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-linux-gnu
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ci-arm64-v1
+          cache-on-failure: true
+
+      - name: The environment the build needs
+        # The one copy of the six variables, appended to $GITHUB_ENV from the same file
+        # the setup script prints. Comments are dropped: $GITHUB_ENV reads KEY=value.
+        run: grep -Ev '^[[:space:]]*(#|$)' deploy/yantrik-os/arm64-cross.env >> "$GITHUB_ENV"
+
+      - name: Build
+        run: cargo build --release --target aarch64-unknown-linux-gnu --workspace --bins --locked
+
   shell-scripts:
     name: shell scripts
     runs-on: ubuntu-latest
@@ -171,6 +229,13 @@ jobs:
       # registrations and both packaging scripts against the reader; no builds, no machine.
       - name: The packaging scripts ask the tree which services they ship
         run: bash deploy/yantrik-os/service-bins.sh selftest
+
+      # The arm64 cross-build setup's offline half (#270): the apt-sources rewriters — a
+      # wrong one bricks a machine's apt-get update, and on a runner that shows up as a
+      # red arm64 job an hour into it — and the env file's shape, which both a build
+      # machine's shell and $GITHUB_ENV have to accept as-is.
+      - name: The arm64 cross-build setup holds its sources rewriting and its env file
+        run: bash deploy/yantrik-os/setup-arm64-cross.sh selftest
 
       # The harnesses that ship as source (harnesses/lib, harnesses/pi, harnesses/deepseek).
       # Same shape as the two above: stdlib-only Python over a fake of everything it talks to —
