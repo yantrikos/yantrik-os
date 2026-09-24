@@ -80,11 +80,22 @@ export struct ApprovalRequest {
     // to — and empty when the app publishes no name index or names none of these values, in
     // which case the card hides the row rather than drawing a blank.
     target: string,
+    // What the app says about THIS call, with these arguments (#137): Studio's card for
+    // `set_backend kind=fake` can say "after this, prompts stay on this machine", where its
+    // published purpose — the same paragraph for every call of the action — could only say
+    // that naming a hosted service sends prompts away. One already-bounded sentence, drawn
+    // under the argument box, and empty for an app that explains nothing per call, in which
+    // case the card hides the block and is exactly what it was. Like `target`, a sentence
+    // ABOUT the arguments, never one more thing the grant binds to — and while the card
+    // carries one, it offers no "Allow for this session" (`can_session` below).
+    explained: string,
     warning: string,        // "" unless there is something that cannot be undone
     // Whether "Allow for this session" may be offered at all. False for `dangerous` and for any
     // action whose own published sentence says it cannot be undone — the same predicate that
     // draws `warning`, so the card can never offer to stop asking about the thing it is warning
-    // about. Decided in approvals.rs from the UNCLIPPED purpose.
+    // about — and false while the card carries an `explained` sentence (#137): that sentence
+    // explained ONE call, and the session rule would stand in for every later one. Decided in
+    // approvals.rs from the UNCLIPPED purpose.
     can-session: bool,
     decision: string,       // "" while waiting; then allowed | denied | expired
     record: string,         // the one line that stays in the conversation afterwards
@@ -509,6 +520,40 @@ export component ApprovalCard inherits Rectangle {
                     font-size: Theme.fs-micro;
                     wrap: no-wrap;
                     overflow: elide;
+                }
+            }
+
+            // What the app says about THIS call, with these arguments (#137), drawn directly
+            // under the argument box — the bridge in reading order: the purpose states the
+            // rule, the box shows the one call, and this says what that call does. One
+            // sentence, wrapped: it arrives already bounded (see `EXPLAINED_CHARS` in
+            // approvals.rs) and cut at a word like every prose line on this card, and the
+            // details section scrolls however it wraps. Hidden when empty, which is every app
+            // that explains nothing per call: their card is exactly what it was.
+            if root.data.explained != "" : VerticalLayout {
+                spacing: 0px;
+                Text {
+                    // Pinned to the layout's width, like `purpose-text` above: a wrapping Text
+                    // left to its default measures its height at its own unwrapped width, so
+                    // the section's preferred height would count this block as one line tall
+                    // however it wraps — and the details' scroll range is that preferred
+                    // height against the clipped box, so the wrapped lines below the fold
+                    // would be unreachable, the wheel having nothing to scroll.
+                    width: parent.width;
+                    text: root.data.explained;
+                    color: Theme.text-primary;
+                    font-size: Theme.fs-caption;
+                    wrap: word-wrap;
+                }
+                // Wrapped, not elided: this footnote is longer than the card is wide, and the
+                // elided line cut off exactly its point — "not to this sentence". The details
+                // section scrolls, so a wrapped footnote costs nothing but its second line.
+                Text {
+                    width: parent.width;
+                    text: "says the app about this one call, with these arguments · the grant binds to the argument box above, not to this sentence";
+                    color: Theme.text-dim;
+                    font-size: Theme.fs-micro;
+                    wrap: word-wrap;
                 }
             }
 

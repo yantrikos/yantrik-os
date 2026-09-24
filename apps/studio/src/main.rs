@@ -694,7 +694,39 @@ fn surface(engine: Engine) -> Vec<(Action, Handler)> {
              is read from the environment each time and never stored.").optional())
         .arg(arg("workflow", "A path to a ComfyUI workflow in API format, to use instead of the \
              built-in SDXL text-to-image graph. A file saved from ComfyUI's editor rather than its \
-             'Save (API Format)' is refused with an explanation, not silently misread.").optional()),
+             'Save (API Format)' is refused with an explanation, not silently misread.").optional())
+        // The paragraph above can only state the condition ("naming a hosted service means the
+        // sentences typed into this app will leave this machine"); whether THIS call meets it
+        // turns on the `kind` it carries, which `describe` never sees (#137). So the card gets
+        // the unconditional half from here: what the arguments establish about where prompts go
+        // after this call, and nothing guessed beyond that. A kind this closure does not know
+        // gets an honest nothing rather than a guess — the card then reads as it did before.
+        .explain(|args| {
+            match args.get("kind").and_then(Value::as_str).unwrap_or_default().trim() {
+                "fake" => "After this, prompts stay on this machine.".to_string(),
+                "openai-images" => {
+                    let url = given(args, "base_url");
+                    let url = url.trim();
+                    if url.is_empty() {
+                        "After this, prompts go to api.openai.com and may cost money.".to_string()
+                    } else {
+                        // Name the PARSED HOST, never the raw argument: `base_url` is
+                        // caller-supplied text, and "https://api.openai.com@evil.example/v1"
+                        // would read as naming api.openai.com while every prompt and the key
+                        // go to evil.example. A URL that parses to no host gets an honest
+                        // nothing rather than a guess, like a kind this closure does not know.
+                        match url::Url::parse(url).ok().and_then(|u| u.host_str().map(str::to_owned))
+                        {
+                            Some(host) => {
+                                format!("After this, prompts go to {host} and may cost money.")
+                            }
+                            None => String::new(),
+                        }
+                    }
+                }
+                _ => String::new(),
+            }
+        }),
         do_set_backend,
     );
 

@@ -1672,6 +1672,7 @@ mod tests {
             summary: crate::approvals::summary_of(purpose),
             args: vec!["command: rm -rf build".into()],
             target: String::new(),
+            explained: String::new(),
             warning: String::new(),
             can_session: true,
             status: crate::approvals::Status::Pending,

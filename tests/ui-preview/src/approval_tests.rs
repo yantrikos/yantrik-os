@@ -58,11 +58,27 @@ fn card(summary: &str) -> ApprovalRequest {
         ]),
         // Both arguments name themselves; no handle on this card needs the app's words (#54).
         target: "".into(),
+        // The shell explains nothing per call, so the card is exactly what it was (#137).
+        explained: "".into(),
         warning: "".into(),
         can_session: true,
         decision: "".into(),
         record: "".into(),
         age_text: "94s left".into(),
+    }
+}
+
+/// A card with room in the details for the #137 block: a short purpose, so the sentence and
+/// its footnote sit above the scroll fold and can be measured whole. A card that speaks about
+/// one call offers no standing yes (#137), so no session row is drawn under its buttons
+/// either. The long-purpose fixture above is the sizing case (#218); this one is the block's
+/// shape.
+fn roomy_card(sentence: &str) -> ApprovalRequest {
+    ApprovalRequest {
+        purpose: "End a running process by PID.".into(),
+        explained: sentence.into(),
+        can_session: false,
+        ..card(RUN_RECIPE_SUMMARY)
     }
 }
 
@@ -72,6 +88,58 @@ fn render(w: &MinimalSoftwareWindow, width: u32, height: u32) -> slint::SharedPi
     w.request_redraw();
     w.draw_if_needed(|r| { r.render(pixels.make_mut_slice(), width as usize); });
     pixels
+}
+
+/// Render until two frames in a row are identical — the card has come to rest. The budget
+/// is a wall, not a sleep: a scene that never settles fails instead of passing by accident.
+fn settle(w: &MinimalSoftwareWindow, width: u32, height: u32) -> slint::SharedPixelBuffer<slint::Rgb8Pixel> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let mut prev = render(w, width, height);
+    loop {
+        std::thread::sleep(std::time::Duration::from_millis(16));
+        let next = render(w, width, height);
+        if next.as_slice() == prev.as_slice() {
+            return next;
+        }
+        prev = next;
+        assert!(std::time::Instant::now() < deadline, "the details section never came to rest");
+    }
+}
+
+/// The runs of inked rows in a window, as (first row, last row, leftmost ink, rightmost ink).
+/// Ink is any pixel differing from the card's own left padding on the same row, which no text
+/// reaches — the theme's colours stay the theme's business. The scan stops left of the details
+/// scrollbar: it is ink on every row and would stretch every line to the panel's edge. A text
+/// row has ink in the dozens; a row carrying only the descenders of the line above has less,
+/// and must not merge two lines into one band.
+fn bands_in(px: &[slint::Rgb8Pixel], width: u32, win_top: u32, win_bottom: u32) -> Vec<(u32, u32, u32, u32)> {
+    let ink = |x: u32, y: u32| -> bool {
+        let (c, bg) = (px[(y * width + x) as usize], px[(y * width + 912) as usize]);
+        let d = |a: u8, b: u8| (a as i32 - b as i32).abs();
+        d(c.r, bg.r).max(d(c.g, bg.g)).max(d(c.b, bg.b)) >= 12
+    };
+    let mut bands: Vec<(u32, u32, u32, u32)> = Vec::new(); // y0, y1, min_x, max_x per run
+    for y in win_top..win_bottom {
+        let (mut first, mut last, mut n) = (u32::MAX, 0u32, 0u32);
+        for x in 916..1264 {
+            if ink(x, y) {
+                n += 1;
+                first = first.min(x);
+                last = x;
+            }
+        }
+        if n >= 40 {
+            match bands.last_mut() {
+                Some(b) if y == b.1 + 1 => {
+                    b.1 = y;
+                    b.2 = b.2.min(first);
+                    b.3 = b.3.max(last);
+                }
+                _ => bands.push((y, y, first, last)),
+            }
+        }
+    }
+    bands
 }
 
 fn save(pixels: &slint::SharedPixelBuffer<slint::Rgb8Pixel>, path: &str, width: u32, height: u32) -> Result<(), Box<dyn std::error::Error>> {
@@ -170,12 +238,66 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
     assert!(bottom <= reply_top, "the button ends above the reply box, inside the Lens: its lowest answer is {bottom}, the reply box starts at {reply_top}");
     assert!(allow_y >= panel_top && allow_y <= reply_top, "Allow is inside the Lens too, at {allow_y}");
 
+    // #137: a card that speaks about one call draws the app's sentence under the argument box,
+    // with a footnote under it — and that footnote is longer than the card is wide. Elided, it
+    // was one line that cut off exactly the clause that is its whole point: the grant binds to
+    // the argument box, "not to this sentence". Wrapped, its last line ends partway across the
+    // card, and all of it can be read. The block sits at the end of the details section, and on
+    // this short card the details fit — the section is precisely as tall as its content, and
+    // nothing scrolls anywhere — so the whole block has to be readable at rest, the footnote's
+    // last line included. Measure the text lines above the buttons: the bottom one is the
+    // details' last, the grade line, whole; the one above it is the footnote's last line — a
+    // short tail when it wrapped, a full-width elided line when it did not.
+    let sentence = "After this, prompts go to images.example and may cost money, and every \
+        picture this app draws from now on is drawn there rather than on this machine.";
+    ui.set_approvals(ModelRc::new(VecModel::from(vec![roomy_card(sentence)])));
+    render(w, width, height);
+    let before = ui.get_denied();
+    let speak_deny_y = scan(w, deny_x, panel_top, panel_bottom - 4.0, || ui.get_denied() > before)
+        .expect("the speaking card's Deny answers a click inside the panel (#137)");
+    let at_rest = settle(w, width, height);
+
+    let win_top = (speak_deny_y - 210.0).max(panel_top) as u32;
+    let win_bottom = (speak_deny_y - 36.0) as u32; // above the button the scan just found
+    let bands = bands_in(at_rest.as_slice(), width, win_top, win_bottom);
+    // Text lines only: the argument box's fill, if the window still reaches it, is tens of
+    // rows of ink rather than the seven or so a line of type is.
+    let texts: Vec<&(u32, u32, u32, u32)> = bands.iter().filter(|b| b.1 - b.0 + 1 <= 14).collect();
+    let widest = texts.iter().map(|b| b.3 - b.2).max().unwrap_or(0);
+    // The last two lines of the section: the grade line, and above it the footnote's last.
+    let (foot_w, foot_rows) =
+        texts.get(texts.len().saturating_sub(2)).map(|b| (b.3 - b.2, b.1 - b.0 + 1)).unwrap_or((0, 0));
+    let (tail_w, tail_rows) = texts.last().map(|b| (b.3 - b.2, b.1 - b.0 + 1)).unwrap_or((0, 0));
+    println!(
+        "#137 block: Deny at {speak_deny_y}, window {win_top}..{win_bottom}, {} text lines, \
+         widest {widest}px, footnote's last line {foot_w}px, bottom line {tail_w}px over \
+         {tail_rows} rows",
+        texts.len()
+    );
+    assert!(
+        texts.len() >= 4,
+        "the details hold the sentence, its footnote and the grade line: {} text lines",
+        texts.len()
+    );
+    assert!(
+        foot_rows >= 4 && foot_w + 40 <= widest,
+        "the footnote's last line is its own short wrapped line, well under the block's full \
+         {widest}px width: {foot_w}px over {foot_rows} rows"
+    );
+    assert!(
+        tail_rows >= 4,
+        "the section ends on a whole line at the bottom, not a clipped sliver: the last line \
+         is {tail_rows} rows of {tail_w}px"
+    );
+
     println!(
         "PASS: the longest card fits the Lens at 1280×800 — Deny answers at {deny_y} and Allow at \
          {allow_y}, one row, the whole {}px button inside the panel above the reply box, the \
-         session row reachable, and the card leads with the description's first sentence \
-         ({differ} pixels drawn)",
-        bottom - top
+         session row reachable, the card leads with the description's first sentence \
+         ({differ} pixels drawn), and the per-call sentence's footnote ends on the card (#137: \
+         {} text lines, the footnote's last {foot_w}px of a {widest}px block)",
+        bottom - top,
+        texts.len()
     );
     Ok(())
 }

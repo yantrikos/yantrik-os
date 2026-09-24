@@ -17,7 +17,13 @@
 //! app.describe {}                                  → { app, summary, state, revision, actions }
 //! app.act      { action, args, expect_revision? }  → { accepted, action_id, settled, result,
 //!                                                      revision, summary, state }
+//! app.explain  { action, args }                    → { app, action, explanation }
 //! ```
+//!
+//! `app.explain` is the optional third method (#137): the sentence an action says about ONE call
+//! of itself, with that call's own arguments, for the approval card the shell builds. An action
+//! publishes `explains: true` in `describe` when it can speak; a surface that does not implement
+//! the method answers `-32601` like any unknown one, and the card is exactly what it was.
 //!
 //! `describe` is a few hundred bytes of exact truth, always current. `act` is the same surface
 //! turned around: the actions an app already exposes to its own buttons, offered to the mind by
@@ -269,7 +275,7 @@ use yantrik_ipc_transport::gate::{agent_token_of, ceiling_from, DEFAULT_CEILING}
 // `control::View` / `control::Action` / `control::Param` caller is unchanged, and the shell
 // window and a headless service now share one definition of what an app is.
 pub use yantrik_ipc_contracts::control_surface::{
-    act_json, describe_json, Action, Param, View, PROTOCOL,
+    act_json, describe_json, Action, Explainer, Param, View, PROTOCOL,
 };
 
 // ── The registry, which lives on the UI thread ──────────────────────
@@ -550,6 +556,32 @@ impl ControlRpc {
                 .map_err(unanswered)?
                 // An action that legitimately refuses is an application error, not a transport
                 // failure: -32602 keeps it out of the client's circuit breaker.
+                .map_err(refusal)
+            }
+
+            // The sentence about ONE call, in the app's own words (#137). The shell asks this
+            // when it builds an approval card for an action whose describe said `explains`.
+            // Reading, not acting: no ceiling, no mode, no grant, no reach — it changes nothing
+            // and spends nothing, so it takes none of what `app.act` holds a call to. Read on
+            // this thread, spoken on the UI one, like everything else the registry owns.
+            "app.explain" => {
+                let action = params["action"].as_str().unwrap_or("").trim().to_string();
+                if action.is_empty() {
+                    return Err(refusal("app.explain needs a non-empty `action`".into()));
+                }
+                let args = params.get("args").cloned().unwrap_or_else(|| serde_json::json!({}));
+                on_ui_thread(who, move |reg| {
+                    reg.explain(&action, &args).map(|explanation| {
+                        serde_json::json!({
+                            "app": reg.app_id(),
+                            "action": action,
+                            "explanation": explanation,
+                        })
+                    })
+                })
+                .map_err(unanswered)?
+                // "This action says nothing about one call of itself" is an answer, not a
+                // transport failure: -32602, so the asker draws no line instead of retrying.
                 .map_err(refusal)
             }
 
@@ -1370,9 +1402,13 @@ mod tests {
                         (
                             // What a handler that records or shows its arguments would record or
                             // show — an approval card, an audit line — and the token beside them.
+                            // Says one sentence about a call of itself (#137), so the wire
+                            // round-trip below has an action to ask; the others declared none and
+                            // stand for every action that did not opt in.
                             Action::new("echo", "Answer with the arguments and the agent token as the handler got them")
                                 .risk("safe")
-                                .arg(Param::text("command").optional()),
+                                .arg(Param::text("command").optional())
+                                .explain(|args| format!("this call echoes {args}")),
                             Box::new(|args| {
                                 Ok(serde_json::json!({ "args": args, "agent_token": agent_token() }))
                             }),
@@ -1455,6 +1491,65 @@ mod tests {
             assert_eq!(status(check).as_deref(), Some("pass"), "{check}: {text}");
         }
         assert_eq!(run.status.code(), Some(1), "a failed check is a non-zero exit");
+    }
+
+    /// #137, over the wire: `describe` says which actions can speak about one call of
+    /// themselves, and `app.explain` brings the sentence back — from the action it belongs to,
+    /// for the arguments the call carries, through the hop to the UI thread and back. An action
+    /// that declared none is refused as an application answer (-32602), which is what tells the
+    /// asker to draw no line rather than treat the surface as broken.
+    #[cfg(unix)]
+    #[test]
+    fn an_explainer_travels_the_socket_beside_the_action_it_belongs_to() {
+        let described = call(r#"{"jsonrpc":"2.0","id":1,"method":"app.describe","params":{}}"#);
+        let explains = |name: &str| {
+            described["result"]["actions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|a| a["name"] == name)
+                .unwrap()
+                .get("explains")
+                .cloned()
+        };
+        assert_eq!(explains("echo"), Some(serde_json::json!(true)), "the fact rides describe");
+        assert_eq!(explains("who"), None, "an action that declared none publishes what it always did");
+
+        let asked = |action: &str, args: serde_json::Value| {
+            call(
+                &serde_json::json!({
+                    "jsonrpc": "2.0", "id": 2, "method": "app.explain",
+                    "params": { "action": action, "args": args },
+                })
+                .to_string(),
+            )
+        };
+        let reply = asked("echo", serde_json::json!({ "command": "ls" }));
+        assert_eq!(reply["result"]["app"], "caller-test");
+        assert_eq!(reply["result"]["action"], "echo");
+        assert_eq!(reply["result"]["explanation"], "this call echoes {\"command\":\"ls\"}");
+
+        let reply = asked("who", serde_json::json!({}));
+        assert_eq!(reply["error"]["code"], -32602, "{reply}");
+        assert!(
+            reply["error"]["message"].as_str().unwrap().contains("`who` says nothing about one call"),
+            "{reply}"
+        );
+
+        // An action the surface does not have is refused the way `act` refuses one.
+        let reply = asked("nope", serde_json::json!({}));
+        assert!(
+            reply["error"]["message"].as_str().unwrap().starts_with("unknown action `nope`"),
+            "{reply}"
+        );
+
+        // A missing or empty action never reaches the registry.
+        let reply = call(r#"{"jsonrpc":"2.0","id":5,"method":"app.explain","params":{}}"#);
+        assert_eq!(reply["error"]["code"], -32602, "{reply}");
+        let reply = call(
+            r#"{"jsonrpc":"2.0","id":6,"method":"app.explain","params":{"action":"  ","args":{}}}"#,
+        );
+        assert_eq!(reply["error"]["code"], -32602, "{reply}");
     }
 
     /// A person's Allow is not used up on a call its own arguments refuse. Over the real socket, on

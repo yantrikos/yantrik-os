@@ -133,8 +133,8 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
                 //
                 // The grade is checked first, because the grade is the one thing the caller
                 // declares that the decision actually turns on.
-                let (grade, grade_note, published_purpose, naming) =
-                    match settle_grade(&app, &action, &grade) {
+                let (grade, grade_note, published_purpose, naming, explained) =
+                    match settle_grade(&app, &action, &grade, &parsed) {
                         Ok(settled) => settled,
                         Err(why) => return Err(why),
                     };
@@ -207,8 +207,13 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
                 // the store exactly as the caller sent it, because the grant is bound to those
                 // bytes and this line must never become one more thing approved beside them.
                 let target = target_line(&parsed, &naming);
+                // And the app's sentence about this one call, with these arguments (#137) —
+                // empty for an app that explains nothing per call, and then the card is exactly
+                // what it was. Display only, like the naming line: `parsed` reaches the store
+                // untouched and the grant binds to those bytes, never to a sentence about them.
                 let asked = approvals::request(
                     &requester, verified, &app, &action, parsed, &grade, &purpose, &target,
+                    &explained,
                 )?;
 
                 // And in the pane of the agent that asked: the same card, under the same request
@@ -592,7 +597,8 @@ const NOTE_CHARS: usize = 62;
 type Naming = std::collections::BTreeMap<String, String>;
 
 /// The grade to act on, the note the card owes the person if it is not what was declared,
-/// the app's own sentence about the action, and what the app says its own ids name.
+/// the app's own sentence about the action, what the app says its own ids name, and what the app
+/// says about this one call with these arguments (#137).
 ///
 /// Refuses rather than guesses. An app this desktop does not have, an action it does not
 /// publish, or a surface that will not say — none of those is a reason to put a card in front of
@@ -607,29 +613,35 @@ fn settle_grade(
     app: &str,
     action: &str,
     claimed: &str,
-) -> Result<(String, String, String, Naming), String> {
-    let (published, purpose, naming) = published_detail(app, action)?;
+    args: &serde_json::Value,
+) -> Result<(String, String, String, Naming, String), String> {
+    let (published, purpose, naming, explained) = published_detail(app, action, args)?;
     let note = grade_note(claimed, &published);
-    Ok((published, note, purpose, naming))
+    Ok((published, note, purpose, naming, explained))
 }
 
-/// What the target app itself says one of its actions is graded, what it is for, and — beside
-/// that — what the app says its own ids name.
+/// What the target app itself says one of its actions is graded, what it is for, what the app
+/// says its own ids name, and what it says about one call of it with `args` (#137).
 ///
-/// The purpose and the naming are empty for the shell's own surface: the local registry shortcut
-/// below publishes a grade and nothing else, and reaching the description would mean a new
-/// function in `yantrik-app-runtime`, which this change does not own. Nothing published by the
-/// shell matches the "cannot be undone" wording today — `files_delete` says "Move a file or
+/// The purpose, the naming and the explanation are empty for the shell's own surface: the local
+/// registry shortcut below publishes a grade and nothing else, and reaching the description would
+/// mean a new function in `yantrik-app-runtime`, which this change does not own. Nothing published
+/// by the shell matches the "cannot be undone" wording today — `files_delete` says "Move a file or
 /// folder to recoverable Trash" — and the caller ORs this with what the request declared, so a
 /// shell action that acquired such a sentence would still be asked about as long as the bridge
 /// kept relaying the purpose it reads out of `describe`. And no shell action takes an opaque id
 /// today either, so there is nothing for a naming index to resolve.
-fn published_detail(app: &str, action: &str) -> Result<(String, String, Naming), String> {
+fn published_detail(
+    app: &str,
+    action: &str,
+    args: &serde_json::Value,
+) -> Result<(String, String, Naming, String), String> {
     published_detail_in(
         &yantrik_ipc_transport::server::socket_dir(),
         &crate::apps::Catalogue::shared().get(),
         app,
         action,
+        args,
     )
 }
 
@@ -639,7 +651,8 @@ fn published_detail_in(
     installed: &[crate::apps::DesktopEntry],
     app: &str,
     action: &str,
-) -> Result<(String, String, Naming), String> {
+    args: &serde_json::Value,
+) -> Result<(String, String, Naming, String), String> {
     let Some(surface) = surface_in(app, installed, dir) else {
         return Err(format!(
             "there is no app called `{app}` on this desktop, so nothing was put in front of the \
@@ -653,7 +666,7 @@ fn published_detail_in(
     // actions take paths, prompts and names, no opaque handle that needs a naming index.
     if surface == "shell" {
         return yantrik_app_runtime::control::published_grade(action)
-            .map(|grade| (grade.to_string(), String::new(), Naming::new()))
+            .map(|grade| (grade.to_string(), String::new(), Naming::new(), String::new()))
             .ok_or_else(|| {
                 format!(
                     "`shell` publishes no action called `{action}`, so there is nothing to ask \
@@ -685,15 +698,20 @@ fn published_detail_in(
             )
         })?;
 
-    // One lookup for all three facts. Two would be two `app.describe` round trips on the UI
-    // thread for one card, and two chances for the grade, the sentence beside it and the names
-    // of its ids to come from different revisions of the same app.
+    // One lookup for all the facts `describe` carries. Two would be two `app.describe` round
+    // trips on the UI thread for one card, and two chances for the grade, the sentence beside it,
+    // the names of its ids and whether the action can explain one call of itself to come from
+    // different revisions of the same app.
     let published = reply["actions"]
         .as_array()
         .and_then(|list| list.iter().find(|a| a["name"].as_str() == Some(action)))
         .and_then(|a| {
             a["permission"].as_str().map(|grade| {
-                (grade.to_string(), a["description"].as_str().unwrap_or_default().to_string())
+                (
+                    grade.to_string(),
+                    a["description"].as_str().unwrap_or_default().to_string(),
+                    a["explains"].as_bool().unwrap_or(false),
+                )
             })
         })
         .ok_or_else(|| {
@@ -702,7 +720,73 @@ fn published_detail_in(
                  and nothing was put in front of the person."
             )
         })?;
-    Ok((published.0, published.1, naming_in(&reply)))
+    // The sentence about THIS call is the one thing `describe` cannot carry, because it depends
+    // on arguments `describe` never sees (#137). It costs a second round trip — but only for an
+    // action that just said on the first one that it can explain a call of itself, so no card
+    // pays for a question its app cannot answer.
+    let explained =
+        if published.2 { explained_in(&address, action, args) } else { String::new() };
+    Ok((published.0, published.1, naming_in(&reply), explained))
+}
+
+/// The app's sentence about ONE call, with these arguments (#137) — or empty, and the card is
+/// exactly what it was.
+///
+/// Reading, not acting: it can change no grade and spend no grant, and the shell asks it only
+/// after the describe above succeeded, so the surface is up and answering. Every way this second
+/// call can fail — a slow surface, a broken pipe, an app whose answer carries no sentence — is
+/// treated as the app having nothing to say: the person still gets the card, with the purpose
+/// and the arguments the grant is actually bound to. A missing line is never a missing card.
+///
+/// The answer is sanitised here, before the shell stores it or lends the sentence its own
+/// "says the app" label (see [`sanitised_explanation`]), and the approvals store cuts it to its
+/// bound on arrival, so what is recorded is bounded too.
+fn explained_in(address: &str, action: &str, args: &serde_json::Value) -> String {
+    yantrik_ipc_transport::SyncRpcClient::new(address)
+        .with_timeout(GRADE_LOOKUP)
+        .call("app.explain", serde_json::json!({ "action": action, "args": args }))
+        .ok()
+        .and_then(|reply| reply["explanation"].as_str().map(sanitised_explanation))
+        .unwrap_or_default()
+}
+
+/// The app's reply made safe to print under the shell's own label (#137).
+///
+/// The sentence is text the app wrote — and on a surface with a mind attached, text a MIND
+/// wrote — drawn on a card that vouches for it as the app's. So it arrives as one line of
+/// plain prose: bidi controls dropped, because an invisible U+202E lets a line read backwards
+/// and the card would vouch for the reversed reading; other control characters dropped,
+/// because nothing that cannot be seen belongs under a label; runs of whitespace and newlines
+/// collapsed to single spaces, because the block's place in the card's height arithmetic is
+/// one wrapped paragraph and never the app's own layout. The length bound is the store's
+/// (`EXPLAINED_CHARS`, applied in `Store::request`), so the cut names the true length once.
+fn sanitised_explanation(raw: &str) -> String {
+    // The Unicode bidi controls: the paired embeds/overrides/marks (U+202A–U+202E), the
+    // isolates (U+2066–U+2069), the directional marks (U+200E, U+200F) and the Arabic letter
+    // mark (U+061C). All are invisible, and all change how the rest of a line reads.
+    const BIDI: [char; 12] = [
+        '\u{202A}', '\u{202B}', '\u{202C}', '\u{202D}', '\u{202E}', '\u{2066}', '\u{2067}',
+        '\u{2068}', '\u{2069}', '\u{200E}', '\u{200F}', '\u{061C}',
+    ];
+    let mut out = String::with_capacity(raw.len());
+    let mut gap = false;
+    for c in raw.chars() {
+        if BIDI.contains(&c) || (c.is_control() && !c.is_whitespace()) {
+            continue; // dropped without a trace: nothing invisible survives the label
+        }
+        if c.is_whitespace() {
+            // A newline or tab is the app's layout, not the card's; a run of whitespace
+            // becomes one space, and a sentence never starts with one.
+            gap = !out.is_empty();
+        } else {
+            if gap {
+                out.push(' ');
+            }
+            out.push(c);
+            gap = false;
+        }
+    }
+    out
 }
 
 /// The app's own id→name index, from `describe`'s `state.naming`.
@@ -1422,6 +1506,11 @@ pub(crate) fn row_for(card: Card) -> crate::ApprovalRequest {
         // One elided line beside the box, or nothing: the card hides the row when an app
         // publishes no naming index (#54), so this is a pass-through, not a second fallback.
         target: card.target.into(),
+        // The app's sentence about this one call (#137), drawn under the argument box — or
+        // empty, and the card hides the block and is exactly what it was. A pass-through like
+        // the naming line: the sanitising happened in `explained_in` and the bounding and the
+        // cutting in `approvals`, where the card's height arithmetic lives.
+        explained: card.explained.into(),
         warning: card.warning.into(),
         can_session: card.can_session,
         decision: match card.status {
@@ -2256,6 +2345,7 @@ mod control_approvals_tests {
                 // Files names no handle here — `name: taxes.pdf` is already the thing itself —
                 // so the naming row is empty, and this is the ordinary path on the card (#54).
                 target: String::new(),
+                explained: String::new(),
                 warning: "The app says this cannot be undone.".into(),
                 can_session: false,
                 status: Status::Pending,
@@ -2322,7 +2412,7 @@ mod control_approvals_tests {
         let mut row = |args: serde_json::Value| {
             let id = store
                 .request("claude-code 2.1.276", Verified::default(), "studio", "set_backend",
-                    args, "sensitive", purpose, "", now, "19:32")
+                    args, "sensitive", purpose, "", "", now, "19:32")
                 .unwrap()
                 .id;
             let card = store.pending(now).into_iter().find(|c| c.id == id).unwrap();
@@ -2452,6 +2542,7 @@ mod control_approvals_tests {
                 summary: crate::approvals::summary_of("Delete a file. It is not recoverable."),
                 args: vec![],
                 target: String::new(),
+                explained: String::new(),
                 warning: String::new(),
                 can_session: false,
                 status,
@@ -2520,8 +2611,18 @@ mod service_surface_approval_tests {
         dir
     }
 
-    /// A socket that answers `app.describe` with `describe`, as a service's own dispatch does.
-    fn serve(path: &Path, describe: serde_json::Value) {
+    /// A socket that answers as a service's own dispatch does: `app.describe` with `describe`,
+    /// and `app.explain` with `explain` — or with the -32601 a surface that has not implemented
+    /// it gives, when `explain` is `None`. Every request it answers is pushed onto the returned
+    /// log, so a test can hold the shell to what it asked and what it did not (#137).
+    fn serve(
+        path: &Path,
+        describe: serde_json::Value,
+        explain: Option<serde_json::Value>,
+    ) -> std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>> {
+        let asked: std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let log = asked.clone();
         let listener = std::os::unix::net::UnixListener::bind(path).unwrap();
         std::thread::spawn(move || {
             for stream in listener.incoming().flatten() {
@@ -2531,11 +2632,22 @@ mod service_surface_approval_tests {
                     continue; // somebody asking whether anything is here
                 }
                 let asked: serde_json::Value = serde_json::from_str(&line).unwrap();
-                let reply = serde_json::json!({ "jsonrpc": "2.0", "id": asked["id"], "result": describe });
+                log.lock().unwrap().push(asked.clone());
+                let reply = match (asked["method"].as_str(), &explain) {
+                    (Some("app.explain"), Some(result)) => serde_json::json!({
+                        "jsonrpc": "2.0", "id": asked["id"], "result": result,
+                    }),
+                    (Some("app.explain"), None) => serde_json::json!({
+                        "jsonrpc": "2.0", "id": asked["id"],
+                        "error": { "code": -32601, "message": "unknown method `app.explain`" },
+                    }),
+                    _ => serde_json::json!({ "jsonrpc": "2.0", "id": asked["id"], "result": describe }),
+                };
                 let mut stream = stream;
                 let _ = stream.write_all(format!("{reply}\n").as_bytes());
             }
         });
+        asked
     }
 
     fn sysmon(grade: &str, description: &str) -> serde_json::Value {
@@ -2557,36 +2669,40 @@ mod service_surface_approval_tests {
         let dir = scratch("service");
         let installed = crate::surfaces::shipped_catalogue();
         // Nothing answers at all: refused, and the sentence says both places were looked in.
-        let err = published_detail_in(&dir, &installed, "system-monitor", "kill_process").unwrap_err();
+        let none = serde_json::json!({});
+        let err =
+            published_detail_in(&dir, &installed, "system-monitor", "kill_process", &none).unwrap_err();
         assert!(err.contains("neither its window nor a service"), "{err}");
 
         // The window was open once and crashed: its socket file is still there, nobody listens.
         drop(std::os::unix::net::UnixListener::bind(dir.join("app-system-monitor.sock")).unwrap());
-        serve(&dir.join("system-monitor.sock"), sysmon("dangerous", "End a running process by PID"));
+        serve(&dir.join("system-monitor.sock"), sysmon("dangerous", "End a running process by PID"), None);
 
         for name in ["system-monitor", "sysmonitor", "System Monitor"] {
             assert_eq!(
-                published_detail_in(&dir, &installed, name, "kill_process"),
+                published_detail_in(&dir, &installed, name, "kill_process", &none),
                 Ok((
                     "dangerous".to_string(),
                     "End a running process by PID".to_string(),
                     Naming::new(),
+                    String::new(),
                 )),
                 "`{name}`, with the window shut, is graded by its service"
             );
         }
-        let err = published_detail_in(&dir, &installed, "system-monitor", "no_such").unwrap_err();
+        let err = published_detail_in(&dir, &installed, "system-monitor", "no_such", &none).unwrap_err();
         assert!(err.contains("publishes no action called `no_such`"), "{err}");
 
         // With the window open, the window is what an act reaches, so it is what is asked.
         std::fs::remove_file(dir.join("app-system-monitor.sock")).unwrap();
-        serve(&dir.join("app-system-monitor.sock"), sysmon("sensitive", "the window's own account"));
+        serve(&dir.join("app-system-monitor.sock"), sysmon("sensitive", "the window's own account"), None);
         assert_eq!(
-            published_detail_in(&dir, &installed, "sysmonitor", "kill_process"),
+            published_detail_in(&dir, &installed, "sysmonitor", "kill_process", &none),
             Ok((
                 "sensitive".to_string(),
                 "the window's own account".to_string(),
                 Naming::new(),
+                String::new(),
             ))
         );
         let _ = std::fs::remove_dir_all(&dir);
@@ -2608,11 +2724,18 @@ mod service_surface_approval_tests {
             // stringifying that guess would be the shell vouching for a sentence the app wrote.
             "not-a-name": 7,
         });
-        serve(&dir.join("system-monitor.sock"), describe);
-        let (grade, purpose, naming) =
-            published_detail_in(&dir, &installed, "system-monitor", "kill_process").unwrap();
+        serve(&dir.join("system-monitor.sock"), describe, None);
+        let (grade, purpose, naming, explained) = published_detail_in(
+            &dir,
+            &installed,
+            "system-monitor",
+            "kill_process",
+            &serde_json::json!({"id": "01a0c718-3931-7342-b9c7-8de36140ddb0"}),
+        )
+        .unwrap();
         assert_eq!(grade, "dangerous");
         assert_eq!(purpose, "End a running process by PID");
+        assert_eq!(explained, "", "an action that declared no explainer is asked no second question");
         assert_eq!(
             naming.get("01a0c718-3931-7342-b9c7-8de36140ddb0").map(String::as_str),
             Some("Dentist, Fri 25 Sep 13:00"),
@@ -2637,12 +2760,145 @@ mod service_surface_approval_tests {
         let dir = scratch("undeclared");
         let installed = crate::surfaces::shipped_catalogue();
         assert_eq!(surface_in("hello-service", &installed, &dir), None);
-        serve(&dir.join("hello-service.sock"), serde_json::json!({ "app": "hello-service", "actions": [] }));
+        serve(&dir.join("hello-service.sock"), serde_json::json!({ "app": "hello-service", "actions": [] }), None);
         assert_eq!(surface_in("Hello Service", &installed, &dir).as_deref(), Some("hello-service"));
         // Declared names are still the catalogue's, whatever answers in the directory.
         assert_eq!(surface_in("container-manager", &installed, &dir).as_deref(), Some("containers"));
         assert_eq!(surface_in("yantrik", &installed, &dir).as_deref(), Some("shell"));
         assert_eq!(surface_in("../etc", &installed, &dir), None, "not a name, whatever is on the disk");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// #137: an app that can say what ONE call of one of its actions does — with that call's
+    /// own arguments — has the sentence read beside the grade and carried to the card. The
+    /// sentence cannot ride `describe`, which never sees the arguments, so it is a second
+    /// round trip; `describe` carries the flag that says the second question has an answer.
+    #[test]
+    fn an_app_that_explains_one_call_has_its_sentence_read_beside_the_grade() {
+        let dir = scratch("explain");
+        let installed = crate::surfaces::shipped_catalogue();
+        drop(std::os::unix::net::UnixListener::bind(dir.join("app-system-monitor.sock")).unwrap());
+        let mut describe = sysmon("dangerous", "End a running process by PID");
+        describe["actions"][0]["explains"] = serde_json::json!(true);
+        let asked = serve(
+            &dir.join("system-monitor.sock"),
+            describe,
+            Some(serde_json::json!({
+                "app": "system-monitor",
+                "action": "kill_process",
+                "explanation": "After this, the session that pid belongs to ends and its unsaved work is gone.",
+            })),
+        );
+        let args = serde_json::json!({"pid": 4242});
+        let (grade, purpose, naming, explained) =
+            published_detail_in(&dir, &installed, "system-monitor", "kill_process", &args).unwrap();
+        assert_eq!(grade, "dangerous", "the explainer moves no grade");
+        assert_eq!(purpose, "End a running process by PID", "and rewrites no purpose");
+        assert!(naming.is_empty());
+        assert_eq!(
+            explained,
+            "After this, the session that pid belongs to ends and its unsaved work is gone."
+        );
+        // The second question was asked with the very arguments the card shows — the sentence
+        // is about THIS call, and about nothing else the shell could have asked it about.
+        let log = asked.lock().unwrap();
+        assert_eq!(
+            log.iter().map(|r| r["method"].as_str().unwrap_or("")).collect::<Vec<_>>(),
+            ["app.describe", "app.explain"]
+        );
+        assert_eq!(log[1]["params"]["action"], "kill_process");
+        assert_eq!(log[1]["params"]["args"], args);
+        drop(log);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// #137, the ordinary case: an app that has not implemented `app.explain` gets today's card
+    /// back — same grade, same purpose, no sentence — and the shell does not even ask it the
+    /// second question, because `describe` said no action of its could answer. And an app that
+    /// claims the flag but then refuses (an old build still running, a handler that failed)
+    /// loses the line, never the card.
+    #[test]
+    fn an_app_that_does_not_explain_leaves_the_card_as_it_was() {
+        let dir = scratch("no-explain");
+        let installed = crate::surfaces::shipped_catalogue();
+        drop(std::os::unix::net::UnixListener::bind(dir.join("app-system-monitor.sock")).unwrap());
+        let asked = serve(
+            &dir.join("system-monitor.sock"),
+            sysmon("dangerous", "End a running process by PID"),
+            None,
+        );
+        let (grade, purpose, naming, explained) = published_detail_in(
+            &dir,
+            &installed,
+            "system-monitor",
+            "kill_process",
+            &serde_json::json!({"pid": 1}),
+        )
+        .unwrap();
+        assert_eq!((grade.as_str(), purpose.as_str()), ("dangerous", "End a running process by PID"));
+        assert!(naming.is_empty());
+        assert_eq!(explained, "", "nothing to say, and the card is what it was");
+        assert_eq!(
+            asked.lock().unwrap().iter().map(|r| r["method"].as_str().unwrap_or("")).collect::<Vec<_>>(),
+            ["app.describe"],
+            "a card for an app that cannot explain costs no second round trip"
+        );
+
+        // The flag claimed, the question refused: today's card, not a failure.
+        let dir2 = scratch("no-explain-refused");
+        drop(std::os::unix::net::UnixListener::bind(dir2.join("app-system-monitor.sock")).unwrap());
+        let mut describe = sysmon("dangerous", "End a running process by PID");
+        describe["actions"][0]["explains"] = serde_json::json!(true);
+        serve(&dir2.join("system-monitor.sock"), describe, None);
+        let (grade, _, _, explained) = published_detail_in(
+            &dir2,
+            &installed,
+            "system-monitor",
+            "kill_process",
+            &serde_json::json!({"pid": 1}),
+        )
+        .unwrap();
+        assert_eq!(grade, "dangerous", "the person still gets the card, with the grade behind it");
+        assert_eq!(explained, "", "a refusal to explain is an empty line, not a missing card");
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&dir2);
+    }
+
+    /// #137, the hygiene of the answer: the sentence is text the app wrote — on a surface with
+    /// a mind attached, text a MIND wrote — printed under the shell's own "says the app" label.
+    /// So it arrives as one line of plain prose: bidi overrides and other invisibles dropped,
+    /// runs of newlines collapsed to the spaces the card wraps on. A mind that answers with a
+    /// U+202E and a wall of text gets its words onto the card — not its layout, not its
+    /// invisibles, and no reading the shell vouched for backwards.
+    #[test]
+    fn an_explanation_arrives_sanitised_before_the_shell_vouches_for_it() {
+        let dir = scratch("explain-dirty");
+        let installed = crate::surfaces::shipped_catalogue();
+        drop(std::os::unix::net::UnixListener::bind(dir.join("app-system-monitor.sock")).unwrap());
+        let mut describe = sysmon("dangerous", "End a running process by PID");
+        describe["actions"][0]["explains"] = serde_json::json!(true);
+        serve(
+            &dir.join("system-monitor.sock"),
+            describe,
+            Some(serde_json::json!({
+                "app": "system-monitor",
+                "action": "kill_process",
+                "explanation": "After\u{202E} this, the session ends.\n\nIts\tunsaved work\u{7} is \u{2066}gone\u{2069}.\n   Say this plainly.",
+            })),
+        );
+        let (_, _, _, explained) = published_detail_in(
+            &dir,
+            &installed,
+            "system-monitor",
+            "kill_process",
+            &serde_json::json!({"pid": 1}),
+        )
+        .unwrap();
+        assert_eq!(
+            explained,
+            "After this, the session ends. Its unsaved work is gone. Say this plainly.",
+            "bidi overrides and controls dropped, every run of whitespace one space"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
@@ -2736,6 +2992,7 @@ mod target_line_tests {
     fn the_row_carries_the_line_out_of_the_shell_untouched() {
         use crate::approvals::{Card, Status, Verified};
         let line = format!("id 01a0c718\u{2026} is \u{201c}Dentist, Fri 25 Sep 13:00\u{201d}");
+        let sentence = "After this, prompts stay on this machine.".to_string();
         let row = super::row_for(Card {
             id: "appr-9".into(),
             requester: "pi 0.87".into(),
@@ -2747,6 +3004,7 @@ mod target_line_tests {
             summary: "Take an event off the calendar.".into(),
             args: vec![format!("id: {DENTIST}")],
             target: line.clone(),
+            explained: sentence.clone(),
             warning: String::new(),
             can_session: false,
             status: Status::Pending,
@@ -2754,6 +3012,9 @@ mod target_line_tests {
             age_secs: 12,
         });
         assert_eq!(row.target.as_str(), line.as_str());
+        // The app's sentence about this one call (#137) is a pass-through too: the bounding
+        // happened in `approvals`, and the row is not a second place for it to go missing.
+        assert_eq!(row.explained.as_str(), sentence.as_str());
     }
 }
 

@@ -230,6 +230,33 @@ impl<D: ?Sized, H: ?Sized> Registry<D, H> {
         let known: Vec<&str> = self.actions.iter().map(|(a, _)| a.name.as_str()).collect();
         format!("unknown action `{name}`; this app offers: {}", known.join(", "))
     }
+
+    /// What this surface says about ONE call to `name`, with these arguments (#137) — the
+    /// sentence an approval card shows between the action's purpose, which is the same for
+    /// every call of it, and the argument box.
+    ///
+    /// Display only, and deliberately so: this consults no ceiling, no mode and no grant, spends
+    /// nothing and binds nothing. A grant is bound to the arguments, and a sentence about them is
+    /// never one more thing approved beside them — the rule the `target` line (#54) established.
+    /// The arguments arrive raw, exactly as sent: the sentence is owed about the call a caller
+    /// means to make, not about one the dispatch would accept, and `act` refuses bad arguments
+    /// whatever this said about them.
+    ///
+    /// `Err` is the sentence for having nothing to say — an action this surface does not have, or
+    /// one that declared no [`Explainer`](yantrik_ipc_contracts::control_surface::Explainer),
+    /// which is every action that did not opt in — and is what tells an asker to draw no line.
+    /// `Ok("")` is the app's own honest "nothing about THIS call", and draws no line either.
+    pub fn explain(&self, name: &str, args: &Value) -> Result<String, String> {
+        let (spec, _) =
+            self.actions.iter().find(|(a, _)| a.name == name).ok_or_else(|| self.unknown(name))?;
+        match &spec.explainer {
+            Some(explainer) => Ok(explainer.sentence(args)),
+            None => Err(format!(
+                "`{name}` says nothing about one call of itself; its description is the same for \
+                 every call of it"
+            )),
+        }
+    }
 }
 
 /// A grade [`Registry::regrade`] may move an action to, or the sentence for one it may not.
@@ -1233,5 +1260,57 @@ mod tests {
             .act("rename", &json!({ "to": "ok" }), None, "notes#1", &open())
             .unwrap();
         assert_eq!(answer["accepted"], true);
+    }
+
+    /// #137: the sentence about ONE call, with the arguments it carries — and the ways there is
+    /// nothing to say: an action that declared no explainer, an action the surface does not
+    /// have, and an app whose honest sentence about THESE arguments is empty. All three are
+    /// answers, not failures of the lookup; only the first two are refusals.
+    #[test]
+    fn an_explainer_speaks_per_call_and_only_when_the_app_declared_one() {
+        let reg = surface(
+            "studio",
+            None,
+            vec![
+                (
+                    Action::new("set_backend", "Choose where pictures are made from now on")
+                        .arg(Param::text("kind"))
+                        .explain(|args| match args["kind"].as_str().unwrap_or_default() {
+                            "fake" => "After this, prompts stay on this machine.".to_string(),
+                            "openai-images" => {
+                                "After this, prompts go to api.openai.com and may cost money."
+                                    .to_string()
+                            }
+                            _ => String::new(),
+                        }),
+                    Box::new(|_| Ok(json!("never reached"))),
+                ),
+                (
+                    Action::new("refresh", "Fetch the gallery again"),
+                    Box::new(|_| Ok(json!("never reached"))),
+                ),
+            ],
+        );
+
+        assert_eq!(
+            reg.explain("set_backend", &json!({ "kind": "fake" })).unwrap(),
+            "After this, prompts stay on this machine."
+        );
+        assert_eq!(
+            reg.explain("set_backend", &json!({ "kind": "openai-images" })).unwrap(),
+            "After this, prompts go to api.openai.com and may cost money."
+        );
+        // A call the app has nothing honest to say about: an empty sentence, not a refusal.
+        assert_eq!(reg.explain("set_backend", &json!({ "kind": "comfyui" })).unwrap(), "");
+
+        // No explainer declared: a refusal that says so, which is what tells an asker to draw
+        // no line — and the same for an action this surface does not have, in `act`'s words.
+        assert!(reg.explain("refresh", &json!({})).unwrap_err().contains("`refresh` says nothing"));
+        assert!(reg.explain("nope", &json!({})).unwrap_err().starts_with("unknown action `nope`"));
+
+        // The arguments arrive as sent — no defaults filled in, no checks run — because the
+        // sentence is about the call the caller means to make, not one the dispatch accepted.
+        assert_eq!(reg.explain("set_backend", &json!({ "kind": "fake", "junk": 1 })).unwrap(),
+            "After this, prompts stay on this machine.");
     }
 }
