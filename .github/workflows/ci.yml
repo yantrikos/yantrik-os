@@ -105,6 +105,15 @@ jobs:
           sudo docker image prune --all --force > /dev/null 2>&1 || true
           df -h / | tail -1
 
+      - name: Clear the runner's own glib tools
+        # The runner image ships libglib2.0-dev-bin for amd64, and it cannot sit beside the
+        # arm64 copy that libglib2.0-dev:arm64 needs (pulled in by libspeechd-dev:arm64):
+        # apt refused with "held broken packages" on the first run of this job. Nothing in
+        # this build runs glib's tools, and a runner is thrown away after the job. This lives
+        # here and not in the setup script, which must not remove packages from somebody's
+        # own machine.
+        run: sudo apt-get remove -y libglib2.0-dev-bin libglib2.0-dev || true
+
       - name: Cross-build environment
         # Installs the cross gcc, the arm64 libraries the -sys crates link against, and —
         # on Ubuntu, which this runner is — points apt at ports.ubuntu.com for arm64 while
