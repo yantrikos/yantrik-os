@@ -74,52 +74,41 @@ jobs:
 
   arm64-cross:
     name: arm64 cross-build
-    # #270's Pi 5 image and general ARM64 image are built from an aarch64 build of the
-    # whole workspace, which for a while existed only as a recipe somebody ran by hand on
-    # a Debian machine. This job is that recipe kept green: the same setup script and the
-    # same env file a real machine uses, run on GitHub's x86 ubuntu-24.04 runner.
+    # #270's Pi 5 image and general ARM64 image are built from an aarch64 build of the whole
+    # workspace. This job keeps that build green with the same setup script and env file a
+    # real machine uses.
     #
-    # It builds; it does not run the tests. The binaries are arm64 and the runner is x86 —
-    # running them would need an arm64 machine or qemu-user, and this job sets up neither.
-    # A workspace that compiles and links for aarch64 is what green means here.
+    # In a Debian 13 container, not on the Ubuntu runner itself. Ubuntu 24.04's multiarch
+    # cannot install libglib2.0-dev:arm64 (pulled in by libspeechd-dev:arm64) beside its own
+    # amd64 packages: apt refused with "held broken packages" twice, the second time with the
+    # runner's amd64 glib tools already removed. Debian 13, the system the ARM64 image is built
+    # on, installs the same list cleanly; container 531 on node2 built the whole workspace this
+    # way. The release target directory comes to about 6 GB, which fits the runner's disk.
+    #
+    # It builds; it does not run the tests. The binaries are arm64 and the runner is x86, and
+    # running them would need an arm64 machine or qemu-user. Not a required check, so it does
+    # not hold up merges.
     runs-on: ubuntu-24.04
     timeout-minutes: 180
+    container:
+      image: debian:trixie
     env:
-      # The same warning suppression the machine-local .cargo/config.toml gives an aarch64
-      # build: the rustc 1.93.x lint-emitter ICEs it guards against do not care which
-      # target is being linted. That file is gitignored — it carries a mold line for x86_64
-      # that would break runners, which have no mold — so CI cannot read it and the flag
-      # travels here instead, as the target-specific variable. Not RUSTFLAGS: a bare
-      # RUSTFLAGS replaces every target's flags instead of adding to them. No mold for
-      # aarch64 either; setup-arm64-cross.sh does not install it.
+      # The warning suppression the machine-local .cargo/config.toml gives x86_64, for the
+      # rustc 1.93.x lint-emitter ICEs; that file is gitignored, so the flag travels here, as
+      # the target-specific variable. Not RUSTFLAGS: a bare RUSTFLAGS replaces every target's
+      # flags instead of adding to them.
       CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS: -A warnings
     steps:
+      - name: Tools the container lacks
+        run: apt-get update -qq && apt-get install -y -qq git curl ca-certificates > /dev/null
+
       - uses: actions/checkout@v4
 
-      - name: Make room
-        # The release target directory of this workspace is ~13 GB and a runner arrives
-        # with ~14 GB free — the arithmetic the ISO job already does. These are toolchains
-        # this build never touches.
-        run: |
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
-          sudo docker image prune --all --force > /dev/null 2>&1 || true
-          df -h / | tail -1
-
-      - name: Clear the runner's own glib tools
-        # The runner image ships libglib2.0-dev-bin for amd64, and it cannot sit beside the
-        # arm64 copy that libglib2.0-dev:arm64 needs (pulled in by libspeechd-dev:arm64):
-        # apt refused with "held broken packages" on the first run of this job. Nothing in
-        # this build runs glib's tools, and a runner is thrown away after the job. This lives
-        # here and not in the setup script, which must not remove packages from somebody's
-        # own machine.
-        run: sudo apt-get remove -y libglib2.0-dev-bin libglib2.0-dev || true
-
       - name: Cross-build environment
-        # Installs the cross gcc, the arm64 libraries the -sys crates link against, and —
-        # on Ubuntu, which this runner is — points apt at ports.ubuntu.com for arm64 while
-        # pinning the existing mirrors to amd64. Idempotent; the pure half of what it does
-        # to apt sources is held by the selftest in the shell-scripts job below.
-        run: sudo bash deploy/yantrik-os/setup-arm64-cross.sh
+        # The cross gcc and the arm64 libraries the -sys crates link against. Idempotent;
+        # the pure half of what it does to apt sources is held by the selftest in the
+        # shell-scripts job below. The container runs as root, so no sudo.
+        run: bash deploy/yantrik-os/setup-arm64-cross.sh
 
       - name: Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -128,7 +117,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          key: ci-arm64-v1
+          key: ci-arm64-debian-v1
           cache-on-failure: true
 
       - name: The environment the build needs
