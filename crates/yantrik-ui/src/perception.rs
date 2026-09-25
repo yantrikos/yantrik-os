@@ -44,7 +44,6 @@
 //! best, from the driver's side: *reflex must never wait for me, and I must never be the thing
 //! that notices.* If a consumer has to poll to find out something happened, the boundary leaked.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -170,18 +169,19 @@ fn worth_remembering(o: &Observation) -> Option<(String, f64)> {
     }
 }
 
-/// Start the reader. Returns immediately; the work happens on its own thread.
+/// Start the reader. Returns immediately; the work happens on its own thread, for as long as the
+/// shell runs.
 ///
 /// Failing to start is not fatal and not even unusual — the OS runs perfectly well without
 /// perception, it simply cannot see. That is said once at info level rather than repeated.
-pub fn spawn(bridge: Arc<CompanionBridge>, running: Arc<AtomicBool>) {
+pub fn spawn(bridge: Arc<CompanionBridge>) {
     std::thread::Builder::new()
         .name("perception-reader".into())
-        .spawn(move || run(bridge, running))
+        .spawn(move || run(bridge))
         .ok();
 }
 
-fn run(bridge: Arc<CompanionBridge>, running: Arc<AtomicBool>) {
+fn run(bridge: Arc<CompanionBridge>) {
     let address = yantrik_ipc_transport::server::RpcServer::default_address("perception");
     let mut cursor: u64 = 0;
     let mut announced = false;
@@ -191,7 +191,7 @@ fn run(bridge: Arc<CompanionBridge>, running: Arc<AtomicBool>) {
     let mut admitted_this_minute = 0usize;
     let mut suppressed_this_minute = 0usize;
 
-    while running.load(Ordering::Relaxed) {
+    loop {
         let client = yantrik_ipc_transport::SyncRpcClient::new(&address)
             .with_timeout(WAIT + Duration::from_secs(5));
 
@@ -200,20 +200,17 @@ fn run(bridge: Arc<CompanionBridge>, running: Arc<AtomicBool>) {
             serde_json::json!({ "seq": cursor, "wait_ms": WAIT.as_millis() as u64 }),
         );
 
-        let page: Page = match page.and_then(|v| {
-            serde_json::from_value(v).map_err(|e| yantrik_ipc_contracts::email::ServiceError {
-                code: -32000,
-                message: e.to_string(),
-            })
-        }) {
-            Ok(p) => {
+        // A transport error and a reply that is not a page are the same thing here: nothing
+        // readable came back, so wait and try again.
+        let page: Page = match page.ok().and_then(|v| serde_json::from_value(v).ok()) {
+            Some(p) => {
                 if !announced {
                     tracing::info!(socket = %address, "Perception connected; the OS can see");
                     announced = true;
                 }
                 p
             }
-            Err(_) => {
+            None => {
                 // Absent is the normal case. Say it once, then keep quiet and keep trying.
                 if announced {
                     tracing::warn!("Perception went away; retrying");
@@ -235,7 +232,7 @@ fn run(bridge: Arc<CompanionBridge>, running: Arc<AtomicBool>) {
                      the machine did more than is recorded for this period.",
                     page.missed
                 ),
-                "perception/gap".into(),
+                "system/perception/gap".into(),
                 0.7,
             );
         }
@@ -255,11 +252,10 @@ fn run(bridge: Arc<CompanionBridge>, running: Arc<AtomicBool>) {
             suppressed_this_minute = 0;
         }
 
+        // There is no activity feed on this desktop to hand every observation to (#58): the
+        // record of all of them is perception-service's own ring. What reaches the shell is
+        // only what is worth searching later.
         for o in &page.observations {
-            // Everything reaches the feed. This is the record, and it is cheap.
-            crate::activity_feed::push(&o.summary, o.salience);
-
-            // From here on, only what is worth searching later.
             if is_ours(o.actor.as_ref()) {
                 continue;
             }
@@ -273,7 +269,10 @@ fn run(bridge: Arc<CompanionBridge>, running: Arc<AtomicBool>) {
                 continue;
             }
             admitted_this_minute += 1;
-            bridge.record_system_event(text, "perception".into(), importance);
+            // Under `system/`: this is the machine's telemetry, stored with source `system`
+            // beside the person's memories and not counted as theirs (#31). A domain outside
+            // `system/` would be rewritten to `system/general` by the bridge anyway.
+            bridge.record_system_event(text, "system/perception".into(), importance);
         }
     }
 }
@@ -369,6 +368,38 @@ mod tests {
         ))
         .unwrap();
         assert!(importance > save);
+    }
+
+    #[test]
+    fn a_page_as_perception_service_writes_it_reads() {
+        // The shape `perception.since` answers with (services/perception-service/src/bus.rs and
+        // observation.rs). This module sat uncompiled for as long as it did (#58) partly because
+        // nothing held it to the service; a field renamed there now fails here.
+        let page: Page = serde_json::from_value(serde_json::json!({
+            "observations": [
+                {
+                    "seq": 7, "at": 1790213170.5,
+                    "kind": { "type": "saved", "path": "/home/p/report.odt", "how": "replaced" },
+                    "actor": { "pid": 4242, "name": "soffice", "parent": 1 },
+                    "salience": 0.6,
+                    "summary": "soffice saved report.odt"
+                },
+                {
+                    "seq": 8, "at": 1790213171.0,
+                    "kind": { "type": "source_failed", "source": "files", "reason": "EPERM" },
+                    "salience": 1.0,
+                    "summary": "file watching stopped: EPERM"
+                }
+            ],
+            "next_seq": 9,
+            "missed": 0
+        }))
+        .expect("the service's page deserializes");
+        assert_eq!(page.next_seq, 9);
+        assert!(matches!(&page.observations[0].kind, Kind::Saved { how: Some(h), .. } if h == "replaced"));
+        assert_eq!(page.observations[0].actor.as_ref().map(|a| a.name.as_str()), Some("soffice"));
+        assert!(page.observations[1].actor.is_none());
+        assert!(worth_remembering(&page.observations[1]).is_some());
     }
 
     #[test]

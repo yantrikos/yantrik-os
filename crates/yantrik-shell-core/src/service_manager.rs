@@ -89,6 +89,11 @@ impl ServiceManager {
     /// Start a service by ID.
     pub fn start(&self, id: &str) -> Result<(), String> {
         let mut inner = self.inner.lock().unwrap();
+        // A service that exited since anyone last asked still reads `Running` until it is reaped,
+        // and short-circuiting on that left it down: a caller asked for it to be up and was told
+        // it was. Reaping here is what `status` does, so `start` no longer depends on every
+        // caller remembering to ask `status` first (#58).
+        inner.reap(id);
 
         let entry = inner
             .services
@@ -148,32 +153,7 @@ impl ServiceManager {
     /// Get the status of a service.
     pub fn status(&self, id: &str) -> Option<ServiceStatus> {
         let mut inner = self.inner.lock().unwrap();
-
-        // Check if process is still alive
-        if let Some(child) = inner.processes.get_mut(id) {
-            match child.try_wait() {
-                Ok(Some(status)) => {
-                    // Process exited
-                    inner.processes.remove(id);
-                    if let Some(entry) = inner.services.get_mut(id) {
-                        if status.success() {
-                            entry.status = ServiceStatus::Stopped;
-                        } else {
-                            entry.status = ServiceStatus::Failed(
-                                format!("Exited with code: {:?}", status.code()),
-                            );
-                        }
-                    }
-                }
-                Ok(None) => {
-                    // Still running
-                }
-                Err(e) => {
-                    tracing::warn!(service = id, error = %e, "Error checking service status");
-                }
-            }
-        }
-
+        inner.reap(id);
         inner.services.get(id).map(|s| s.status.clone())
     }
 
@@ -224,6 +204,29 @@ impl ServiceManager {
                 if !id.is_empty() && !binary.is_empty() {
                     self.register(&id, &binary, autostart);
                 }
+            }
+        }
+    }
+}
+
+impl Inner {
+    /// If `id`'s process has exited, collect it and record how it ended.
+    fn reap(&mut self, id: &str) {
+        let Some(child) = self.processes.get_mut(id) else { return };
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                self.processes.remove(id);
+                if let Some(entry) = self.services.get_mut(id) {
+                    entry.status = if status.success() {
+                        ServiceStatus::Stopped
+                    } else {
+                        ServiceStatus::Failed(format!("Exited with code: {:?}", status.code()))
+                    };
+                }
+            }
+            Ok(None) => {}
+            Err(e) => {
+                tracing::warn!(service = id, error = %e, "Error checking service status");
             }
         }
     }
@@ -388,6 +391,35 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&dir);
         drop(mgr);
+    }
+
+    #[test]
+    fn starting_a_service_that_exited_starts_it_again() {
+        let _turn = taking_turns();
+        // `start` short-circuited on a `Running` that was only true until the process exited,
+        // and nothing had reaped it yet: asked to bring a dead service up, it did nothing and
+        // said Ok. Both callers asked `status` first to get around it (#58).
+        let (dir, pidfile) = fixture("restart");
+        let mgr = ServiceManager::new(dir.clone());
+        mgr.register("svc", "svc", false);
+        mgr.start("svc").unwrap();
+        let first = pid_from(&pidfile);
+
+        let _ = std::fs::remove_file(&pidfile);
+        unsafe { libc::kill(first as i32, libc::SIGKILL) };
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while alive(first) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(!alive(first), "the fixture service did not die");
+
+        // No `status` call in between: that is the case the old `start` got wrong.
+        mgr.start("svc").unwrap();
+        let second = pid_from(&pidfile);
+        assert_ne!(first, second, "start left the dead service down and reported success");
+        assert!(alive(second));
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
