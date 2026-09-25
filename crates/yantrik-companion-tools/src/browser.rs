@@ -22,6 +22,28 @@ const MAX_ELEMENTS: usize = 250;
 /// Global CDP message counter for unique IDs.
 static MSG_ID: AtomicU32 = AtomicU32::new(1);
 
+/// Where a browser window the companion opens is drawn, as the environment to start it with.
+///
+/// The shell sets this once at startup (`yantrik-ui`'s `mind_view::display_for_mind`), so a
+/// window a mind opens lands in Mind View (#239) rather than over the person's work. It used to be
+/// `WAYLAND_DISPLAY=wayland-0` written into the launch, which is the person's own display: the
+/// companion's Chromium opened on their desktop while Mind View sat beside it, empty and black.
+/// Without a shell to ask (tests, a companion run on its own), it is still that.
+static DISPLAY_FOR_MIND: std::sync::OnceLock<fn() -> Vec<(&'static str, String)>> =
+    std::sync::OnceLock::new();
+
+/// Tell the browser tools where a mind's windows go. The first call wins.
+pub fn set_display_for_mind(display: fn() -> Vec<(&'static str, String)>) {
+    let _ = DISPLAY_FOR_MIND.set(display);
+}
+
+fn display_for_mind() -> Vec<(&'static str, String)> {
+    match DISPLAY_FOR_MIND.get() {
+        Some(display) => display(),
+        None => vec![("WAYLAND_DISPLAY", "wayland-0".to_string())],
+    }
+}
+
 pub fn register(reg: &mut ToolRegistry) {
     reg.register(Box::new(LaunchBrowserTool));
     reg.register(Box::new(BrowseTool));
@@ -617,8 +639,14 @@ impl Tool for LaunchBrowserTool {
 
         let result = std::process::Command::new(&binary)
             .args(&chrome_args)
-            .env("WAYLAND_DISPLAY", "wayland-0")
             .env("XDG_RUNTIME_DIR", "/run/user/1000")
+            // A headed window goes where a mind's windows go. Headless draws nowhere, so it
+            // keeps the display it always had rather than starting Mind View for nothing.
+            .envs(if headless {
+                vec![("WAYLAND_DISPLAY", "wayland-0".to_string())]
+            } else {
+                display_for_mind()
+            })
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())

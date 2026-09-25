@@ -146,6 +146,10 @@ fn main() {
         }
     }
 
+    // A browser the companion opens goes where a mind's apps go (#239), not onto the person's
+    // display, which is where its tools used to put it unconditionally.
+    yantrik_companion::tools::browser::set_display_for_mind(mind_view::display_for_mind);
+
     // Pick the renderer before Slint reads SLINT_BACKEND — it only looks once, at App::new().
     // Getting this wrong is not a small penalty: femtovg on a machine with no GPU falls through
     // to llvmpipe and burns ~6 cores, against ~1 for the software rasteriser. See render_backend.
