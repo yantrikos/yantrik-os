@@ -167,9 +167,11 @@ dispatch on every call. Each mode runs actions unasked up to a grade: `plan` not
 (a mind says what it would do instead), `ask` up to `standard`, `auto` up to `sensitive`,
 `bypass` everything under the ceiling (for a while — a bypass expires). Above that, the call is
 refused with `GRANT:`, and the refusal says how to get the person's Allow; `yos act` and the MCP
-bridge do that for a mind, putting a card on the screen and acting again with the grant. On the
-ceiling this OS ships with, for an action whose description does and does not say it cannot be
-undone:
+bridge do that for a mind, putting a card on the screen and acting again with the grant. The mode
+and the session rules beside it end with the shell that set them: the file names that shell — its
+pid, the start time the kernel gave it, and the machine's boot — and a dispatch that cannot find
+that shell alive, in that boot, reads `ask`. On the ceiling this OS ships with, for an action whose
+description does and does not say it cannot be undone:
 
 <!-- output: grade-table -->
 ```text

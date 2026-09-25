@@ -351,14 +351,17 @@ with its outcome and the exact sentence. Every implementation replays the file i
   call.
 - The person's **mode**, from `mind-mode.json` beside the settings file, which the shell writes:
   `{"mode": "plan|ask|auto|bypass", "previous": …, "bypass_expires_unix": <n>|null,
-  "session_rules": [{"app": …, "action": …}], "shell_pid": <n>, "shell_start_ticks": <n>}`. A
-  missing or unreadable file, or a mode it does not name, is `ask`. A `bypass` whose
-  `bypass_expires_unix` has passed is its `previous` mode (or `ask`). The last two fields name
-  the shell that wrote the file — its pid and that pid's start time (field 22 of
-  `/proc/<pid>/stat`, ticks since boot) — and a file whose shell is not running (pid gone, or
-  alive under a different start time: reused) is `ask`, rules and all, so a shell that died in
-  bypass does not leave it in force (#154). A file that names no shell is read as before. Read
-  per call.
+  "session_rules": [{"app": …, "action": …}], "shell_pid": <n>, "shell_start_ticks": <n>,
+  "boot_id": "<uuid>"}`. A missing or unreadable file, or a mode it does not name, is `ask`. A
+  `bypass` whose `bypass_expires_unix` has passed is its `previous` mode (or `ask`). The last
+  three fields name the shell that wrote the file and the boot it wrote in — its pid, that
+  pid's start time (field 22 of `/proc/<pid>/stat`, ticks since boot), and
+  `/proc/sys/kernel/random/boot_id`, which the kernel picks fresh on every boot — and a file
+  whose shell cannot be found (pid gone; alive under a different start time: reused; exited
+  but unreaped: a zombie, state `Z`/`X`; or recorded under a boot that has ended) is `ask`,
+  rules and all, so a shell that died in bypass does not leave it in force (#154, #333). Less
+  than the whole identity — any of the three missing — fails closed the same way. A file that
+  names no shell at all is read as before. Read per call.
 - Whether the call carries a **grant** the shell spent (§8).
 
 **The rule**, in order:
