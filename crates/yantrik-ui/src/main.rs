@@ -88,6 +88,7 @@ mod mind_panel;
 mod mind_view;
 mod notifications;
 mod onboarding;
+mod perception;
 mod icons;
 mod render_backend;
 /// Every recipe the companion holds, as the worker last published them: the Recipes screen,
@@ -184,17 +185,18 @@ fn main() {
     // way is never described as stopped.
     {
         let starter = service_manager.clone();
-        yantrik_ipc_transport::service::set_local_starter(move |id| {
-            // `status` before `start`, the same order the control surface uses: it reaps a child
-            // that has exited, and without it an entry still marked Running short-circuits the
-            // start and the socket never comes back.
-            let _ = starter.status(id);
-            starter.start(id)
-        });
+        // `start` reaps a child that has exited before it checks for Running (#58), so a
+        // service that died is started again rather than reported as up.
+        yantrik_ipc_transport::service::set_local_starter(move |id| starter.start(id));
     }
 
     // Initialize all shared state
     let ctx = app_context::AppContext::init(config, &ui, config_path);
+
+    // Read perception-service into the companion's memory, through the reader's gate: the OS's
+    // own processes, low salience and anything over the rate ceiling stay out. The service is
+    // started on demand, so most of the time this parks on a retry and costs nothing (#58).
+    perception::spawn(ctx.bridge.clone());
 
     // Wire all callbacks
     wire::wire_all(&ui, &ctx);
