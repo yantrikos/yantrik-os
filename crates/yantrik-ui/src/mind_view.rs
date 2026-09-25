@@ -50,10 +50,13 @@ const CHECKOUT_CONFIG: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../config
 /// `wlroots - WL-1`, which is what the spike saw on labwc 0.7.1. labwc 0.8 retitles it
 /// `labwc - WL-1`, and on the VM that miss left the taskbar showing a black window by that name.
 /// So either program's name is accepted, as the app_id or as the start of such a title.
+///
+/// The title counts only when the window declared no app_id. Any page or terminal can set its
+/// own title to `labwc - WL-1`, and a window on the person's desktop must not pass as contained.
 pub fn is_nested_window(declared_id: &str, title: &str) -> bool {
     const COMPOSITORS: [&str; 2] = ["wlroots", "labwc"];
-    if COMPOSITORS.iter().any(|c| declared_id.eq_ignore_ascii_case(c)) {
-        return true;
+    if !declared_id.is_empty() {
+        return COMPOSITORS.iter().any(|c| declared_id.eq_ignore_ascii_case(c));
     }
     title
         .split_once(" - ")

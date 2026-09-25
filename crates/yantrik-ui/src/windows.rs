@@ -1100,11 +1100,16 @@ mod tests {
         assert_eq!(mind_view.title, "wlroots - WL-1");
         assert_eq!(mind_view.subtitle, "Mind View");
         assert_eq!(mind_view.wayland_app_id, "wlroots");
-        // labwc 0.8 retitles it after itself, and it is still Mind View.
-        let labwc = toplevel_entry("wlroots: labwc - WL-1");
+        // labwc 0.8 names it after itself, as VM 520 printed it, and it is still Mind View.
+        let labwc = toplevel_entry("labwc: labwc - WL-1");
         assert_eq!(labwc.app_id, "mind-view");
         assert_eq!(labwc.title, "labwc - WL-1");
+        assert_eq!(labwc.subtitle, "Mind View");
         assert_eq!(toplevel_entry(": labwc - WL-1").app_id, "mind-view");
+        // A window that declares its own app_id is never Mind View by its title alone: a page
+        // or a terminal can be titled anything.
+        assert_ne!(toplevel_entry("chromium: labwc - WL-1").app_id, "mind-view");
+        assert_ne!(toplevel_entry("foot: wlroots - WL-1").app_id, "mind-view");
         assert_eq!(toplevel_entry("Some Foreign Window").wayland_app_id, "");
     }
 

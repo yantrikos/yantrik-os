@@ -1178,7 +1178,7 @@ and this is running as $(id -un). Run: sudo yantrik-update set-channel $new"
 
 # Package names, not command names: `ip` and `ss` are both in iproute2, `ping` is in
 # iputils-ping. A package the image's own lists all install.
-REQUIRED_PACKAGES="iproute2 iputils-ping grim curl python3 nano htop"
+REQUIRED_PACKAGES="iproute2 iputils-ping grim curl python3 nano htop swaybg"
 
 # Is this package installed, per dpkg? Prints dpkg's own status word, or nothing.
 pkg_installed() {
@@ -1391,11 +1391,11 @@ cmd_selftest() {
   printf '#!/bin/sh\ncase "$1" in iproute2|curl|python3|grim) echo installed ;; esac\n' > "$old"
   chmod +x "$old"
   out="$(missing_packages "$old")"
-  if [ "$out" = "iputils-ping nano htop" ]; then
+  if [ "$out" = "iputils-ping nano htop swaybg" ]; then
     printf '  %sok%s   a 520-style machine is named package by package\n' "$c_grn" "$c_off"
   else
     printf '  %sFAIL%s a 520-style machine: wanted %s, got %s\n' \
-      "$c_red" "$c_off" "iputils-ping nano htop" "${out:-nothing}"
+      "$c_red" "$c_off" "iputils-ping nano htop swaybg" "${out:-nothing}"
     fails=$((fails + 1))
   fi
 
