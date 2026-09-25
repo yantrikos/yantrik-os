@@ -8,7 +8,7 @@ use std::time::Duration;
 use slint::{ComponentHandle, Model, ModelRc, SharedString, Timer, TimerMode, VecModel};
 
 use crate::app_context::{self, AppContext};
-use crate::mime_dispatch::{self, FileAction};
+use crate::mime_dispatch;
 use crate::app_context::FileClipOp;
 use crate::{
     bridge, cards, filebrowser, focus, lock, onboarding, App, BreadcrumbSegment,
@@ -210,62 +210,11 @@ fn wire_file_open(ui: &App, ctx: &AppContext) {
         };
         tracing::info!(path = %full.display(), "Opening file");
 
-        match mime_dispatch::classify(&name_str) {
-            // The same app the launcher opens, given the file that was double-clicked. It used
-            // to load the picture into the shell's own screen instead, which is why the
-            // standalone viewer could ship for months without anyone noticing it opened nothing.
-            FileAction::ImageViewer => {
-                super::dock::spawn_app_with_args(
-                    "image",
-                    "yantrik-image-viewer",
-                    &[&full.to_string_lossy()],
-                );
-            }
-            FileAction::TextEditor => {
-                super::dock::spawn_app_with_args("editor", "yantrik-text-editor", &[&full.to_string_lossy()]);
-            }
-            FileAction::MediaPlayer => {
-                // mpv's own window, opened the way its desktop entry opens it: pseudo-gui gives
-                // a song a window with the play bar, where a bare `mpv song.mp3` plays with no
-                // window at all and nothing to stop it by. Through the one launcher, so the
-                // child does not inherit SLINT_FULLSCREEN.
-                //
-                // Said on the Files screen when there is no mpv: the image this desktop builds
-                // does not install it, and a failed launch is otherwise only a log line.
-                if super::dock::find_program("mpv").is_none() {
-                    if let Some(ui) = ui_weak.upgrade() {
-                        ui.set_file_notice(
-                            format!("{name_str} cannot play: no media player (mpv) is installed.")
-                                .into(),
-                        );
-                    }
-                    return;
-                }
-                let target = full.to_string_lossy().to_string();
-                super::dock::spawn_app_with_args(
-                    "mpv",
-                    "mpv",
-                    &["--player-operation-mode=pseudo-gui", "--", target.as_str()],
-                );
-            }
-            FileAction::Browser => {
-                // The browser the Browser pin opens, with the file as its argument: the same
-                // launcher, so the registry and the reaper see the window, and Chromium gets the
-                // DevTools flags that let `yos web` drive the page a person just double-clicked.
-                match super::dock::find_browser() {
-                    Some((bin, flags)) => {
-                        let target = full.to_string_lossy().to_string();
-                        let mut argv: Vec<&str> = flags.to_vec();
-                        argv.push(&target);
-                        super::dock::spawn_app_with_args("browser", bin, &argv);
-                    }
-                    None => tracing::error!(
-                        path = %full.display(),
-                        "Cannot open the file in a browser: none is installed"
-                    ),
-                }
-            }
-        }
+        // One rule picks the app and one module launches it, so this double-click, an
+        // "Open with" row and the control surface's `files_open` cannot drift apart (#233).
+        let action = mime_dispatch::classify(&name_str);
+        let ui_up = ui_weak.upgrade();
+        super::open_with::launch(&action, &name_str, &full, ui_up.as_ref());
     });
 
 }

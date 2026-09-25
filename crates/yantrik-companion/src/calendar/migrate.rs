@@ -135,6 +135,9 @@ pub fn run(conn: &rusqlite::Connection, backend: &dyn CalendarBackend) -> Migrat
             color: String::new(),
             is_all_day: row.is_all_day,
             attendees: Vec::new(),
+            // Migrated out of the companion's old private cache: whoever made these is not
+            // on record, and a migration is not a surface caller anybody verified (#201).
+            creator: None,
         };
 
         match backend.create(&params) {

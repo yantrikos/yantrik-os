@@ -382,17 +382,28 @@ pub fn run<H: RecipeHost>(host: &mut H, recipe_id: &str, max: usize) -> usize {
     taken
 }
 
-/// What the clock should move now: every recipe running — a signal lost to a restart is not a
-/// recipe lost — every one whose wait is over or that has an agent working, and every finished
-/// one that still names an agent as working, so the agent is let go.
-pub fn due(conn: &Connection) -> Vec<String> {
-    let mut ids = RecipeStore::get_resumable(conn);
-    for id in RecipeStore::get_expired_waiting(conn).into_iter().chain(RecipeStore::finished_with_agents_working(conn)) {
+/// What the clock should move at `now`: first the recipes whose triggers are due — a schedule
+/// whose time has come, or a leader's completion that chains another recipe (#187) — then every
+/// recipe running (a signal lost to a restart is not a recipe lost), every one whose wait is over
+/// or that has an agent working, and every finished one that still names an agent as working, so
+/// the agent is let go.
+pub fn due_at(conn: &Connection, now: f64) -> Vec<String> {
+    let mut ids = RecipeStore::fire_due_triggers_at(conn, now);
+    for id in RecipeStore::get_resumable(conn)
+        .into_iter()
+        .chain(RecipeStore::get_expired_waiting_at(conn, now))
+        .chain(RecipeStore::finished_with_agents_working(conn))
+    {
         if !ids.contains(&id) {
             ids.push(id);
         }
     }
     ids
+}
+
+/// What the clock should move now ([`due_at`] on the machine's clock).
+pub fn due(conn: &Connection) -> Vec<String> {
+    due_at(conn, now_ts())
 }
 
 /// Run what is due, a few steps each, for a host with no worker to signal
@@ -1201,10 +1212,15 @@ impl RecipeHost for CompanionService {
     }
 
     fn notify(&mut self, recipe_id: &str, text: &str) {
+        let at = now_ts();
         self.set_proactive_message(crate::types::ProactiveMessage {
             text: text.to_string(),
-            urge_ids: vec![format!("recipe:{recipe_id}")],
-            generated_at: now_ts(),
+            // Every message carries a key of its own: the shell remembers deliveries per key,
+            // and one key per recipe used to hold back that recipe's next message for the
+            // whole delivery cooldown (#187). The first segment stays "recipe" — that is what
+            // names the instinct the message came from.
+            urge_ids: vec![format!("recipe:{recipe_id}:{at}")],
+            generated_at: at,
         });
     }
 
@@ -1598,7 +1614,7 @@ fn now_ts() -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::recipe::{Condition, WaitCondition};
+    use crate::recipe::{Condition, TriggerType, WaitCondition};
     use crate::recipe_view::{self, RecipeOp};
     use std::collections::VecDeque;
 
@@ -1960,7 +1976,9 @@ mod tests {
         let id = desk.start(&steps);
         run(&mut desk, &id, 20);
         assert_eq!(desk.status(&id), (RecipeStatus::Waiting, 2));
-        assert_eq!(desk.view(&id).waiting_for.as_deref(), Some("15m to pass, until 08:15 UTC"));
+        // The engine's own clock reading: the test does not hard-code the machine's zone.
+        let wake = clock_text(EIGHT_AM + 900.0);
+        assert_eq!(desk.view(&id).waiting_for, Some(format!("15m to pass, until {wake}")));
         // A second chain's signal, or a chat turn's sweep, finds it still waiting.
         assert_eq!(step(&mut desk, &id), Advance::Blocked);
         assert_eq!(desk.status(&id), (RecipeStatus::Waiting, 2));
@@ -1978,7 +1996,7 @@ mod tests {
         run(&mut desk, &id, 20);
         assert_eq!(desk.status(&id).0, RecipeStatus::Done);
         assert!(desk.said.iter().any(|s| s == "Later."));
-        assert_eq!(desk.view(&id).steps[1].result.as_deref(), Some("waited until 08:15 UTC"));
+        assert_eq!(desk.view(&id).steps[1].result, Some(format!("waited until {wake}")));
     }
 
     /// What the worker's clock moves: the recipes running, and the waits that are over — not a
@@ -2088,7 +2106,11 @@ mod tests {
         assert_eq!(vars["summary"], json!("Two recipes, both fine."), "the model's answer, its thinking stripped");
         assert_eq!(vars["head"], json!("Two recipes"), "Extract ran for real, not passed through");
         let said = companion.take_proactive_message().expect("the companion tells the person");
-        assert_eq!(said.urge_ids, [format!("recipe:{id}")]);
+        assert!(
+            said.urge_ids.len() == 1 && said.urge_ids[0].starts_with(&format!("recipe:{id}:")),
+            "the message keys on its own delivery, still named for its recipe: {:?}",
+            said.urge_ids
+        );
         assert!(said.text.contains("Two recipes: Two recipes, both fine."), "{}", said.text);
     }
 
@@ -2650,5 +2672,67 @@ mod tests {
             "{context}"
         );
         assert_eq!(desk.status(&id).0, RecipeStatus::Done);
+    }
+
+    /// What the executor's clock moves now includes the triggers whose time has come (#187):
+    /// they were stored and never fired — `get_enabled_triggers` had no caller — so a recipe
+    /// with a schedule never started by itself.
+    #[test]
+    fn the_clock_starts_a_recipe_whose_trigger_is_due() {
+        let mut desk = Desk::new();
+        // Every minute: a schedule that reads the same whatever zone the test machine is in.
+        let id = RecipeStore::create(
+            &desk.conn,
+            "Digest",
+            "",
+            &[notify("digest ready")],
+            Some(&TriggerType::Cron { expression: "* * * * *".into() }),
+        );
+        // create() stamps with the real clock; this recipe lives on the test's calendar.
+        desk.conn.execute("UPDATE recipes SET created_at = ?1 WHERE id = ?2", rusqlite::params![desk.clock - 120.0, id]).unwrap();
+
+        assert!(due_at(&desk.conn, desk.clock - 61.0).is_empty(), "before the first occurrence since it existed: nothing to move");
+        assert_eq!(due_at(&desk.conn, desk.clock), vec![id.clone()], "the due occurrence starts its recipe, on the clock");
+        // And the clock runs it the way it runs anything else due.
+        for rid in due_at(&desk.conn, desk.clock) {
+            run(&mut desk, &rid, 50);
+        }
+        assert_eq!(desk.status(&id).0, RecipeStatus::Done);
+        assert!(desk.said.iter().any(|s| s == "digest ready"), "{:?}", desk.said);
+        assert!(due_at(&desk.conn, desk.clock).is_empty(), "the same occurrence fires once");
+        desk.clock += 30.0;
+        assert!(due_at(&desk.conn, desk.clock).is_empty(), "and not again before the next one");
+        desk.clock += 30.0;
+        let again = due_at(&desk.conn, desk.clock);
+        assert_eq!(again.len(), 1, "the next occurrence fires");
+        assert_ne!(again[0], id, "as a run of its own, the last one's record kept");
+    }
+
+    /// A formation chained on another: the clock sees the leader's completion and starts the
+    /// follower — the wiring that was to run the chair after the council (#187).
+    #[test]
+    fn the_clock_starts_the_follower_when_its_leader_completes() {
+        let mut desk = Desk::new();
+        let council = RecipeStore::create(&desk.conn, "Council", "", &[notify("council sat")], None);
+        RecipeStore::update_status(&desk.conn, &council, &RecipeStatus::Running, 0);
+        let chair = RecipeStore::create(
+            &desk.conn,
+            "Chair",
+            "",
+            &[notify("chair sat")],
+            Some(&TriggerType::RecipeComplete { recipe_id: council.clone() }),
+        );
+
+        assert_eq!(due_at(&desk.conn, desk.clock), vec![council.clone()], "the follower waits on its leader");
+        run(&mut desk, &council, 50);
+        assert_eq!(desk.status(&council).0, RecipeStatus::Done);
+        let moved = due_at(&desk.conn, desk.clock);
+        assert!(moved.contains(&chair), "the clock sees the completion and starts the follower: {moved:?}");
+        for rid in moved {
+            run(&mut desk, &rid, 50);
+        }
+        assert!(desk.said.iter().any(|s| s == "chair sat"), "{:?}", desk.said);
+        assert_eq!(desk.status(&chair).0, RecipeStatus::Done);
+        assert!(due_at(&desk.conn, desk.clock).is_empty(), "one completion chains once");
     }
 }

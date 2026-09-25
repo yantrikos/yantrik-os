@@ -55,6 +55,13 @@ pub fn wire(ui: &App, ctx: &AppContext) {
     let event_dedup: RefCell<HashMap<String, Instant>> = RefCell::new(HashMap::new());
     const DEDUP_WINDOW: Duration = Duration::from_secs(300); // 5 minutes
 
+    // Network memory gate: the connection state behind the last network memory
+    // recorded. A time window is not enough for the network — the connection is
+    // re-announced every few minutes forever, so every window that expires lets
+    // another identical row into the store (#31). Only a change of state is a
+    // new fact.
+    let last_network: RefCell<Option<system_context::NetworkState>> = RefCell::new(None);
+
     // Network cache: when the network service was last asked, and what it said.
     // `None` inside the option is the service failing to answer, which is a
     // different thing from not having asked yet.
@@ -192,6 +199,19 @@ pub fn wire(ui: &App, ctx: &AppContext) {
             }
 
             for event in &events {
+                // A `NetworkChanged` event announces the current connection and fires on
+                // every link flap and DHCP renewal, not only when something happens (#31).
+                // Record a memory when the connection state changes and drop repeats of
+                // the state behind the last network memory, or the store fills with
+                // identical rows for one connection and the Memory screen counts them all.
+                let is_network_repeat = system_context::gate_network_memory(
+                    &mut last_network.borrow_mut(),
+                    event,
+                ) == Some(false);
+                if is_network_repeat {
+                    continue;
+                }
+
                 if let Some((text, domain, importance)) = system_context::event_to_memory(event) {
                     // Skip if same event text was recorded within the dedup window
                     if let Some(last) = cache.get(&text) {
@@ -422,6 +442,16 @@ fn wire_chart_history(ui: &App, ctx: &AppContext) {
 
 /// Handle a keybind action.
 fn handle_keybind(ui: &App, action: &str) {
+    // A keybind is not a keystroke: it arrives over the session D-Bus, which any process
+    // running as this user can send to, so this is a door onto the desktop like the socket and
+    // is held to the same rule (#203). While the login or lock screen is up, nothing here
+    // launches, navigates, screenshots or toggles — the arms below that check `screen == 1`
+    // only ever guarded the lens and the overlays, and the rest ran on the lock screen.
+    // Unlocking goes through the lock screen's own callbacks, never through a keybind.
+    if crate::control::locked_screen(ui.get_current_screen()) {
+        tracing::debug!(action, "Keybind dropped — the desktop is waiting for the person to sign in");
+        return;
+    }
     match action {
         "open-lens" => {
             if ui.get_current_screen() == 1 {

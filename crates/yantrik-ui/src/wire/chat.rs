@@ -231,8 +231,10 @@ fn wire_lens_submit(ui: &App, ctx: &AppContext) {
         let installed = catalogue.get();
         let app_matches = apps::search(&lower, &installed);
         if let Some(entry) = app_matches.first() {
-            let parts: Vec<&str> = entry.exec.split_whitespace().collect();
-            if let Some((bin, args)) = parts.split_first() {
+            // The Exec line read per the spec: field codes survive parsing now, and a launch
+            // with no file removes them where they stand instead of passing them as words (#304).
+            let argv = apps::exec_argv(&entry.exec, None);
+            if let Some((bin, args)) = argv.split_first() {
                 tracing::info!(exec = %entry.exec, name = %entry.name, "Launching app from Lens");
                 match std::process::Command::new(bin).args(args).spawn() {
                     Ok(_) => tracing::info!(name = %entry.name, "App started"),

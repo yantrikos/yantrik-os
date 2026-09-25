@@ -248,6 +248,7 @@ mod tests {
                 color: String::new(),
                 is_all_day: false,
                 attendees: Vec::new(),
+                creator: None,
             })
             .expect("the event is stored")
             .id

@@ -140,15 +140,16 @@ const APPROVAL_POLL: Duration = Duration::from_secs(1);
 const SHELL_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Where the desktop's sockets are and how long to wait for a person. The session's own in use;
-/// a test hands in a scratch directory and a shorter wait.
-struct Desk {
-    dir: Option<std::path::PathBuf>,
-    wait: Duration,
-    poll: Duration,
+/// a test hands in a scratch directory and a shorter wait. `pub(crate)` because `window.rs`
+/// drives the shell's own window actions through the same desk and the same asking.
+pub(crate) struct Desk {
+    pub(crate) dir: Option<std::path::PathBuf>,
+    pub(crate) wait: Duration,
+    pub(crate) poll: Duration,
 }
 
 impl Desk {
-    fn session() -> Desk {
+    pub(crate) fn session() -> Desk {
         Desk { dir: None, wait: APPROVAL_WAIT, poll: APPROVAL_POLL }
     }
 
@@ -165,7 +166,7 @@ impl Desk {
 ///
 /// `Err` is always a sentence for the model to read and relay: the app's own refusal passed
 /// through, or what became of the card — denied, unanswered, not needed after all.
-fn act_asking(
+pub(crate) fn act_asking(
     desk: &Desk,
     app: &str,
     action: &str,
@@ -818,7 +819,7 @@ fn timed_out(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     #[test]
@@ -932,8 +933,9 @@ mod tests {
 
     /// One fake socket: answers each JSON-RPC line with whatever `reply` makes of the request,
     /// and records every request. `reply` returns the whole response object minus `jsonrpc`/`id`.
+    /// `pub(crate)` because `window.rs` tests the same asking through the same kind of fake.
     #[cfg(unix)]
-    fn fake(
+    pub(crate) fn fake(
         path: std::path::PathBuf,
         reply: impl Fn(&serde_json::Value) -> serde_json::Value + Send + Sync + 'static,
     ) -> std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>> {

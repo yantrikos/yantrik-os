@@ -210,12 +210,28 @@ fn sysmon_actions() -> Vec<Action> {
     ]
 }
 
+/// The name a process goes by: the program it ran, not the kernel's fifteen-character `comm`.
+///
+/// `comm` is truncated, so the busy list opened with "yantrik-termina" and "yantrik-calenda"
+/// (#35) — names no shell and no memory holds, and what a caller of `kill_process` was told to
+/// end. The command line carries the invocation in full; kernel threads have none and keep
+/// their `comm`, which is what a person looking for them would type anyway.
+fn display_name(cmdline: &str, comm: &str) -> String {
+    let argv0 = cmdline.split('\0').next().unwrap_or("");
+    let base = argv0.rsplit('/').next().unwrap_or("");
+    if base.is_empty() {
+        comm.to_string()
+    } else {
+        base.to_string()
+    }
+}
+
 /// Every process whose name or command line contains `needle`, newest last.
 ///
-/// `/proc/<pid>/comm` is truncated to fifteen characters, so `yantrik-system-monitor` is
-/// `yantrik-system-` there; the command line is read as well so a name a person would type
-/// matches. Kernel threads have no command line and are skipped: nothing on this surface can
-/// do anything about them.
+/// A process is named from its command line, not from `/proc/<pid>/comm`, which is truncated to
+/// fifteen characters (`yantrik-system-monitor` is `yantrik-system-` there); the truncated
+/// `comm` is matched as well, so a needle read off an old list still hits. Kernel threads have
+/// no command line and are skipped: nothing on this surface can do anything about them.
 fn find_processes(needle: &str) -> Vec<serde_json::Value> {
     let needle = needle.trim().to_lowercase();
     let mut found = Vec::new();
@@ -244,7 +260,7 @@ fn find_processes(needle: &str) -> Vec<serde_json::Value> {
             })
             .unwrap_or_default();
         let shown: String = command.chars().take(160).collect();
-        found.push(serde_json::json!({ "pid": pid, "name": comm, "command": shown, "uid": uid }));
+        found.push(serde_json::json!({ "pid": pid, "name": display_name(&cmdline, &comm), "command": shown, "uid": uid }));
     }
     found.sort_by_key(|p| p["pid"].as_u64().unwrap_or(0));
     found
@@ -594,6 +610,37 @@ mod platform {
             .unwrap_or(0)
     }
 
+    /// The window `read_processes` measures CPU over. A process's share of a core is only a
+    /// fact about an interval, and the interval this used to divide by was the process's whole
+    /// lifetime — the `ps pcpu` number, the average of everything a process has ever done,
+    /// which grows more wrong the longer the machine runs (#35: the inside report read
+    /// `yantrik-ui 92.7%` where `ps` and this code agreed with each other and neither agreed
+    /// with the machine). Half a second per call is the order `top` samples at, and the app
+    /// polls every two, so the window never delays a reading that is wanted sooner.
+    const CPU_SAMPLE_WINDOW: std::time::Duration = std::time::Duration::from_millis(500);
+
+    /// The `comm`, the state character and the CPU used in total so far (utime + stime, in
+    /// ticks) from a `/proc/<pid>/stat` line. `comm` sits in parentheses and can hold spaces
+    /// and closing parens, so the numbered fields are counted after the *last* `)` rather
+    /// than by splitting the whole line on whitespace.
+    pub fn parse_stat(content: &str) -> Option<(&str, &str, f64)> {
+        let comm_start = content.find('(')?;
+        let comm_end = content.rfind(')')?;
+        if comm_end <= comm_start {
+            return None;
+        }
+        // A line that ends at `comm` has nothing left to read, and slicing for it would panic.
+        let fields: Vec<&str> = content.get(comm_end + 2..)?.split_whitespace().collect();
+        // state is the line's 3rd field and utime and stime its 14th and 15th, so the 1st,
+        // 12th and 13th counted from here.
+        if fields.len() < 13 {
+            return None;
+        }
+        let utime: f64 = fields[11].parse().unwrap_or(0.0);
+        let stime: f64 = fields[12].parse().unwrap_or(0.0);
+        Some((&content[comm_start + 1..comm_end], fields[0], utime + stime))
+    }
+
     pub fn read_processes(sort_by: &str, limit: u32) -> Result<Vec<ProcessInfo>, ServiceError> {
         let entries = std::fs::read_dir("/proc").map_err(|e| ServiceError {
             code: -32000,
@@ -605,14 +652,11 @@ mod platform {
         let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) as u64 };
         let clock_ticks = unsafe { libc::sysconf(libc::_SC_CLK_TCK) as f64 };
 
-        let uptime_secs = std::fs::read_to_string("/proc/uptime")
-            .ok()
-            .and_then(|s| s.split_whitespace().next().map(String::from))
-            .and_then(|s| s.parse::<f64>().ok())
-            .unwrap_or(1.0);
-
-        let mut procs = Vec::new();
-
+        // The whole table as the sample window opens: what each process is, and the CPU it had
+        // used by the time this pass read its line. (Reads of a busy table take milliseconds,
+        // and the ticks of each line are that much older than the window's start — as in
+        // `top`, the skew is ignored.)
+        let mut opened = Vec::new();
         for entry in entries.flatten() {
             let name_os = entry.file_name();
             let name_str = name_os.to_string_lossy();
@@ -625,34 +669,14 @@ mod platform {
                 Ok(c) => c,
                 Err(_) => continue,
             };
-
-            let comm_start = match stat_content.find('(') {
-                Some(i) => i + 1,
-                None => continue,
-            };
-            let comm_end = match stat_content.rfind(')') {
-                Some(i) => i,
-                None => continue,
-            };
-
-            let proc_name = stat_content[comm_start..comm_end].to_string();
-            let after_comm = &stat_content[comm_end + 2..];
-            let fields: Vec<&str> = after_comm.split_whitespace().collect();
-            if fields.len() < 22 {
+            let Some((comm, state_char, cpu_ticks)) = parse_stat(&stat_content) else {
                 continue;
-            }
-
-            let state_char = fields[0];
-            let utime: f64 = fields[11].parse().unwrap_or(0.0);
-            let stime: f64 = fields[12].parse().unwrap_or(0.0);
-            let starttime: f64 = fields[19].parse().unwrap_or(0.0);
-
-            let process_uptime = uptime_secs - (starttime / clock_ticks);
-            let cpu_percent = if process_uptime > 0.0 {
-                (utime + stime) / clock_ticks / process_uptime * 100.0
-            } else {
-                0.0
             };
+
+            let name = display_name(
+                &std::fs::read_to_string(format!("/proc/{pid}/cmdline")).unwrap_or_default(),
+                comm,
+            );
 
             let mem_bytes = std::fs::read_to_string(format!("/proc/{pid}/statm"))
                 .ok()
@@ -666,10 +690,6 @@ mod platform {
             } else {
                 0.0
             };
-
-            if mem_percent < 0.01 && cpu_percent < 0.01 {
-                continue;
-            }
 
             let user = std::fs::read_to_string(format!("/proc/{pid}/loginuid"))
                 .ok()
@@ -693,15 +713,47 @@ mod platform {
             }
             .to_string();
 
-            procs.push(ProcessInfo {
+            opened.push((cpu_ticks, ProcessInfo {
                 pid,
-                name: proc_name,
-                cpu_percent,
+                name,
+                cpu_percent: 0.0,
                 mem_percent,
                 mem_bytes,
                 state,
                 user,
-            });
+            }));
+        }
+
+        let window_start = std::time::Instant::now();
+        std::thread::sleep(CPU_SAMPLE_WINDOW);
+
+        // The window closes on each line as it is read again: the ticks used inside it, over
+        // that much time, is the share of one core the process is taking right now. A process
+        // that died mid-window has no second reading and drops out — the caller re-reads the
+        // table seconds later anyway.
+        let mut procs = Vec::new();
+        for (cpu_ticks_at_start, mut info) in opened {
+            let Ok(content) = std::fs::read_to_string(format!("/proc/{}/stat", info.pid)) else {
+                continue;
+            };
+            let Some((_, _, cpu_ticks_now)) = parse_stat(&content) else {
+                continue;
+            };
+            // A pid recycled inside the window is the one thing that can put the counter
+            // backwards; nothing else can, and nothing is served by a negative reading.
+            let ticks_used = (cpu_ticks_now - cpu_ticks_at_start).max(0.0);
+            let seconds = window_start.elapsed().as_secs_f64().max(0.001);
+            info.cpu_percent = if clock_ticks > 0.0 {
+                ticks_used / clock_ticks / seconds * 100.0
+            } else {
+                0.0
+            };
+
+            if info.mem_percent < 0.01 && info.cpu_percent < 0.01 {
+                continue;
+            }
+
+            procs.push(info);
         }
 
         match sort_by {
@@ -1172,5 +1224,175 @@ mod tests {
     #[test]
     fn the_surface_is_declared_soundly() {
         assert!(sysmon_surface().registry().problems().is_empty());
+    }
+}
+
+/// The process list says what a process is using CPU *now*, and calls it by its whole name.
+///
+/// The inside report caught both halves in one line: `yantrik-ui` listed at 92.7% while top,
+/// the same moment, had 5.0% — the old reading divided a process's total CPU by its own age,
+/// the `ps pcpu` lifetime average, which grows more wrong the longer the machine runs — and
+/// names like `"yantrik-termina"`, the kernel's fifteen-character `comm` where a mind reaches
+/// for `kill_process`. Both faults are tested against real children of the test's own, so no
+/// mock decides what a process is doing.
+#[cfg(all(test, unix))]
+mod process_readings {
+    use super::*;
+    use std::path::PathBuf;
+    use std::process::{Child, Command, Stdio};
+    use std::time::{Duration, Instant};
+
+    /// A child of ours that is ended when the test ends, panic included. A busy child left
+    /// running is worse than a leaked file handle: it holds the test binary's stderr pipe
+    /// open, so a *failing* test hangs the runner's output instead of reporting the failure.
+    /// Both pipes are nulled for the same reason — a child that has none cannot block one.
+    struct Ended(Option<Child>);
+
+    impl Ended {
+        fn spawn(command: &mut Command) -> Ended {
+            Ended(Some(
+                command
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .spawn()
+                    .expect("a child of our own"),
+            ))
+        }
+
+        fn pid(&self) -> u32 {
+            self.0.as_ref().expect("our child, until it is ended").id()
+        }
+    }
+
+    impl Drop for Ended {
+        fn drop(&mut self) {
+            if let Some(mut child) = self.0.take() {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+        }
+    }
+
+    /// The whole table, re-read until it agrees about our child. Each read takes its own
+    /// half-second sample, so this loop is the wait and the deadline is slack, not a guess
+    /// about when the child gets there.
+    fn wait_until_listed(pid: u32, agrees: impl Fn(&ProcessInfo) -> bool) -> ProcessInfo {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            if let Ok(list) = read_processes("cpu", 100_000) {
+                if let Some(found) = list.into_iter().find(|p| p.pid == pid && agrees(p)) {
+                    return found;
+                }
+            }
+            assert!(Instant::now() < deadline, "pid {pid} never showed up as asked");
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+
+    /// A copy of `yes` under a name longer than the kernel's `comm` can hold — and whose
+    /// first fifteen characters are not its whole, so a truncated name cannot pass by luck.
+    fn long_named_spinner(tag: &str) -> (Ended, PathBuf) {
+        let dir = std::env::temp_dir().join(format!("sysmon-35-{tag}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a directory of our own");
+        let program = dir.join("yos-monitor-current-cpu-check");
+        std::fs::copy("/usr/bin/yes", &program)
+            .expect("a `yes` that answers to a long name");
+        let mut spinner = Command::new(&program);
+        (Ended::spawn(&mut spinner), program)
+    }
+
+    /// A process that keeps a spin going is named by its program, whole. The list used to
+    /// carry `comm` instead, so a caller of `kill_process` was told to end "yos-monitor-cur"
+    /// — a name no program answers to.
+    #[test]
+    fn a_process_is_named_by_its_whole_program() {
+        let (child, program) = long_named_spinner("name");
+        let found = wait_until_listed(child.pid(), |_| true);
+        let _ = std::fs::remove_dir_all(program.parent().unwrap());
+
+        assert_eq!(found.name, "yos-monitor-current-cpu-check");
+        // The spinner really was spinning while the list looked at it: an assertion about a
+        // process that had already exited would pass on nothing.
+        assert!(found.cpu_percent > 20.0, "spinner read {}%", found.cpu_percent);
+    }
+
+    /// Three seconds of work and then sleep reads as *sleep*. The old number divided the
+    /// three seconds by the child's age — barely older than the three seconds, so tens of
+    /// percent at the best moment to look, when the machine's own answer was zero.
+    #[test]
+    fn cpu_percent_reads_the_sample_window_not_the_lifetime() {
+        // The list's own filter (which drops what uses no CPU and under 0.01% of memory)
+        // would hide a sleeping child entirely, so it holds half a percent of this machine's
+        // RAM — at least 100 MB — allocated *before* it starts working. That way the state
+        // the test waits for, asleep with the allocation held, can only be seen after the
+        // work phase is over: the test never catches a running state by luck and never
+        // sleeps a fixed guess. (A bash string substitution would not do it — bash frees the
+        // pages before the test can read them; `bytearray` is real, resident memory.)
+        let hold = 100_000_000u64.max(
+            std::fs::read_to_string("/proc/meminfo")
+                .expect("this machine has a /proc/meminfo")
+                .lines()
+                .find_map(|line| line.strip_prefix("MemTotal:"))
+                .and_then(|rest| rest.trim().trim_end_matches(" kB").trim().parse::<u64>().ok())
+                .map(|kb| kb * 1024 / 200)
+                .unwrap_or(100_000_000),
+        );
+        let child = Ended::spawn(
+            Command::new("python3")
+                .arg("-c")
+                .arg(format!(
+                    "import time\n\
+                     held = bytearray({hold})\n\
+                     step = 1 << 21\n\
+                     for i in range(0, {hold}, step): held[i] = 1\n\
+                     end = time.time() + 3\n\
+                     while time.time() < end: pass\n\
+                     time.sleep(120)\n"
+                )),
+        );
+        // Sleeping with a half percent of RAM resident can only be the far end of the
+        // script: the allocation precedes the work, and the work precedes the sleep.
+        let found = wait_until_listed(child.pid(), |p| {
+            p.state == "Sleeping" && p.mem_percent >= 0.4
+        });
+
+        assert!(
+            found.cpu_percent < 10.0,
+            "{} is asleep but reads {}% — that is its lifetime average, not its use",
+            found.name,
+            found.cpu_percent
+        );
+    }
+
+    /// `comm` sits in parentheses and can hold spaces and closing parens, so the numbered
+    /// fields are counted after the *last* `)`. These lines keep that rule on record.
+    #[test]
+    fn a_stat_line_is_read_from_after_its_comm() {
+        let (comm, state, ticks) = platform::parse_stat(
+            "42 (my (odd) name) R 1 42 42 0 -1 0 100 50 0 0 300 100 0 0 20 0 0 0",
+        )
+        .expect("a stat line as /proc writes it");
+        assert_eq!(comm, "my (odd) name");
+        assert_eq!(state, "R");
+        assert_eq!(ticks, 400.0);
+
+        assert!(platform::parse_stat("42 (gone").is_none(), "no closing paren for comm");
+        assert!(platform::parse_stat("42 (x) S 1 42").is_none(), "ends before the CPU fields");
+    }
+
+    /// The name comes from the command line; `comm` is only what a kernel thread, which has
+    /// no command line, is called.
+    #[test]
+    fn a_name_is_the_program_and_not_the_paths_around_it() {
+        assert_eq!(
+            display_name("/usr/bin/yantrik-terminal\0--wait\0", "yantrik-termina"),
+            "yantrik-terminal"
+        );
+        assert_eq!(
+            display_name("./run_beyond_comm_fifteen\0", "run_beyond_comm"),
+            "run_beyond_comm_fifteen"
+        );
+        assert_eq!(display_name("", "kworker/0:1H-kblockd"), "kworker/0:1H-kblockd");
+        assert_eq!(display_name("\0\0", "sh"), "sh");
     }
 }

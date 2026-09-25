@@ -2,6 +2,7 @@
 //!
 //! Notes stored as `.md` files in `~/.local/share/yantrik/notes/`.
 //! Metadata (pinned, tags) stored in `.meta` sidecar files.
+//! A note id is the file's stem in that folder and nothing else: an id that is a path is refused.
 //!
 //! Methods:
 //!   notes.list       { folder? }                → Vec<NoteSummary>
@@ -13,7 +14,7 @@
 //!   notes.set_tags   { id, tags }               → ()
 //!   notes.search     { query }                  → Vec<NoteSummary>
 
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use yantrik_ipc_contracts::notes::*;
 use yantrik_service_sdk::prelude::*;
@@ -159,8 +160,25 @@ fn write_meta(md_path: &Path, meta: &NoteMeta) {
 // ── CRUD implementation ──────────────────────────────────────────────
 
 impl NotesHandler {
-    fn note_path(&self, id: &str) -> PathBuf {
-        self.dir.join(format!("{id}.md"))
+    /// The file a note id names, or a refusal when the id is not one plain file name.
+    ///
+    /// Every id this service hands out is a file stem in its own folder, so anything else is not
+    /// a note. It used to be joined on as given: `notes.delete {"id": "../../x"}` removed `~/x.md`
+    /// from outside the library, and `notes.update` wrote over any `.md` file the person owns —
+    /// through a socket that checks nobody (#161).
+    fn note_path(&self, id: &str) -> Result<PathBuf, ServiceError> {
+        let mut parts = Path::new(id).components();
+        match (parts.next(), parts.next()) {
+            (Some(Component::Normal(name)), None) if name == id => {
+                Ok(self.dir.join(format!("{id}.md")))
+            }
+            _ => Err(ServiceError {
+                code: -32602,
+                message: format!(
+                    "`{id}` is not a note id; ids are the names notes.list reports, never paths"
+                ),
+            }),
+        }
     }
 
     fn list_notes(&self, _folder: Option<&str>) -> Result<Vec<NoteSummary>, ServiceError> {
@@ -242,7 +260,7 @@ impl NotesHandler {
     }
 
     fn get_note(&self, id: &str) -> Result<NoteContent, ServiceError> {
-        let path = self.note_path(id);
+        let path = self.note_path(id)?;
         let body = std::fs::read_to_string(&path).map_err(|e| ServiceError {
             code: -32000,
             message: format!("Note not found: {e}"),
@@ -298,7 +316,7 @@ impl NotesHandler {
         tags: Vec<String>,
     ) -> Result<NoteContent, ServiceError> {
         let id = uuid7::uuid7().to_string();
-        let path = self.note_path(&id);
+        let path = self.note_path(&id)?;
 
         let content = if body.is_empty() {
             format!("# {title}\n\n")
@@ -331,7 +349,7 @@ impl NotesHandler {
     }
 
     fn update_note(&self, id: &str, title: &str, body: &str) -> Result<(), ServiceError> {
-        let path = self.note_path(id);
+        let path = self.note_path(id)?;
         if !path.exists() {
             return Err(ServiceError {
                 code: -32000,
@@ -348,14 +366,14 @@ impl NotesHandler {
     }
 
     fn delete_note(&self, id: &str) -> Result<(), ServiceError> {
-        let path = self.note_path(id);
+        let path = self.note_path(id)?;
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(meta_path(&path));
         Ok(())
     }
 
     fn set_pinned(&self, id: &str, pinned: bool) -> Result<(), ServiceError> {
-        let path = self.note_path(id);
+        let path = self.note_path(id)?;
         if !path.exists() {
             return Err(ServiceError {
                 code: -32000,
@@ -369,7 +387,7 @@ impl NotesHandler {
     }
 
     fn set_tags(&self, id: &str, tags: Vec<String>) -> Result<(), ServiceError> {
-        let path = self.note_path(id);
+        let path = self.note_path(id)?;
         if !path.exists() {
             return Err(ServiceError {
                 code: -32000,
@@ -394,5 +412,62 @@ impl NotesHandler {
                     || n.tags.iter().any(|t| t.to_lowercase().contains(&query_lower))
             })
             .collect())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A library folder inside a scratch folder, so there is somewhere outside it to aim at.
+    fn scratch(name: &str) -> (PathBuf, NotesHandler) {
+        let root = std::env::temp_dir()
+            .join(format!("notes-service-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let dir = root.join("notes");
+        std::fs::create_dir_all(&dir).unwrap();
+        (root, NotesHandler { dir })
+    }
+
+    #[test]
+    fn an_id_that_is_a_path_reaches_nothing_outside_the_library() {
+        let (root, notes) = scratch("paths");
+        let outside = root.join("outside.md");
+        std::fs::write(&outside, "# mine\n\nnot a note").unwrap();
+        let absolute = root.join("outside");
+
+        for id in ["../outside", absolute.to_str().unwrap(), "./x", "a/b", "x/", "..", ".", ""] {
+            let args = serde_json::json!({ "id": id, "title": "t", "body": "b", "tags": [] });
+            for method in
+                ["notes.get", "notes.update", "notes.delete", "notes.set_pinned", "notes.set_tags"]
+            {
+                let err = notes.handle(method, args.clone()).expect_err(&format!("{method} {id:?}"));
+                assert_eq!(err.code, -32602, "{method} {id:?}: {}", err.message);
+            }
+        }
+        assert_eq!(std::fs::read_to_string(&outside).unwrap(), "# mine\n\nnot a note");
+        assert!(!root.join("outside.meta").exists(), "no sidecar was written beside it");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn an_id_the_service_handed_out_still_works() {
+        let (root, notes) = scratch("ids");
+        let made = notes
+            .handle("notes.create", serde_json::json!({ "title": "Groceries", "body": "eggs" }))
+            .unwrap();
+        let id = made["id"].as_str().unwrap().to_string();
+
+        notes
+            .handle("notes.update", serde_json::json!({ "id": id, "title": "Shop", "body": "milk" }))
+            .unwrap();
+        notes.handle("notes.set_pinned", serde_json::json!({ "id": id, "pinned": true })).unwrap();
+        let got = notes.handle("notes.get", serde_json::json!({ "id": id })).unwrap();
+        assert_eq!(got["title"], "Shop");
+        assert_eq!(got["pinned"], true);
+
+        notes.handle("notes.delete", serde_json::json!({ "id": id })).unwrap();
+        assert!(notes.handle("notes.get", serde_json::json!({ "id": id })).is_err());
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

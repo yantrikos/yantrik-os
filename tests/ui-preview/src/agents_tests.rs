@@ -151,9 +151,11 @@ pub(crate) fn fill(g: &AgentsState, popped: bool) {
         tokens: "41k in · 1.2k out".into(),
         cost: "".into(),
         refused: "".into(),
+        refused_lines: "".into(),
         basis: "Commands, files and approvals count only what the shell itself ran or asked. Calls include what the harness reported.".into(),
         role: "".into(),
         reach: "".into(),
+        reach_patterns: "".into(),
     });
 }
 
@@ -191,7 +193,8 @@ fn red_team(g: &AgentsState) {
     let mut details = g.get_details();
     details.mind = "deepseek".into();
     details.role = "Red team".into();
-    details.reach = "nothing on this desktop beyond asking the person and reading its own session · at most safe".into();
+    details.reach = "nothing on this desktop, and it may ask for safe acts".into();
+    details.reach_patterns = "nothing on this desktop beyond asking the person and reading its own session · at most safe".into();
     details.calls = "3".into();
     g.set_details(details);
     let block = |key: &str, block: &str, text: &str, markdown: &str| AgentItemData {
@@ -337,9 +340,12 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
         discrepancies: lines(&[]),
         app: "files".into(),
         action: "move".into(),
+        summary: "Move files or folders to another place, or into the recoverable Trash.".into(),
         purpose: "Move files or folders to another place, or into the recoverable Trash.".into(),
         grade: "sensitive".into(),
         args: lines(&["from: ~/Pictures/copy of a.jpg", "to: ~/.local/share/Trash"]),
+        // Files names no handle — both arguments are paths a person can read (#54).
+        target: "".into(),
         warning: "".into(),
         can_session: false,
         decision: "".into(),
@@ -498,7 +504,8 @@ pub fn run_catalog(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dy
     let mut details = g.get_details();
     details.mind = "deepseek".into();
     details.role = "Reviewer".into();
-    details.reach = "editor, documents and notes · at most safe".into();
+    details.reach = "the Editor, Documents and Notes, and it may ask for safe acts".into();
+    details.reach_patterns = "editor, documents and notes · at most safe".into();
     g.set_details(details);
     g.set_roles(roles());
 
@@ -507,11 +514,13 @@ pub fn run_catalog(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dy
         let (l, weak) = (log.clone(), ui.as_weak());
         g.on_pick_role(move |id| {
             l.borrow_mut().push(format!("pick-role:{id}"));
-            // What the shell does: the role is picked, and the note says where it runs and what it may touch.
+            // What the shell does: the role is picked, the note says where it runs and what it
+            // may reach in words, and the patterns behind the words go with it (#212).
             if let Some(ui) = weak.upgrade() {
                 let g = ui.global::<AgentsState>();
                 g.set_new_role(id.clone());
-                g.set_new_note(format!("Runs on deepseek. May touch editor, documents and notes · at most safe. Up to 4 turns and 15 minutes. ({id})").into());
+                g.set_new_note(format!("Runs on deepseek. May reach: the Editor, Documents and Notes, and it may ask for safe acts. Up to 4 turns and 15 minutes. ({id})").into());
+                g.set_new_note_reach("editor, documents and notes · at most safe".into());
             }
         });
         let l = log.clone();

@@ -876,6 +876,7 @@ setup:
             builtin: false,
             active,
             capabilities: Capabilities { streaming: true, tools: true, memory: false },
+            pid: None,
         }
     }
 
@@ -887,6 +888,7 @@ setup:
             builtin: true,
             active: true,
             capabilities: Capabilities { streaming: true, tools: true, memory: true },
+            pid: None,
         }
     }
 
@@ -1021,6 +1023,28 @@ setup:
         let rows = rows(&fixture.machine(), &[builtin(), entry("pi", true)]);
         assert_eq!(row(&rows, "pi").state, State::Answering);
         assert!(row(&rows, "pi").active);
+    }
+
+    #[test]
+    fn a_listed_mind_is_attached_even_while_its_unit_says_stopped() {
+        // A harness run by hand from a terminal — or by anything other than its unit — polls
+        // happily while `systemctl --user show` says the unit is inactive. The registry, which
+        // drops a session the moment the kernel says its process is gone (#67), is the only
+        // witness that counts here: a row that preferred the unit's word would call this
+        // answering mind stopped and take *Use this* away from it.
+        let fixture = Fixture::new("hand-run");
+        fixture.harness("pi", PI);
+        let mut machine = fixture.machine();
+        machine.units.insert(
+            "yantrik-pi.service".into(),
+            Unit { loaded: true, enabled: true, ..Default::default() },
+        );
+
+        let pi = row(&rows(&machine, &[builtin(), entry("pi", true)]), "pi").clone();
+        assert_eq!(pi.state, State::Answering);
+        assert!(pi.state.can_answer() && pi.attached && pi.active);
+        assert_eq!(pi.need, "");
+        assert_eq!(pi.detail, "pi says hello");
     }
 
     #[test]

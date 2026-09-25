@@ -47,7 +47,7 @@ What it is actually checking, in one line each:
     passes only the shell's names, is given as long as its wait (and the harness's client allows
     it), taints the session when it waited for the role's answer, and an agent held to a role's
     reach hears the reach's refusal as a policy answer and is never shown asking the person for an
-    act outside it;
+    act outside it, and a closed app its reach names says the role may open it (#195);
   * the shell's describe carries `clock` as an object — date, weekday, time, UTC offset and
     zone name — and it reaches a mind through os_describe untouched, so learning the day never
     has to go through a sensitive `agent_run date` again (#207);
@@ -59,6 +59,7 @@ What it is actually checking, in one line each:
     anyway says what it is and where to look.
 """
 
+import hashlib
 import importlib.util
 import io
 import json
@@ -295,6 +296,11 @@ if argv[:1] == ["describe"]:
     if target == "terminal" and state.get("terminal_open"):
         sys.stdout.write(DESCRIBE_TERMINAL)
         raise SystemExit(0)
+    if target in (state.get("no_socket_for") or []):
+        # A declared app whose window is closed, in the real `yos`'s words — including the
+        # "(no socket for ...)" the bridge keys its own way-forward sentence on (#195).
+        die("%s is closed. Open it first: act shell open_app name=%s — then describe %s. "
+            "(no socket for %r yet)" % (target, target, target, target))
     die("%s is not open." % target)
 
 if argv[:1] == ["web"]:
@@ -1830,6 +1836,36 @@ with tempfile.TemporaryDirectory() as d:
     check("in auto, hand_off runs unasked and lands in the record, without the token",
           not s.get("requests") and (audited.get("app"), audited.get("action"), audited.get("args_json"))
           == ("shell", "hand_off", {"role": "reviewer", "task": "tidy"}) and not leaks(state), s)
+
+    # 24g. A closed app that is in a role's reach says the role may open it (#195). The Planner
+    # was told "Open it first" and then refused for trying. The door now lets a reach open the
+    # apps it names, and this sentence — where the role reads it — says so, but only when the
+    # file the shell publishes puts the app in the reach. The bridge reads that file for the
+    # wording alone; the door still decides.
+    digest = hashlib.sha256(TOKEN.encode("utf-8")).hexdigest()
+    home = tmp / "home"
+    (home / ".config" / "yantrik").mkdir(parents=True)
+    (home / ".config" / "yantrik" / "agent-reach.json").write_text(json.dumps({"agents": [
+        {"token_sha256": digest, "agent": "deepseek:c-role1", "role": "reviewer",
+         "name": "Reviewer", "surfaces": ["editor", "documents", "notes.read_*"],
+         "ceiling": "safe"},
+    ]}), encoding="utf-8")
+    module, state = case(tmp, "closed-in-reach", token=TOKEN, no_socket_for=["notes", "terminal"])
+    saved_home = os.environ.get("HOME")
+    os.environ["HOME"] = str(home)
+    try:
+        told, failed = module.run_tool(module.BY_NAME["os_describe"], {"app": "notes"})
+        other, _ = module.run_tool(module.BY_NAME["os_describe"], {"app": "terminal"})
+    finally:
+        if saved_home is None:
+            os.environ.pop("HOME", None)
+        else:
+            os.environ["HOME"] = saved_home
+    check("a closed app within the reach says the role may open it",
+          failed and "Open it first" in told
+          and "Your reach names notes, so you may open it." in told, told)
+    check("and one the reach does not name promises nothing, and still shows the way",
+          "Open it first" in other and "reach" not in other, other)
 
     # 25. os_describe names the apps this machine declares, from their .desktop files — anybody's
     # as well as ours — and names none of its own. os_apps says a closed app is listed.

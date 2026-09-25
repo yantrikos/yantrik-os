@@ -871,6 +871,39 @@ pub fn calculate_selection_size(dir: &str, names: &[String]) -> String {
     format_size(total)
 }
 
+/// The line the Files footer shows for a selection (issue #208). "1 selected · 0.0 KiB in
+/// files" said nothing about the folder that was picked, so a folder answers with what it
+/// holds, a file with its size, and a bigger selection counts its folders and totals the
+/// file bytes.
+pub fn selection_text(items: &[&DirEntry], show_hidden: bool) -> String {
+    let folders = items.iter().filter(|e| e.is_dir).count();
+    if items.len() == 1 {
+        let only = items[0];
+        if only.is_dir {
+            return match only.items.as_ref().and_then(|c| c.shown(show_hidden)) {
+                Some(1) => "1 folder · 1 item".to_string(),
+                Some(count) => format!("1 folder · {count} items"),
+                None => "1 folder · items unknown".to_string(),
+            };
+        }
+        return format!("1 file · {}", only.size_text);
+    }
+    let mut parts = vec![format!("{} selected", items.len())];
+    if folders == 1 {
+        parts.push("1 folder".to_string());
+    } else if folders > 1 {
+        parts.push(format!("{folders} folders"));
+    }
+    if folders < items.len() {
+        let bytes = items
+            .iter()
+            .filter(|e| !e.is_dir)
+            .fold(0u64, |total, e| total.saturating_add(e.size_bytes));
+        parts.push(format!("{} in files", format_size(bytes)));
+    }
+    parts.join(" · ")
+}
+
 /// Detect the project type of a directory by checking for marker files.
 /// Returns a short label like "Rust project", "Node.js project", etc.
 /// Returns empty string if no project type is detected.
@@ -906,4 +939,73 @@ pub fn detect_project_type(path: &str) -> String {
     }
 
     String::new()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn dir(name: &str, items: Option<ItemCount>) -> DirEntry {
+        DirEntry {
+            size_bytes: 0,
+            modified: std::time::SystemTime::UNIX_EPOCH,
+            name: name.to_string(),
+            is_dir: true,
+            size_text: String::new(),
+            modified_text: String::new(),
+            icon_char: String::new(),
+            selected: false,
+            items,
+        }
+    }
+
+    fn file(name: &str, bytes: u64) -> DirEntry {
+        DirEntry {
+            is_dir: false,
+            size_bytes: bytes,
+            size_text: format_size(bytes),
+            items: None,
+            ..dir(name, None)
+        }
+    }
+
+    #[test]
+    fn one_folder_answers_with_what_it_holds() {
+        let empty = dir("Tour 23 Sep", Some(ItemCount::Known { all: 0, visible: 0 }));
+        assert_eq!(selection_text(&[&empty], false), "1 folder · 0 items");
+        let one = dir("src", Some(ItemCount::Known { all: 1, visible: 1 }));
+        assert_eq!(selection_text(&[&one], false), "1 folder · 1 item");
+        let shared = dir("Shared", Some(ItemCount::Unknown("permission denied".into())));
+        assert_eq!(selection_text(&[&shared], false), "1 folder · items unknown");
+    }
+
+    #[test]
+    fn the_folder_count_follows_the_hidden_files_view() {
+        let counted = dir("docs", Some(ItemCount::Known { all: 3, visible: 2 }));
+        assert_eq!(selection_text(&[&counted], false), "1 folder · 2 items");
+        assert_eq!(selection_text(&[&counted], true), "1 folder · 3 items");
+    }
+
+    #[test]
+    fn one_file_answers_with_its_size() {
+        let notes = file("notes.md", 2458);
+        assert_eq!(selection_text(&[&notes], false), "1 file · 2.4 KB");
+    }
+
+    #[test]
+    fn a_bigger_selection_counts_folders_and_totals_files() {
+        let a = dir("projects", Some(ItemCount::Known { all: 6, visible: 6 }));
+        let b = dir("src", Some(ItemCount::Known { all: 2, visible: 2 }));
+        let c = file("forge.py", 2048);
+        let d = file("notes.md", 1024);
+        assert_eq!(
+            selection_text(&[&a, &b, &c, &d], false),
+            "4 selected · 2 folders · 3.0 KB in files"
+        );
+        assert_eq!(selection_text(&[&a, &b], false), "2 selected · 2 folders");
+        assert_eq!(
+            selection_text(&[&a, &c], false),
+            "2 selected · 1 folder · 2.0 KB in files"
+        );
+    }
 }

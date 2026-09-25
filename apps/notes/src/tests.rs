@@ -377,6 +377,7 @@ fn real_notes_autosave_navigation_conflict_trash_preview_and_idle() {
     let published = surface(&ui, &s);
     every_action_says_what_it_does(&published);
     one_call_makes_a_titled_note_with_a_body(&ui, &s, &published, &dir);
+    metadata_moves_the_revision(&ui, &s, &published, &dir);
     a_missing_required_argument_is_refused_by_name(&ui, &s, &published);
 
     let mut b = s.borrow_mut();
@@ -528,6 +529,41 @@ fn one_call_makes_a_titled_note_with_a_body(
     assert!(
         std::fs::read_to_string(dir.join(&filename)).unwrap().ends_with("butter\n"),
         "append has to reach the file"
+    );
+}
+
+/// `tags` moved the note's `.meta` and answered with the same revision as before (#79).
+///
+/// A revision is the hash of the view, and the view carried the open note's text but none of its
+/// metadata — so the caller's "unchanged since I last read it" check passed on a note whose tags
+/// had just changed. This runs right after the append above has settled, with the note saved and
+/// nothing on screen moving, so the only thing that can move the revision is the tag change.
+fn metadata_moves_the_revision(
+    ui: &NotesApp,
+    s: &State,
+    published: &[(Action, Handler)],
+    dir: &std::path::Path,
+) {
+    let before = view(ui, s).revision();
+    let answer = act_on(published, "tags", serde_json::json!({ "text": "talk, work" }))
+        .expect("tags on the open note");
+    assert_eq!(answer["tags"], "talk, work", "answer: {answer}");
+    assert_eq!(answer["saved"], true, "the action says it saved: {answer}");
+
+    let after = view(ui, s).revision();
+    assert_ne!(
+        before, after,
+        "the note's metadata moved, so its revision has to move with it"
+    );
+    // And it moved because the sidecar changed, not because something in the window drifted.
+    let filename = answer["filename"]
+        .as_str()
+        .expect("the answer names the file it wrote");
+    assert!(
+        std::fs::read_to_string(dir.join(filename).with_extension("meta"))
+            .expect("the sidecar is on disk")
+            .contains("tags:talk, work"),
+        "the tags the revision now hashes have to be the tags on disk"
     );
 }
 

@@ -72,7 +72,9 @@ desktop is fully usable on it.
   untested here.
 - **Wi-Fi on real adapters.**
 - **VirtualBox.** It should work — the image is an ordinary Debian live ISO — but nobody has
-  checked it against a current build.
+  checked it against a current build. The settings this repository's own tools give it
+  (VMSVGA, 128 MB of video memory, EFI, 4 GB of RAM) are configured, not measured, and are
+  written out in [getting-started.md](getting-started.md).
 
 ---
 
@@ -100,6 +102,12 @@ qemu-system-x86_64 -enable-kvm -m 4096 -smp 4 \
 ---
 
 ## Disk, if you install it
+
+The minimum target disk is **6 GB** (configured: `MIN_DISK_BYTES` in the first-boot hardware
+scan; the README's hardware table carries the same number and a test holds the two together).
+The scan measures the whole size of the disk the installer's picker has selected, with
+`lsblk -b` — it used to report the free space of the live session, which on a live USB
+describes the stick you booted from and not the disk you are installing to.
 
 The image copies its own live filesystem onto the disk, so an installed machine is roughly a
 Debian 13 system plus `/opt/yantrik`.

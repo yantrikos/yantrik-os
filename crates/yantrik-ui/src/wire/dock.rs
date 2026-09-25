@@ -470,7 +470,9 @@ pub fn resolve(app: &str, installed: &[DesktopEntry]) -> Resolved {
             return Resolved::Shelved(shelf);
         }
         if entry.exec != "__builtin__" {
-            let mut parts = entry.exec.split_whitespace().map(str::to_string);
+            // The Exec line read per the Desktop Entry spec — a quoted path is one argument
+            // however many spaces are inside it, and the field codes go where they stand (#304).
+            let mut parts = crate::apps::exec_argv(&entry.exec, None).into_iter();
             if let Some(bin) = parts.next() {
                 // The surface as the catalogue settled it, not merely as the file wrote it: a
                 // declaration that lost its name to the desktop or to another app declares nothing.
@@ -564,6 +566,10 @@ pub fn availability(app: &str, installed: &[DesktopEntry]) -> Availability {
 /// Whether the programs an entry needs are on this machine: the one its `TryExec` names, and
 /// the one its `Exec` line runs.
 ///
+/// `program` is that Exec program already tokenised (the first argument `exec_argv` reads out
+/// of the line) — not the raw line, which a quoted path with spaces inside makes unsafe to
+/// split again here (#304).
+///
 /// `TryExec` comes first because it names the program the entry is FOR, while `Exec` names what
 /// the shell would start. For an adapter's entry the two are not the same program: LibreOffice's
 /// `Exec` runs `yantrik-libreoffice`, the wrapper this OS ships beside the entry, so `Exec` alone
@@ -571,18 +577,18 @@ pub fn availability(app: &str, installed: &[DesktopEntry]) -> Availability {
 /// answered "launching", and the wrapper exited with an error (#214). `TryExec=soffice` is the
 /// standard key that names the wrapped app, and the standard rule now decides: no `soffice`, no
 /// entry.
-fn program_availability(exec: &str, try_exec: Option<&str>) -> Availability {
+fn program_availability(program: &str, try_exec: Option<&str>) -> Availability {
     if let Some(program) = try_exec.and_then(|p| p.split_whitespace().next()) {
         if find_program(program).is_none() {
             return Availability::Missing(program.to_string());
         }
     }
-    let Some(bin) = exec.split_whitespace().next() else {
+    if program.is_empty() {
         return Availability::Missing("a program to run".to_string());
-    };
-    match find_program(bin) {
+    }
+    match find_program(program) {
         Some(_) => Availability::Ready,
-        None => Availability::Missing(bin.to_string()),
+        None => Availability::Missing(program.to_string()),
     }
 }
 
@@ -619,7 +625,12 @@ pub fn entry_is_launchable(entry: &DesktopEntry) -> bool {
     if entry.exec == "__builtin__" {
         return route(&entry.app_id).is_some();
     }
-    program_availability(&entry.exec, entry.try_exec.as_deref()) == Availability::Ready
+    // The program is the line's first argument read per the spec, so a quoted path with spaces
+    // is looked up whole instead of as `"/opt/My` (#304).
+    let Some(bin) = crate::apps::exec_argv(&entry.exec, None).first().cloned() else {
+        return false;
+    };
+    program_availability(&bin, entry.try_exec.as_deref()) == Availability::Ready
 }
 
 /// The names of the apps that will open on this machine, for telling a caller what it can ask for:
@@ -933,6 +944,43 @@ pub fn spawn_app_with_args(app_id: &str, bin: &str, args: &[&str]) {
     spawn_app_in(app_id, bin, args, None)
 }
 
+/// Open one file in one installed app: the app's desktop entry `Exec` line read per the spec,
+/// the file where the line's field code stands (or last, when it has none), through the same
+/// `spawn_launch` every other launch goes through — registry, reaper, session environment and
+/// the surface's adapter all present (#233, #304). This is what Files' "Open with" does for an
+/// app the shell has no route of its own to, and what a `mimeapps.list` default naming such an
+/// app means at double-click time.
+pub fn launch_entry_with_file(entry: &DesktopEntry, installed: &[DesktopEntry], file: &str) {
+    if entry.exec.is_empty() || entry.exec == "__builtin__" {
+        tracing::error!(app = %entry.app_id, "Cannot open the file: the entry runs nothing");
+        return;
+    }
+    // One reading of the Exec line for every launch: flatpak's `@@u %U @@` needs the file
+    // between the markers, a quoted program path needs its spaces kept, and only a line with
+    // no field code gets the file appended (#304).
+    let argv = crate::apps::exec_argv(&entry.exec, Some(file));
+    let Some((bin, rest)) = argv.split_first() else {
+        tracing::error!(app = %entry.app_id, "Cannot open the file: the entry runs nothing");
+        return;
+    };
+    let args: Vec<&str> = rest.iter().map(String::as_str).collect();
+    // The surface as the catalogue settled it, not merely as the file wrote it — the same rule
+    // `resolve` follows for a tile click, so an app opened with a file arrives the same way it
+    // arrives without one.
+    let surface = crate::surfaces::declared(installed)
+        .into_iter()
+        .find(|d| entry.surface.as_deref() == Some(d.id.as_str()))
+        .map(|d| d.id);
+    let adapter = surface.as_ref().and(entry.adapter.clone());
+    spawn_launch(
+        &super::app_grid::icon_id_for(&entry.app_id),
+        bin,
+        &args,
+        None,
+        surface.as_deref().zip(adapter.as_deref()),
+    );
+}
+
 /// The same launcher, started in a particular directory.
 ///
 /// For "open a terminal here", where the directory IS the request. Goes through one body with
@@ -1047,12 +1095,49 @@ fn exit_verdict(lived_ms: u64, status_success: bool, owns_window: bool, brought_
 /// `adapter` is `(surface, command)`: started once the app process exists, told which process it
 /// serves, and stopped when that process exits — by the same reaper that already watches the app,
 /// so an adapter cannot outlive its app on one launch path and not another.
+///
+/// Where it opens is decided here, while the call that asked for it is still on this thread: an
+/// app a mind opens goes into Mind View (#239), a desktop of the mind's own inside one window,
+/// rather than over the person's work. Starting Mind View can take a moment the first time, so
+/// that launch finishes on a worker; every other launch is exactly what it was.
 fn spawn_launch(
     app_id: &str,
     bin: &str,
     args: &[&str],
     dir: Option<&std::path::Path>,
     adapter: Option<(&str, &str)>,
+) {
+    let route = crate::mind_view::route_now(app_id);
+    let Some(who) = route.mind_view else {
+        return launch(app_id, bin, args, dir, adapter, None, route.raise_on_handover);
+    };
+    let (app_id, bin) = (app_id.to_string(), bin.to_string());
+    let args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+    let dir = dir.map(std::path::Path::to_path_buf);
+    let adapter = adapter.map(|(surface, command)| (surface.to_string(), command.to_string()));
+    std::thread::spawn(move || {
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        let adapter = adapter.as_ref().map(|(s, c)| (s.as_str(), c.as_str()));
+        match crate::mind_view::ensure() {
+            Ok(seat) => {
+                tracing::info!(app = %app_id, mind = %who, display = %seat.wayland, "Opening in Mind View");
+                launch(&app_id, &bin, &args, dir.as_deref(), adapter, Some(&seat), false);
+            }
+            // Already logged, and published in `describe shell`. The app still opens.
+            Err(_) => launch(&app_id, &bin, &args, dir.as_deref(), adapter, None, true),
+        }
+    });
+}
+
+/// Start one app, on the person's desktop or on `seat`.
+fn launch(
+    app_id: &str,
+    bin: &str,
+    args: &[&str],
+    dir: Option<&std::path::Path>,
+    adapter: Option<(&str, &str)>,
+    seat: Option<&crate::mind_view::Seat>,
+    raise_on_handover: bool,
 ) {
     let path = resolve_app_binary(bin);
     let mut command = std::process::Command::new(&path);
@@ -1061,6 +1146,10 @@ fn spawn_launch(
     }
     command.args(args);
     for (key, value) in session_env() {
+        command.env(key, value);
+    }
+    // After the session's own, so the nested display wins over the person's.
+    for (key, value) in seat.map(crate::mind_view::Seat::env).unwrap_or_default() {
         command.env(key, value);
     }
     match command
@@ -1079,6 +1168,9 @@ fn spawn_launch(
             // before the reaper thread starts, so a describe that lands in the same instant sees
             // it.
             let owns_window = crate::running::mark_launched(app_id, pid, bin);
+            if seat.is_some() {
+                crate::mind_view::mark_launched(app_id, pid);
+            }
             if let Some((surface, command)) = adapter {
                 crate::surfaces::start_adapter(surface, command, pid);
             }
@@ -1108,6 +1200,7 @@ fn spawn_launch(
                         // and never for a crash or an app that lived its life.
                         let brought_forward = lived_ms < crate::running::LAUNCH_GRACE_MS
                             && success
+                            && raise_on_handover
                             && crate::windows::present_app(&id);
                         match exit_verdict(lived_ms, success, owns_window, brought_forward) {
                             ExitVerdict::SecondCopy => {
@@ -1140,6 +1233,7 @@ fn spawn_launch(
                 }
                 crate::surfaces::app_exited(pid, second_copy);
                 crate::running::mark_exited(&id, pid);
+                crate::mind_view::mark_exited(pid);
             });
         }
         Err(e) => tracing::error!(app = app_id, bin, path = %path.display(), error = %e, "Failed to launch app"),
@@ -1700,9 +1794,15 @@ mod tests {
     fn a_missing_program_is_known_but_does_not_open() {
         let there = PathBuf::from("/definitely/not/here/yantrik-notes");
         assert!(find_program(there.to_str().unwrap()).is_none());
+        // The program arrives tokenised, as `resolve` and `entry_is_launchable` read it (#304).
         assert_eq!(
-            program_availability("/definitely/not/here/yantrik-notes --new", None),
+            program_availability("/definitely/not/here/yantrik-notes", None),
             Availability::Missing("/definitely/not/here/yantrik-notes".to_string())
+        );
+        // A quoted path with spaces is one program, looked up whole.
+        assert_eq!(
+            program_availability("/definitely/not/here/My App", None),
+            Availability::Missing("/definitely/not/here/My App".to_string())
         );
         // Screens are compiled into the shell; they are always there.
         assert_eq!(availability("files", &[]), Availability::Ready);
@@ -2172,5 +2272,58 @@ mod tests {
                  shipped-desktop-files.sh, so a machine it installs finds none of our apps by name"
             );
         }
+    }
+
+    // ── An Exec line, read the way the Desktop Entry spec writes it (#304) ──
+
+    /// An installed app's entry with one Exec line, as the catalogue would carry it.
+    fn entry_with_exec(exec: &str) -> DesktopEntry {
+        crate::apps::parse_desktop_text(
+            "thing",
+            &format!("[Desktop Entry]\nType=Application\nName=Thing\nExec={exec}\n"),
+        )
+        .expect("an app")
+    }
+
+    /// A tile launch reads the entry per the spec: a quoted program path stays one argument,
+    /// and a file field code mid-line is removed where it stands — splitting on spaces made
+    /// the program `"/opt/My` and left the code as a literal word the app receives.
+    #[test]
+    fn a_tile_launch_reads_the_exec_line_per_the_spec() {
+        match resolve("thing", &[entry_with_exec("\"/opt/My App/bin/app\" --flag %f")]) {
+            Resolved::Catalogue { bin, args, .. } => {
+                assert_eq!(bin, "/opt/My App/bin/app");
+                assert_eq!(args, ["--flag".to_string()]);
+            }
+            other => panic!("a quoted Exec line resolves to {other:?}"),
+        }
+        // flatpak's exported entries: `%U` sits between `@@u` and `@@`, and a launch with no
+        // file removes it there instead of leaving it for flatpak to receive as a word.
+        match resolve(
+            "thing",
+            &[entry_with_exec("/usr/bin/flatpak run --file-forwarding org.x.Y @@u %U @@")],
+        ) {
+            Resolved::Catalogue { bin, args, .. } => {
+                assert_eq!(bin, "/usr/bin/flatpak");
+                assert_eq!(
+                    args,
+                    ["run", "--file-forwarding", "org.x.Y", "@@u", "@@"]
+                        .map(str::to_string)
+                );
+            }
+            other => panic!("a flatpak Exec line resolves to {other:?}"),
+        }
+    }
+
+    /// The launcher's own filter reads the program the same way: an entry whose Exec quotes a
+    /// path with spaces is listed and opens, where splitting on spaces looked the program up
+    /// as `"/bin/sh` and the entry seemed unlaunchable. `/bin/sh` stands in for a program
+    /// under a path with spaces; the tokenisation is what is being tested, not the program.
+    #[cfg(unix)]
+    #[test]
+    fn a_quoted_program_path_is_launchable() {
+        let quoted = entry_with_exec("\"/bin/sh\" --version");
+        assert!(entry_is_launchable(&quoted));
+        assert_eq!(availability("thing", &[quoted]), Availability::Ready);
     }
 }

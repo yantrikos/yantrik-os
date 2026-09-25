@@ -117,7 +117,7 @@ pub fn wire(ui: &App, ctx: &AppContext) {
         let host = host.clone();
         ui.on_use_harness(move |id| {
             let Some(ui) = weak.upgrade() else { return };
-            match host.set_active(&id) {
+            match choose(&host, &id) {
                 Ok(()) => {
                     tracing::info!(harness = %id, "Now answering");
                     // Remembered, because choosing a mind is a decision about the machine and
@@ -235,6 +235,45 @@ pub fn install(id: &str) -> Result<String, String> {
 
 pub fn start(id: &str) -> Result<String, String> {
     crate::harness_install::start(&manifest(id)?)
+}
+
+/// Choose which mind answers, refusing one its row says cannot take a turn.
+///
+/// A mind whose process is gone leaves the registry at once (#67, [`yantrik_harness::Host`]), so
+/// choosing it is refused by `set_active`'s own sentence naming what is attached — the Settings
+/// row, drawn from the same registry, shows it unattached at the same moment. For a mind the
+/// registry does list, the row is what the person is looking at, so the choice asks it first:
+/// whatever it says, the page and the action cannot disagree.
+pub fn choose(host: &Host, id: &str) -> Result<(), String> {
+    let entries = host.list();
+    let machine = harness_catalogue::machine(crate::harness_install::views());
+    if let Some(refusal) = row_refusal(&machine, &entries, id) {
+        return Err(refusal);
+    }
+    host.set_active(id)
+}
+
+/// What a catalogue row says against choosing a mind the registry still lists, if anything.
+///
+/// Only the registry's own candidates are asked: for an id it does not hold, `set_active`
+/// already answers with the list it does. A listed row always says its mind can answer — the
+/// attachment wins in the catalogue, and the registry drops a session the moment the kernel
+/// says its process is gone — so this is a guarantee rather than a second opinion: were a row
+/// ever to say a listed mind cannot answer, the refusal stays the row's own `need` sentence.
+fn row_refusal(
+    machine: &harness_catalogue::Machine,
+    entries: &[yantrik_harness::Entry],
+    id: &str,
+) -> Option<String> {
+    if !entries.iter().any(|e| e.id == id) {
+        return None;
+    }
+    harness_catalogue::rows(machine, entries)
+        .into_iter()
+        .find(|r| r.id == id)
+        .filter(|r| !r.state.can_answer())
+        .map(|r| r.need)
+        .filter(|need| !need.is_empty())
 }
 
 /// Say what happened where the person is looking.
@@ -439,5 +478,79 @@ impl yantrik_ipc_transport::server::ServiceHandler for HarnessService {
         self.host.handle_from(method, &params, pid).map_err(|message| {
             yantrik_ipc_contracts::email::ServiceError { code: -32000, message }
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::harness_catalogue::{Manifest, Machine, State, Unit};
+    use yantrik_harness::protocol;
+
+    /// pi's manifest, plus what — if anything — systemd says about its unit. The manifest
+    /// needs nothing the machine cannot already answer for, so the unit is the one fact that
+    /// could disagree with the registry — and the disagreement the row must not make (#67).
+    fn pi_machine(unit: Option<Unit>) -> Machine {
+        let mut machine = Machine::default();
+        machine.manifests.insert(
+            "pi".into(),
+            Manifest {
+                id: "pi".into(),
+                name: "Pi".into(),
+                unit: "yantrik-pi.service".into(),
+                ..Default::default()
+            },
+        );
+        if let Some(unit) = unit {
+            machine.units.insert("yantrik-pi.service".into(), unit);
+        }
+        machine
+    }
+
+    /// A host with pi attached without peer credentials — the shape of the TCP dev path, where
+    /// presence is left to the grace of missed polls. The registry has promised a mind; the
+    /// question is what the row and the chooser do with that promise.
+    fn host_with_pi() -> Host {
+        let host = Host::new(vec![]);
+        host.handle(protocol::ATTACH, &serde_json::json!({ "id": "pi", "name": "Pi" })).unwrap();
+        host
+    }
+
+    #[test]
+    fn a_hand_started_mind_is_chosen_even_while_its_unit_says_stopped() {
+        // #67 in the other direction: the fix lives in the registry, which drops a session the
+        // moment the kernel says its process is gone — not in a rule that prefers a stopped
+        // unit over a mind the registry lists. A harness started from a terminal polls happily
+        // while its unit file sits installed and inactive; refusing it here would take *Use
+        // this* away from a mind that is answering.
+        let host = host_with_pi();
+        let stopped = Unit { loaded: true, enabled: true, ..Default::default() };
+        let machine = pi_machine(Some(stopped));
+        assert_eq!(row_refusal(&machine, &host.list(), "pi"), None);
+        // The row the person sees agrees with the action: attached, and able to answer.
+        let rows = harness_catalogue::rows(&machine, &host.list());
+        let pi = rows.iter().find(|r| r.id == "pi").unwrap();
+        assert_eq!(pi.state, State::Answering);
+        assert!(pi.attached && pi.state.can_answer());
+        assert_eq!(pi.need, "");
+        // A mind whose process really died is refused before ever reaching the row: the
+        // registry has dropped it, and `set_active` answers with its own sentence naming what
+        // is attached (yantrik-harness's host tests pin that).
+        choose(&host, "pi").unwrap();
+        assert_eq!(host.active_id(), "pi");
+    }
+
+    #[test]
+    fn the_refusal_defers_to_the_registry_where_the_row_cannot_contradict_it() {
+        let host = host_with_pi();
+        // systemd has no record at all — a container without a user manager, or a harness run
+        // by hand while its unit file was never installed. The attachment is the fresher fact.
+        assert_eq!(row_refusal(&pi_machine(None), &host.list(), "pi"), None);
+        // A unit genuinely running: the promise stands and nothing is refused.
+        let up = Unit { loaded: true, active: true, ..Default::default() };
+        assert_eq!(row_refusal(&pi_machine(Some(up)), &host.list(), "pi"), None);
+        // An id the registry does not hold gets `set_active`'s sentence — the list of what is
+        // attached — not a row's.
+        assert_eq!(row_refusal(&pi_machine(None), &host.list(), "hermes"), None);
     }
 }

@@ -19,9 +19,15 @@ use crate::wire::settings::{
 };
 use crate::App;
 
-/// Minimums from the README's stated hardware requirements.
+/// The minimums. The README's hardware table carries the same numbers in its
+/// Minimum column, and the test at the end of this file holds the two together,
+/// because they drifted apart once already (#268): the docs said one thing, the
+/// wizard checked another, and nobody could say which was the requirement.
+/// The disk figure is the whole size of the disk the installer will write to —
+/// not free space on the live session, which describes the stick, not the target.
+const MIN_CPU_CORES: usize = 2;
 const MIN_RAM_BYTES: u64 = 4 * 1024 * 1024 * 1024;
-const MIN_DISK_BYTES: u64 = 4 * 1024 * 1024 * 1024;
+const MIN_DISK_BYTES: u64 = 6 * 1024 * 1024 * 1024;
 
 /// Wire AI onboarding callbacks.
 pub fn wire(ui: &App, ctx: &AppContext) {
@@ -119,7 +125,7 @@ pub fn wire(ui: &App, ctx: &AppContext) {
         let cpus = std::thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(0);
-        ui.set_onboard_ai_hw_cpu_ok(cpus >= 2);
+        ui.set_onboard_ai_hw_cpu_ok(cpus >= MIN_CPU_CORES);
         ui.set_onboard_ai_hw_cpu_label(
             if cpus > 0 { format!("{cpus} cores") } else { "Unknown".into() }.into(),
         );
@@ -128,9 +134,10 @@ pub fn wire(ui: &App, ctx: &AppContext) {
         ui.set_onboard_ai_hw_gpu_ok(gpu.is_some());
         ui.set_onboard_ai_hw_gpu_label(gpu.clone().unwrap_or_else(|| "Not detected".into()).into());
 
-        // RAM/disk are read one-shot rather than waiting on the observer,
-        // whose resource poll is 10s by default — far longer than the user
-        // watches this screen, so the scan used to time out into "Unknown".
+        // RAM is read one-shot rather than waiting on the observer, whose
+        // resource poll is 10s by default — far longer than the user watches
+        // this screen, so the scan used to time out into "Unknown". The disk
+        // row measures the install target and is a one-shot of its own.
         let weak = ui.as_weak();
         let has_gpu = gpu.is_some();
         let local_worth_it = matches!(
@@ -140,16 +147,15 @@ pub fn wire(ui: &App, ctx: &AppContext) {
         std::thread::spawn(move || {
             let hw = read_hardware();
             let runtime = probe_runtime(configured_url.as_deref());
+            let (disk_ok, disk_label) = measure_install_target();
             {
                 let weak = weak.clone();
                 let _ = slint::invoke_from_event_loop(move || {
                     let Some(ui) = weak.upgrade() else { return };
                     ui.set_onboard_ai_hw_ram_ok(hw.ram_total >= MIN_RAM_BYTES);
                     ui.set_onboard_ai_hw_ram_label(format!("{} GB", gib(hw.ram_total)).into());
-                    ui.set_onboard_ai_hw_disk_ok(hw.disk_free >= MIN_DISK_BYTES);
-                    ui.set_onboard_ai_hw_disk_label(
-                        format!("{} GB free", gib(hw.disk_free)).into(),
-                    );
+                    ui.set_onboard_ai_hw_disk_ok(disk_ok);
+                    ui.set_onboard_ai_hw_disk_label(disk_label.into());
                     ui.set_onboard_ai_hw_network_ok(hw.network);
                 });
             }
@@ -181,36 +187,95 @@ pub fn wire(ui: &App, ctx: &AppContext) {
 
 struct Measured {
     ram_total: u64,
-    disk_free: u64,
     network: bool,
 }
 
 /// One-shot hardware read. Same source the observer uses (sysinfo), taken
 /// directly so the scan does not depend on the observer's poll cycle.
 fn read_hardware() -> Measured {
-    use sysinfo::{Disks, System};
+    use sysinfo::System;
 
     let mut sys = System::new();
     sys.refresh_memory();
-    let ram_total = sys.total_memory();
-
-    // Root mount, falling back to the largest disk we can see.
-    let disks = Disks::new_with_refreshed_list();
-    let mut disk_free = 0u64;
-    for disk in &disks {
-        if disk.mount_point().to_string_lossy() == "/" {
-            disk_free = disk.available_space();
-            break;
-        }
-        disk_free = disk_free.max(disk.available_space());
-    }
 
     Measured {
-        ram_total,
-        disk_free,
+        ram_total: sys.total_memory(),
         // Reachability, not link state: what matters on this screen is
         // whether a cloud provider could be contacted at all.
         network: network_reachable(),
+    }
+}
+
+/// The Disk row of the hardware scan.
+///
+/// This row used to report the free space of the live system's root filesystem.
+/// On a live USB that is the session's overlay on the stick it booted from, a
+/// number that says nothing about the disk being installed to — the only disk
+/// this screen cares about. A machine could fail the check beside an empty
+/// 500 GB disk, and a machine with no target disk at all could pass it on the
+/// strength of a tmpfs.
+///
+/// So it measures the target instead: in installer mode, the disk the picker
+/// preselects, sized with lsblk. Booted live with nothing to install to, it
+/// says that plainly rather than printing a number that answers nothing.
+fn measure_install_target() -> (bool, String) {
+    let installer_mode = std::path::Path::new("/opt/yantrik/.installer-mode").exists();
+    let target = if installer_mode { first_install_candidate() } else { None };
+    disk_row(installer_mode, target)
+}
+
+/// The disk the wizard will install to unless the person picks another: the
+/// installer's own listing, whose first candidate its picker preselects
+/// (`wire::installer`), sized with `lsblk -b`. The listing is run here rather
+/// than read off the picker's selection property because the scan and the
+/// picker are populated on separate threads, and UI properties are not ours
+/// to read from this one.
+fn first_install_candidate() -> Option<(String, Option<u64>)> {
+    let disk = super::installer::detect_disks().into_iter().next()?;
+    Some((disk.name.clone(), disk_size_bytes(&disk.name)))
+}
+
+/// The size of `/dev/<name>` in bytes, from `lsblk -b -dn -o SIZE`.
+fn disk_size_bytes(name: &str) -> Option<u64> {
+    let output = std::process::Command::new("lsblk")
+        .args(["-b", "-dn", "-o", "SIZE", &format!("/dev/{name}")])
+        .env("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    parse_size_bytes(&String::from_utf8_lossy(&output.stdout))
+}
+
+/// `lsblk -b` prints one number of bytes and nothing else. Anything that is
+/// not exactly that is treated as no answer rather than guessed at — in
+/// particular lsblk's human sizes ("80G"), which are what `-b` is not.
+fn parse_size_bytes(out: &str) -> Option<u64> {
+    out.trim().parse::<u64>().ok()
+}
+
+/// The scan's verdict on the install target, kept apart from the I/O that
+/// measures it so it can be tested without a disk. `target` is the name and
+/// byte-size of the disk the installer would write to, or `None` when no
+/// candidate was found.
+fn disk_row(installer_mode: bool, target: Option<(String, Option<u64>)>) -> (bool, String) {
+    if !installer_mode {
+        // Running live: nothing will be written to any disk, so no disk can
+        // fail this check — and the row says that instead of implying one was
+        // measured.
+        return (true, "Running live — no disk needed".into());
+    }
+    let Some((name, size)) = target else {
+        return (false, "No disk found to install to".into());
+    };
+    let Some(size) = size else {
+        return (false, format!("{name} — could not read its size"));
+    };
+    if size >= MIN_DISK_BYTES {
+        (true, format!("{} GB ({name})", gib(size)))
+    } else {
+        (false, format!("{} GB ({name}) — needs {} GB", gib(size), gib(MIN_DISK_BYTES)))
     }
 }
 
@@ -303,7 +368,9 @@ fn probe_runtime(configured: Option<&str>) -> bool {
 }
 
 /// Anthropic uses `x-api-key`; the rest of the presets are bearer-token.
-fn auth_type_for(provider: &str) -> &'static str {
+/// Shared with the installer, which rebuilds the wizard's provider entry for
+/// the installed user and must not guess the auth scheme differently.
+pub(crate) fn auth_type_for(provider: &str) -> &'static str {
     match provider {
         "anthropic" => "x-api-key",
         _ if is_local_runtime(provider) => "none",
@@ -369,5 +436,104 @@ fn privacy_of(base_url: &str) -> &'static str {
         "network"
     } else {
         "cloud"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const GIB: u64 = 1024 * 1024 * 1024;
+
+    /// The README's hardware table carries a Minimum column, and the wizard
+    /// checks against the constants above it. This reads the README and holds
+    /// the two to each other: #268 was the docs saying 6 GB, the wizard
+    /// checking 4, and no way to tell which was the requirement.
+    #[test]
+    fn minimums_match_readme_hardware_table() {
+        let readme = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../README.md"),
+        )
+        .expect("README.md sits in the repository root");
+
+        fn minimum_cell(readme: &str, row: &str) -> String {
+            let prefix = format!("| **{row}**");
+            let line = readme
+                .lines()
+                .find(|l| l.starts_with(&prefix))
+                .unwrap_or_else(|| panic!("README's hardware table has no {row} row"));
+            line.split('|')
+                .nth(2)
+                .unwrap_or_else(|| panic!("the {row} row has no Minimum cell"))
+                .trim()
+                .to_string()
+        }
+
+        fn leading_number(cell: &str) -> u64 {
+            let digits: String = cell.chars().take_while(|c| c.is_ascii_digit()).collect();
+            digits
+                .parse()
+                .unwrap_or_else(|_| panic!("Minimum cell {cell:?} does not start with a number"))
+        }
+
+        assert_eq!(
+            leading_number(&minimum_cell(&readme, "CPU")) as usize,
+            MIN_CPU_CORES
+        );
+        assert_eq!(leading_number(&minimum_cell(&readme, "RAM")) * GIB, MIN_RAM_BYTES);
+        assert_eq!(
+            leading_number(&minimum_cell(&readme, "Disk")) * GIB,
+            MIN_DISK_BYTES,
+            "the README's disk minimum and the wizard's check must be the one number"
+        );
+    }
+
+    /// The Disk row reports the disk the installer would write to. The live
+    /// session's own free space — what the row used to read — appears nowhere
+    /// in these inputs, so a row that borrowed it could not pass.
+    #[test]
+    fn disk_row_measures_the_install_target() {
+        // A target above the minimum passes and names itself.
+        let (ok, label) = disk_row(true, Some(("sda".into(), Some(240_057_409_536))));
+        assert!(ok, "{label}");
+        assert!(label.contains("sda") && label.contains("223 GB"), "{label}");
+
+        // A target below the minimum fails and says what the minimum is.
+        let (ok, label) = disk_row(true, Some(("sdb".into(), Some(MIN_DISK_BYTES - 1))));
+        assert!(!ok, "{label}");
+        assert!(
+            label.contains("sdb") && label.contains(&format!("needs {} GB", MIN_DISK_BYTES / GIB)),
+            "{label}"
+        );
+
+        // Exactly the minimum passes.
+        let (ok, _) = disk_row(true, Some(("sda".into(), Some(MIN_DISK_BYTES))));
+        assert!(ok);
+
+        // No candidate disk fails, rather than passing on the live session's space.
+        let (ok, label) = disk_row(true, None);
+        assert!(!ok, "{label}");
+        assert!(label.contains("No disk"), "{label}");
+
+        // A disk whose size lsblk will not report is not a pass either.
+        let (ok, label) = disk_row(true, Some(("sda".into(), None)));
+        assert!(!ok, "{label}");
+        assert!(label.contains("could not read"), "{label}");
+
+        // Booted live with nothing to install to, the row says that instead of
+        // reporting on a requirement that does not apply.
+        let (ok, label) = disk_row(false, None);
+        assert!(ok, "{label}");
+        assert!(label.contains("live"), "{label}");
+    }
+
+    #[test]
+    fn parses_lsblk_byte_sizes() {
+        assert_eq!(parse_size_bytes("240057409536\n"), Some(240_057_409_536));
+        assert_eq!(parse_size_bytes("  80015632224  "), Some(80_015_632_224));
+        assert_eq!(parse_size_bytes(""), None);
+        // lsblk's human size is what `-b` exists to avoid; it is not a byte
+        // count and must not be read as one.
+        assert_eq!(parse_size_bytes("80G"), None);
     }
 }

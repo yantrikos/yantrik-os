@@ -10,6 +10,10 @@ mod screen_controls_tests;
 mod apps_button_tests;
 mod lens_tests;
 mod overview_tests;
+mod approval_tests;
+mod taskbar_menu_tests;
+mod monitor_tests;
+mod weather_tests;
 use slint::{
     platform::{
         software_renderer::{MinimalSoftwareWindow, RepaintBufferType},
@@ -44,9 +48,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if args.iter().any(|a| a == "verify-lens-agents") { return agents_tests::run_lens(&window, output); }
     if args.iter().any(|a| a == "verify-screen-controls") { return screen_controls_tests::run(&window, output); }
     if args.iter().any(|a| a == "verify-apps-button") { return apps_button_tests::run(&window, output); }
+    if args.iter().any(|a| a == "verify-taskbar-menu") { return taskbar_menu_tests::run(&window, output); }
     if args.iter().any(|a| a == "verify-lens-answers") { return lens_tests::run(&window, output); }
+    if args.iter().any(|a| a == "verify-approval-card") { return approval_tests::run(&window, output); }
     if args.iter().any(|a| a == "lens-answer") { return lens_tests::run_lens(&window, output); }
     if args.iter().any(|a| a == "verify-agents-overview") { return overview_tests::run(&window, output); }
+    if args.iter().any(|a| a == "verify-monitor") { return monitor_tests::run(&window); }
+    if args.iter().any(|a| a == "verify-weather") { return weather_tests::run(&window); }
     if args.iter().any(|a| a == "verify-idle") {
         let probe = TerminalProbe::new()?;
         probe.show()?;
@@ -359,5 +367,19 @@ fn click(window: &MinimalSoftwareWindow, x: f32, y: f32) {
     window.dispatch_event(WindowEvent::PointerReleased {
         position,
         button: PointerEventButton::Left,
+    });
+}
+
+/// The press a context menu is summoned with: the same shape as `click`, right button.
+fn right_click(window: &MinimalSoftwareWindow, x: f32, y: f32) {
+    use slint::platform::{PointerEventButton, WindowEvent};
+    let position = slint::LogicalPosition::new(x, y);
+    window.dispatch_event(WindowEvent::PointerPressed {
+        position,
+        button: PointerEventButton::Right,
+    });
+    window.dispatch_event(WindowEvent::PointerReleased {
+        position,
+        button: PointerEventButton::Right,
     });
 }

@@ -105,6 +105,17 @@ pub struct CreateEventParams {
     pub is_all_day: bool,
     #[serde(default)]
     pub attendees: Vec<Attendee>,
+    /// Who created this event, in the one spelling every surface agrees on: the program the
+    /// kernel's peer credentials lead to, or `agent <mind>:<conversation>` where the call
+    /// carried an agent token (#201).
+    ///
+    /// Set by the creating surface from what the machine established about its caller — never
+    /// from anything inside the request's own arguments, which a caller writes — and `None`
+    /// for an event made from a window's own form, made by a caller nothing could identify, or
+    /// made before this record existed. The store keeps it as stored; what it is worth is
+    /// decided by the surface that reads it back, not here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub creator: Option<String>,
 }
 
 /// Parameters for [`method::UPDATE_EVENT`]. Every field but `id` is optional; those left out
@@ -178,6 +189,15 @@ pub struct CalendarEvent {
     pub recurrence: Option<String>,
     pub calendar_id: String,
     pub remote_id: Option<String>,
+    /// Who created this event, when the surface that created it could establish one. See
+    /// [`CreateEventParams::creator`].
+    ///
+    /// Kept in the event's own file and never changed by an update, so the record survives the
+    /// calendar app — and this service — restarting between a create and a delete. `None` for
+    /// every event stored before the field existed: a file with no `creator` key reads back as
+    /// an event nobody is on record as having made.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub creator: Option<String>,
 }
 
 /// An event attendee.

@@ -3,7 +3,6 @@ name = "yantrik-files-core-tests"
 version = "0.1.0"
 edition = "2021"
 publish = false
-[workspace]
 [dependencies]
 libc = "0.2"
 serde_json = "1"

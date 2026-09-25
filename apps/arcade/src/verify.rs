@@ -19,15 +19,17 @@
 //!     vector, collects every item
 //!  6. bot_reaches_lose — the suicidal bot exhausts the lives
 //!  7. frame_budget — average frame time under software rendering stays under a
-//!     generous budget; a game that crawls in swiftshader is a broken game
+//!     generous budget; clearing it is a pass on any machine, and missing it on
+//!     a machine whose own floor is above it says nothing about the game (#97)
 //!
 //! A gate answers one of two questions, and the report keeps them apart (#97):
 //! the first six are about the game (`correctness`), the seventh is about speed
 //! on this machine (`performance`). Each gate ends passed, failed, or
 //! inconclusive. Inconclusive means the machine could not settle the question —
-//! a software renderer too slow to run a bot to the end of its budget — and it
-//! never counts as a pass, but it is also not the game's failure, and every
-//! summary line says which of the two it was. The bots are budgeted in the
+//! too slow to run a bot to the end of its budget, or too slow for the frame
+//! budget to be about the game at all — and it never counts as a pass, but it
+//! is also not the game's failure, and every summary line says which of the two
+//! it was. The bots are budgeted in the
 //! engine's simulated seconds, not the wall clock, because on a machine with no
 //! GPU the wall clock is a measure of the renderer (#111).
 //!
@@ -47,11 +49,14 @@ use tungstenite::protocol::Message;
 use tungstenite::WebSocket;
 
 /// Average frame-time ceiling in milliseconds, measured by the engine over its
-/// last 90 frames. This is a floor for "not broken", not a quality bar: headless
-/// Chromium in WSL renders through swiftshader (software), which is many times
-/// slower than any GPU the game will actually run on. 250 ms means the software
-/// renderer still managed 4 fps; a real machine clears that trivially, and a game
-/// that misses it has a runaway loop or a pathological draw count.
+/// last 90 frames. Clearing this under software rendering is a real pass — any
+/// faster machine clears it too. Missing it is not a real failure: the number
+/// is one machine's floor, and "software rendering" is not one speed. On the
+/// GPU-less VM 520 (#97) the smallest game this grammar can express averaged
+/// 361.3 ms and a fuller one 354.2 — past a slow machine's floor the number
+/// measures the renderer, not the game. So this is a pass line, not a fail
+/// line: only a runner with a reference frame time measured on its own machine
+/// could blame a game for missing it, and no such runner exists yet.
 pub const FRAME_BUDGET_MS: f64 = 250.0;
 
 /// The bots' budgets. Simulated seconds are the engine's own clock and mean the
@@ -651,13 +656,7 @@ pub fn verify_session(ws_url: &str, browser: &str, screenshot_out: Option<&Path>
         .ok();
     std::thread::sleep(Duration::from_millis(2500));
     let final_state = session.evaluate("JSON.stringify(window.__arcade.state())").unwrap_or(Value::Null);
-    let frame_ms = state_num(&final_state, "frameMs").unwrap_or(f64::MAX);
-    let budget_ok = frame_ms <= FRAME_BUDGET_MS && frame_ms < f64::MAX;
-    let budget_detail = if frame_ms == f64::MAX {
-        "the engine stopped reporting frame times".to_string()
-    } else {
-        format!("average frame {frame_ms:.1} ms under software rendering, budget {FRAME_BUDGET_MS:.0} ms")
-    };
+    let (budget_verdict, budget_detail) = judge_frame_budget(state_num(&final_state, "frameMs"));
 
     // Gate 2 is judged last so it covers the whole session: CDP events plus the
     // engine's own window.onerror collection.
@@ -685,7 +684,7 @@ pub fn verify_session(ws_url: &str, browser: &str, screenshot_out: Option<&Path>
         ("input_moves_player", input_verdict, input_detail),
         ("bot_reaches_win", win_verdict, win_detail),
         ("bot_reaches_lose", lose_verdict, lose_detail),
-        ("frame_budget", as_verdict(budget_ok), budget_detail),
+        ("frame_budget", budget_verdict, budget_detail),
     ];
     for (name, verdict, detail) in executed {
         report.gate(name, verdict, detail);
@@ -838,6 +837,33 @@ fn judge_lose(run: &BotRun, budget: f64) -> (Verdict, String) {
 }
 
 const NO_CLOCK: &str = "this build's engine reports no simulated clock (it was built before the bots were judged by one); run `build` again and verify the new file";
+
+/// The frame-budget gate's verdict and sentence, pure so both machines are
+/// testable without a browser. This gate has no reference frame time of its
+/// own to compare against (FRAME_BUDGET_MS documents what that costs it), so it
+/// can only clear a game or decline to judge it: under the budget is a pass on
+/// any machine, and over it the measurement is either a slow game or a slow
+/// machine — indistinguishable on a machine whose floor is above the budget,
+/// which is the machine #97 was filed from. It is never the game's failure on
+/// this evidence.
+fn judge_frame_budget(frame_ms: Option<f64>) -> (Verdict, String) {
+    match frame_ms {
+        None => (
+            Verdict::Inconclusive,
+            "the engine stopped reporting frame times, so this machine could not measure the gate".to_string(),
+        ),
+        Some(ms) if ms <= FRAME_BUDGET_MS => (
+            Verdict::Passed,
+            format!("average frame {ms:.1} ms under software rendering, budget {FRAME_BUDGET_MS:.0} ms"),
+        ),
+        Some(ms) => (
+            Verdict::Inconclusive,
+            format!(
+                "average frame {ms:.1} ms under software rendering, budget {FRAME_BUDGET_MS:.0} ms; this machine sits below the budget's own floor, where the number measures the renderer and not the game"
+            ),
+        ),
+    }
+}
 
 /// The sentence for a machine that could not run a bot to the end of its budget:
 /// the wall time it had, how little of the simulation that bought, and the
@@ -1156,6 +1182,32 @@ mod tests {
         assert_eq!(v, Verdict::Passed);
     }
 
+    #[test]
+    fn the_frame_budget_judge_clears_a_game_but_never_blames_a_slow_machine_for_its_floor() {
+        // The dev box's numbers (#97's own table): clears the bar, a real pass.
+        let (v, detail) = judge_frame_budget(Some(48.0));
+        assert_eq!(v, Verdict::Passed);
+        assert!(detail.contains("48.0 ms"), "{detail}");
+        assert!(detail.contains("250 ms"), "{detail}");
+        // VM 520's numbers: the seven-berries game at 354.2 ms, and the floor
+        // probe — the smallest game the grammar can express — at 361.3. Both
+        // over budget, indistinguishable from each other; the machine cannot
+        // settle the question, so it must not be reported as the game's.
+        let (v, detail) = judge_frame_budget(Some(354.2));
+        assert_eq!(v, Verdict::Inconclusive, "over budget on an uncalibrated machine is not a game failure: {detail}");
+        assert!(detail.contains("354.2"), "{detail}");
+        assert!(detail.contains("250"), "{detail}");
+        assert!(detail.contains("renderer"), "{detail}");
+        let (v, _) = judge_frame_budget(Some(361.3));
+        assert_eq!(v, Verdict::Inconclusive);
+        // Exactly on the budget still passes, as it always did.
+        assert_eq!(judge_frame_budget(Some(FRAME_BUDGET_MS)).0, Verdict::Passed);
+        // No frame times at all: the machine could not measure the gate either.
+        let (v, detail) = judge_frame_budget(None);
+        assert_eq!(v, Verdict::Inconclusive);
+        assert!(detail.contains("stopped reporting"), "{detail}");
+    }
+
     // ── The fake CDP server ───────────────────────────────────────
     // A whole verification run, browser-free: the test server answers the same
     // methods Chrome would, and walks the engine state through boots → input
@@ -1188,6 +1240,10 @@ mod tests {
         /// fraction of a second in the time the key was held; the bots then win
         /// and lose as normal.
         InputTooSlow,
+        /// Everything is clean and the game plays, but the final frame time is
+        /// VM 520's from #97: over the absolute budget on a machine whose own
+        /// floor is above it, which the gate must not report as the game's.
+        SlowFloor,
     }
 
     fn state_json(status: &str, x: f64, z: f64, collected: u32, lives: u32, frames: u32, frame_ms: f64, elapsed: Option<f64>) -> Value {
@@ -1294,7 +1350,9 @@ mod tests {
                                         _ => state_json("win", 2.0, -3.0, 5, 3, 400, 17.0, Some(31.2)),
                                     },
                                     4 => state_json("lose", 1.0, 1.0, 2, 0, 700, 18.0, Some(12.0)),
-                                    _ => state_json("playing", 0.0, 0.0, 0, 3, 900, 16.5, Some(2.5)),
+                                    // The SlowFloor machine plays everything cleanly;
+                                    // only the final frame time differs — VM 520's.
+                                    _ => state_json("playing", 0.0, 0.0, 0, 3, 900, if script == Script::SlowFloor { 354.2 } else { 16.5 }, Some(2.5)),
                                 };
                                 json!({ "result": { "type": "string", "value": s.to_string() } })
                             } else {
@@ -1498,5 +1556,29 @@ mod tests {
         assert_eq!(win.verdict, Verdict::Inconclusive);
         assert!(win.detail.contains("`build`"), "{}", win.detail);
         assert!(!report.passed);
+    }
+
+    #[test]
+    fn a_machine_whose_floor_is_over_the_frame_budget_is_inconclusive_not_a_bad_game() {
+        // This is #97: VM 520 has no GPU, its software renderer runs even the
+        // smallest expressible game at ~360 ms, and the whole report went red at
+        // `frame_budget` as if the game were broken. The correctness of a game
+        // that plays perfectly on such a machine must stay `passed`, the
+        // performance question must stay open with the measurement attached,
+        // and the report must still not pass overall.
+        let fake = Fake::start(Script::SlowFloor);
+        let report = verify_session(&fake.ws_url(), "fake-chrome", None, &quick_limits()).unwrap();
+        all_but(&report, "frame_budget");
+        let budget = report.gates.iter().find(|g| g.gate == "frame_budget").unwrap();
+        assert_eq!(budget.verdict, Verdict::Inconclusive);
+        assert!(!budget.passed);
+        assert!(budget.detail.contains("354.2 ms"), "{}", budget.detail);
+        assert!(!budget.detail.contains("failed"), "{}", budget.detail);
+        assert_eq!(report.correctness, Verdict::Passed);
+        assert_eq!(report.performance, Verdict::Inconclusive);
+        assert!(!report.passed, "inconclusive must never satisfy a required check");
+        let line = report.summary_line();
+        assert!(line.starts_with("inconclusive at frame_budget"), "{line}");
+        assert!(line.contains(MACHINE_NOT_GAME), "{line}");
     }
 }

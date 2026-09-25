@@ -12,7 +12,9 @@ use yantrik_ipc_contracts::calendar::{
     method, CalendarRevision, CreateEventParams, DeleteEventParams, EventsParams, GetEventParams,
     UpdateEventParams,
 };
+use yantrik_ipc_transport::{peer_identity, reach};
 
+mod ownership;
 mod views;
 use views::ViewMode;
 
@@ -48,9 +50,9 @@ fn refresh_agent_rail(ui: &CalendarApp) {
     }
     ui.set_agent_context(ModelRc::new(VecModel::from(context)));
 
-    let online = companion::is_online();
+    let reach = companion::reach();
     let mut next: Vec<AgentSuggestion> = Vec::new();
-    if online {
+    if reach == companion::Reach::Ready {
         next.push(AgentSuggestion {
             id: "explain".into(),
             label: "What does this day look like?".into(),
@@ -73,10 +75,9 @@ fn refresh_agent_rail(ui: &CalendarApp) {
     }
     ui.set_agent_suggestions(ModelRc::new(VecModel::from(next)));
 
-    ui.set_agent_unavailable(if online {
-        SharedString::new()
-    } else {
-        "Not connected. Start the Yantrik shell for suggestions.".into()
+    ui.set_agent_unavailable(match reach.hint() {
+        Some(hint) => hint.into(),
+        None => SharedString::new(),
     });
 }
 
@@ -168,6 +169,10 @@ struct CalEvent {
     #[allow(dead_code)]
     notes: String,
     is_all_day: bool,
+    /// Who created this event, as the store recorded it at creation — `None` for everything
+    /// stored before the record existed and everything a window's own form made. Read by
+    /// `describe` and by the own-creation rule in `ownership`; never written from this app.
+    creator: Option<String>,
     /// Position in `PALETTE`, not a colour: the same event has to be coloured the same in the
     /// agenda list and on the week grid, and `views` -- which has no Slint in it -- carries this
     /// through the derivation.
@@ -218,6 +223,7 @@ fn fetch_events_in_range(
         end: e.end.clone(),
         notes: e.description.clone(),
         is_all_day: e.is_all_day,
+        creator: e.creator.clone(),
         color_index: i,
     }).collect())
 }
@@ -247,6 +253,32 @@ fn fetch_revision() -> Option<CalendarRevision> {
         .ok()
 }
 
+/// Who is asking, in the one spelling the store records it under.
+///
+/// The agent an agent token belongs to, where the call carried one and the shell's reach file
+/// knows it; else the program the kernel's peer credentials lead to — `peer_identity`'s walk,
+/// which steps over our own `yos`/`yos-mcp` plumbing to the first thing a person would
+/// recognise (#221). `None` when nothing could be established: a call from the window's own
+/// form, a TCP dev connection, a `/proc` that said nothing.
+///
+/// Nothing here reads the request's arguments — a caller cannot say who it is, only be
+/// recognised — and nothing is invented when the machine cannot tell: an event stored with no
+/// creator is one nobody may delete unasked, and a caller with no identity deletes nothing
+/// unasked. `ownership::may_delete_unasked` is the rule those two facts are worth.
+fn requester() -> Option<String> {
+    if let Some(token) = control::agent_token() {
+        // A token the reach file does not know is no agent — the shell refuses a token whose
+        // reach it cannot read before the call gets here at all — so this falls through to
+        // the program rather than refusing again.
+        if let Ok(Some(reach)) = reach::reach_of(&token) {
+            return Some(ownership::agent_identity(&reach.agent));
+        }
+    }
+    let who = control::caller()?;
+    let name = peer_identity::resolve(Some(who.pid)).name();
+    if name.is_empty() { None } else { Some(name) }
+}
+
 fn create_event_via_service(
     title: &str,
     start: &str,
@@ -267,6 +299,12 @@ fn create_event_via_service(
         // attendees have no way in from this app and are not invented here.
         is_all_day,
         attendees: Vec::new(),
+        // Who is asking, verified, and the record a later `delete_own_event` is checked
+        // against (#201). Inside a surface dispatch this is the caller the kernel and the
+        // reach file establish; from the window's own form there is no caller on the socket
+        // and nothing is recorded, so an event a person typed into the form is nobody's
+        // "own" but a person's.
+        creator: requester(),
     };
     let result = client
         .call(method::CREATE_EVENT, serde_json::to_value(params).map_err(|e| e.to_string())?)
@@ -505,12 +543,23 @@ fn events_in_month(events: &[CalEvent], year: i32, month: u32) -> usize {
 /// The id is here so that a mind reading the week can name an event back to `delete_event` or
 /// `update_event`. It could see one and not say which, which is how a surface comes to be
 /// readable and not actable. An event running past midnight is two blocks carrying one id.
-fn block_json(block: &views::TimeEvent) -> serde_json::Value {
+///
+/// The grids carry ids, so they carry the same mark the day list does: whether this caller
+/// created the event and may take it off through `delete_own_event` without anybody being
+/// asked (#201). The creator is looked up in the events the window holds rather than carried
+/// through `views` — the grid arithmetic has no business knowing who made anything.
+fn block_json(
+    block: &views::TimeEvent,
+    events: &[CalEvent],
+    me: Option<&str>,
+) -> serde_json::Value {
+    let creator = events.iter().find(|e| e.id == block.id).and_then(|e| e.creator.as_deref());
     serde_json::json!({
         "id": block.id,
         "title": block.title,
         "at": format!("{:02}:{:02}", block.start_hour, block.start_min),
         "minutes": block.duration_min,
+        "may_delete_unasked": ownership::may_delete_unasked(creator, me),
     })
 }
 
@@ -743,6 +792,64 @@ fn delete_through_service(event_id: &str) -> Result<String, String> {
     Ok(event.title)
 }
 
+/// Which event a delete names: by id, or by exactly one title on one date. Never a guess.
+///
+/// The resolution both delete actions share, lifted out of the handlers so the two cannot
+/// drift — `delete_event` and `delete_own_event` must answer with the same event for the same
+/// words, and differ only in the rule that runs afterwards. The answer is the store's id and
+/// the name to use in a notice.
+fn named_event(args: &serde_json::Value) -> Result<(String, String), String> {
+    let given = |key: &str| {
+        args[key].as_str().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string)
+    };
+    match (given("id"), given("title"), given("date")) {
+        (Some(id), _, _) => Ok((id.clone(), id)),
+        (None, Some(title), Some(date)) => {
+            if date.len() != 10 || date.matches('-').count() != 2 {
+                return Err(format!("`date` should look like 2026-09-06, not `{date}`"));
+            }
+            let day = chrono::NaiveDate::parse_from_str(&date, "%Y-%m-%d")
+                .map_err(|_| format!("`{date}` is not a date"))?;
+            // Read from the store now, not off the screen: the day named may not be the day
+            // the window is showing, and the events in hand are only the visible range.
+            let on_that_day = fetch_events_on(day)?;
+            match views::named_on(&event_refs(&on_that_day), &title, &date) {
+                views::Named::One(event) => Ok((event.id, format!("“{title}”"))),
+                views::Named::None => Err(format!(
+                    "nothing called “{title}” on {date}; the day holds: {}",
+                    if on_that_day.is_empty() {
+                        "nothing".to_string()
+                    } else {
+                        on_that_day
+                            .iter()
+                            .map(|e| format!("“{}”", e.title))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    }
+                )),
+                // Never a guess. Two events of one name on one day is an ordinary thing for a
+                // calendar to hold, and picking one would remove the wrong appointment and
+                // report success — which is the trash-icon bug 617dac9 fixed, rebuilt on the
+                // surface.
+                views::Named::Ambiguous(candidates) => Err(format!(
+                    "{} events on {date} are called “{title}”; say which by id: {}",
+                    candidates.len(),
+                    candidates
+                        .iter()
+                        .map(|e| format!(
+                            "{} at {}",
+                            e.id,
+                            e.start.split('T').nth(1).unwrap_or(&e.start)
+                        ))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )),
+            }
+        }
+        _ => Err("name the event by `id`, or by `title` and `date` together".into()),
+    }
+}
+
 /// Change an appointment, and show what it became — or say why it did not.
 ///
 /// The one update path, on the same terms as the delete above: what comes back is read from the
@@ -859,6 +966,12 @@ fn publish_control(app: &CalendarApp, state: Rc<RefCell<CalState>>) {
                 .map(|d| serde_json::json!({ "day": d.day_number, "events": d.event_count }))
                 .collect();
 
+            // Who this caller was verified to be, and what that is worth against each event's
+            // creator record: the answer `delete_own_event` would give, before it is asked
+            // (#201). Per describe, because the caller changes per describe, and from the same
+            // two facts the action itself reads.
+            let me = requester();
+
             let s = st.borrow();
             let view = ViewMode::from_index(ui.get_view_mode());
             let selected = views::selected_date(s.year, s.month, day);
@@ -876,6 +989,12 @@ fn publish_control(app: &CalendarApp, state: Rc<RefCell<CalState>>) {
                         "date": format!("{:04}-{:02}-{:02}", s.year, s.month, day),
                         "time": time_text(e),
                         "all_day": e.is_all_day,
+                        // Whether this caller created this event, which is whether
+                        // `delete_own_event` will take it off without anybody being asked.
+                        "may_delete_unasked": ownership::may_delete_unasked(
+                            e.creator.as_deref(),
+                            me.as_deref(),
+                        ),
                     })
                 })
                 .collect();
@@ -916,6 +1035,24 @@ fn publish_control(app: &CalendarApp, state: Rc<RefCell<CalState>>) {
                 }
             };
 
+            // What each event id in hand names, as a person would say it. The id is the
+            // reliable way to point at an event — `delete_event` recommends it and the
+            // approval grant is bound to it exactly — but a card that asks permission with a
+            // uuid alone asks a question nobody can answer (#54), and the shell reads this
+            // from the same `app.describe` it already reads the grade and the purpose from.
+            // Every event in hand, not just the selected day's: an id in an action was read
+            // from some view of the visible range, and the card cannot say what it has not
+            // been given. Bounded, because `describe` is read by agents and a full table in
+            // a reply is what describe replies are told to avoid: only the loaded visible
+            // range — the same events every other key below is derived from, never the whole
+            // store — and a fixed cap of `views::NAMING_CAP` entries, oldest dropped (see
+            // `views::naming_index`).
+            let naming: serde_json::Map<String, serde_json::Value> =
+                views::naming_index(&event_refs(&s.events))
+                    .into_iter()
+                    .map(|(id, name)| (id, serde_json::Value::String(name)))
+                    .collect();
+
             let mut out = View::new(summary)
                 .with("month", month)
                 .with("year", s.year)
@@ -928,11 +1065,21 @@ fn publish_control(app: &CalendarApp, state: Rc<RefCell<CalState>>) {
                 .with("today", views::today_line(chrono::Local::now().date_naive()))
                 .with("view", view.as_str())
                 .with("events_on_selected_day", serde_json::Value::Array(today))
+                .with("naming", serde_json::Value::Object(naming))
                 .with("days_with_events", serde_json::Value::Array(busy))
                 .with("events_this_month", events_in_month(&s.events, s.year, s.month) as i64)
                 // What the person is being told went wrong, if anything. A caller that just
                 // failed to save should be able to read the reason rather than infer it.
-                .with("notice", ui.get_notice().to_string());
+                .with("notice", ui.get_notice().to_string())
+                // The identity every `may_delete_unasked` in this describe was answered
+                // against, so a caller that expected to own something and sees `false` can
+                // tell whether the event has no record or the record names somebody else —
+                // and how it itself was recorded. The transport's one spelling for "nothing
+                // could be established" when there is no identity to show.
+                .with(
+                    "you",
+                    me.clone().unwrap_or_else(|| peer_identity::UNIDENTIFIED.to_string()),
+                );
 
             match view {
                 ViewMode::Week => {
@@ -945,7 +1092,7 @@ fn publish_control(app: &CalendarApp, state: Rc<RefCell<CalState>>) {
                                 .events
                                 .iter()
                                 .filter(|b| b.day_index == column as i32)
-                                .map(block_json)
+                                .map(|b| block_json(b, &s.events, me.as_deref()))
                                 .collect();
                             serde_json::json!({ "day": label, "events": events })
                         })
@@ -956,8 +1103,11 @@ fn publish_control(app: &CalendarApp, state: Rc<RefCell<CalState>>) {
                         .with("week", serde_json::Value::Array(per_day));
                 }
                 ViewMode::Day => {
-                    let events: Vec<serde_json::Value> =
-                        day_view.events.iter().map(block_json).collect();
+                    let events: Vec<serde_json::Value> = day_view
+                        .events
+                        .iter()
+                        .map(|b| block_json(b, &s.events, me.as_deref()))
+                        .collect();
                     out = out
                         .with("day_shown", day_view.title.clone())
                         .with("events_on_day_grid", serde_json::Value::Array(events));
@@ -974,12 +1124,14 @@ fn publish_control(app: &CalendarApp, state: Rc<RefCell<CalState>>) {
     let add_state = state.clone();
     let view_state = state.clone();
     let delete_state = state.clone();
+    let own_delete_state = state.clone();
     let update_state = state.clone();
     let day_ui = ui_for.clone();
     let move_ui = ui_for.clone();
     let today_ui = ui_for.clone();
     let add_ui = ui_for.clone();
     let delete_ui = ui_for.clone();
+    let own_delete_ui = ui_for.clone();
     let update_ui = ui_for.clone();
     let view_ui = ui_for;
 
@@ -1028,7 +1180,9 @@ fn publish_control(app: &CalendarApp, state: Rc<RefCell<CalState>>) {
             Action::new("add_event", "Put something on the calendar")
                 .arg(Param::text("title"))
                 .arg(Param::text("date").describe("YYYY-MM-DD"))
-                .arg(Param::text("time").describe("HH:MM, 24-hour"))
+                .arg(Param::text("time")
+                    .describe("HH:MM, 24-hour; needed unless `all_day` is set")
+                    .optional())
                 .arg(Param::text("notes").optional())
                 // The form has no duration field and the template path already carries minutes,
                 // so the one caller that could say how long a thing runs was the one that could
@@ -1047,7 +1201,6 @@ fn publish_control(app: &CalendarApp, state: Rc<RefCell<CalState>>) {
                 let ui = add_ui()?;
                 let title = args["title"].as_str().unwrap_or_default().trim().to_string();
                 let date = args["date"].as_str().unwrap_or_default().trim().to_string();
-                let time = args["time"].as_str().unwrap_or_default().trim().to_string();
                 let all_day = args["all_day"].as_bool().unwrap_or(false);
                 if title.is_empty() {
                     return Err("`title` is empty".into());
@@ -1057,9 +1210,10 @@ fn publish_control(app: &CalendarApp, state: Rc<RefCell<CalState>>) {
                 if date.len() != 10 || date.matches('-').count() != 2 {
                     return Err(format!("`date` should look like 2026-09-06, not `{date}`"));
                 }
-                if !all_day && !time.contains(':') {
-                    return Err(format!("`time` should look like 14:30, not `{time}`"));
-                }
+                // Whether this call needed a `time` at all is decided here, not by the
+                // declaration: `time` is optional on the surface because an all-day event has
+                // no clock to give, but a timed one is nothing without it.
+                let time = views::added_clock(args["time"].as_str(), all_day)?;
                 let duration_min = match args.get("duration_min") {
                     None | Some(serde_json::Value::Null) => None,
                     Some(v) => Some(
@@ -1115,65 +1269,7 @@ fn publish_control(app: &CalendarApp, state: Rc<RefCell<CalState>>) {
                     .optional()),
             move |args| {
                 let ui = delete_ui()?;
-                let given = |key: &str| {
-                    args[key].as_str().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string)
-                };
-                let (id, named) = match (given("id"), given("title"), given("date")) {
-                    (Some(id), _, _) => (id.clone(), id),
-                    (None, Some(title), Some(date)) => {
-                        if date.len() != 10 || date.matches('-').count() != 2 {
-                            return Err(format!(
-                                "`date` should look like 2026-09-06, not `{date}`"
-                            ));
-                        }
-                        let day = chrono::NaiveDate::parse_from_str(&date, "%Y-%m-%d")
-                            .map_err(|_| format!("`{date}` is not a date"))?;
-                        // Read from the store now, not off the screen: the day named may not be
-                        // the day the window is showing, and the events in hand are only the
-                        // visible range.
-                        let on_that_day = fetch_events_on(day)?;
-                        match views::named_on(&event_refs(&on_that_day), &title, &date) {
-                            views::Named::One(event) => (event.id, format!("“{title}”")),
-                            views::Named::None => {
-                                return Err(format!(
-                                    "nothing called “{title}” on {date}; the day holds: {}",
-                                    if on_that_day.is_empty() {
-                                        "nothing".to_string()
-                                    } else {
-                                        on_that_day
-                                            .iter()
-                                            .map(|e| format!("“{}”", e.title))
-                                            .collect::<Vec<_>>()
-                                            .join(", ")
-                                    }
-                                ))
-                            }
-                            // Never a guess. Two events of one name on one day is an ordinary
-                            // thing for a calendar to hold, and picking one would remove the
-                            // wrong appointment and report success — which is the trash-icon bug
-                            // 617dac9 fixed, rebuilt on the surface.
-                            views::Named::Ambiguous(candidates) => {
-                                return Err(format!(
-                                    "{} events on {date} are called “{title}”; say which by id: {}",
-                                    candidates.len(),
-                                    candidates
-                                        .iter()
-                                        .map(|e| format!(
-                                            "{} at {}",
-                                            e.id,
-                                            e.start.split('T').nth(1).unwrap_or(&e.start)
-                                        ))
-                                        .collect::<Vec<_>>()
-                                        .join(", ")
-                                ))
-                            }
-                        }
-                    }
-                    _ => {
-                        return Err("name the event by `id`, or by `title` and `date` together"
-                            .into())
-                    }
-                };
+                let (id, named) = named_event(&args)?;
 
                 match remove_event(&ui, &delete_state, &id) {
                     Ok(title) => {
@@ -1183,6 +1279,77 @@ fn publish_control(app: &CalendarApp, state: Rc<RefCell<CalState>>) {
                     // On screen as well as in the answer. A delete that did not happen leaves a
                     // row where it was, and a row that stayed put has to say which of the two
                     // things it means.
+                    Err(e) => {
+                        ui.set_notice(format!("Could not delete {named}: {e}").into());
+                        Err(e)
+                    }
+                }
+            },
+        )
+        .action(
+            // Graded `standard`, and the only events it can reach are the ones the store
+            // records as created by this very caller: `requester` reads the kernel's account
+            // of the call — the peer walk of #221, or the agent an agent token belongs to —
+            // at creation, the service keeps that in the event's own file, and the rule in
+            // `ownership` compares the two when a delete arrives. Nothing the request itself
+            // says is consulted on either side. For the caller that made it, this is the
+            // inverse of its own `add_event`, which is `standard` too: an unattended harness
+            // can put an event on and take it off again without a person being asked, which
+            // is the whole of issue #201. Everything else — a person's event, another
+            // caller's, an event stored before the record existed — is refused here and stays
+            // with `delete_event` above: same grade, same card, exactly as it was.
+            Action::new(
+                "delete_own_event",
+                "Take an event this caller created itself off the calendar. Anything else is \
+                 `delete_event`, which asks a person first",
+            )
+            .arg(Param::text("id")
+                .describe("The id the store gave the event — `add_event` answers with it and \
+                           `describe` lists it, marked with whether this caller may delete it \
+                           unasked")
+                .optional())
+            .arg(Param::text("title")
+                .describe("The event's exact title, given with `date`, when the id is not known")
+                .optional())
+            .arg(Param::text("date")
+                .describe("YYYY-MM-DD, given with `title`")
+                .optional()),
+            move |args| {
+                let ui = own_delete_ui()?;
+                let (id, named) = named_event(&args)?;
+                // The record the service kept at creation, read back from the event's own
+                // file — so the check survives this app restarting between the create and
+                // this delete, which the arena's reset can (#201).
+                let event = get_event_via_service(&id)?;
+                let me = requester();
+                if !ownership::may_delete_unasked(event.creator.as_deref(), me.as_deref()) {
+                    let who =
+                        me.unwrap_or_else(|| "nobody this machine could identify".to_string());
+                    let why = match event.creator.as_deref() {
+                        Some(made_by) => format!(
+                            "{named} was created by {made_by} and this call is {who}: only the \
+                             caller that created an event may delete it without a person being \
+                             asked"
+                        ),
+                        None => format!(
+                            "{named} has no creator on record — it is older than the record, or \
+                             a person made it in the window — and this call is {who}: only the \
+                             caller that created an event may delete it without a person being \
+                             asked"
+                        ),
+                    };
+                    let why = format!(
+                        "{why}. Any event comes off through `delete_event`, which asks first"
+                    );
+                    ui.set_notice(format!("Could not delete {named}: {why}").into());
+                    return Err(why);
+                }
+
+                match remove_event(&ui, &own_delete_state, &id) {
+                    Ok(title) => {
+                        ui.set_notice(SharedString::new());
+                        Ok(serde_json::json!({ "deleted": title, "id": id }))
+                    }
                     Err(e) => {
                         ui.set_notice(format!("Could not delete {named}: {e}").into());
                         Err(e)
@@ -1599,7 +1766,7 @@ fn wire(app: &CalendarApp) -> slint::Timer {
                             tracing::warn!(error = %e, "Companion call failed");
                             ui.set_proposal(AgentProposal {
                                 title: "The companion did not answer".into(),
-                                body: format!("{e}\n\nIs the Yantrik shell running?").into(),
+                                body: e.to_string().into(),
                                 verb: "Close".into(),
                                 ..Default::default()
                             });

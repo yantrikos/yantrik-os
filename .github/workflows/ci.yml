@@ -210,3 +210,13 @@ jobs:
           python3 -m unittest discover -s templates/python-surface/tests -v
           python3 -m unittest discover -s adapters/libreoffice/tests -v
           python3 -m unittest discover -s docs/sdk/samples -v
+
+      # The record #161 asks for: a service's own JSON-RPC methods answer on the same socket
+      # beside its gated app.act and meet no gate until #43 can tell callers apart, so every one
+      # of them is listed in docs/app-control.md beside the graded action that does the same
+      # thing. This walks each services/*/src/main.rs dispatch — literal arms, and const arms
+      # resolved through yantrik-ipc-contracts — and holds the two lists together: a method with
+      # no row fails, a row with no method fails, and a `change` that names neither a grade nor
+      # `none` fails. Stdlib-only source text, like everything above; it runs no service.
+      - name: Every method a service answers stands in the guide beside its grade
+        run: python3 -m unittest discover -s tests/service-methods -v

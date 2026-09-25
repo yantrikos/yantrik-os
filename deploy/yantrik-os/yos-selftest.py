@@ -56,7 +56,10 @@ What it is checking, in one line each:
     to describe it (#190); describing it anyway says what it is, and the store behind a closed app
     says the app is closed and how to open it;
   * `yos` writes nothing to `app-shell.sock` unless a `yantrik-ui` binary is what listens there;
-  * and the socket-directory chain is the transport's, in its order.
+  * the socket-directory chain is the transport's, in its order;
+  * and a describe state carrying the shell's large `agents` and `catalog` lists is printed in
+    the fixed order — the small, high-value fields first, with `clock` inside the first bytes a
+    length-clipped reader keeps, and the large lists last (#319).
 """
 
 import contextlib
@@ -993,6 +996,51 @@ def main():
               chain)
         check("and with no XDG_RUNTIME_DIR, where logind puts it, in the first place",
               unset[0] == "/run/user/%d/yantrik" % os.getuid() and unset[1:] == chain[1:], unset)
+
+        print("yos describe shell, carrying the large lists a busy desktop has (#319)")
+        # The wire order is alphabetical — the shell's state is a serde_json map, which is a
+        # BTreeMap — so a describe carrying large `agents` and `catalog` lists arrives with them
+        # ahead of `clock`. Padded to about the sizes measured on a live desktop: 11.5 KB and
+        # 4.5 KB. `sort_keys` makes the dict hold them in the wire's order, the way `json.loads`
+        # of a real reply would.
+        state = json.loads(json.dumps({
+            "agents": [{"id": "pi:a%d" % i, "task": "x" * 100} for i in range(100)],
+            "catalog": [{"role": "r%d" % i, "may": "y" * 100} for i in range(40)],
+            "services": [{"id": "svc%d" % i, "state": "running"} for i in range(20)],
+            "clock": {"date": "2026-09-24", "weekday": "Thursday", "time": "17:55",
+                      "utc_offset": "-05:00", "zone": "America/Chicago"},
+            "screen": "desktop",
+            "windows": [{"title": "Notes", "app": "notes"}],
+            "companion_online": False,
+            "bond": "Partner-in-Crime",
+            "cpu_percent": 10,
+            "date": "Thu 24 Sep",
+        }, sort_keys=True))
+        reply_before = shell.reply
+        shell.reply = lambda _s, asked: (
+            {"app": "shell", "summary": "Yantrik — desktop screen", "state": state,
+             "actions": []}
+            if asked["method"] == "app.describe" else {"accepted": True, "settled": True})
+        try:
+            out, err, code = run(lambda: yos.cmd_describe(["shell", "--fold"]))
+        finally:
+            shell.reply = reply_before
+        check("it answered, with nothing on stderr", code is None and err == "", (err, code))
+        clock_at = out.find('"clock"')
+        check("clock is within the first 300 bytes of what a mind reads, however big the lists",
+              0 <= clock_at < 300, clock_at)
+        order = [json.loads(m.group(1)) for m in
+                 (re.match(r'^  ("(?:[^"\\]|\\.)*"): ', line) for line in out.splitlines())
+                 if m]
+        check("the small, high-value fields lead, in the fixed order",
+              order[:4] == ["screen", "clock", "windows", "companion_online"], order)
+        check("and the large lists come last, after every small field",
+              order[-3:] == ["agents", "catalog", "services"], order)
+        check("every key is printed exactly once", sorted(order) == sorted(state), order)
+        check("and each value byte for byte as it arrived",
+              '  "clock": %s' % json.dumps(state["clock"], ensure_ascii=False) in out
+              and '  "agents": %s' % json.dumps(state["agents"], ensure_ascii=False) in out,
+              out[:200])
 
         print("yos perception, with no desktop to ask")
         for svc in services:

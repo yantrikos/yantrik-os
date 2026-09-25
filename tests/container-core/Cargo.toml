@@ -3,7 +3,6 @@ name = "yantrik-container-core-tests"
 version = "0.1.0"
 edition = "2021"
 publish = false
-[workspace]
 [dependencies]
 [lib]
 path = "lib.rs"

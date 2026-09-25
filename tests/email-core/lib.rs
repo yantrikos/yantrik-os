@@ -1805,4 +1805,101 @@ mod tests {
             );
         }
     }
+
+    // ── The HTML original, as the browser gets it ────────────────────
+    //
+    // "Open original" writes the sender's HTML to a file and hands it to a browser (#275). A
+    // click that only meant "let me see the layout" must not tell the sender the mail was
+    // opened, when, and from which address — which is exactly what the invisible pictures in
+    // notification mail exist to report. What the cleaning keeps and drops is a decision, and
+    // the decisions live in `state.rs` so they can be checked here without a window.
+
+    #[test]
+    fn every_image_that_would_fetch_is_gone_before_the_browser_gets_the_mail() {
+        let html = "<p>Read:</p>\
+             <img src=\"https://track.example/open.gif?to=someone@example.com\">\
+             <img src='http://track.example/pixel.png'>\
+             <img src=\"//track.example/relative.gif\">\
+             <img src=\"local.png\" srcset=\"https://cdn.example/big.png 2x\">";
+        let (cleaned, removed) = state::strip_remote_images(html);
+        assert_eq!(removed, 4, "{removed} of 4 fetches found in:\n{cleaned}");
+        for gone in ["track.example", "cdn.example", "open.gif", "big.png"] {
+            assert!(!cleaned.contains(gone), "{gone} survived:\n{cleaned}");
+        }
+        // What the mail says is not an image and stays.
+        assert!(cleaned.contains("<p>Read:</p>"), "{cleaned}");
+    }
+
+    #[test]
+    fn images_the_mail_carries_itself_stay_and_so_does_every_other_tag() {
+        // `cid:` is a part of this very message and `data:` is inline bytes; neither leaves the
+        // machine. Links stay too: an `<a>` fetches nothing until it is clicked, and the issue
+        // is about what a page load reports.
+        let html = "<a href=\"https://news.example/story\">story</a>\
+             <img src=\"cid:logo@example\">\
+             <img src=\"data:image/png;base64,iVBOR\">\
+             <table><tr><td>24 upvotes</td></tr></table>";
+        let (cleaned, removed) = state::strip_remote_images(html);
+        assert_eq!(removed, 0);
+        assert_eq!(cleaned, html);
+    }
+
+    #[test]
+    fn a_tag_is_judged_by_its_own_attributes_not_by_a_lookalike() {
+        // `data-src` is a lazy-load placeholder: as the tag stands the browser fetches nothing
+        // from it, so it does not decide the tag's fate — and a boundary check is what stops
+        // `data-src` being read as `src`.
+        let html = "<img data-src=\"https://cdn.example/late.png\" src=\"cid:part1\">\
+             <imgx src=\"https://not-an-img.example/x.gif\">";
+        let (cleaned, removed) = state::strip_remote_images(html);
+        assert_eq!(removed, 0, "lookalikes were judged:\n{cleaned}");
+        assert!(cleaned.contains("cid:part1"), "{cleaned}");
+        assert!(cleaned.contains("<imgx"), "{cleaned}");
+    }
+
+    #[test]
+    fn the_scanner_reads_a_tag_the_way_a_browser_would() {
+        // Uppercase, unquoted values, and a `>` sitting inside an attribute: a scanner that
+        // ended the tag at that `>` would leave half a fetch behind in the file.
+        let html = "<IMG SRC=https://TRACK.EXAMPLE/P.GIF>\
+             <img alt=\"a > b\" src=\"https://track.example/q.gif\">";
+        let (cleaned, removed) = state::strip_remote_images(html);
+        assert_eq!(removed, 2, "{removed} of 2 found in:\n{cleaned}");
+        assert!(!cleaned.to_lowercase().contains("track.example"), "{cleaned}");
+        assert!(!cleaned.contains("p.gif") && !cleaned.contains("q.gif"), "{cleaned}");
+    }
+
+    #[test]
+    fn an_id_from_the_wire_never_becomes_a_path() {
+        // The message id is the server's string, and the file goes where a browser can open it.
+        // A separator or a `..` segment surviving into the name would let a hostile id choose
+        // the location of the file.
+        let dir = PathBuf::from("/home/p/.cache/yantrik/email");
+        let escaped = state::original_html_file(&dir, "../../etc/passwd");
+        assert_eq!(escaped.parent(), Some(dir.as_path()), "{escaped:?} left the directory");
+        assert_eq!(escaped.file_name().unwrap(), "etcpasswd.html");
+        assert_eq!(
+            state::original_html_file(&dir, "<17e0.9c2@news.example>").file_name().unwrap(),
+            "17e09c2newsexample.html"
+        );
+        // An id that was all punctuation still gets a file rather than a bare ".html".
+        assert_eq!(
+            state::original_html_file(&dir, "///").file_name().unwrap(),
+            "message.html"
+        );
+    }
+
+    #[test]
+    fn the_notice_says_what_was_taken_out_of_the_mail() {
+        // The issue asks for this sentence: a person who clicked "Open original" is told the
+        // remote images went, so the click is not silently a phone-home.
+        let clean = state::original_opened_note(0);
+        assert!(clean.contains("no remote images"), "{clean}");
+        let one = state::original_opened_note(1);
+        assert!(one.contains("1 remote image removed"), "{one}");
+        assert!(one.contains("sender is not told"), "{one}");
+        let many = state::original_opened_note(7);
+        assert!(many.contains("7 remote images removed"), "{many}");
+        assert!(many.contains("sender is not told"), "{many}");
+    }
 }

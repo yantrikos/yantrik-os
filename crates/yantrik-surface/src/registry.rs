@@ -33,6 +33,15 @@ pub struct Registry<D: ?Sized = Describer, H: ?Sized = Handler> {
     app_id: String,
     describe: Option<Box<D>>,
     actions: Vec<(Action, Box<H>)>,
+    /// A rule about this surface's own state that every call is held to, whatever the action.
+    ///
+    /// Consulted in [`Registry::act`] before the arguments and the gate are read, and in
+    /// [`Registry::check_call`] so a person's grant is not spent on a call the rule will refuse.
+    /// The shell installs the locked-desktop rule here (#203): while the login or lock screen is
+    /// showing, every action is refused in one sentence, and a new action is refused by default
+    /// because the rule is the surface's, not the actions'. `None` — every other surface — holds
+    /// nothing.
+    state_rule: Option<Box<dyn Fn(&str) -> Result<(), String> + Send + Sync>>,
     /// Grades [`Registry::regrade`] has moved since the surface was published, by action name.
     ///
     /// Its own lock, and that is the whole point. A handler runs from inside the dispatch and
@@ -49,6 +58,7 @@ impl<D: ?Sized, H: ?Sized> Registry<D, H> {
             app_id: app_id.to_string(),
             describe: None,
             actions: Vec::new(),
+            state_rule: None,
             overrides: Mutex::new(Vec::new()),
         }
     }
@@ -67,6 +77,22 @@ impl<D: ?Sized, H: ?Sized> Registry<D, H> {
     /// again around every `act` (before, when the call carries `expect_revision`, and after).
     pub fn set_describe(&mut self, f: Box<D>) {
         self.describe = Some(f);
+    }
+
+    /// Hold every call to a rule about this surface's own state — see the `state_rule` field.
+    /// The rule reads the action's name and answers `Ok(())` or the refusal, in the surface's
+    /// own words.
+    pub fn set_state_rule(&mut self, f: Box<dyn Fn(&str) -> Result<(), String> + Send + Sync>) {
+        self.state_rule = Some(f);
+    }
+
+    /// What this surface's own state rule says about a call to `name` right now. No rule — every
+    /// surface but the shell's — holds nothing.
+    fn state_allows(&self, name: &str) -> Result<(), String> {
+        match &self.state_rule {
+            Some(rule) => rule(name),
+            None => Ok(()),
+        }
     }
 
     /// One thing this surface can be asked to do. A declaration the dispatch cannot check is
@@ -167,12 +193,16 @@ impl<D: ?Sized, H: ?Sized> Registry<D, H> {
     /// handler. `None` — no token, or no reach for it — holds nothing. An action this surface does
     /// not have is answered as that.
     ///
+    /// The arguments are the ones the call arrived with, and the reach reads one act's: which app
+    /// a `shell.open_app` opens decides whether a reach that names that app covers it (#195).
+    /// Wrong arguments of any other kind are refused by the check that follows this one.
+    ///
     /// A second rule beside the gate's, not part of it, so it is called beside [`Registry::act`]
     /// rather than inside it: the gate asks whether the machine and the person allow an act, this
     /// asks whether this agent was given it, and both must say yes.
-    pub fn within_reach(&self, reach: Option<&Reach>, name: &str) -> Result<(), String> {
+    pub fn within_reach(&self, reach: Option<&Reach>, name: &str, args: &Value) -> Result<(), String> {
         let Some(reach) = reach else { return Ok(()) };
-        reach::within(reach, &self.app_id, name, self.grade_of(name)?)
+        reach::within(reach, &self.app_id, name, self.grade_of(name)?, args)
     }
 
     /// Everything about a call that must hold before a person's grant is spent on it: the action
@@ -186,6 +216,10 @@ impl<D: ?Sized, H: ?Sized> Registry<D, H> {
     /// checked here, ahead of the ceiling and the spend, and again in [`Registry::act`].
     pub fn check_call(&self, name: &str, args: &Value) -> Result<&'static str, String> {
         let grade = self.grade_of(name)?;
+        // The surface's own state rule, here as well as in `act`: this is the read a grant is
+        // spent against, and a call the dispatch will refuse must not use up a person's Allow
+        // on the way (#154's lesson, applied to #203's rule).
+        self.state_allows(name)?;
         if let Some((spec, _)) = self.actions.iter().find(|(a, _)| a.name == name) {
             check_arguments(spec, args)?;
         }
@@ -236,9 +270,10 @@ where
     ///
     /// The order, which every door keeps (docs/surface-protocol.md, §5): the action exists; the
     /// calling agent's reach, when it carries a token ([`Registry::within_reach`], called just
-    /// before this); the arguments as sent; the ceiling; any grant, spent against the arguments as
-    /// sent (before this, see [`crate::ActCall::spend_grant`]); the mode; the revision guard; and
-    /// only then the arguments converted to their declared types and the handler.
+    /// before this); the surface's own state rule, when it has one; the arguments as sent; the
+    /// ceiling; any grant, spent against the arguments as sent (before this, see
+    /// [`crate::ActCall::spend_grant`]); the mode; the revision guard; and only then the arguments
+    /// converted to their declared types and the handler.
     ///
     /// These steps are one function because they have to be one turn of whatever serialises the
     /// app. Split across calls, the gap between the check and the dispatch is a window in which
@@ -262,6 +297,12 @@ where
         let Some((spec, run)) = self.actions.iter().find(|(a, _)| a.name == name) else {
             return Err(self.unknown(name));
         };
+
+        // The surface's own state rule, before anything about this call is read: a surface in a
+        // state it must not be moved out of refuses every call in one sentence of its own, and
+        // the refusal is the same whatever the arguments, the grade or the mode say. The shell's
+        // rule is the locked desktop (#203).
+        self.state_allows(name)?;
 
         // Present, known, and of the declared type or losslessly converted to it — see `args`.
         // First, and before any grant is spent: a malformed call is refused for what is wrong with
@@ -1073,5 +1114,124 @@ mod tests {
             );
         }
         assert_eq!(shared.act("nope", &json!({}), None, "n#1", &open()), local.act("nope", &json!({}), None, "n#1", &open()));
+    }
+
+    /// A door holds the reach on the arguments the call arrived with, because one act is decided
+    /// by them: `shell.open_app` is within a reach that names the app it opens (#195). A Planner,
+    /// whose reach is two apps to read at `safe`, opens Notes through the shell's own registry and
+    /// does not open the Terminal.
+    #[test]
+    fn a_door_holds_the_reach_on_the_arguments_the_call_arrived_with() {
+        let shell = surface(
+            "shell",
+            None,
+            vec![(
+                Action::new("open_app", "Launch an app, or focus it if it is already running")
+                    .arg(Param::text("name")),
+                Box::new(|_| Ok(json!({ "launching": "notes" }))),
+            )],
+        );
+        let planner = Reach {
+            agent: "deepseek:c-7a1f02".into(),
+            role: "planner".into(),
+            name: "Planner".into(),
+            surfaces: vec!["calendar".into(), "notes".into()],
+            ceiling: "safe".into(),
+        };
+        assert_eq!(shell.published_grade("open_app"), Some("standard"), "the grade this reach is below");
+
+        let held = |args: &Value| shell.within_reach(Some(&planner), "open_app", args);
+        assert!(held(&json!({ "name": "notes" })).is_ok(), "an app its reach names");
+        let err = held(&json!({ "name": "terminal" })).unwrap_err();
+        assert!(err.starts_with("REACH: shell.open_app opens `terminal`, an app the Planner's reach does not name"), "{err}");
+
+        // A call with no reach is held to nothing, and an action this surface does not have is
+        // answered as that rather than passed to the rule.
+        assert!(shell.within_reach(None, "open_app", &json!({ "name": "terminal" })).is_ok());
+        let err = shell.within_reach(Some(&planner), "launch", &json!({})).unwrap_err();
+        assert!(err.starts_with("unknown action `launch`"), "{err}");
+    }
+
+    // ── The surface's own state rule ──
+
+    /// The refusal the shell's rule answers with while the desktop waits for the person (#203).
+    const LOCKED: &str = "LOCKED: the desktop is waiting for the person to sign in";
+
+    /// A shell-shaped surface whose rule allows one action and refuses every other one — the
+    /// shape of the locked desktop, with an allow-list of one so both sides can be tested.
+    fn ruled_surface(ran: Rc<Cell<bool>>) -> Registry {
+        let mut reg = surface(
+            "shell",
+            Some(Box::new(|| View::new("Shell \u{2014} lock screen"))),
+            vec![
+                (Action::new("open_lens", "Open the ask bar").risk("safe"), {
+                    let ran = ran.clone();
+                    Box::new(move |_| {
+                        ran.set(true);
+                        Ok(Value::Null)
+                    })
+                }),
+                (
+                    Action::new("read_clock", "Read the clock").risk("safe"),
+                    Box::new(|_| Ok(Value::Null)),
+                ),
+                (
+                    Action::new("installer_install", "Erase a disk and install").risk("dangerous"),
+                    Box::new(|_| Ok(Value::Null)),
+                ),
+            ],
+        );
+        reg.set_state_rule(Box::new(|name| {
+            if name == "read_clock" {
+                Ok(())
+            } else {
+                Err(LOCKED.to_string())
+            }
+        }));
+        reg
+    }
+
+    #[test]
+    fn a_state_rule_refuses_before_the_arguments_and_the_gate_are_read() {
+        let ran = Rc::new(Cell::new(false));
+        let reg = ruled_surface(ran.clone());
+
+        // A safe action, a well-formed call, and every authority open: refused anyway, in the
+        // rule's own sentence — this is the call from the bug report, `yos act shell open_lens`
+        // on a machine standing at its login screen.
+        let err = reg.act("open_lens", &json!({}), None, "shell#1", &open()).unwrap_err();
+        assert_eq!(err, LOCKED);
+        assert!(!ran.get(), "the handler must not have run");
+
+        // A malformed call gets the same sentence, not an argument complaint: nothing about the
+        // call is read while the rule refuses.
+        let err = reg
+            .act("installer_install", &json!({"junk": 1}), None, "shell#2", &in_mode("ask", false))
+            .unwrap_err();
+        assert_eq!(err, LOCKED, "not GRANT:, not an argument refusal: {err}");
+
+        // And the allow-list side: an action the rule names passes, and the ordinary dispatch
+        // decides it as it always would.
+        assert!(reg.act("read_clock", &json!({}), None, "shell#3", &open()).is_ok());
+    }
+
+    #[test]
+    fn a_state_rule_refuses_before_a_grant_is_spent_on_the_call() {
+        // `check_call` is what the dispatch asks before spending a person's Allow. A call the
+        // rule will refuse must not use the Allow up on the way — the lesson of #154, applied
+        // to the rule of #203.
+        let reg = ruled_surface(Rc::new(Cell::new(false)));
+        assert_eq!(reg.check_call("open_lens", &json!({})).unwrap_err(), LOCKED);
+        assert_eq!(reg.check_call("read_clock", &json!({})), Ok("safe"), "the allow-list passes");
+    }
+
+    #[test]
+    fn a_surface_with_no_state_rule_is_held_to_nothing_by_one() {
+        // Every surface but the shell's: `notes_at` has no rule, and its act runs — pinned here
+        // so adding the field cannot quietly change the dispatch for the other thirty surfaces.
+        let answer = notes_at("Kernel asks")
+            .act("rename", &json!({ "to": "ok" }), None, "notes#1", &open())
+            .unwrap();
+        assert_eq!(answer["accepted"], true);
     }
 }

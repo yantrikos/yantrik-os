@@ -138,7 +138,7 @@ fn wire_mail_ai(app: &EmailApp, which: MailAi) {
                     },
                     // Said out loud, not logged. A model that could not be reached left the card
                     // exactly as it was and the person waiting at it with no idea why.
-                    Err(e) => say(&ui, format!("The companion could not answer: {e}")),
+                    Err(e) => say(&ui, e.to_string()),
                 }
             });
         });
@@ -226,10 +226,16 @@ fn list_messages_via_service(
     )
 }
 
-fn get_message_via_service(account: &str, message_id: &str) -> Result<EmailDetail, String> {
+/// Read one message out of `folder` — the folder its row was listed from. UIDs are per-mailbox,
+/// so the folder is part of naming the message, not context the service can assume (#275).
+fn get_message_via_service(
+    account: &str,
+    folder: &str,
+    message_id: &str,
+) -> Result<EmailDetail, String> {
     call_typed(
         method::GET_MESSAGE,
-        serde_json::json!({ "account_id": account, "message_id": message_id }),
+        serde_json::json!({ "account_id": account, "folder": folder, "message_id": message_id }),
     )
 }
 
@@ -258,40 +264,81 @@ fn send_message_via_service(
     .map(|_| ())
 }
 
-fn search_via_service(account: &str, query: &str) -> Result<Vec<EmailSummary>, String> {
-    call_typed(method::SEARCH, serde_json::json!({ "account_id": account, "query": query }))
+/// Search `folder` — the one on screen. Search ran in INBOX whichever folder was open, so a
+/// search from Spam answered with mail nobody was looking at (#288).
+fn search_via_service(
+    account: &str,
+    folder: &str,
+    query: &str,
+) -> Result<Vec<EmailSummary>, String> {
+    call_typed(
+        method::SEARCH,
+        serde_json::json!({ "account_id": account, "folder": folder, "query": query }),
+    )
 }
 
-fn mark_read_via_service(account: &str, message_id: &str, read: bool) -> Result<(), String> {
+/// Flag one message in `folder`, for [`get_message_via_service`]'s reason: the app marks a
+/// message read right after opening it, and flagging INBOX's UID instead would touch a
+/// stranger's mail.
+fn mark_read_via_service(
+    account: &str,
+    folder: &str,
+    message_id: &str,
+    read: bool,
+) -> Result<(), String> {
     call(
         method::MARK_READ,
-        serde_json::json!({ "account_id": account, "message_id": message_id, "read": read }),
+        serde_json::json!({
+            "account_id": account,
+            "folder": folder,
+            "message_id": message_id,
+            "read": read,
+        }),
     )
     .map(|_| ())
 }
 
+/// Star one message in `folder`, for [`mark_read_via_service`]'s reason: starring ran in
+/// INBOX whatever folder the row was listed from, and moved the star on a stranger's message
+/// (#288).
 fn mark_starred_via_service(
     account: &str,
+    folder: &str,
     message_id: &str,
     starred: bool,
 ) -> Result<(), String> {
     call(
         method::MARK_STARRED,
-        serde_json::json!({ "account_id": account, "message_id": message_id, "starred": starred }),
+        serde_json::json!({
+            "account_id": account,
+            "folder": folder,
+            "message_id": message_id,
+            "starred": starred,
+        }),
     )
     .map(|_| ())
 }
 
-fn delete_message_via_service(account: &str, message_id: &str) -> Result<(), String> {
+/// Delete one message from `folder` — always the row's own, never omitted. This cannot be
+/// undone, and a UID with no folder beside it can destroy a different message in INBOX
+/// (#288).
+fn delete_message_via_service(
+    account: &str,
+    folder: &str,
+    message_id: &str,
+) -> Result<(), String> {
     call(
         method::DELETE_MESSAGE,
-        serde_json::json!({ "account_id": account, "message_id": message_id }),
+        serde_json::json!({ "account_id": account, "folder": folder, "message_id": message_id }),
     )
     .map(|_| ())
 }
 
+/// Move one message out of `folder` into `target_folder`. The source folder is never omitted
+/// either, for [`delete_message_via_service`]'s reason (#288).
 fn move_message_via_service(
     account: &str,
+    folder: &str,
     message_id: &str,
     target_folder: &str,
 ) -> Result<(), String> {
@@ -299,6 +346,7 @@ fn move_message_via_service(
         method::MOVE_MESSAGE,
         serde_json::json!({
             "account_id": account,
+            "folder": folder,
             "message_id": message_id,
             "target_folder": target_folder,
         }),
@@ -443,6 +491,9 @@ fn detail_to_ui(d: &EmailDetail) -> EmailDetailData {
             .join(", ")
             .into(),
         thread_count: d.thread_messages.len() as i32,
+        // Whether "Open original" has an original to open: the sender's HTML, which the text
+        // above is a reading of.
+        has_html: !d.body_html.is_empty(),
     }
 }
 
@@ -519,10 +570,14 @@ struct Mail {
     folder: RefCell<String>,
     /// Every message the folder returned, before the triage tabs filter it. Held so that
     /// switching tabs is a filter over what is in hand rather than another question to the mail
-    /// server.
-    all_rows: RefCell<Vec<(String, EmailListItem)>>,
-    /// Message ids parallel to the rows actually on screen.
-    shown_ids: RefCell<Vec<String>>,
+    /// server. Each row is `(id, folder it was listed from, the row on screen)`: the folder
+    /// travels with the row because IMAP UIDs are per-mailbox, and the same id in another
+    /// mailbox is another message — everything done to a row has to ask the mailbox that
+    /// listed it (#275, #288).
+    all_rows: RefCell<Vec<(String, String, EmailListItem)>>,
+    /// The rows actually on screen, as `(id, folder it was listed from)`, parallel to the list
+    /// model.
+    shown_rows: RefCell<Vec<(String, String)>>,
     triage: Cell<Triage>,
     /// True while a connection test or a save is in flight, so the two buttons cannot be pressed
     /// on top of each other.
@@ -536,6 +591,10 @@ struct Mail {
     /// race by a second at most, and the loser must not be the Cancel.
     google_flow: RefCell<Option<String>>,
     draft_path: std::path::PathBuf,
+    /// The open message's HTML original, as `(id, html)`, held for the toolbar's "Open
+    /// original" so the button does not go back to the mail server for what the reading pane
+    /// was just given. `None` for a plain-text message, whose button is not drawn.
+    open_original: RefCell<Option<(String, String)>>,
 }
 
 thread_local! {
@@ -559,12 +618,13 @@ impl Mail {
             }),
             folder: RefCell::new("INBOX".to_string()),
             all_rows: RefCell::new(Vec::new()),
-            shown_ids: RefCell::new(Vec::new()),
+            shown_rows: RefCell::new(Vec::new()),
             triage: Cell::new(Triage::All),
             setting_up: Cell::new(false),
             syncing: Cell::new(false),
             google_flow: RefCell::new(None),
             draft_path: state::draft_path(),
+            open_original: RefCell::new(None),
         }
     }
 
@@ -580,8 +640,13 @@ impl Mail {
         }
     }
 
-    fn id_at(&self, row: usize) -> Option<String> {
-        self.shown_ids.borrow().get(row).cloned()
+    /// The `(id, folder it was listed from)` of a row on screen.
+    ///
+    /// The folder belongs to the row, not to whatever folder is on display: opening a message
+    /// has to SELECT the mailbox that listed it, because the same UID in another folder is
+    /// another message (#275).
+    fn row_at(&self, row: usize) -> Option<(String, String)> {
+        self.shown_rows.borrow().get(row).cloned()
     }
 }
 
@@ -693,10 +758,10 @@ fn apply_loaded(ui: &EmailApp, mail: &Rc<Mail>, loaded: Loaded) {
 
 /// Put a folder's messages into the model, through the triage filter.
 fn set_rows(ui: &EmailApp, mail: &Rc<Mail>, messages: &[EmailSummary]) {
-    let rows: Vec<(String, EmailListItem)> = messages
+    let rows: Vec<(String, String, EmailListItem)> = messages
         .iter()
         .enumerate()
-        .map(|(i, s)| (s.id.clone(), summary_to_list_item(s, i)))
+        .map(|(i, s)| (s.id.clone(), s.folder.clone(), summary_to_list_item(s, i)))
         .collect();
     *mail.all_rows.borrow_mut() = rows;
     show_rows(ui, mail);
@@ -706,11 +771,12 @@ fn set_rows(ui: &EmailApp, mail: &Rc<Mail>, messages: &[EmailSummary]) {
 fn show_rows(ui: &EmailApp, mail: &Rc<Mail>) {
     let triage = mail.triage.get();
     let all = mail.all_rows.borrow();
-    let kept: Vec<&(String, EmailListItem)> =
-        all.iter().filter(|(_, it)| triage.keeps(it.is_read, it.is_flagged)).collect();
+    let kept: Vec<&(String, String, EmailListItem)> =
+        all.iter().filter(|(_, _, it)| triage.keeps(it.is_read, it.is_flagged)).collect();
 
-    *mail.shown_ids.borrow_mut() = kept.iter().map(|(id, _)| id.clone()).collect();
-    let items: Vec<EmailListItem> = kept.iter().map(|(_, it)| it.clone()).collect();
+    *mail.shown_rows.borrow_mut() =
+        kept.iter().map(|(id, folder, _)| (id.clone(), folder.clone())).collect();
+    let items: Vec<EmailListItem> = kept.iter().map(|(_, _, it)| it.clone()).collect();
 
     // The counts are of the folder, not of the tab: "3 unread of 128" is about the mailbox, and
     // it would be a strange thing for pressing Unread to change.
@@ -728,7 +794,7 @@ fn show_rows(ui: &EmailApp, mail: &Rc<Mail>) {
 fn show_folder_counts(ui: &EmailApp, mail: &Rc<Mail>) {
     let folder = mail.folder.borrow().clone();
     let all = mail.all_rows.borrow();
-    let loaded_unread = all.iter().filter(|(_, it)| !it.is_read).count();
+    let loaded_unread = all.iter().filter(|(_, _, it)| !it.is_read).count();
     match Counted::of(&folder_records(ui), &folder, loaded_unread, all.len()) {
         Counted::Known(counts) => {
             ui.set_email_folder_unread(counts.unread);
@@ -819,8 +885,8 @@ fn row_flag(mail: &Rc<Mail>, id: &str, flag: impl Fn(&EmailListItem) -> bool) ->
     mail.all_rows
         .borrow()
         .iter()
-        .find(|(row_id, _)| row_id == id)
-        .map(|(_, it)| flag(it))
+        .find(|(row_id, _, _)| row_id == id)
+        .map(|(_, _, it)| flag(it))
         .unwrap_or(true)
 }
 
@@ -864,10 +930,20 @@ fn load_folder(ui: &EmailApp, mail: &Rc<Mail>, folder: &str) -> Result<usize, St
 /// Open a message and mark it read, reporting the flags the mail server has afterwards.
 fn open_message(ui: &EmailApp, mail: &Rc<Mail>, row: usize) -> Result<EmailDetail, String> {
     let account = mail.account();
-    let id = mail.id_at(row).ok_or_else(|| format!("there is no message at row {}", row + 1))?;
+    let (id, row_folder) =
+        mail.row_at(row).ok_or_else(|| format!("there is no message at row {}", row + 1))?;
 
-    let detail = get_message_via_service(&account, &id)
+    // From the folder the row was listed from: the same UID read out of INBOX was a different
+    // message, which is what opening mail outside INBOX used to show (#275).
+    let detail = get_message_via_service(&account, &row_folder, &id)
         .map_err(|e| format!("Could not open that message: {e}"))?;
+
+    // The HTML original, kept for the toolbar's "Open original".
+    *mail.open_original.borrow_mut() = if detail.body_html.is_empty() {
+        None
+    } else {
+        Some((id.clone(), detail.body_html.clone()))
+    };
 
     ui.set_email_detail(detail_to_ui(&detail));
     ui.set_email_attachments(ModelRc::new(VecModel::from(attachments_to_ui(&detail))));
@@ -888,11 +964,12 @@ fn open_message(ui: &EmailApp, mail: &Rc<Mail>, row: usize) -> Result<EmailDetai
     // Reading a message marks it read on the mail server. `let _ =` here meant a failure to do
     // that was invisible, and the row kept its unread dot with no explanation.
     if !detail.is_read {
-        match mark_read_via_service(&account, &id, true) {
+        // The flag goes to the mailbox the message is in, and the unread count that moves is
+        // that mailbox's — the same reason the fetch above names its folder.
+        match mark_read_via_service(&account, &row_folder, &id, true) {
             Ok(()) => {
                 mark_row_locally(mail, &id, |it| it.is_read = true);
-                let folder = mail.folder.borrow().clone();
-                change_counts_of(ui, mail, &folder, |c| c.after_read_change(false, true));
+                change_counts_of(ui, mail, &row_folder, |c| c.after_read_change(false, true));
                 show_rows(ui, mail);
                 clear_notice(ui);
             }
@@ -911,24 +988,27 @@ fn open_message(ui: &EmailApp, mail: &Rc<Mail>, row: usize) -> Result<EmailDetai
 /// was never made, which is the same shape as the calendar's fabricated `add_event`.
 fn set_read(ui: &EmailApp, mail: &Rc<Mail>, row: usize, read: bool) -> Result<bool, String> {
     let account = mail.account();
-    let id = mail.id_at(row).ok_or_else(|| format!("there is no message at row {}", row + 1))?;
+    let (id, row_folder) =
+        mail.row_at(row).ok_or_else(|| format!("there is no message at row {}", row + 1))?;
     let was_read = row_flag(mail, &id, |it| it.is_read);
-    mark_read_via_service(&account, &id, read).map_err(|e| {
+    mark_read_via_service(&account, &row_folder, &id, read).map_err(|e| {
         let text = format!("Could not mark that message read: {e}");
         say(ui, text.clone());
         text
     })?;
     let observed = observe_flag(ui, mail, &id, |it| it.is_read)?;
-    let folder = mail.folder.borrow().clone();
-    change_counts_of(ui, mail, &folder, |c| c.after_read_change(was_read, observed));
+    change_counts_of(ui, mail, &row_folder, |c| c.after_read_change(was_read, observed));
     clear_notice(ui);
     Ok(observed)
 }
 
 fn set_flagged(ui: &EmailApp, mail: &Rc<Mail>, row: usize, flagged: bool) -> Result<bool, String> {
     let account = mail.account();
-    let id = mail.id_at(row).ok_or_else(|| format!("there is no message at row {}", row + 1))?;
-    mark_starred_via_service(&account, &id, flagged).map_err(|e| {
+    let (id, row_folder) =
+        mail.row_at(row).ok_or_else(|| format!("there is no message at row {}", row + 1))?;
+    // In the mailbox the row was listed from: the same UID starred in INBOX was a different
+    // message's star (#288).
+    mark_starred_via_service(&account, &row_folder, &id, flagged).map_err(|e| {
         let text = format!("Could not flag that message: {e}");
         say(ui, text.clone());
         text
@@ -955,15 +1035,15 @@ fn observe_flag(
     set_rows(ui, mail, &messages);
     let all = mail.all_rows.borrow();
     all.iter()
-        .find(|(row_id, _)| row_id == id)
-        .map(|(_, it)| read(it))
+        .find(|(row_id, _, _)| row_id == id)
+        .map(|(_, _, it)| read(it))
         .ok_or_else(|| format!("the message is no longer in {folder}"))
 }
 
 /// Change a row in hand, for the cases where the mail server has already agreed.
 fn mark_row_locally(mail: &Rc<Mail>, id: &str, change: impl Fn(&mut EmailListItem)) {
     let mut all = mail.all_rows.borrow_mut();
-    if let Some((_, item)) = all.iter_mut().find(|(row_id, _)| row_id == id) {
+    if let Some((_, _, item)) = all.iter_mut().find(|(row_id, _, _)| row_id == id) {
         change(item);
     }
 }
@@ -975,17 +1055,20 @@ fn mark_row_locally(mail: &Rc<Mail>, id: &str, change: impl Fn(&mut EmailListIte
 /// that worked.
 fn delete_message(ui: &EmailApp, mail: &Rc<Mail>, row: usize) -> Result<String, String> {
     let account = mail.account();
-    let id = mail.id_at(row).ok_or_else(|| format!("there is no message at row {}", row + 1))?;
+    let (id, row_folder) =
+        mail.row_at(row).ok_or_else(|| format!("there is no message at row {}", row + 1))?;
     let subject = mail
         .all_rows
         .borrow()
         .iter()
-        .find(|(row_id, _)| *row_id == id)
-        .map(|(_, it)| it.subject.to_string())
+        .find(|(row_id, _, _)| *row_id == id)
+        .map(|(_, _, it)| it.subject.to_string())
         .unwrap_or_default();
 
     let was_read = row_flag(mail, &id, |it| it.is_read);
-    delete_message_via_service(&account, &id).map_err(|e| {
+    // From the mailbox the row was listed from, and never left to the service's INBOX
+    // default: deleting a Spam row could destroy a different INBOX message (#288).
+    delete_message_via_service(&account, &row_folder, &id).map_err(|e| {
         let text = format!("Could not delete \u{201c}{subject}\u{201d}: {e}");
         say(ui, text.clone());
         text
@@ -1004,17 +1087,19 @@ fn move_message(
     target: &str,
 ) -> Result<String, String> {
     let account = mail.account();
-    let id = mail.id_at(row).ok_or_else(|| format!("there is no message at row {}", row + 1))?;
+    let (id, row_folder) =
+        mail.row_at(row).ok_or_else(|| format!("there is no message at row {}", row + 1))?;
     let subject = mail
         .all_rows
         .borrow()
         .iter()
-        .find(|(row_id, _)| *row_id == id)
-        .map(|(_, it)| it.subject.to_string())
+        .find(|(row_id, _, _)| *row_id == id)
+        .map(|(_, _, it)| it.subject.to_string())
         .unwrap_or_default();
 
     let was_read = row_flag(mail, &id, |it| it.is_read);
-    move_message_via_service(&account, &id, target).map_err(|e| {
+    // Out of the mailbox the row was listed from, for delete's reason (#288).
+    move_message_via_service(&account, &row_folder, &id, target).map_err(|e| {
         let text = format!("Could not move \u{201c}{subject}\u{201d} to {target}: {e}");
         say(ui, text.clone());
         text
@@ -1043,7 +1128,7 @@ fn confirm_gone(
         text
     })?;
     set_rows(ui, mail, &messages);
-    if mail.all_rows.borrow().iter().any(|(row_id, _)| row_id == id) {
+    if mail.all_rows.borrow().iter().any(|(row_id, _, _)| row_id == id) {
         let text = format!(
             "The mail server reported the {what} of \u{201c}{subject}\u{201d} and it is still in \
              {folder}."
@@ -1056,6 +1141,9 @@ fn confirm_gone(
     if ui.get_email_detail().subject == subject {
         ui.set_email_detail(EmailDetailData::default());
         ui.set_email_attachments(ModelRc::new(VecModel::<EmailAttachmentData>::from(Vec::new())));
+        // The pane is clear, so there is no original to open either; the button follows
+        // `has-html` off the default detail and the held copy goes with it.
+        *mail.open_original.borrow_mut() = None;
     }
     clear_notice(ui);
     Ok(())
@@ -1083,7 +1171,10 @@ fn run_search(ui: &EmailApp, mail: &Rc<Mail>, query: &str) -> Result<usize, Stri
     }
 
     ui.set_email_search_active(true);
-    match search_via_service(&account, query) {
+    // The folder on screen is the folder searched: the results are shown beside it, and each
+    // row carries the folder it was found in for whatever is done to it next (#288).
+    let folder = mail.folder.borrow().clone();
+    match search_via_service(&account, &folder, query) {
         Ok(results) => {
             let count = results.len();
             set_rows(ui, mail, &results);
@@ -2084,6 +2175,48 @@ fn wire(app: &EmailApp) {
         });
     }
 
+    // ── Open original ──
+    //
+    // The sender's HTML, handed to a browser, for the mail whose layout the reading pane's text
+    // cannot carry. The file the browser gets has every remote image taken out first: a loaded
+    // pixel tells the sender this message was opened, when, and from which address, and a click
+    // that only meant "show me the layout" must not send that. The notice says what was removed,
+    // because a layout that opens without its pictures is a change the person is owed an
+    // explanation of.
+    {
+        let weak = app.as_weak();
+        let mail = mail.clone();
+        app.on_open_original(move || {
+            let Some(ui) = weak.upgrade() else { return };
+            let Some((id, html)) = mail.open_original.borrow().clone() else {
+                say(&ui, "There is no message open with an HTML original.");
+                return;
+            };
+            let (stripped, removed) = state::strip_remote_images(&html);
+            let dir = state::original_html_dir();
+            let path = state::original_html_file(&dir, &id);
+            let written = std::fs::create_dir_all(&dir)
+                .map_err(|e| format!("could not make {}: {e}", dir.display()))
+                .and_then(|()| {
+                    std::fs::write(&path, stripped)
+                        .map_err(|e| format!("could not write {}: {e}", path.display()))
+                });
+            if let Err(e) = written {
+                say(&ui, format!("The original HTML could not be written for the browser: {e}"));
+                return;
+            }
+            match open_in_browser(&path.to_string_lossy()) {
+                Ok(()) => say(&ui, state::original_opened_note(removed)),
+                // Not silence: the file is there, and a person on a machine with no xdg-open
+                // handler can still open it by hand if the screen says where it is.
+                Err(e) => say(
+                    &ui,
+                    format!("The original is at {} but the browser could not be opened: {e}", path.display()),
+                ),
+            }
+        });
+    }
+
     // ── What the companion is for ──
     //
     // Summarising a thread, drafting from an instruction, suggesting a reply, and sorting one
@@ -2114,7 +2247,7 @@ fn wire(app: &EmailApp) {
                             ui.set_compose_body(text.into());
                             clear_notice(&ui);
                         }
-                        Err(e) => say(&ui, format!("The companion could not draft that: {e}")),
+                        Err(e) => say(&ui, e.to_string()),
                     }
                 });
             });
@@ -2144,7 +2277,7 @@ fn wire(app: &EmailApp) {
                             ui.set_compose_body(text.into());
                             clear_notice(&ui);
                         }
-                        Err(e) => say(&ui, format!("The companion could not rewrite that: {e}")),
+                        Err(e) => say(&ui, e.to_string()),
                     }
                 });
             });
@@ -2196,7 +2329,7 @@ fn wire(app: &EmailApp) {
                                 );
                             }
                         }
-                        Err(e) => say(&ui, format!("The companion could not classify that: {e}")),
+                        Err(e) => say(&ui, e.to_string()),
                     }
                 });
             });
@@ -2505,6 +2638,8 @@ Small thing: the world model's epistemic states read well. \"Believed\" vs \"obs
             has_attachment: true,
             attachment_names: "perception-tiers-v3.pdf, commit-gate.png".into(),
             thread_count: 4,
+            // The demo body is plain text, so there is no HTML original to open.
+            has_html: false,
         });
         app.set_email_attachments(ModelRc::new(VecModel::from(vec![
             EmailAttachmentData { name: "perception-tiers-v3.pdf".into(), size_text: "412 KB".into(), mime_type: "application/pdf".into(), is_downloaded: true },
@@ -2523,5 +2658,29 @@ Small thing: the world model's epistemic states read well. \"Believed\" vs \"obs
         app.set_email_folder_counts_known(true);
         app.set_email_sync_status("Synced 2 min ago".into());
         app.set_has_account(true);
+    }
+}
+
+#[cfg(test)]
+mod enhance_tests {
+    /// The Enhance buttons used to hand the composer's body to the callback, and the handler —
+    /// which reads the body from the composer itself — put it into the prompt a second time, so
+    /// every rewrite request carried the email twice. The defect lives in the markup, so the
+    /// markup is what this pins: a button may name the tone, never the body.
+    #[test]
+    fn enhance_buttons_pass_a_tone_and_never_the_body() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../crates/yantrik-ui-slint/ui/email.slint"
+        );
+        let src = std::fs::read_to_string(path).expect("the shared email markup");
+        let calls: Vec<&str> = src.lines().filter(|l| l.contains("enhance-text(")).collect();
+        assert!(calls.len() >= 4, "the four Enhance buttons should call enhance-text");
+        for call in &calls {
+            assert!(
+                !call.contains("compose-body"),
+                "an Enhance button hands the body to the handler, which sends it twice: {call}"
+            );
+        }
     }
 }

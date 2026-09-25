@@ -1048,6 +1048,12 @@ fn view(ui: &NotesApp, s: &State) -> View {
         .with("characters", open.map(|n| n.text.chars().count() as i64))
         .with("trashed_note_open", open.is_some_and(|n| n.trash))
         .with("content", open.map(|n| n.text.chars().take(4000).collect::<String>()))
+        // The `.meta` sidecar travels with the text — `tags`, `notebook` and `pinned` live in it —
+        // so it belongs in the view a revision is hashed from. It did not, and `tags` rewrote a
+        // note's metadata while answering with the same revision as the call before it: a caller
+        // whose "unchanged since I read it" check compares revisions was told a changed note had
+        // not changed.
+        .with("metadata", open.map(|n| n.meta.clone()))
         .with("notes_directory", b.dir.display().to_string())
         .with("library_ready", b.ready)
         .with("busy", ui.get_busy())

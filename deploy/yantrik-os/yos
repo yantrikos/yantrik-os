@@ -859,6 +859,29 @@ def cmd_describe(argv):
         print(render_action(action, brief))
 
 
+# The fixed presentation order of the state's keys (#319). The wire cannot carry an order:
+# `View.state` is a `serde_json::Value`, whose map is a BTreeMap, so every describe arrives with
+# its keys sorted alphabetically — and it has to stay that way, because `View::revision()` hashes
+# exactly that sorted rendering and the Python port pins the same bytes. Alphabetically, the
+# shell's large lists land among the small fields it buries: measured on a live desktop, `agents`
+# (~11.5 KB) and `catalog` (~4.5 KB) sorted ahead of `clock`, so a mind reading only the head of
+# a describe, or clipping it by length, lost the time and every other small field sorting after
+# the big ones. The order is therefore chosen here, where the text a reader sees is made: the
+# small, high-value fields first, the large lists last, the rest in the wire's alphabetical order
+# between them. Keys and values are untouched; only the order they are printed in changes. A key
+# that is not present is simply not printed, so this is safe for every app, not only the shell.
+STATE_FIRST = ("summary", "screen", "locked", "clock", "windows", "companion_online")
+STATE_LAST = ("agents", "catalog", "services")
+
+
+def state_keys_in_order(state):
+    """The keys of `state` in the order a reader gets them: `STATE_FIRST` that are present, in
+    that order, then every other key as it arrived, then `STATE_LAST` that are present."""
+    middle = [k for k in state if k not in STATE_FIRST and k not in STATE_LAST]
+    return ([k for k in STATE_FIRST if k in state] + middle
+            + [k for k in STATE_LAST if k in state])
+
+
 def render_state(state, app, fold):
     """The state object, still JSON, without the air.
 
@@ -868,6 +891,10 @@ def render_state(state, app, fold):
     line per bracket, a window list of four entries spread over twenty lines. It is printed one
     top-level key per line with the value compact. That is the same JSON — every caller that
     parses it from the first `{` still can — at well under half the size.
+
+    The keys are printed in the fixed order of `state_keys_in_order`, small fields first and the
+    large lists last, because the wire's own order is alphabetical and put the largest fields
+    over the small ones a length-clipped reader keeps (#319).
 
     `--fold` (what the MCP bridge asks for) also leaves out the shell's `apps` list: it is the
     table behind `open_app`, `os_apps` already presents it in three lines, and here it was 2.7 KB
@@ -879,7 +906,8 @@ def render_state(state, app, fold):
     if fold and app.lower() in ("shell", "app-shell") and "apps" in state:
         state = {k: v for k, v in state.items() if k != "apps"}
         note = "\n(what `open_app` can open is listed by os_apps / `yos ls`, not repeated here)"
-    rows = ["  %s: %s" % (json.dumps(k), json.dumps(v, ensure_ascii=False)) for k, v in state.items()]
+    rows = ["  %s: %s" % (json.dumps(k), json.dumps(state[k], ensure_ascii=False))
+            for k in state_keys_in_order(state)]
     return "{\n" + ",\n".join(rows) + "\n}" + note
 
 

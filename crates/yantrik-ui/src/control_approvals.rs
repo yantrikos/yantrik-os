@@ -133,7 +133,7 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
                 //
                 // The grade is checked first, because the grade is the one thing the caller
                 // declares that the decision actually turns on.
-                let (grade, grade_note, published_purpose) =
+                let (grade, grade_note, published_purpose, naming) =
                     match settle_grade(&app, &action, &grade) {
                         Ok(settled) => settled,
                         Err(why) => return Err(why),
@@ -147,8 +147,10 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
 
                 // ── Agents catalog: an agent held to a role's reach is never shown asking for an
                 // act its reach refuses — its door would refuse it whatever the person pressed.
+                // Held on the arguments the card would be bound to, since one act is decided by
+                // them: a role may open an app its reach names (#195).
                 if let Some(Ok(agent)) = crate::control_agent_terminal::calling_agent() {
-                    crate::control_agents::within_reach(&agent, &app, &action, &grade)?;
+                    crate::control_agents::within_reach(&agent, &app, &action, &grade, &parsed)?;
                 }
 
                 // Whether the app's own sentence says this cannot be taken back. `auto` asks
@@ -199,8 +201,14 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
                 }
                 let agent = verified.agent.clone();
 
+                // And one line beside the arguments saying what their handles are, from the same
+                // `describe` the grade came from (#54) — empty for a call that names nothing by
+                // handle and for an app that publishes no index. Display only: `parsed` goes to
+                // the store exactly as the caller sent it, because the grant is bound to those
+                // bytes and this line must never become one more thing approved beside them.
+                let target = target_line(&parsed, &naming);
                 let asked = approvals::request(
-                    &requester, verified, &app, &action, parsed, &grade, &purpose,
+                    &requester, verified, &app, &action, parsed, &grade, &purpose, &target,
                 )?;
 
                 // And in the pane of the agent that asked: the same card, under the same request
@@ -576,8 +584,15 @@ const GRADE_LOOKUP: Duration = Duration::from_millis(500);
 /// How much of the "you said X, the app says Y" sentence fits on one elided card row.
 const NOTE_CHARS: usize = 62;
 
-/// The grade to act on, the note the card owes the person if it is not what was declared, and
-/// the app's own sentence about the action.
+/// What an app says its own ids stand for: handle → the thing it names, in the app's words.
+///
+/// Read from `describe`'s `naming` key, which the calendar publishes for every event it has
+/// (#54) and every other app may publish the same way without the shell changing. Empty for an
+/// app that publishes none — which is the ordinary case today and simply draws no row.
+type Naming = std::collections::BTreeMap<String, String>;
+
+/// The grade to act on, the note the card owes the person if it is not what was declared,
+/// the app's own sentence about the action, and what the app says its own ids name.
 ///
 /// Refuses rather than guesses. An app this desktop does not have, an action it does not
 /// publish, or a surface that will not say — none of those is a reason to put a card in front of
@@ -592,22 +607,24 @@ fn settle_grade(
     app: &str,
     action: &str,
     claimed: &str,
-) -> Result<(String, String, String), String> {
-    let (published, purpose) = published_detail(app, action)?;
+) -> Result<(String, String, String, Naming), String> {
+    let (published, purpose, naming) = published_detail(app, action)?;
     let note = grade_note(claimed, &published);
-    Ok((published, note, purpose))
+    Ok((published, note, purpose, naming))
 }
 
-/// What the target app itself says one of its actions is graded, and what it is for.
+/// What the target app itself says one of its actions is graded, what it is for, and — beside
+/// that — what the app says its own ids name.
 ///
-/// The purpose is empty for the shell's own surface: the local registry shortcut below publishes
-/// a grade and nothing else, and reaching the description would mean a new function in
-/// `yantrik-app-runtime`, which this change does not own. Nothing published by the shell matches
-/// the "cannot be undone" wording today — `files_delete` says "Move a file or folder to
-/// recoverable Trash" — and the caller ORs this with what the request declared, so a shell
-/// action that acquired such a sentence would still be asked about as long as the bridge kept
-/// relaying the purpose it reads out of `describe`.
-fn published_detail(app: &str, action: &str) -> Result<(String, String), String> {
+/// The purpose and the naming are empty for the shell's own surface: the local registry shortcut
+/// below publishes a grade and nothing else, and reaching the description would mean a new
+/// function in `yantrik-app-runtime`, which this change does not own. Nothing published by the
+/// shell matches the "cannot be undone" wording today — `files_delete` says "Move a file or
+/// folder to recoverable Trash" — and the caller ORs this with what the request declared, so a
+/// shell action that acquired such a sentence would still be asked about as long as the bridge
+/// kept relaying the purpose it reads out of `describe`. And no shell action takes an opaque id
+/// today either, so there is nothing for a naming index to resolve.
+fn published_detail(app: &str, action: &str) -> Result<(String, String, Naming), String> {
     published_detail_in(
         &yantrik_ipc_transport::server::socket_dir(),
         &crate::apps::Catalogue::shared().get(),
@@ -622,7 +639,7 @@ fn published_detail_in(
     installed: &[crate::apps::DesktopEntry],
     app: &str,
     action: &str,
-) -> Result<(String, String), String> {
+) -> Result<(String, String, Naming), String> {
     let Some(surface) = surface_in(app, installed, dir) else {
         return Err(format!(
             "there is no app called `{app}` on this desktop, so nothing was put in front of the \
@@ -632,10 +649,11 @@ fn published_detail_in(
 
     // The shell asking the shell. Over the socket this would be a call the shell's own UI thread
     // has to answer while it is blocked making it — so it is read straight out of the registry
-    // that thread already holds.
+    // that thread already holds. The registry carries grades and nothing else: the shell's own
+    // actions take paths, prompts and names, no opaque handle that needs a naming index.
     if surface == "shell" {
         return yantrik_app_runtime::control::published_grade(action)
-            .map(|grade| (grade.to_string(), String::new()))
+            .map(|grade| (grade.to_string(), String::new(), Naming::new()))
             .ok_or_else(|| {
                 format!(
                     "`shell` publishes no action called `{action}`, so there is nothing to ask \
@@ -667,10 +685,10 @@ fn published_detail_in(
             )
         })?;
 
-    // One lookup for both facts. Two would be two `app.describe` round trips on the UI thread
-    // for one card, and two chances for the grade and the sentence beside it to come from
-    // different revisions of the same app.
-    reply["actions"]
+    // One lookup for all three facts. Two would be two `app.describe` round trips on the UI
+    // thread for one card, and two chances for the grade, the sentence beside it and the names
+    // of its ids to come from different revisions of the same app.
+    let published = reply["actions"]
         .as_array()
         .and_then(|list| list.iter().find(|a| a["name"].as_str() == Some(action)))
         .and_then(|a| {
@@ -683,7 +701,70 @@ fn published_detail_in(
                 "`{app}` publishes no action called `{action}`, so there is nothing to ask about \
                  and nothing was put in front of the person."
             )
+        })?;
+    Ok((published.0, published.1, naming_in(&reply)))
+}
+
+/// The app's own id→name index, from `describe`'s `state.naming`.
+///
+/// An app publishes it when its actions take handles a person cannot read (#54); an entry whose
+/// value is not a string is skipped rather than stringified, because a number the app chose to
+/// index under an id is the app confused its own surface, and a card built on that guess would
+/// be the shell vouching for a sentence the app never wrote.
+fn naming_in(reply: &serde_json::Value) -> Naming {
+    reply["state"]["naming"]
+        .as_object()
+        .map(|entries| {
+            entries
+                .iter()
+                .filter_map(|(handle, name)| {
+                    name.as_str().map(|name| (handle.clone(), name.to_string()))
+                })
+                .collect()
         })
+        .unwrap_or_default()
+}
+
+/// How much of the handle itself the naming line echoes before an ellipsis.
+///
+/// Enough of a uuid7 to tell one event from another on a day's calendar — the line is a pointer
+/// into the argument box above it, not a second copy of it, and a full uuid echoed in front of
+/// the name would push the name, which is the point of the row, off the end of the elided line.
+const TARGET_HANDLE_CHARS: usize = 8;
+
+/// The line that says what a handle in the arguments is, or empty when nothing in the call
+/// is one the app has a name for.
+///
+/// #54: the card for `calendar.delete_event {"id": "01a0c718-…"}` said only the uuid. A person
+/// asked "may this be deleted?" cannot answer to a handle — by title and date the same card
+/// reads fine; it is the id route, the reliable one the action recommends, that goes opaque.
+/// The app knows what its ids stand for and says so on the `describe` this handler already
+/// makes one round trip for; this reads the argument values against that index and says what
+/// matches: `id 01a0c718… is “Dentist, Fri 25 Sep 13:00”`.
+///
+/// It is a sentence about the arguments, drawn beside them, never one more thing the grant
+/// binds to — the argument box stays byte-for-byte what [`crate::approvals::consume`] compares.
+/// Hits are joined in the order the box lists them, so the two rows read top-to-bottom alike,
+/// and the row is one line because the card's height is arithmetic.
+fn target_line(args: &serde_json::Value, naming: &Naming) -> String {
+    let Some(map) = args.as_object() else { return String::new() };
+    let mut keys: Vec<&String> = map.keys().collect();
+    keys.sort();
+    keys
+        .iter()
+        .filter_map(|key| {
+            let handle = map[*key].as_str()?;
+            let name = naming.get(handle)?;
+            let shown: String = handle.chars().take(TARGET_HANDLE_CHARS).collect();
+            let head = if shown.chars().count() < handle.chars().count() {
+                format!("{shown}\u{2026}")
+            } else {
+                shown
+            };
+            Some(format!("{key} {head} is \u{201c}{name}\u{201d}"))
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
 }
 
 /// Where a surface answers right now: its window's socket, or else its service's.
@@ -1083,6 +1164,20 @@ pub fn wire(ui: &App) {
         }
     });
 
+    // Where a mind's apps open (#239). A pointer's choice, wired here beside the modes for the
+    // same reason they are: nothing on the socket reaches it.
+    let mind_view_ui = ui.as_weak();
+    ui.on_mind_view_chosen(move |on| {
+        if let Err(e) = crate::wire::settings::set_minds_open_in_mind_view(on) {
+            tracing::warn!(error = %e, on, "where minds open apps was not saved");
+        }
+        tracing::info!(on, "a person chose where a mind's apps open");
+        if let Some(ui) = mind_view_ui.upgrade() {
+            ui.set_mind_view_on(crate::wire::settings::minds_open_in_mind_view());
+        }
+    });
+    ui.set_mind_view_on(crate::wire::settings::minds_open_in_mind_view());
+
     publish_mode(ui);
 
     let tick_ui = ui.as_weak();
@@ -1126,45 +1221,8 @@ pub fn wire(ui: &App) {
 ///
 /// `None` means either nothing is waiting, or the compositor would not say unambiguously which
 /// window was in front — in which case the shell stays where it is rather than guessing at a
-/// window to throw the person into. See [`window_in_front`].
+/// window to throw the person into. See [`crate::windows::front_now`].
 static RESTORE_TO: Mutex<Option<String>> = Mutex::new(None);
-
-/// Which toplevel the compositor says is activated, if exactly one is and it is not the shell.
-///
-/// The shell does not track this itself: `wlrctl toplevel list` carries no focus flag, and the
-/// one place that treats "first in the list" as the foreground window (`wire::timers`, feeding
-/// the think cycle) is reading an ordering that means nothing — the list is the launch registry
-/// merged with the compositor's, in neither case in focus order.
-///
-/// `state:activated` is wlrctl's own matcher for the focused toplevel, and this trusts it only
-/// when it answers with exactly one line. Two lines or none means either the compositor has
-/// nothing activated or this wlrctl does not support the matcher and has listed everything — and
-/// both of those are "not knowable", not "probably the first one". Handing a person's screen to
-/// the wrong window is worse than leaving the shell in front, which is at least where the thing
-/// they just answered was.
-fn window_in_front() -> Option<String> {
-    let output = std::process::Command::new("wlrctl")
-        .args(["toplevel", "list", "state:activated"])
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let text = String::from_utf8_lossy(&output.stdout);
-    let lines: Vec<&str> = text.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
-    if lines.len() != 1 {
-        return None;
-    }
-    // `wlrctl toplevel list` prints `app_id: title`, and our own windows declare no wayland
-    // app_id, so the line usually begins with the separator.
-    let line = lines[0];
-    let title = line.split_once(':').map(|(_, t)| t.trim()).unwrap_or(line).to_string();
-    if title.is_empty() || title == crate::windows::SHELL_WINDOW_TITLE {
-        // The person was already looking at the desktop. Nothing to give back.
-        return None;
-    }
-    Some(title)
-}
 
 /// Ask the compositor to bring one toplevel forward. Blocking; call it off the UI thread.
 fn focus_toplevel(title: &str) {
@@ -1185,14 +1243,16 @@ fn focus_toplevel(title: &str) {
 /// Note what the person was using, then put the shell in front of it.
 ///
 /// Both halves on one worker thread and in that order, because the reading has to happen before
-/// the raise or it reads the shell. Nothing is recorded if something is already waiting — the
+/// the raise or it reads the shell. It asks the compositor fresh rather than reading the taskbar's
+/// cached answer, because that one is up to `COMPOSITOR_TTL` old and the screen is being handed to
+/// the window in front NOW. Nothing is recorded if something is already waiting — the
 /// shell is already in front by then, so a second reading would capture the shell and the window
 /// the person actually came from would be lost.
 fn take_the_screen() {
     std::thread::spawn(|| {
         if let Ok(mut slot) = RESTORE_TO.lock() {
             if slot.is_none() {
-                *slot = window_in_front();
+                *slot = crate::windows::front_now();
             }
         }
         focus_toplevel(crate::windows::SHELL_WINDOW_TITLE);
@@ -1221,8 +1281,8 @@ thread_local! {
     static SHOWN: RefCell<String> = const { RefCell::new(String::new()) };
 }
 
-fn fingerprint(cards: &[Card]) -> String {
-    cards
+fn fingerprint(cards: &[Card], pane: &str) -> String {
+    let cards = cards
         .iter()
         .map(|c| {
             // The age only moves on a card that is still waiting, so a screen with nothing
@@ -1231,12 +1291,66 @@ fn fingerprint(cards: &[Card]) -> String {
             format!("{}:{}:{age}", c.id, c.status.as_str())
         })
         .collect::<Vec<_>>()
-        .join("|")
+        .join("|");
+    // The pane is part of what is shown: walking to the Agents screen, or to another agent
+    // there, moves a waiting card between the popup and the pane (#212).
+    format!("{cards}|pane:{pane}")
+}
+
+/// The agent whose pane is on screen right now, or "" when no pane is: the Agents screen, in
+/// its list view, with an agent selected. That pane is where the agent's own card is answered,
+/// so the popup must not draw it a second time (#212).
+fn pane_agent(ui: &App) -> String {
+    if ui.get_current_screen() != crate::wire::agents::SCREEN {
+        return String::new();
+    }
+    let g = ui.global::<crate::AgentsState>();
+    if g.get_view() != "list" {
+        return String::new();
+    }
+    g.get_selected().to_string()
+}
+
+/// Whether a card is answered in the pane on screen. The pane draws live buttons for exactly
+/// the pending cards of the agent it shows (`approval_of` in wire/agents.rs), so this is the
+/// same predicate: the verified agent, never anything the request says. A card with no agent
+/// — a caller that is no agent, or a token that was not believed — is in no pane and stays on
+/// screen.
+fn in_the_pane(card: &Card, pane: &str) -> bool {
+    !pane.is_empty() && card.verified.agent == pane
+}
+
+/// What the screen draws: every decided record, and the oldest pending card that is not being
+/// answered in the pane on screen. `cards()` returns the records first and then the pending in
+/// order, so the first pending row kept here is the oldest — one card at a time, as before.
+fn cards_for_screen<'a>(cards: &'a [Card], pane: &str) -> Vec<&'a Card> {
+    let mut out: Vec<&Card> = Vec::new();
+    let mut front = false;
+    for card in cards {
+        if card.status != Status::Pending {
+            out.push(card);
+        } else if !front && !in_the_pane(card, pane) {
+            front = true;
+            out.push(card);
+        }
+    }
+    out
+}
+
+/// The pane to leave the card to, asked only while something is waiting: with nothing pending
+/// there is no card to place, and moving about the desktop must not repaint the records.
+fn pane_now(ui: &App, cards: &[Card]) -> String {
+    if cards.iter().any(|c| c.status == Status::Pending) {
+        pane_agent(ui)
+    } else {
+        String::new()
+    }
 }
 
 fn sync_if_changed(ui: &App) {
     let cards = approvals::cards();
-    let now = fingerprint(&cards);
+    let pane = pane_now(ui, &cards);
+    let now = fingerprint(&cards, &pane);
     let changed = SHOWN.with(|shown| {
         if *shown.borrow() == now {
             false
@@ -1246,14 +1360,15 @@ fn sync_if_changed(ui: &App) {
         }
     });
     if changed {
-        publish(ui, cards);
+        publish(ui, cards, &pane);
     }
 }
 
 fn sync(ui: &App) {
     let cards = approvals::cards();
-    SHOWN.with(|shown| *shown.borrow_mut() = fingerprint(&cards));
-    publish(ui, cards);
+    let pane = pane_now(ui, &cards);
+    SHOWN.with(|shown| *shown.borrow_mut() = fingerprint(&cards, &pane));
+    publish(ui, cards, &pane);
 }
 
 pub(crate) fn row_for(card: Card) -> crate::ApprovalRequest {
@@ -1293,12 +1408,20 @@ pub(crate) fn row_for(card: Card) -> crate::ApprovalRequest {
         } else {
             card.purpose.into()
         },
+        // The first sentence of that description, and the line the card leads with (#218):
+        // the whole paragraph is for the person who wants it, under "show more", not the first
+        // thing everybody has to read. Empty when the app publishes nothing — the card hides
+        // the row and the purpose block above says so instead.
+        summary: card.summary.into(),
         // One model entry per argument, one single-line `Text` per entry on the card. A
         // newline-joined string was the first shape of this and it is what made the card's
         // height something the layout had to discover by measuring wrapped text.
         args: ModelRc::new(VecModel::from(
             card.args.into_iter().map(slint::SharedString::from).collect::<Vec<_>>(),
         )),
+        // One elided line beside the box, or nothing: the card hides the row when an app
+        // publishes no naming index (#54), so this is a pass-through, not a second fallback.
+        target: card.target.into(),
         warning: card.warning.into(),
         can_session: card.can_session,
         decision: match card.status {
@@ -1318,7 +1441,7 @@ pub(crate) fn row_for(card: Card) -> crate::ApprovalRequest {
     }
 }
 
-fn publish(ui: &App, cards: Vec<Card>) {
+fn publish(ui: &App, cards: Vec<Card>, pane: &str) {
     let waiting = cards.iter().filter(|c| c.status == Status::Pending).count();
 
     // The same answers, in the pane of the agent each request was for: one request id, so
@@ -1326,22 +1449,21 @@ fn publish(ui: &App, cards: Vec<Card>) {
     // the same turn it reaches the Lens.
     crate::agents::settle_approvals(settled_as);
 
-    // One card at a time, even though up to three requests can be waiting.
+    // One card at a time, even though up to three requests can be waiting — and never the one
+    // the pane on screen is answering: that card the person reads beside the session it belongs
+    // to, with the same buttons, and seeing it twice is seeing it nowhere (#212). The card was
+    // drawn in one place or the other, never neither: the pane shows buttons for exactly the
+    // cards `cards_for_screen` leaves out.
     //
     // Three cards stacked is 780px on an 800px screen: the third one's buttons land under the
     // taskbar, unreachable. It is also the wrong thing to show — a person facing a stack reads
     // none of them properly, which is the approval-fatigue failure the whole design is trying to
-    // avoid. So the oldest is the one on screen and the rest wait behind a count. `cards()`
-    // returns the decided records first and then the pending ones in order, so the first pending
-    // row here is the oldest.
+    // avoid. So the oldest is the one on screen and the rest wait behind a count.
     let mut shown: Vec<crate::ApprovalRequest> = Vec::new();
     let mut in_front: Vec<crate::ApprovalRequest> = Vec::new();
-    for card in cards {
+    for card in cards_for_screen(&cards, pane) {
         let pending = card.status == Status::Pending;
-        if pending && !in_front.is_empty() {
-            continue;
-        }
-        let mut row = row_for(card);
+        let mut row = row_for(card.clone());
         // Who the agent works for — "Council recipe → Reviewer" — from how the shell started it.
         // Read here, where no other lock is held, never inside `row_for`, which the Agents pane
         // calls while it holds the agents' store.
@@ -2089,20 +2211,27 @@ mod control_approvals_tests {
         use crate::approvals::{Card, Status, Verified};
         use slint::Model;
 
-        let card = |verified: Verified| Card {
-            id: "appr-1".into(),
-            requester: "an unnamed caller".into(),
-            verified,
-            app: "files".into(),
-            action: "delete".into(),
-            grade: "dangerous".into(),
-            purpose: "Delete a file. It is not recoverable.".into(),
-            args: vec!["name: taxes.pdf".into()],
-            warning: "The app says this cannot be undone.".into(),
-            can_session: false,
-            status: Status::Pending,
-            record: String::new(),
-            age_secs: 3,
+        let card = |verified: Verified| {
+            let purpose = "Delete a file. It is not recoverable.";
+            Card {
+                id: "appr-1".into(),
+                requester: "an unnamed caller".into(),
+                verified,
+                app: "files".into(),
+                action: "delete".into(),
+                grade: "dangerous".into(),
+                purpose: purpose.into(),
+                summary: crate::approvals::summary_of(purpose),
+                args: vec!["name: taxes.pdf".into()],
+                // Files names no handle here — `name: taxes.pdf` is already the thing itself —
+                // so the naming row is empty, and this is the ordinary path on the card (#54).
+                target: String::new(),
+                warning: "The app says this cannot be undone.".into(),
+                can_session: false,
+                status: Status::Pending,
+                record: String::new(),
+                age_secs: 3,
+            }
         };
 
         let nothing = super::row_for(card(Verified::default()));
@@ -2163,7 +2292,7 @@ mod control_approvals_tests {
         let mut row = |args: serde_json::Value| {
             let id = store
                 .request("claude-code 2.1.276", Verified::default(), "studio", "set_backend",
-                    args, "sensitive", purpose, now, "19:32")
+                    args, "sensitive", purpose, "", now, "19:32")
                 .unwrap()
                 .id;
             let card = store.pending(now).into_iter().find(|c| c.id == id).unwrap();
@@ -2177,6 +2306,12 @@ mod control_approvals_tests {
         for shown in [&back, &away] {
             assert_eq!(shown.purpose.as_str(), purpose, "the sentence, whole");
             assert!(!shown.purpose.contains("characters in full"), "{}", shown.purpose);
+            assert_eq!(
+                shown.summary.as_str(),
+                "Choose where pictures are made from now on, and write that choice down in the \
+                 configuration file.",
+                "the row also carries the one line the card leads with (#218)"
+            );
             // Nothing in red. The shell knows the grade and the app's sentence; it does not know
             // what `fake` or `openai-images` means to Studio, so a hosted-service warning of its
             // own would be the OS vouching for something it has not established — in the safe
@@ -2267,6 +2402,77 @@ mod control_approvals_tests {
         assert!(grant_belongs("appr-1", "pi:c-parent", &Some(Err("no".into()))).is_err(), "a token not believed spends nothing");
         assert!(grant_belongs("appr-1", "pi:c-parent", &None).is_ok(), "an app's own dispatch, as before");
     }
+
+    /// #212: a card shown twice — once in the pane, once in the floating popup — was a card
+    /// nobody could tell was one question or two. One place answers it now: the pane when the
+    /// agent's own pane is on screen, the popup otherwise, and never neither.
+    #[test]
+    fn approvals_a_card_the_pane_answers_is_not_in_the_popup_too() {
+        use crate::approvals::{Card, Status, Verified};
+
+        fn card(id: &str, status: Status, agent: &str) -> Card {
+            Card {
+                id: id.into(),
+                requester: "pi 0.87".into(),
+                verified: Verified { agent: agent.into(), ..Verified::default() },
+                app: "files".into(),
+                action: "delete".into(),
+                grade: "sensitive".into(),
+                purpose: "Delete a file. It is not recoverable.".into(),
+                summary: crate::approvals::summary_of("Delete a file. It is not recoverable."),
+                args: vec![],
+                target: String::new(),
+                warning: String::new(),
+                can_session: false,
+                status,
+                record: String::new(),
+                age_secs: 3,
+            }
+        }
+        // As `cards()` returns them: the decided records first, then the pending, oldest first.
+        let cards = vec![
+            card("appr-0", Status::Granted, "pi:c-1"),
+            card("appr-1", Status::Pending, "pi:c-1"),
+            card("appr-2", Status::Pending, "deepseek:c-2"),
+        ];
+        let ids = |pane: &str| {
+            super::cards_for_screen(&cards, pane).into_iter().map(|c| c.id.as_str()).collect::<Vec<_>>()
+        };
+
+        // No pane on screen: the oldest pending is in front, exactly as before.
+        assert_eq!(ids(""), ["appr-0", "appr-1"]);
+        // The pane is pi's agent: its own card is answered there, and the popup takes the next
+        // one — a second request is never left without a place on screen.
+        assert_eq!(ids("pi:c-1"), ["appr-0", "appr-2"]);
+        // A pane for another agent changes nothing about pi's card.
+        assert_eq!(ids("deepseek:c-2"), ["appr-0", "appr-1"]);
+        // The only card waiting is the pane's own: the popup keeps the records and no card.
+        let alone = vec![card("appr-9", Status::Pending, "pi:c-1")];
+        assert!(super::cards_for_screen(&alone, "pi:c-1").is_empty());
+        assert_eq!(super::cards_for_screen(&alone, "").len(), 1);
+        // A card with no verified agent is in no pane, whatever is on screen.
+        let nobody = vec![card("appr-8", Status::Pending, "")];
+        assert_eq!(super::cards_for_screen(&nobody, "pi:c-1").len(), 1);
+
+        // Walking to or from the pane is a change the once-a-second tick has to republish.
+        assert_ne!(
+            super::fingerprint(&cards, ""),
+            super::fingerprint(&cards, "pi:c-1"),
+            "the same cards with a different pane must not look unchanged"
+        );
+        assert_eq!(super::fingerprint(&cards, "pi:c-1"), super::fingerprint(&cards, "pi:c-1"));
+
+        // And the two halves stay in step: the popup leaves out exactly the cards the pane draws
+        // live buttons for, so a request is never hidden from both places at once.
+        let src = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/control_approvals.rs")).unwrap();
+        let src = src.split("#[cfg(test)]").next().unwrap();
+        assert!(src.contains("!pane.is_empty() && card.verified.agent == pane"), "the popup matches the pane by the verified agent alone");
+        assert!(src.contains("ui.get_current_screen() != crate::wire::agents::SCREEN"), "only the Agents screen has a pane");
+        assert!(src.contains("g.get_view() != \"list\""), "the map is not a pane: the session is not on screen");
+        let wire = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/wire/agents.rs")).unwrap();
+        let wire = wire.split("#[cfg(test)]").next().unwrap();
+        assert!(wire.contains("c.verified.agent == a.meta.id.0"), "the pane's live buttons are the same predicate");
+    }
 }
 
 /// Approvals for a surface whose window is shut: its service answers for it (issue #161).
@@ -2275,7 +2481,7 @@ mod service_surface_approval_tests {
     use std::io::{BufRead, BufReader, Write};
     use std::path::{Path, PathBuf};
 
-    use super::{published_detail_in, surface_in};
+    use super::{published_detail_in, surface_in, Naming};
 
     fn scratch(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("yantrik-approvals-{tag}-{}", std::process::id()));
@@ -2331,7 +2537,11 @@ mod service_surface_approval_tests {
         for name in ["system-monitor", "sysmonitor", "System Monitor"] {
             assert_eq!(
                 published_detail_in(&dir, &installed, name, "kill_process"),
-                Ok(("dangerous".to_string(), "End a running process by PID".to_string())),
+                Ok((
+                    "dangerous".to_string(),
+                    "End a running process by PID".to_string(),
+                    Naming::new(),
+                )),
                 "`{name}`, with the window shut, is graded by its service"
             );
         }
@@ -2343,7 +2553,49 @@ mod service_surface_approval_tests {
         serve(&dir.join("app-system-monitor.sock"), sysmon("sensitive", "the window's own account"));
         assert_eq!(
             published_detail_in(&dir, &installed, "sysmonitor", "kill_process"),
-            Ok(("sensitive".to_string(), "the window's own account".to_string()))
+            Ok((
+                "sensitive".to_string(),
+                "the window's own account".to_string(),
+                Naming::new(),
+            ))
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// What the app says its own ids stand for rides the same `describe` as its grade (#54) —
+    /// one round trip, so the sentence beside a handle cannot come from a different revision
+    /// of the app than the grade the card was graded by.
+    #[test]
+    fn an_app_that_names_its_ids_has_them_read_off_the_same_describe() {
+        let dir = scratch("naming");
+        let installed = crate::surfaces::shipped_catalogue();
+        // The window is shut; the service answers, and its surface names an event handle.
+        drop(std::os::unix::net::UnixListener::bind(dir.join("app-system-monitor.sock")).unwrap());
+        let mut describe = sysmon("dangerous", "End a running process by PID");
+        describe["state"]["naming"] = serde_json::json!({
+            "01a0c718-3931-7342-b9c7-8de36140ddb0": "Dentist, Fri 25 Sep 13:00",
+            // An app that indexed a number under an id confused its own surface; a card built on
+            // stringifying that guess would be the shell vouching for a sentence the app wrote.
+            "not-a-name": 7,
+        });
+        serve(&dir.join("system-monitor.sock"), describe);
+        let (grade, purpose, naming) =
+            published_detail_in(&dir, &installed, "system-monitor", "kill_process").unwrap();
+        assert_eq!(grade, "dangerous");
+        assert_eq!(purpose, "End a running process by PID");
+        assert_eq!(
+            naming.get("01a0c718-3931-7342-b9c7-8de36140ddb0").map(String::as_str),
+            Some("Dentist, Fri 25 Sep 13:00"),
+            "the handle resolves off the wire, beside the grade"
+        );
+        assert!(!naming.contains_key("not-a-name"), "a value that is not a name is skipped");
+        assert_eq!(
+            super::target_line(
+                &serde_json::json!({"id": "01a0c718-3931-7342-b9c7-8de36140ddb0"}),
+                &naming
+            ),
+            "id 01a0c718\u{2026} is \u{201c}Dentist, Fri 25 Sep 13:00\u{201d}",
+            "and the arguments resolve against it"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -2362,5 +2614,115 @@ mod service_surface_approval_tests {
         assert_eq!(surface_in("yantrik", &installed, &dir).as_deref(), Some("shell"));
         assert_eq!(surface_in("../etc", &installed, &dir), None, "not a name, whatever is on the disk");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// The line that names what a handle in the arguments stands for (#54).
+#[cfg(test)]
+mod target_line_tests {
+    use super::{naming_in, target_line, Naming};
+
+    fn index(entries: &[(&str, &str)]) -> Naming {
+        entries.iter().map(|(handle, name)| (handle.to_string(), name.to_string())).collect()
+    }
+
+    const DENTIST: &str = "01a0c718-3931-7342-b9c7-8de36140ddb0";
+    const STANDUP: &str = "01a0c718-3931-7e0a-8a1b-0f2d4c8a91b2";
+
+    /// The card the person on 22 September could not answer: a delete asked by id.
+    #[test]
+    fn a_handle_reads_as_the_thing_it_stands_for() {
+        let naming = index(&[(DENTIST, "Dentist, Fri 25 Sep 13:00")]);
+        let line = target_line(&serde_json::json!({"id": DENTIST}), &naming);
+        assert_eq!(line, "id 01a0c718\u{2026} is \u{201c}Dentist, Fri 25 Sep 13:00\u{201d}");
+        assert!(!line.contains("b9c7-8de36140ddb0"), "the tail of the handle is not the point");
+        assert!(!line.contains('\n'), "one line: the card's height is arithmetic");
+        assert_eq!(target_line(&serde_json::json!({"id": STANDUP}), &naming), "", "what the app does not name draws nothing");
+    }
+
+    /// A handle no longer than the echo is shown whole — the ellipsis is for what it cuts.
+    #[test]
+    fn a_short_handle_wears_no_ellipsis() {
+        let naming = index(&[("evt-3", "Gym, Sat 26 Sep 08:00")]);
+        assert_eq!(
+            target_line(&serde_json::json!({"id": "evt-3"}), &naming),
+            "id evt-3 is \u{201c}Gym, Sat 26 Sep 08:00\u{201d}"
+        );
+    }
+
+    /// Two handles — an event and the one to merge it into — read in the order the box above
+    /// lists them, which is sorted, so the rows line up.
+    #[test]
+    fn two_handles_join_in_the_order_the_box_lists_them() {
+        let naming = index(&[(DENTIST, "Dentist, Fri 25 Sep 13:00"), (STANDUP, "Standup, Tue 22 Sep 09:00")]);
+        let line = target_line(
+            &serde_json::json!({"id": STANDUP, "into": DENTIST}),
+            &naming,
+        );
+        assert_eq!(
+            line,
+            "id 01a0c718\u{2026} is \u{201c}Standup, Tue 22 Sep 09:00\u{201d}; \
+             into 01a0c718\u{2026} is \u{201c}Dentist, Fri 25 Sep 13:00\u{201d}"
+        );
+    }
+
+    /// The rule of the row: it says what the app says. Not an object, no string value, an app
+    /// that publishes no index — every way there is nothing to vouch for draws nothing.
+    #[test]
+    fn what_nothing_names_draws_nothing() {
+        let naming = index(&[(DENTIST, "Dentist, Fri 25 Sep 13:00")]);
+        for args in [
+            serde_json::json!(null),
+            serde_json::json!("01a0c718-3931-7342-b9c7-8de36140ddb0"),
+            serde_json::json!({"id": 7184}),
+            serde_json::json!({"pid": 7184, "id": "not-in-the-index"}),
+        ] {
+            assert_eq!(target_line(&args, &naming), "", "{args}");
+        }
+        assert_eq!(target_line(&serde_json::json!({"id": DENTIST}), &Naming::new()), "", "an app that names nothing");
+    }
+
+    /// The index as `describe` answers it: an id→name map the app wrote, and an entry that is
+    /// not a name — which is skipped, not stringified (see `naming_in`).
+    #[test]
+    fn the_index_is_read_off_the_state_the_app_publishes() {
+        let mut entries = serde_json::Map::new();
+        entries.insert(DENTIST.into(), serde_json::json!("Dentist, Fri 25 Sep 13:00"));
+        entries.insert("not-a-name".into(), serde_json::json!(7));
+        let reply = serde_json::json!({
+            "app": "calendar",
+            "state": { "naming": serde_json::Value::Object(entries) },
+        });
+        let naming = naming_in(&reply);
+        assert_eq!(naming.get(DENTIST).map(String::as_str), Some("Dentist, Fri 25 Sep 13:00"));
+        assert_eq!(naming.len(), 1, "the number is not a name: {naming:?}");
+        assert!(naming_in(&serde_json::json!({"state": {}})).is_empty(), "an app that publishes none");
+        assert!(naming_in(&serde_json::Value::Null).is_empty(), "an app that answered nothing at all");
+    }
+
+    /// The string reaches the Slint row as the store gave it: `row_for` is a pass-through, so
+    /// the card cannot be the place a name goes missing.
+    #[test]
+    fn the_row_carries_the_line_out_of_the_shell_untouched() {
+        use crate::approvals::{Card, Status, Verified};
+        let line = format!("id 01a0c718\u{2026} is \u{201c}Dentist, Fri 25 Sep 13:00\u{201d}");
+        let row = super::row_for(Card {
+            id: "appr-9".into(),
+            requester: "pi 0.87".into(),
+            verified: Verified::default(),
+            app: "calendar".into(),
+            action: "delete_event".into(),
+            grade: "sensitive".into(),
+            purpose: "Take an event off the calendar.".into(),
+            summary: "Take an event off the calendar.".into(),
+            args: vec![format!("id: {DENTIST}")],
+            target: line.clone(),
+            warning: String::new(),
+            can_session: false,
+            status: Status::Pending,
+            record: String::new(),
+            age_secs: 12,
+        });
+        assert_eq!(row.target.as_str(), line.as_str());
     }
 }

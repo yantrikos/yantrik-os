@@ -221,6 +221,51 @@ pub fn event_to_memory(event: &yantrik_os::SystemEvent) -> Option<(String, Strin
     }
 }
 
+/// The connection state behind a network memory.
+///
+/// NetworkManager re-announces its primary connection on every link flap and
+/// DHCP renewal — about every three minutes on the wired test machine — and the
+/// observer turns each announcement into a `NetworkChanged` event. Every one of
+/// those repeats used to be written to the store, so the Memory screen counted
+/// 1 339 identical "Connected to network 'Wired connection 1'" rows for one
+/// connection that never changed (#31). A repeat is not a new fact: the
+/// connection is in the same state as it was.
+///
+/// Signal strength is deliberately not part of the state. It drifts with every
+/// radio report, and a drift is not a change of connection; counting one would
+/// bring the flood straight back.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NetworkState {
+    pub connected: bool,
+    pub ssid: Option<String>,
+}
+
+/// Decide whether a system event is a network memory worth recording, and keep
+/// the gate's state for the next one.
+///
+/// Returns `None` for anything that is not a `NetworkChanged` event, so the
+/// caller falls through to its own dedup. For a network event, returns
+/// `Some(true)` when the connection state differs from `last` — a real change —
+/// and `Some(false)` when it repeats the state behind the most recent network
+/// memory. `last` is updated whenever the state changed.
+pub fn gate_network_memory(
+    last: &mut Option<NetworkState>,
+    event: &yantrik_os::SystemEvent,
+) -> Option<bool> {
+    let yantrik_os::SystemEvent::NetworkChanged { connected, ssid, .. } = event else {
+        return None;
+    };
+    let state = NetworkState {
+        connected: *connected,
+        ssid: ssid.clone(),
+    };
+    let changed = last.as_ref() != Some(&state);
+    if changed {
+        *last = Some(state);
+    }
+    Some(changed)
+}
+
 /// Transient/noisy processes that churn constantly and don't represent
 /// meaningful user activity (browser helpers, system daemons, etc.).
 /// Whether this process is an APPLICATION -- something the user could have launched.
@@ -370,5 +415,74 @@ mod tests {
     fn nothing_up_says_disconnected() {
         let context = format_system_context(&yantrik_os::SystemSnapshot::default());
         assert!(context.contains("Network: disconnected"), "{context}");
+    }
+
+    #[test]
+    fn one_connection_is_one_memory_however_often_it_is_announced() {
+        // The wired machine re-announces "Wired connection 1" on every DHCP
+        // renewal, about every three minutes; the store filled with 1 339
+        // identical rows for a connection that never changed (#31).
+        let connected = yantrik_os::SystemEvent::NetworkChanged {
+            connected: true,
+            ssid: Some("Wired connection 1".to_string()),
+            signal: None,
+        };
+        let mut last: Option<NetworkState> = None;
+        let mut recorded = 0;
+        for _ in 0..136 {
+            if gate_network_memory(&mut last, &connected) != Some(false) {
+                recorded += 1;
+            }
+        }
+        assert_eq!(recorded, 1, "a connection announced 136 times is one memory");
+
+        // Pulling the cable is a real change and earns a memory...
+        let disconnected = yantrik_os::SystemEvent::NetworkChanged {
+            connected: false,
+            ssid: None,
+            signal: None,
+        };
+        assert_eq!(gate_network_memory(&mut last, &disconnected), Some(true));
+        // ...and so is plugging it back in.
+        assert_eq!(gate_network_memory(&mut last, &connected), Some(true));
+        // A signal report over an unchanged connection is not: the strength
+        // drifts with every radio report and is not part of the state.
+        let same_but_signal = yantrik_os::SystemEvent::NetworkChanged {
+            connected: true,
+            ssid: Some("Wired connection 1".to_string()),
+            signal: Some(42),
+        };
+        assert_eq!(gate_network_memory(&mut last, &same_but_signal), Some(false));
+    }
+
+    #[test]
+    fn a_different_network_is_a_change() {
+        // Moving between two named connections is a change of state even though
+        // `connected` stays true the whole time.
+        let mut last: Option<NetworkState> = None;
+        let home = yantrik_os::SystemEvent::NetworkChanged {
+            connected: true,
+            ssid: Some("Wombat".to_string()),
+            signal: None,
+        };
+        let cafe = yantrik_os::SystemEvent::NetworkChanged {
+            connected: true,
+            ssid: Some("Cafe Guest".to_string()),
+            signal: None,
+        };
+        assert_eq!(gate_network_memory(&mut last, &home), Some(true));
+        assert_eq!(gate_network_memory(&mut last, &home), Some(false));
+        assert_eq!(gate_network_memory(&mut last, &cafe), Some(true));
+    }
+
+    #[test]
+    fn non_network_events_are_left_to_the_callers_own_dedup() {
+        let mut last: Option<NetworkState> = None;
+        let opened = yantrik_os::SystemEvent::ProcessStarted {
+            name: "yantrik-terminal".to_string(),
+            pid: 1,
+            cpu_percent: 0.0,
+        };
+        assert_eq!(gate_network_memory(&mut last, &opened), None);
     }
 }

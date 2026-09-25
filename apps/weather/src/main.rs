@@ -41,9 +41,9 @@ fn refresh_agent_rail(ui: &WeatherApp) {
     }
     ui.set_agent_context(ModelRc::new(VecModel::from(context)));
 
-    let online = companion::is_online();
+    let reach = companion::reach();
     let mut next: Vec<AgentSuggestion> = Vec::new();
-    if online && !c.temperature.is_empty() {
+    if reach == companion::Reach::Ready && !c.temperature.is_empty() {
         next.push(AgentSuggestion {
             id: "advise".into(),
             label: "What should I plan for?".into(),
@@ -54,10 +54,9 @@ fn refresh_agent_rail(ui: &WeatherApp) {
         });
     }
     ui.set_agent_suggestions(ModelRc::new(VecModel::from(next)));
-    ui.set_agent_unavailable(if online {
-        SharedString::new()
-    } else {
-        companion::OFFLINE_HINT.into()
+    ui.set_agent_unavailable(match reach.hint() {
+        Some(hint) => hint.into(),
+        None => SharedString::new(),
     });
 }
 
@@ -953,15 +952,16 @@ fn publish_control(
             },
         )
         .action(
-            // Grade: standard. It reaches outward — a public geocoding lookup — and writes one
-            // line of this app's own prefs file. That is the whole of its effect: nothing on
-            // the machine changes, nobody else feels it, and a place added in error is one
-            // removal away. `sensitive` is for what interrupts something (stopping a container,
-            // a network change); a saved city is not that. Declared rather than left to the
-            // default, so the judgement is on the page — and it is only worth declaring now
-            // that the action stores something, which until this change it did not.
+            // Grade: sensitive. The geocoding lookup is one public request, and a place added
+            // in error is one removal away — but what the action leaves behind is a line in
+            // this app's prefs file, and that line outlives the turn that wrote it: the place
+            // is still saved when the window closes and after the machine restarts. Writing
+            // stored configuration is something the person should see first, however small
+            // the thing written; `standard` is for changes the moment takes back. `show_location`
+            // stays `standard` beside it because it only moves a saved place onto the screen —
+            // the prefs line it touches is which place was being shown, not what is saved.
             Action::new("add_location", "Look a place up and save it")
-                .risk("standard")
+                .risk("sensitive")
                 .arg(Param::text("name")),
             move |args| {
                 let ui = add_ui()?;
@@ -997,11 +997,13 @@ fn publish_control(
             },
         )
         .action(
-            // Grade: standard. It changes what the person is reading and writes the choice to
-            // this app's prefs; it is display-only and instantly reversible, but it is still a
-            // change made on someone's screen, and `safe` in this vocabulary is for reads.
+            // Grade: sensitive. The flip on screen is instant and reversible, but the choice
+            // is also written to this app's prefs file, and that file decides the units every
+            // future reading arrives in, across restarts. The effect outlives the turn that
+            // made it, which is what puts a stored setting above `standard`; and `safe` in
+            // this vocabulary stays for reads.
             Action::new("set_units", "Show temperatures in Celsius or Fahrenheit")
-                .risk("standard")
+                .risk("sensitive")
                 .arg(Param::text("units").describe("celsius | fahrenheit")),
             move |args| {
                 let ui = units_ui()?;
@@ -1166,8 +1168,8 @@ fn wire(app: &WeatherApp) {
                 ui.set_ai_response("There is no reading yet — refresh first.".into());
                 return;
             }
-            if !companion::is_online() {
-                ui.set_ai_response(companion::OFFLINE_HINT.into());
+            if let Some(hint) = companion::reach().hint() {
+                ui.set_ai_response(hint.into());
                 return;
             }
             ui.set_ai_is_working(true);
@@ -1182,9 +1184,7 @@ fn wire(app: &WeatherApp) {
                         Ok(text) => ui.set_ai_response(text.into()),
                         Err(e) => {
                             tracing::warn!(error = %e, "companion call failed");
-                            ui.set_ai_response(
-                                format!("The companion did not answer: {e}").into(),
-                            );
+                            ui.set_ai_response(e.to_string().into());
                         }
                     }
                 });
@@ -1314,4 +1314,78 @@ fn day_of_week(date_str: &str) -> String {
     let h = ((h + 7) % 7) as usize;
     let names = ["Sat", "Sun", "Mon", "Tue", "Wed", "Thu", "Fri"];
     names[h].to_string()
+}
+
+#[cfg(test)]
+mod grade_tests {
+    //! #48 named this app: `add_location` and `set_units` write choices into
+    //! `~/.config/yantrik/weather.json` that outlive the turn — they are still standing when
+    //! the window closes and after the machine restarts — and both were graded `standard`,
+    //! the grade for what the moment takes back, the same grade as opening a window.
+    //!
+    //! The handlers need a live Slint window and a geocoder to run, so the grades are pinned
+    //! against the source the way `lock_grade_tests` in the shell pins `lock`.
+    use std::path::Path;
+
+    /// One action's declaration and handler, from its quoted name to where the next `.action(`
+    /// begins (or `.serve()` ends the chain for the last one), as written above the tests.
+    fn declaration(name: &str) -> String {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs");
+        let whole = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
+        let src = whole.split("#[cfg(test)]").next().unwrap_or_default();
+        let quoted = format!("\"{name}\"");
+        let from = src
+            .find(&quoted)
+            .unwrap_or_else(|| panic!("weather no longer publishes {name}"));
+        let rest = &src[from..];
+        let end = rest
+            .find(".action(")
+            .or_else(|| rest.find(".serve()"))
+            .unwrap_or(rest.len());
+        rest[..end].to_string()
+    }
+
+    /// What the action leaves in the prefs file is graded above what it shows on screen.
+    ///
+    /// `add_location` stores a place; `set_units` decides the units every future reading
+    /// arrives in. Both effects outlive the turn and survive a restart, so both ask first
+    /// (#48). `refresh` fetches and changes nothing stored, and `show_location` moves an
+    /// already-saved place onto the screen — the prefs line it touches is which place was
+    /// being shown, not what is saved — so neither may become a card in `ask` mode.
+    #[test]
+    fn what_outlives_the_turn_asks_first() {
+        for name in ["add_location", "set_units"] {
+            let declaration = declaration(name);
+            assert!(
+                declaration.contains(".risk(\"sensitive\")"),
+                "`weather.{name}` must be graded sensitive: it writes a choice into this app's \
+                 prefs file that outlives the turn and survives a restart (#48), and a stored \
+                 setting graded `standard` runs unasked in the default mode. Declaration as \
+                 written:\n{declaration}"
+            );
+            assert!(
+                !declaration.contains(".risk(\"standard\")"),
+                "`weather.{name}` is graded standard again (#48). Declaration as \
+                 written:\n{declaration}"
+            );
+        }
+        for name in ["refresh", "show_location"] {
+            let declaration = declaration(name);
+            assert!(
+                !declaration.contains(".risk(\"sensitive\")"),
+                "`weather.{name}` shows or reads and stores no new setting: fetching again, or \
+                 moving an already-saved place onto the screen, is the common person-driven \
+                 flow that must not become a card in `ask` mode (#48 keeps show/read/open at \
+                 `standard` or `safe`). Declaration as written:\n{declaration}"
+            );
+        }
+        // `show_location` declares its grade rather than taking the default, so the judgement
+        // that keeps it below its two writing neighbours stays on the page.
+        assert!(
+            declaration("show_location").contains(".risk(\"standard\")"),
+            "`weather.show_location` declares standard on purpose; if the declaration is gone \
+             the reason beside it has gone with it"
+        );
+    }
 }

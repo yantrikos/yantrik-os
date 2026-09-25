@@ -31,7 +31,8 @@ url = { workspace = true }
 imap = { workspace = true }
 native-tls = { workspace = true }
 lettre = { workspace = true }
-html2text = { workspace = true }
+# The reading pane's HTML-to-text rule, shared with the email service so the two cannot drift.
+yantrik-email-text = { workspace = true }
 mailparse = { workspace = true }
 ureq = { workspace = true }
 regex = { workspace = true }

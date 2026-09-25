@@ -15,6 +15,9 @@ mod app_grid;
 pub mod dep_check;
 mod callbacks;
 mod files;
+/// Launching the app the one MIME rule picked: double-click, "Open with" and `files_open`
+/// all run their decision through here (#233).
+pub mod open_with;
 pub(crate) mod chat;
 mod clipboard;
 pub mod dock;

@@ -1,15 +1,18 @@
-//! The folder the open document lives in, watched, so that moving the document does not strand it.
+//! The folder an open file lives in, watched, so that moving the file does not strand it.
 //!
 //! Seen on 22 Sep 2026: with a document open in yDoc, Files moved it into a new folder. The disk
 //! agreed and the window did not — it went on saying `saved · <the old path>`, and everything
 //! downstream of that line was then wrong. Save had no file to write into, Save As refused the
 //! new path because something was already there, and Open silently dropped the unsaved edit. The
 //! path in the window has to be able to change without a person retyping it, and inotify on the
-//! folder is how the window finds out that it has.
+//! folder is how the window finds out that it has. The Text Editor was found (#86) to strand a
+//! moved file exactly the same way, so what #84 built for yDoc lives here and both apps use it.
 //!
-//! Nothing here decides anything. The decisions are `document::follow_rename` and
-//! `document::moved_to`, which are pure enough to test with a temporary directory and no
-//! filesystem event in sight; this module is the wire between them and the kernel.
+//! The wire and the decisions are together here because the decisions are pure enough to test
+//! with a temporary directory and no filesystem event in sight: [`follow_rename`] answers where
+//! a file is after a rename the folder reported, and [`moved_to`] goes looking on disk when the
+//! event said only that the file left. What stays in each app is what a save does about it — the
+//! refusal that names where the bytes went, and the write itself.
 
 use notify::{
     event::{EventKind, ModifyKind, RenameMode},
@@ -29,7 +32,7 @@ pub enum Move {
     To(PathBuf),
     /// The document left the folder and the event did not say where to — which is the ordinary
     /// case, because the folder it went into is not the folder being watched. Somebody has to go
-    /// and look: `document::moved_to`.
+    /// and look: [`moved_to`].
     Away,
 }
 
@@ -65,7 +68,7 @@ impl Watch {
         match notify::recommended_watcher(handler) {
             Ok(watcher) => Self { watcher: Some(watcher), folder: None, file },
             Err(e) => {
-                tracing::warn!(error = %e, "yDoc cannot watch the folder its document is in");
+                tracing::warn!(error = %e, "cannot watch the folder the open file is in");
                 Self { watcher: None, folder: None, file }
             }
         }
@@ -101,7 +104,7 @@ impl Watch {
 /// What one directory event means for the file at `current`.
 ///
 /// `None` for the events that are about something else, which is nearly all of them — including
-/// yDoc's own temporary file being renamed over the document on every single save.
+/// the editor's own temporary file being renamed over the document on every single save.
 pub fn read_event(event: &Event, current: &Path) -> Option<Move> {
     match &event.kind {
         // Both halves of the rename, paired by inotify on their cookie: the folder told us where
@@ -109,7 +112,7 @@ pub fn read_event(event: &Event, current: &Path) -> Option<Move> {
         EventKind::Modify(ModifyKind::Name(RenameMode::Both)) => {
             let from = event.paths.first()?;
             let to = event.paths.get(1)?;
-            crate::document::follow_rename(current, from, to).map(Move::To)
+            follow_rename(current, from, to).map(Move::To)
         }
         // Only the leaving half, or a removal. The file went somewhere this watch cannot see, or
         // it is really gone; which of those it is takes a look at the disk, and that is the
@@ -146,15 +149,102 @@ pub fn latest(moves: Vec<Move>) -> Option<Move> {
     to.map(Move::To).or(away.then_some(Move::Away))
 }
 
+// ── The decisions ───────────────────────────────────────────────────────────
+//
+// A file open in an editor is a file somebody else can move while it is open — Files does
+// exactly that, with `rename`, which keeps the bytes and the inode and changes only the name.
+// Nothing below watches anything; these are the two decisions the watcher makes, separated from
+// the events that trigger them so they can be tested with a temporary directory and no inotify.
+
+/// How far the search for a moved file is allowed to go.
+///
+/// A person moving a file in Files moves it near where it was: into a folder beside it, usually
+/// one they have just made. That is what this looks for. The bounds are what stop "where did my
+/// document go" from walking a whole home directory — four levels under the folder it used to
+/// be in, and two thousand entries, whichever runs out first.
+const SEARCH_DEPTH: usize = 4;
+const SEARCH_ENTRIES: usize = 2000;
+
+/// Where the file that used to be at `original` probably is now, or `None`.
+///
+/// The same name and exactly the bytes the document last agreed with, somewhere under the folder
+/// it used to live in. Both halves matter: the name on its own would point at any file called
+/// `notes.md`, and the bytes on their own would point at a backup copy under a different name.
+/// `None` is an honest answer and the callers say so rather than guessing.
+///
+/// `read` is the calling app's own file reader, so what counts as "the same bytes" is bounded
+/// the way that app bounds a document — yDoc and the Text Editor refuse different things, and
+/// each gets its own refusal here rather than a shared lowest common denominator.
+pub fn moved_to(
+    original: &Path,
+    baseline: &str,
+    read: fn(&Path) -> Result<String, String>,
+) -> Option<PathBuf> {
+    let name = original.file_name()?;
+    // The folder it lived in — or, when that folder is itself the thing that was moved, the one
+    // above it. No further up than that: a search that climbs is a search with no bound.
+    let start = original.parent().filter(|p| p.is_dir()).or_else(|| {
+        original
+            .parent()
+            .and_then(|p| p.parent())
+            .filter(|p| p.is_dir())
+    })?;
+
+    let mut queue = vec![(start.to_path_buf(), 0usize)];
+    let mut seen = 0usize;
+    while let Some((folder, depth)) = queue.pop() {
+        let Ok(entries) = fs::read_dir(&folder) else { continue };
+        for entry in entries.flatten() {
+            seen += 1;
+            if seen > SEARCH_ENTRIES {
+                return None;
+            }
+            let path = entry.path();
+            // symlink_metadata, so a link pointing back up the tree cannot turn this walk into
+            // a loop: a symlinked folder is neither descended into nor read as a document.
+            let Ok(meta) = fs::symlink_metadata(&path) else { continue };
+            if meta.is_dir() {
+                // Hidden folders are skipped. A `.git` or a `.cache` beside the document would
+                // spend the whole entry budget on somewhere nobody moved a document to.
+                let hidden = entry.file_name().to_string_lossy().starts_with('.');
+                if !hidden && depth < SEARCH_DEPTH {
+                    queue.push((path, depth + 1));
+                }
+            } else if meta.is_file()
+                && entry.file_name() == name
+                && meta.len() == baseline.len() as u64
+                && path.as_path() != original
+                && read(&path).ok().as_deref() == Some(baseline)
+            {
+                return Some(path);
+            }
+        }
+    }
+    None
+}
+
+/// Where an open file lives after a rename the folder around it reported.
+///
+/// Two cases, and the second is the one that catches people out: the file itself was renamed, or
+/// a folder it sits inside was. Moving a folder in Files strands every document in it exactly as
+/// thoroughly as moving one document does, and it is the same fix.
+pub fn follow_rename(current: &Path, from: &Path, to: &Path) -> Option<PathBuf> {
+    if current == from {
+        return Some(to.to_path_buf());
+    }
+    current.strip_prefix(from).ok().map(|rest| to.join(rest))
+}
+
 #[cfg(test)]
 mod tests {
     //! Real inotify, real renames, a real temporary directory.
     //!
-    //! What a document does about a move is decided by `document::follow_rename` and
-    //! `document::moved_to`, and those are tested without a filesystem event in sight over in
-    //! `tests/document-core`. What is left over is the wire, and the wire is the part that cannot
-    //! be reasoned about: that the watch is pointed at the right folder, that the kernel's event
-    //! reaches the channel, and that somebody else's file moving in the same folder wakes nobody.
+    //! What an editor does about a move is decided by its own save path, on top of
+    //! `follow_rename` and `moved_to` here; the decisions themselves are tested without a
+    //! filesystem event in sight in `tests/document-core` and the Text Editor's own tests. What
+    //! is left over is the wire, and the wire is the part that cannot be reasoned about: that
+    //! the watch is pointed at the right folder, that the kernel's event reaches the channel,
+    //! and that somebody else's file moving in the same folder wakes nobody.
 
     use super::*;
     use std::{sync::mpsc::Receiver, time::Duration};
@@ -165,7 +255,7 @@ mod tests {
 
     impl Dir {
         fn new(name: &str) -> Self {
-            let path = std::env::temp_dir().join(format!("ydoc-follow-{}-{name}", std::process::id()));
+            let path = std::env::temp_dir().join(format!("file-follow-{}-{name}", std::process::id()));
             let _ = fs::remove_dir_all(&path);
             fs::create_dir_all(&path).expect("a scratch directory");
             Self(fs::canonicalize(&path).expect("a real path"))

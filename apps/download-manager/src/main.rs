@@ -222,9 +222,9 @@ fn wire(app: &DownloadManagerApp, engine: Engine) -> Timer {
         let engine = engine.clone();
         app.on_ai_explain_pressed(move || {
             let Some(ui) = weak.upgrade() else { return };
-            if !companion::is_online() {
+            if let Some(hint) = companion::reach().hint() {
                 ui.set_ai_is_working(false);
-                ui.set_ai_response(companion::OFFLINE_HINT.into());
+                ui.set_ai_response(hint.into());
                 return;
             }
             // The list, handed over as the list. Describing it in prose first and asking the model
@@ -247,7 +247,7 @@ fn wire(app: &DownloadManagerApp, engine: Engine) -> Timer {
                     ui.set_ai_response(
                         match outcome {
                             Ok(text) => text,
-                            Err(reason) => format!("The companion did not answer — {reason}"),
+                            Err(e) => e.to_string(),
                         }
                         .into(),
                     );

@@ -147,6 +147,40 @@ export component SystemMonitor inherits Rectangle {
 
     callback back-pressed();
 
+    // ── What the list and the AI card say about themselves (#220) ──
+    //
+    // A filter that matched nothing read exactly like a machine that reported nothing, so the
+    // empty list now echoes the word that was typed. The AI Workloads card drew a row of
+    // dashes and a confident "0%" error rate while nothing on this machine fed its inputs --
+    // no source anywhere in Yantrik sets them -- so with nothing measured it now says that
+    // plainly, and the numbers only draw when something real arrives.
+    out property <string> process-empty-text: root.process-search != ""
+        ? "No process matches '" + root.process-search + "'"
+        : "No process data";
+    property <bool> ai-has-measurements: root.ai-model-name != "" || root.ai-tokens-per-sec > 0.0
+        || root.ai-tokens-today > 0 || root.ai-provider-latency-ms >= 0 || root.ai-request-active;
+    out property <string> ai-no-source-text: root.ai-has-measurements ? ""
+        : "Nothing measured: no source on this machine reports model or token activity.";
+
+    // ── Geometry mirrored out for the ui-preview checks (#220) ──
+    //
+    // Slint centres an element that sets a width but no x -- (parent.width - width) / 2 --
+    // which drew a 62% bar from about 20% of its track. The fills now say `x: 0`, and these
+    // mirrors pin it: a fill must start at the left edge of its track and take a real width.
+    // The core and disk fills live inside repeaters, so they report through changed
+    // callbacks; the health and swap fills are single elements and bind directly.
+    out property <length> health-fill-x: health-fill.x;
+    out property <length> swap-fill-x: swap-fill.x;
+    out property <length> swap-fill-width: swap-fill.width;
+    out property <length> core-fill-x: 0px;
+    out property <length> core-fill-width: 0px;
+    out property <length> disk-fill-x: 0px;
+    out property <length> disk-fill-width: 0px;
+    // Selecting a row must not move the list: the header row used to grow 14px the moment
+    // End and Force Kill appeared, sliding everything below down under the pointer.
+    out property <length> proc-header-height: proc-header.height;
+    out property <length> proc-search-y: proc-search-bar.y;
+
     VerticalLayout {
         spacing: 0px;
 
@@ -320,7 +354,8 @@ export component SystemMonitor inherits Rectangle {
                         border-radius: 2px;
                         background: Theme.bg-deep;
 
-                        Rectangle {
+                        health-fill := Rectangle {
+                            x: 0;
                             width: max(0px, parent.width * root.health-score / 100);
                             height: 100%;
                             border-radius: 2px;
@@ -522,12 +557,15 @@ export component SystemMonitor inherits Rectangle {
                                     background: Theme.bg-deep;
 
                                     Rectangle {
+                                        x: 0;
                                         width: max(0px, parent.width * core.usage / 100);
                                         height: 100%;
                                         border-radius: 4px;
                                         background: core.usage > 80 ? Theme.color-emotional :
                                                    core.usage > 50 ? Theme.amber : Theme.accent;
                                         animate width { duration: 300ms; }
+                                        changed x => { root.core-fill-x = self.x; }
+                                        changed width => { root.core-fill-width = self.width; }
                                     }
                                 }
 
@@ -692,7 +730,8 @@ export component SystemMonitor inherits Rectangle {
                                 border-radius: 3px;
                                 background: Theme.bg-deep;
 
-                                Rectangle {
+                                swap-fill := Rectangle {
+                                    x: 0;
                                     width: max(0px, parent.width * root.swap-usage / 100);
                                     height: 100%;
                                     border-radius: 3px;
@@ -772,12 +811,15 @@ export component SystemMonitor inherits Rectangle {
                                         background: Theme.bg-deep;
 
                                         Rectangle {
+                                            x: 0;
                                             width: max(0px, parent.width * disk.usage-percent / 100);
                                             height: 100%;
                                             border-radius: 4px;
                                             background: disk.usage-percent > 90 ? Theme.color-emotional :
                                                        disk.usage-percent > 75 ? Theme.amber : Theme.accent;
                                             animate width { duration: 300ms; }
+                                            changed x => { root.disk-fill-x = self.x; }
+                                            changed width => { root.disk-fill-width = self.width; }
                                         }
                                     }
 
@@ -962,6 +1004,22 @@ export component SystemMonitor inherits Rectangle {
 
                         Rectangle { height: 1px; background: Theme.bg-elevated; }
 
+                        // The honest state (#220). Nothing in Yantrik feeds the ai-* inputs --
+                        // no service reports a running model, tokens per second or provider
+                        // latency -- so with nothing measured this card used to draw a row of
+                        // dashes beside a confident "0%" error rate while minds ran, implying
+                        // readings nobody took. It now says plainly that there is no source,
+                        // and the numbers only draw when something real arrives.
+                        if !root.ai-has-measurements : Text {
+                            text: root.ai-no-source-text;
+                            color: Theme.text-dim;
+                            font-size: Theme.fs-caption;
+                            wrap: word-wrap;
+                        }
+
+                        if root.ai-has-measurements : VerticalLayout {
+                        spacing: 8px;
+
                         // Model info row
                         HorizontalLayout {
                             spacing: 10px;
@@ -1079,6 +1137,7 @@ export component SystemMonitor inherits Rectangle {
                                 }
                             }
                         }
+                        }
 
                         // Active request progress bar
                         if root.ai-request-active : VerticalLayout {
@@ -1098,6 +1157,7 @@ export component SystemMonitor inherits Rectangle {
                                     border-radius: 2px;
                                     background: Theme.bg-elevated;
                                     Rectangle {
+                                        x: 0;
                                         width: parent.width * (root.ai-request-progress / 100.0);
                                         height: 4px;
                                         border-radius: 2px;
@@ -1129,8 +1189,13 @@ export component SystemMonitor inherits Rectangle {
                         spacing: 6px;
 
                         // Header row
-                        HorizontalLayout {
+                        proc-header := HorizontalLayout {
                             spacing: 8px;
+                            // The row keeps the buttons' height whether or not they are shown
+                            // (#220): it used to grow 14px the moment a selection produced End
+                            // and Force Kill, sliding the whole list down under the pointer
+                            // between the press and the click that was meant to follow it.
+                            height: 28px;
 
                             Text {
                                 text: "PROCESSES";
@@ -1196,7 +1261,7 @@ export component SystemMonitor inherits Rectangle {
                         }
 
                         // Search bar
-                        Rectangle {
+                        proc-search-bar := Rectangle {
                             height: 30px;
                             background: Theme.bg-deep;
                             border-width: 1px;
@@ -1320,8 +1385,11 @@ export component SystemMonitor inherits Rectangle {
 
                         Rectangle { height: 1px; background: Theme.bg-elevated; }
 
+                        // An empty list says which of the two emptinesses this is (#220):
+                        // a filter that matched nothing echoes the word typed, and only a
+                        // machine that reported nothing at all says "No process data".
                         if root.processes.length == 0 : Text {
-                            text: "No process data";
+                            text: root.process-empty-text;
                             color: Theme.text-dim;
                             font-size: Theme.fs-caption;
                         }

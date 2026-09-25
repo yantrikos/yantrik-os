@@ -355,14 +355,14 @@ mod tests {
 
     #[test]
     fn a_document_follows_its_own_rename_and_the_rename_of_a_folder_above_it() {
-        let renamed = document::follow_rename(
+        let renamed = yantrik_file_follow::follow_rename(
             Path::new("/home/p/Documents/notes.md"),
             Path::new("/home/p/Documents/notes.md"),
             Path::new("/home/p/Documents/pricing.md"),
         );
         assert_eq!(renamed.as_deref(), Some(Path::new("/home/p/Documents/pricing.md")));
 
-        let carried = document::follow_rename(
+        let carried = yantrik_file_follow::follow_rename(
             Path::new("/home/p/Documents/notes.md"),
             Path::new("/home/p/Documents"),
             Path::new("/home/p/Archive"),
@@ -373,7 +373,7 @@ mod tests {
     #[test]
     fn a_rename_of_some_other_file_leaves_the_document_where_it_is() {
         assert_eq!(
-            document::follow_rename(
+            yantrik_file_follow::follow_rename(
                 Path::new("/home/p/Documents/notes.md"),
                 Path::new("/home/p/Documents/other.md"),
                 Path::new("/home/p/Documents/renamed.md"),
@@ -383,7 +383,7 @@ mod tests {
         // A prefix that is not a path component is not an ancestor: `/home/p/Doc` is not the
         // folder `/home/p/Documents` is in, whatever the strings look like.
         assert_eq!(
-            document::follow_rename(
+            yantrik_file_follow::follow_rename(
                 Path::new("/home/p/Documents/notes.md"),
                 Path::new("/home/p/Doc"),
                 Path::new("/home/p/Elsewhere"),

@@ -97,10 +97,13 @@ yos act shell refresh_apps
 yos ls                       # my-surface, closed, with its purpose
 ```
 
-The shell splits `Exec` and `X-Yantrik-Adapter` on whitespace and strips field codes such as
-`%U`; it does not interpret quotes. Keep both to a program and plain arguments, and put anything
-more elaborate in a small script (LibreOffice's `Exec` runs `yantrik-libreoffice`, a launcher that
-adds the pipe argument, for this reason).
+The shell reads `Exec` the way the Desktop Entry spec writes it: arguments split on unquoted
+whitespace, `"quoted"` sections kept as one argument, backslash escapes honoured, and field codes
+such as `%U` answered where they stand — a file being opened goes where the code is, a launch with
+no file removes it, and only a line with no code at all gets the file appended last.
+`X-Yantrik-Adapter` is still simply split on whitespace: keep it to a program and plain arguments,
+and put anything more elaborate in a small script (LibreOffice's `Exec` runs `yantrik-libreoffice`,
+a launcher that adds the pipe argument, for this reason).
 
 ## Checked by
 

@@ -133,6 +133,7 @@ fi
 say "Desktop chrome"
 "${SSH[@]}" "mkdir -p $REMOTE/share/labwc $REMOTE/share/fonts"
 rsync -a -e "$RSYNC_RSH" "$PROJECT_ROOT/config/labwc/" "$TARGET_HOST:$REMOTE/share/labwc/"
+rsync -a -e "$RSYNC_RSH" "$PROJECT_ROOT/config/labwc-mind/" "$TARGET_HOST:$REMOTE/share/labwc-mind/"
 rsync -a -e "$RSYNC_RSH" "$PROJECT_ROOT/crates/yantrik-design-tokens/slint/fonts/" \
   "$TARGET_HOST:$REMOTE/share/fonts/"
 echo "   labwc theme + Barlow/JetBrains Mono"

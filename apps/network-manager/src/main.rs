@@ -45,6 +45,10 @@ use yantrik_ipc_contracts::network::{
 };
 use yantrik_ipc_transport::SyncRpcClient;
 
+/// The windowless half of connecting: the plan, the published action, the request the typed
+/// secret travels in. Pure, so `tests/network-core` can exercise it without a window.
+mod connect;
+
 slint::include_modules!();
 
 /// What the last refresh learned, beside the window.
@@ -471,21 +475,53 @@ fn do_scan(ui: &NetworkManagerApp, state: &State) {
     );
 }
 
+/// Put the window's own password prompt on screen for the person to type into.
+///
+/// It is the same dialog the Wi-Fi list opens for an unsaved row: same title, same box, same
+/// Connect button that fires `on_wifi_connect`. The prompt is cleared first so a previous
+/// attempt's status or half-typed secret is not sitting in it. A prompt nobody can see is a
+/// connect that never happens, so the window comes out of minimized the way the other apps'
+/// `show` actions do.
+fn raise_password_prompt(ui: &NetworkManagerApp, ssid: &str) {
+    ui.set_wifi_password_input("".into());
+    ui.set_wifi_connect_status("".into());
+    ui.set_wifi_password_ssid(ssid.into());
+    ui.set_wifi_password_visible(true);
+    ui.window().set_minimized(false);
+}
+
+/// The real backend: the socket call to network-service. `join_request` has already decided
+/// what secret, if any, travels; the service hands it to nmcli over stdin with `--ask`, never
+/// through a command line, and its errors never name it.
+struct ServiceBackend;
+
+impl connect::Backend for ServiceBackend {
+    fn wifi_connect(&self, request: &WifiConnectParams) -> Result<WifiState, String> {
+        let params = serde_json::to_value(request).unwrap();
+        call::<WifiState>(method::WIFI_CONNECT, params)
+    }
+}
+
 /// Join a network. Runs off the UI thread: an association waits on a handshake and on DHCP.
 ///
-/// The password is moved into the worker and never copied anywhere else — not into the notice,
-/// not into `wifi-connect-status`, not into a log line. `wifi-password-input` is cleared as the
-/// dialog closes so it does not sit in the window's model either.
-fn do_connect(ui: &NetworkManagerApp, state: &State, ssid: String, password: Option<String>) {
-    ui.set_wifi_connect_status(format!("Connecting to {ssid}\u{2026}").as_str().into());
+/// The request is moved into the worker and its password is never copied anywhere else — not
+/// into the notice, not into `wifi-connect-status`, not into a log line. `wifi-password-input`
+/// is cleared as the dialog closes so it does not sit in the window's model either.
+fn do_connect(ui: &NetworkManagerApp, state: &State, request: WifiConnectParams) {
+    ui.set_wifi_connect_status(format!("Connecting to {}\u{2026}", request.ssid).as_str().into());
     let state = state.clone();
-    let named = ssid.clone();
+    let named = request.ssid.clone();
     off_thread(
         ui,
         move || {
-            let params =
-                serde_json::to_value(WifiConnectParams { ssid, password }).unwrap();
-            call::<WifiState>(method::WIFI_CONNECT, params)
+            // The same `submit` the tests drive with a recorder: one path from a typed
+            // password to the backend, whether a person typed it or the action raised the
+            // prompt for one.
+            connect::submit(
+                &ServiceBackend,
+                &request.ssid,
+                request.password.as_deref().unwrap_or(""),
+            )
         },
         move |ui, outcome| {
             match &outcome {
@@ -579,9 +615,9 @@ fn refresh_agent_rail(ui: &NetworkManagerApp, state: &State) {
 
     ui.set_agent_context(ModelRc::new(VecModel::from(context)));
 
-    let online = companion::is_online();
+    let reach = companion::reach();
     let mut suggestions: Vec<AgentSuggestion> = Vec::new();
-    if online {
+    if reach == companion::Reach::Ready {
         suggestions.push(AgentSuggestion {
             id: "explain".into(),
             label: "Explain this machine's network".into(),
@@ -592,10 +628,9 @@ fn refresh_agent_rail(ui: &NetworkManagerApp, state: &State) {
         });
     }
     ui.set_agent_suggestions(ModelRc::new(VecModel::from(suggestions)));
-    ui.set_agent_unavailable(if online {
-        SharedString::new()
-    } else {
-        companion::OFFLINE_HINT.into()
+    ui.set_agent_unavailable(match reach.hint() {
+        Some(hint) => hint.into(),
+        None => SharedString::new(),
     });
 }
 
@@ -669,15 +704,9 @@ fn wire(app: &NetworkManagerApp, state: &State) {
         let state = state.clone();
         app.on_wifi_connect(move |ssid, password| {
             let Some(ui) = weak.upgrade() else { return };
-            let password = password.to_string();
-            do_connect(
-                &ui,
-                &state,
-                ssid.to_string(),
-                // An empty box is not a password. The contract carries `Option` for this: an
-                // empty string used to mean both "open network" and "the user cleared the field".
-                (!password.is_empty()).then_some(password),
-            );
+            // An empty box is not a password; `join_request` decides that, and it is the same
+            // function the control action's path goes through.
+            do_connect(&ui, &state, connect::join_request(&ssid, &password));
         });
     }
 
@@ -790,7 +819,7 @@ fn ask_companion(ui: &NetworkManagerApp, state: &State) {
                     });
                 }
                 Err(e) => {
-                    ui.set_ai_response(format!("The companion did not answer: {e}").as_str().into());
+                    ui.set_ai_response(e.to_string().as_str().into());
                     ui.set_proposal(AgentProposal {
                         title: "The companion did not answer".into(),
                         body: format!("{e}").as_str().into(),
@@ -826,10 +855,11 @@ fn ask_companion(ui: &NetworkManagerApp, state: &State) {
 // call here. `wifi_radio` carries the grade for its worst argument, because the ladder grades
 // actions and not argument values, and `off` is the worst argument.
 //
-// `wifi_connect` is **sensitive**. It joins a network and hands a secret to whatever is
-// answering to that SSID, which is worth a deliberate decision; it does not take the machine off
-// the network it is on — a wired link is untouched, and a failed association leaves the previous
-// one standing.
+// `wifi_connect` is **sensitive**. It hands this machine to whatever is answering to that
+// SSID, which is worth a deliberate decision; it does not take the machine off the network it
+// is on — a wired link is untouched, and a failed association leaves the previous one standing.
+// The password is not an argument and cannot become one (#178): a network this machine has not
+// saved opens the window's own prompt and waits for a person to type into it.
 //
 // `wifi_forget` is **sensitive**, and it is only honestly sensitive because the service refuses
 // to forget the network currently in use: `nmcli connection delete` on the active profile takes
@@ -840,6 +870,8 @@ fn ask_companion(ui: &NetworkManagerApp, state: &State) {
 // few seconds and changes nothing.
 //
 // No password is echoed by any of this: not in a result, not in `describe`, not in the notice.
+// None is taken in either — the only road a secret travels is the window's prompt to the
+// service, and no action argument, card or audit line is on it.
 
 fn publish_control(app: &NetworkManagerApp, state: &State) {
     use yantrik_app_runtime::control::{Action, App, Param, View};
@@ -1030,40 +1062,41 @@ fn publish_control(app: &NetworkManagerApp, state: &State) {
         )
         .action(
             // Sensitive, and deferred: an association waits on a WPA handshake and on DHCP, which
-            // the service allows twenty-five seconds.
-            Action::new("wifi_connect", "Join a Wi-Fi network")
-                .defers()
-                .risk("sensitive")
-                .arg(Param::text("ssid").describe("The network name to join"))
-                .arg(
-                    Param::text("password")
-                        .optional()
-                        .describe(
-                            "The network's password. Omit for an open network or one this \
-                             machine has already saved. Never echoed back.",
-                        ),
-                ),
+            // the service allows twenty-five seconds. The published parameter list — and the
+            // reason there is no `password` in it — lives in `connect::wifi_connect_action`.
+            connect::wifi_connect_action(),
             move |args| {
                 let ui = connect_ui()?;
                 let ssid = args["ssid"].as_str().unwrap_or_default().trim().to_string();
                 if ssid.is_empty() {
                     return Err("a network name is needed to connect".to_string());
                 }
-                let present = connect_state.lock().unwrap().wifi.adapter_present;
+                // Bound to locals first: the lock guard of a `.lock()` written inside an `if`
+                // condition lives to the end of the whole `if`, and `no_adapter` locks again —
+                // which would be a deadlock on the UI thread.
+                let (present, plan) = {
+                    let reading = connect_state.lock().unwrap();
+                    (reading.wifi.adapter_present, connect::plan(&ssid, &reading.known))
+                };
                 if !present {
                     return Err(no_adapter(&ui, &connect_state));
                 }
-                let password = args["password"]
-                    .as_str()
-                    .map(str::to_string)
-                    .filter(|p| !p.is_empty());
-                do_connect(&ui, &connect_state, ssid.clone(), password);
-                // The SSID, and not one word about the secret. The result of an action that took
-                // a password must be readable in a log.
-                Ok(serde_json::json!({
-                    "connecting_to": ssid,
-                    "settles": "wifi.connected_ssid and notice in describe",
-                }))
+                match plan {
+                    connect::Plan::Join => {
+                        // Saved on this machine: NetworkManager holds the credential, so no
+                        // secret is needed and none is asked for.
+                        do_connect(&ui, &connect_state, connect::join_request(&ssid, ""));
+                        Ok(connect::joining_answer(&ssid))
+                    }
+                    connect::Plan::AskPerson => {
+                        // Nothing is saved here and a password is not an argument this action
+                        // can carry (#178). The window's own prompt goes up, the person types
+                        // into it, and what they type reaches the service through the same
+                        // `on_wifi_connect` path their click would.
+                        raise_password_prompt(&ui, &ssid);
+                        Ok(connect::waiting_answer(&ssid))
+                    }
+                }
             },
         )
         .action(

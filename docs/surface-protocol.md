@@ -243,7 +243,7 @@ refusal of the act itself is error `-32602`, whose `message` is the sentence giv
 | --- | --- | --- |
 | 1 | an `action` | `` act needs a non-empty `action` `` |
 | 2 | the action exists | `` unknown action `<name>`; this app offers: <a>, <b>, … `` (every action, in declaration order) |
-| 3 | the calling agent's reach, when the call carries an `agent_token` whose role has one (`yantrik_ipc_transport::reach`) | `REACH: …` — the act is outside the role's surfaces, or above its ceiling; a reach file that cannot be read refuses every token-carrying call |
+| 3 | the calling agent's reach, when the call carries an `agent_token` whose role has one (`yantrik_ipc_transport::reach`) | `REACH: …` — the act is outside the role's surfaces, or above its ceiling; a reach file that cannot be read refuses every token-carrying call. One act is read against its arguments: `shell.open_app` is within a reach that names the app in `name`, whatever the ceiling — opening a window is not an act on its data |
 | 4 | `args` is an object (absent or `null` is none) | `` `<action>` takes its arguments as an object of named values, and <kind> arrived `` |
 | 5 | every required argument is present | `` `<action>` needs argument `<param>` `` (the first missing, in declaration order) |
 | 6 | no argument the action does not declare | `` `<action>` has no argument `<key>`; it takes: <p1>, <p2>, … `` — or, for an action with none, `` `<action>` takes no arguments, but `<key>` was given `` (the first undeclared key in sorted order; the list in declaration order) |

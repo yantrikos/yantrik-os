@@ -83,10 +83,16 @@ component MetricTile inherits Rectangle {
     in property <string> label;
 
     horizontal-stretch: 1;
-    // Without this the tile's minimum comes from its own text, so a wide value
-    // like "13 km/h" makes its column wider than the one beside it and the rows
-    // stop lining up. At 0 every tile takes an identical share of the grid.
+    // Equal shares with a ceiling (#220). Every tile claims the same minimum, the same
+    // preferred and the same maximum, so the columns line up whatever their texts say --
+    // a wide value like "13 km/h" can no longer make its column wider than "92%" -- and
+    // at the default 1000×720 window, where the 280px context rail leaves the hero about
+    // 608px, the grid shrinks inside the card instead of pushing the UV index and cloud
+    // cover tiles under the rail. The fixed `width: 161px` this replaces could not shrink
+    // at all: three of them plus the gutters claimed 499px whatever the window said.
     min-width: 0px;
+    preferred-width: 161px;
+    max-width: 161px;
     height: 64px;
     border-radius: Theme.r-md;
     background: Theme.bg-surface;
@@ -169,10 +175,9 @@ export component WeatherDashboard inherits Rectangle {
     property <length> CHIP-H: 32px;
     property <length> HERO-ICON: 60px;
     property <length> HERO-GUTTER: 18px;
-    // Explicit, because a stretch factor only shares the SURPLUS: each tile still
-    // claims a minimum from its own text, so "1020 hPa" made its column wider
-    // than "92%" and the grid rows drifted out of line.
-    property <length> HERO-TILE: 161px;
+    // The tile grid's design width moved into MetricTile itself, as the preferred and
+    // maximum every tile shares — a fixed width here was exactly what the default window
+    // could not fit beside the context rail (#220).
 
     in property <WeatherCurrent> current: {
         temperature: "--",
@@ -243,6 +248,20 @@ export component WeatherDashboard inherits Rectangle {
     in property <string> weather-aqi-value: "--";
     in property <string> weather-aqi-label: "N/A";
     in property <int> weather-aqi-level: 0;  // 0=good, 1=moderate, 2=unhealthy
+
+    // ── Geometry mirrored out for the ui-preview checks (#220) ──
+    //
+    // The hero's stat tiles must stay inside the space the window leaves for the content
+    // column: at the default 1000×720 window the 280px context rail leaves it about 720px,
+    // and the old fixed 499px tile grid pushed the UV index and cloud cover out of the card
+    // and under the rail. `hero-tiles-abs-right` and `content-space-right` are both measured
+    // from the dashboard's own left edge; the first must never pass the second.
+    out property <length> hero-row-width: hero-row.width;
+    out property <length> hero-tiles-x: hero-tiles.x;
+    out property <length> hero-tiles-width: hero-tiles.width;
+    out property <length> hero-tiles-abs-right: content-flick.x + hero-card.x + hero-row.x
+        + hero-tiles.x + hero-tiles.width;
+    out property <length> content-space-right: content-flick.x + content-flick.width;
 
     // The content, with the agent rail beside it.
     VerticalLayout {
@@ -560,7 +579,7 @@ export component WeatherDashboard inherits Rectangle {
             }
 
             // ── Scrollable content ──
-            Flickable {
+            content-flick := Flickable {
                 viewport-height: content-col.preferred-height + 40px;
 
                 content-col := VerticalLayout {
@@ -662,7 +681,7 @@ export component WeatherDashboard inherits Rectangle {
                     }
 
                     // ══════ HERO SECTION — Current Conditions ══════
-                    Rectangle {
+                    hero-card := Rectangle {
                         // A weather panel should have some air in it; a flat fill read as a form.
                         background: @linear-gradient(160deg, Theme.bg-elevated 0%, Theme.bg-card 70%);
                         border-radius: Theme.r-lg;
@@ -692,7 +711,7 @@ export component WeatherDashboard inherits Rectangle {
                             }
 
                             // ── The reading, then today's numbers beside it ──
-                            HorizontalLayout {
+                            hero-row := HorizontalLayout {
                                 spacing: 24px;
 
                                 VerticalLayout {
@@ -753,27 +772,23 @@ export component WeatherDashboard inherits Rectangle {
                                     }
                                 }
 
-                                VerticalLayout {
-                                    width: 3 * root.HERO-TILE + 2 * 8px;
+                                hero-tiles := VerticalLayout {
                                     alignment: center;
                                     spacing: 8px;
 
                                     HorizontalLayout {
                                         spacing: 8px;
                                         MetricTile {
-                                            width: root.HERO-TILE;
                                             icon-path: Icons.droplet;
                                             value: root.current.humidity;
                                             label: "HUMIDITY";
                                         }
                                         MetricTile {
-                                            width: root.HERO-TILE;
                                             icon-path: Icons.wind;
                                             value: root.current.wind-speed;
                                             label: "WIND " + root.current.wind-direction;
                                         }
                                         MetricTile {
-                                            width: root.HERO-TILE;
                                             icon-path: Icons.sun;
                                             value: root.current.uv-index;
                                             label: "UV INDEX";
@@ -783,19 +798,16 @@ export component WeatherDashboard inherits Rectangle {
                                     HorizontalLayout {
                                         spacing: 8px;
                                         MetricTile {
-                                            width: root.HERO-TILE;
                                             icon-path: Icons.eye;
                                             value: root.current.visibility;
                                             label: "VISIBILITY";
                                         }
                                         MetricTile {
-                                            width: root.HERO-TILE;
                                             icon-path: Icons.compass;
                                             value: root.current.pressure;
                                             label: "PRESSURE";
                                         }
                                         MetricTile {
-                                            width: root.HERO-TILE;
                                             icon-path: Icons.cloud;
                                             value: root.current.cloud-cover;
                                             label: "CLOUD COVER";

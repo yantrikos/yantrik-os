@@ -147,12 +147,104 @@ fn wire(app: &SpreadsheetApp) {
     app.on_sheet_show_formula_help(|| { tracing::info!("Show formula help"); });
 
     // ── AI assist ──
-    app.on_sheet_ai_submit(|prompt| { tracing::info!("AI submit: {prompt} (standalone mode)"); });
-    app.on_sheet_ai_apply(|| { tracing::info!("AI apply"); });
-    app.on_sheet_ai_dismiss(|| { tracing::info!("AI dismiss"); });
-    app.on_sheet_ai_formula(|desc| { tracing::info!("AI formula: {desc}"); });
-    app.on_sheet_ai_analyze(|| { tracing::info!("AI analyze"); });
-    app.on_sheet_ai_suggest_chart(|| { tracing::info!("AI suggest chart"); });
-    app.on_sheet_ai_insights(|| { tracing::info!("AI insights"); });
-    app.on_sheet_ai_generate_data(|desc| { tracing::info!("AI generate data: {desc}"); });
+    //
+    // Shelved: the panel and its buttons are in the markup, but nothing behind them asks
+    // anything — every handler here wrote a log line and returned, so pressing Analyze opened
+    // a panel that stayed empty forever, which reads as a request in flight. Until this app
+    // grows real AI actions, the buttons say that plainly, in the panel they open.
+    app.on_sheet_ai_submit({
+        let weak = app.as_weak();
+        move |_prompt| {
+            if let Some(ui) = weak.upgrade() { say_unavailable(&ui); }
+        }
+    });
+    app.on_sheet_ai_apply({
+        let weak = app.as_weak();
+        move || {
+            if let Some(ui) = weak.upgrade() {
+                ui.set_sheet_ai_response("There is nothing to apply.".into());
+            }
+        }
+    });
+    app.on_sheet_ai_dismiss({
+        let weak = app.as_weak();
+        move || {
+            if let Some(ui) = weak.upgrade() { ui.set_sheet_ai_response("".into()); }
+        }
+    });
+    app.on_sheet_ai_formula({
+        let weak = app.as_weak();
+        move |_desc| {
+            if let Some(ui) = weak.upgrade() { say_unavailable(&ui); }
+        }
+    });
+    app.on_sheet_ai_analyze({
+        let weak = app.as_weak();
+        move || {
+            if let Some(ui) = weak.upgrade() { say_unavailable(&ui); }
+        }
+    });
+    app.on_sheet_ai_suggest_chart({
+        let weak = app.as_weak();
+        move || {
+            if let Some(ui) = weak.upgrade() { say_unavailable(&ui); }
+        }
+    });
+    app.on_sheet_ai_insights({
+        let weak = app.as_weak();
+        move || {
+            if let Some(ui) = weak.upgrade() { say_unavailable(&ui); }
+        }
+    });
+    app.on_sheet_ai_generate_data({
+        let weak = app.as_weak();
+        move |_desc| {
+            if let Some(ui) = weak.upgrade() { say_unavailable(&ui); }
+        }
+    });
+}
+
+/// The one sentence every shelved AI button in this app says, so six ways of being unfinished
+/// do not become six different excuses.
+fn say_unavailable(ui: &SpreadsheetApp) {
+    ui.set_sheet_ai_response(companion::NOT_BUILT_YET.into());
+}
+
+#[cfg(test)]
+mod ai_stub_tests {
+    /// Everything above the first test module: the wiring assertions read this, so test code
+    /// mentioning the same names cannot satisfy them.
+    fn main_source() -> String {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/src/main.rs");
+        let src = std::fs::read_to_string(path).expect("this file");
+        src.split("#[cfg(test)]").next().unwrap_or_default().to_string()
+    }
+
+    /// The defect: every AI handler wrote a log line and returned, so the button opened a panel
+    /// that stayed empty forever. Each one must now say so in the panel itself.
+    #[test]
+    fn every_ai_button_says_it_is_not_available_yet() {
+        let src = main_source();
+        for name in [
+            "on_sheet_ai_submit",
+            "on_sheet_ai_formula",
+            "on_sheet_ai_analyze",
+            "on_sheet_ai_suggest_chart",
+            "on_sheet_ai_insights",
+            "on_sheet_ai_generate_data",
+        ] {
+            let start = src.find(name).unwrap_or_else(|| panic!("{name} is not wired at all"));
+            let body = &src[start..];
+            let end = body.find("});").map(|e| e + 3).unwrap_or(body.len());
+            assert!(
+                body[..end].contains("say_unavailable"),
+                "{name} must put the not-available-yet sentence in the panel"
+            );
+        }
+        assert!(src.contains("on_sheet_ai_dismiss"), "dismiss must be wired to clear the panel");
+        assert!(
+            src.contains("companion::NOT_BUILT_YET"),
+            "the sentence is the shared one, not this app's own wording"
+        );
+    }
 }

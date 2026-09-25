@@ -227,8 +227,11 @@ spent and before the handler runs: a window's dispatch here, a service through
 `yantrik_service_sdk::reach::permits` before `gate::permit`. The shell publishes each such agent's
 reach in `~/.config/yantrik/agent-reach.json`, keyed by the SHA-256 of its token (never the token),
 and an act outside it is refused with `REACH:` and a sentence naming the role
-(`yantrik_ipc_transport::reach`). A token with no reach is not held; a call with no token is the
-person's.
+(`yantrik_ipc_transport::reach`). One act is decided by its arguments: `shell.open_app` is within
+a reach that names the app it opens, whatever the ceiling — a closed app cannot be read, so a
+reach that named it and could not open it named an app the role could never use, and opening a
+window is not an act on its data. Every act on the data still meets the surfaces and the ceiling
+once the app answers. A token with no reach is not held; a call with no token is the person's.
 
 The rule lives in `yantrik_ipc_transport::gate` (re-exported as `yantrik_app_runtime::control`), so
 a service that answers `app.act` in its own handler meets it too, without linking Slint. System
@@ -249,6 +252,220 @@ the answer was noticing what `run_command` cannot do — run something in the wi
 
 **And some things should not have a surface yet.** The download manager had none while every
 button only logged a line, and got one once a real transfer engine was behind it.
+
+### Every action, and the grade it holds
+
+#48 asked the question of two actions in Weather: `add_location` and `set_units` wrote choices
+into `~/.config/yantrik/weather.json` that were still standing after a restart, and both were
+graded the same as opening a window. The fix is a rule, so the rule was walked across every
+published action on every app and service surface: **an action whose effect outlives the turn
+that made it — a persistent setting, stored configuration, anything a restart reads back — is at
+least `sensitive`; showing, reading and opening stay `standard` or `safe`.** Five actions moved:
+Weather's two, and the shell's `pin_app`, `use_harness` and `set_do_not_disturb`, each of which
+writes a setting into the shell's own settings file. This table is the record of the walk.
+
+One distinction the table leans on, because it is what kept the walk from regrading every save:
+**configuration against content**. A choice about how the app or the machine behaves from now on
+— which mind answers, which units readings arrive in, what sits on START — is configuration, and
+configuration asks first. A thing the person owns — a note, an event, a document, a scene — is
+content, and a content action a paired action takes back stays `standard` (`add_event` beside
+`delete_own_event`; [the grade guide](sdk/grades.md) argues the line).
+
+| Surface | Action | Grade | Why |
+| --- | --- | --- | --- |
+| shell | `read_message`, `open_lens`, `show_desktop` | safe | reads and showings; nothing written |
+| shell | `open_app`, `start_service`, `refresh_apps`, `send_message` | standard | launch, start, rescan, say a line to the desktop — undone by closing or stopping, nothing stored |
+| shell | `show_screen`, `show_app`, `focus_window`, `close_window`, `minimise_window`, `maximise_window` | standard | moving and placing windows; the state they change dies with the session |
+| shell | `pin_app` | sensitive | **regraded (#48)**: writes the START pin list into the shell's settings, and it is still pinned after a restart |
+| shell | `use_harness` | sensitive | **regraded (#48)**: writes the preferred mind into the shell's settings — a choice about who answers from now on, across restarts |
+| shell | `set_do_not_disturb` | sensitive | **regraded (#48)**: writes `dnd_mode` into the shell's settings; left on, it swallows every notification that follows, quietly, until somebody notices |
+| shell | `report_problem` | sensitive | sends what it carries out of the machine |
+| shell | `install_harness`, `start_harness` | sensitive | fetches software onto the machine; decides what it runs on every login |
+| shell | `set_mind_panel` | safe | showing: how much of one panel is drawn, remembered in the panel's own file; nothing sent, run or granted |
+| shell | `lock` | safe | only takes access away — Super+L must lock, not ask about locking (#215) |
+| shell | `files_go`, `files_enter`, `files_open`, `files_up`, `files_new_folder`, `files_new_file`, `files_select`, `files_view`, `files_rename`, `files_copy`, `files_cut`, `files_paste`, `files_trash_selected`, `files_undo_trash`, `files_toggle_trash`, `files_refresh`, `files_cancel`, `files_terminal` | standard | driving the Files screen; what they change is content, taken back by the paired verb or recovered from Trash |
+| shell | `files_delete` | dangerous | destroys without a trash |
+| shell | `check_update` | safe | reads |
+| shell | `set_update_channel` | sensitive | stored configuration: decides where every later update comes from |
+| shell | `apply_update` | dangerous | replaces the system |
+| shell | `installer_set`, `installer_go_to` | standard | driving the installer's own screens |
+| shell | `installer_install`, `installer_reboot` | dangerous | writes the disk; ends the session |
+| shell | `run_recipe` | sensitive | starts agents |
+| shell | `answer_recipe`, `pause_recipe`, `resume_recipe`, `cancel_recipe` | standard | steering a run already started |
+| shell | `new_agent`, `hand_off` | sensitive | starts an agent, with what that costs and whatever reach the role carries |
+| shell | `send_to_agent`, `stop_agent` | standard | talking to, or stopping, an agent the person started |
+| shell | `read_agent`, `show_agent` | safe | reads and showings |
+| shell | `agent_run`, `agent_input` | sensitive | arbitrary commands; typing into a live shell |
+| shell | `agent_job`, `agent_kill` | standard | reading a job's state; ending a job the caller's token owns |
+| shell | `request_approval`, `approval_status`, `consume_approval`, `set_mind_mode`, `record_unasked_action`, `show_mind_audit`, `close_mind_menu` | safe | the approval machinery itself, which must never act; `set_mind_mode` refuses every loosening, so it can only tighten |
+| arcade | `new_character`, `new_game`, `update_game`, `update_character`, `build`, `play`, `verify`, `screenshot` | standard | editing and building library content, editable again |
+| arcade | `delete` | sensitive | destroys the one named game |
+| calendar | `select_day`, `show_month`, `go_to_today`, `set_view` | standard | moving around the calendar |
+| calendar | `add_event`, `update_event`, `delete_own_event` | standard | content, paired: what `add_event` writes, `delete_own_event` takes back |
+| calendar | `delete_event` | sensitive | no trash — the file the event lives in is removed, and its description says it is not recoverable |
+| containers | `refresh`, `start`, `show_logs` | standard | reads, and starting what is stopped |
+| containers | `stop`, `restart` | sensitive | interrupts what the container was serving |
+| containers | `remove` | dangerous | the writable layer goes with it |
+| documents | `find`, `show` | safe | reads |
+| documents | `open`, `new`, `save`, `save_as`, `set_content`, `append`, `replace_all`, `export_markdown` | standard | content in the app's own library in ~/Documents, every step editable again |
+| download-manager | `add`, `pause`, `resume`, `retry`, `verify`, `pause_all`, `resume_all`, `clear_completed`, `open_folder` | standard | steering the queue |
+| download-manager | `cancel` | sensitive | ends a transfer in flight |
+| email | `open_message`, `select_folder`, `search`, `mark_read`, `flag`, `compose` | standard | reads and a draft; `send` is deliberately not published — mail that has gone cannot be taken back |
+| email | `begin_google_sign_in` | sensitive | puts a full-access consent screen in front of the person, unasked |
+| image-viewer | `open`, `show`, `next`, `previous`, `rotate`, `fit`, `toggle_info` | standard | showing pictures; `rotate` turns what is on screen, the file is unchanged |
+| network | `refresh`, `wifi_scan` | standard | reads that trigger a radio scan |
+| network | `wifi_connect`, `wifi_forget` | sensitive | changes what the machine joins; forgetting deletes a stored credential |
+| network | `wifi_disconnect`, `wifi_radio` | dangerous | on a machine reached over Wi-Fi, takes away the channel the undo would travel on |
+| notes | `new_note`, `open_note`, `set_title`, `append`, `search`, `set_folder`, `notebook`, `tags`, `save`, `restore`, `copy`, `reload`, `preview`, `focus`, `undo`, `redo` | standard | library content, with `undo` beside it |
+| notes | `set_content`, `trash`, `import`, `export` | sensitive | replaces a note's whole body; moves things in and out of the library and the filesystem |
+| presentation | `open`, `show`, `save`, `save_as`, `new_deck`, `add_slide`, `set_slide`, `move_slide`, `go_to`, `next`, `previous`, `present`, `export_markdown` | standard | deck content, editable again |
+| presentation | `delete_slide` | sensitive | takes the slide and its contents off the deck |
+| snippets | `open`, `search`, `show` | safe | reads |
+| snippets | `new`, `save`, `copy`, `toggle_favorite`, `import` | standard | library content, paired verbs |
+| snippets | `delete` | sensitive | no trash |
+| studio | `refresh` | safe | reads |
+| studio | `generate`, `variations` | standard ⇄ sensitive | regraded at runtime: `standard` to a model on the machine, `sensitive` when the backend sends the prompt to a hosted service |
+| studio | `set_backend` | sensitive | stored configuration: written into the settings file, it decides where every later prompt goes |
+| studio | `upscale`, `open`, `delete`, `cancel`, `cancel_all` | standard | library content and job steering |
+| system-monitor | `sort_processes`, `filter_processes` | standard | view state |
+| system-monitor | `kill_process` | dangerous | ends what somebody else is running |
+| terminal | `run`, `send_input`, `new_tab`, `open_directory` | sensitive | arbitrary commands in the window the person is looking at |
+| editor | `new`, `open`, `save`, `save_as`, `show`, `close`, `cancel`, `find`, `find-next`, `find-prev`, `replace_text`, `replace`, `replace-all`, `append`, `undo`, `redo`, `select_tab` | standard | buffer and file content, `undo` beside it; `close` refuses unsaved changes rather than deciding about them |
+| editor | `discard`, `set_content` | sensitive | throws work away; replaces the buffer wholesale |
+| weather | `refresh` | standard | fetches again, stores nothing |
+| weather | `show_location` | standard | a showing: moves an already-saved place onto the screen — the prefs line it touches is which place was being shown, not what is saved |
+| weather | `add_location` | sensitive | **regraded (#48)**: saves a place into `~/.config/yantrik/weather.json`, still saved after a restart |
+| weather | `set_units` | sensitive | **regraded (#48)**: the stored unit choice decides the units every future reading arrives in |
+| weather-service | `set_location` | standard | remembered in memory for this run only; the service writes no file — the app's `add_location` is the storing one |
+| system-monitor-service | `find_process` | safe | reads |
+| system-monitor-service | `kill_process` | dangerous | ends what somebody else is running |
+| notifications-service | `notify`, `dismiss`, `dismiss_all`, `mark_read` | standard | a notification changes nothing and reaches nowhere outside this machine |
+| blender | `new_scene`, `add_primitive`, `delete_object`, `transform`, `set_material`, `set_camera`, `set_light`, `import_model`, `set_render`, `screenshot` | standard | scene content, editable again |
+| blender | `render`, `save`, `open` | sensitive | writes files on the machine; `open` replaces the scene in front of the person |
+| blender | `run_python` | dangerous | arbitrary code can do anything the person can |
+| libreoffice | `read_text`, `read_cells` | safe | reads |
+| libreoffice | `open`, `write_text`, `write_cells`, `save_as`, `export_pdf`, `close` | standard | nothing reaches the disk until `save`; `save_as` and `export_pdf` refuse a path where a file already is, and `close` refuses unsaved changes |
+| libreoffice | `save` | sensitive | replaces the file the document came from |
+
+The walk also looked at, and left: `weather.show_location` (a showing — regrading it would make
+"show me London" a card, and the issue named only the two that store); `shell.set_mind_panel` and
+`shell.lock` (showing, and #215); the approvals surface (its seven `safe`s are the tested
+security property that the surface which asks can never act); and every first-party `save`
+(content in the app's own library, against LibreOffice's `save`, which replaces an outside file
+the document came from). Two places grade the same verb differently, and the walk left both:
+studio's `delete` stays `standard` while arcade's is `sensitive`, though both move to the Trash —
+arcade's author graded a built game as work somebody asked for, the way Notes grades its own
+`trash` — and `files_delete` (`dangerous`, no trash) sits beside `files_trash_selected`
+(`standard`, recoverable). None of the four writes configuration, so none is #48's rule; whether
+every trash-move of finished work deserves a card is a judgement for its own issue.
+
+### The methods a service answers beside the gate
+
+Every grade above is enforced in the `app.act` dispatch. A service also answers **its own**
+JSON-RPC methods on the same socket — `sysmon.kill_process`, `network.wifi_connect` — and those
+meet no gate at all: a caller that speaks JSON-RPC directly can use the method instead of the
+action, and the ceiling, the mind's mode and the grant are no part of it (#161). Beside the
+`dangerous` `kill_process` action, which nothing runs without a grant, the raw method signals any
+pid it is handed; beside the `sensitive` `wifi_connect` action, the raw method joins any network.
+
+Leaving them open is deliberate, and it ends at #43. These methods are not back doors somebody
+forgot; they are the doors the desktop itself walks in through. System Monitor's End button
+delivers its SIGTERM by calling `sysmon.kill_process`; every app that raises a notification goes
+through an app-runtime helper calling `notifications.add`; the shell's own notification wire
+polls `notifications.since`. Until a service can tell the person's own window from any other peer
+on the socket — which is what #43 gives it — gating the method would deny the person's own
+buttons. So each one is listed here instead: every method every service answers, whether it
+changes anything, and the graded `app.act` action that does the same thing where one exists.
+`tests/service-methods` walks each service's dispatch and fails when a method has no row here, or
+a row here has no method behind it, so a new method — mutating or not — cannot join a service
+until somebody has written down what it is beside the gate.
+
+<!-- service-methods: kept honest by `python3 -m unittest discover -s tests/service-methods`, which reads every service's dispatch and holds the two lists together. `read` changes nothing that outlives the call; `change` does. -->
+| Service | Method | | Gated `app.act` beside it | What it is, and who calls it |
+| --- | --- | --- | --- | --- |
+| system-monitor | `sysmon.snapshot` | read | — | the machine's numbers; the window polls, and the surface's `describe` reads the same |
+| system-monitor | `sysmon.processes` | read | — | the process list, sorted and capped; the window polls |
+| system-monitor | `sysmon.kill_process` | change | `kill_process` (service surface) — dangerous | SIGTERM to one pid. The window's End button calls the method; Force Kill is SIGKILL and goes local, because the method takes no signal |
+| network | `network.interfaces` | read | — | what the Network Manager window draws; it polls these six |
+| network | `network.status` | read | — | |
+| network | `network.dns` | read | — | |
+| network | `network.wifi_state` | read | — | |
+| network | `network.wifi_known` | read | — | |
+| network | `network.firewall` | read | — | |
+| network | `network.wifi_scan` | change | `wifi_scan` (app) — standard | asks the radio to rescan |
+| network | `network.wifi_radio` | change | `wifi_radio` (app) — dangerous | turns Wi-Fi off; on a machine reached over Wi-Fi, takes away the channel the undo would travel on |
+| network | `network.wifi_connect` | change | `wifi_connect` (app) — sensitive | joins a network, storing the credential |
+| network | `network.dns_set` | change | none | writes the machine's resolvers. The gated door is the companion's `network_dns_set` tool (sensitive), not an action |
+| network | `network.wifi_disconnect` | change | `wifi_disconnect` (app) — dangerous | leaves the joined network |
+| network | `network.wifi_forget` | change | `wifi_forget` (app) — sensitive | deletes a stored credential |
+| calendar | `calendar.events` | read | — | the Calendar app's model; it reads these three |
+| calendar | `calendar.get_event` | read | — | |
+| calendar | `calendar.revision` | read | — | |
+| calendar | `calendar.create_event` | change | `add_event` (app) — standard | writes an event file |
+| calendar | `calendar.update_event` | change | `update_event` (app) — standard | rewrites an event file |
+| calendar | `calendar.delete_event` | change | `delete_event` (app) — sensitive | removes the file the event lives in; no trash |
+| calendar | `calendar.upsert_remote` | change | none | stores what a CalDAV sync fetched; the companion's sync is the graded door in front of it |
+| notes | `notes.list` | read | — | the library, enumerated |
+| notes | `notes.get` | read | — | one note |
+| notes | `notes.search` | read | — | full-text over the library |
+| notes | `notes.create` | change | `new_note` (app) — standard | writes a note file. **No caller on the desktop**: the Notes app keeps its own library folder |
+| notes | `notes.update` | change | `set_content` (app) — sensitive | rewrites a note file. No caller on the desktop |
+| notes | `notes.delete` | change | none | removes the note file outright — no trash; the app's `trash` (sensitive) is the recoverable one. No caller on the desktop |
+| notes | `notes.set_pinned` | change | none | rewrites the note's pinned flag. No caller on the desktop |
+| notes | `notes.set_tags` | change | `tags` (app) — standard | rewrites the note's tags. No caller on the desktop |
+| notifications | `notifications.list` | read | — | the centre's contents |
+| notifications | `notifications.since` | read | — | what changed since a revision; the shell's notification wire polls it |
+| notifications | `notifications.add` | change | `notify` (service surface) — standard | stores and shows one notification. Every app's notify goes through an app-runtime helper that calls this method |
+| notifications | `notifications.dismiss` | change | `dismiss` (service surface) — standard | takes one off the screen |
+| notifications | `notifications.dismiss_all` | change | `dismiss_all` (service surface) — standard | takes them all off |
+| notifications | `notifications.mark_read` | change | `mark_read` (service surface) — standard | clears the unread badge |
+| notifications | `notifications.action` | change | none | invokes a notification's button and tells the sender. The shell calls it when the person clicks; the click is the authority, which is why there is no action |
+| email | `email.accounts` | read | — | the configured accounts, secrets stripped |
+| email | `email.oauth_status` | read | — | where a sign-in stands |
+| email | `email.test_account` | read | — | dials the account's server to check the credentials; changes nothing |
+| email | `email.list_folders` | read | — | the mailbox tree; the Email app reads these four |
+| email | `email.list_messages` | read | — | |
+| email | `email.get_message` | read | — | |
+| email | `email.search` | read | — | |
+| email | `email.save_account` | change | none | writes the account configuration, password included. The app's settings screen calls it |
+| email | `email.oauth_begin` | change | `begin_google_sign_in` (app) — sensitive | starts the OAuth dance: a browser opens on a full-access consent screen |
+| email | `email.oauth_cancel` | change | none | abandons a sign-in in flight |
+| email | `email.send_message` | change | none | **sends mail.** The app publishes `compose` and deliberately never `send` — mail that has gone cannot be taken back — but the method sends |
+| email | `email.mark_read` | change | `mark_read` (app) — standard | sets the read flag on the server |
+| email | `email.mark_starred` | change | `flag` (app) — standard | sets the star |
+| email | `email.move_message` | change | none | moves a message between folders on the server |
+| email | `email.delete_message` | change | none | deletes a message on the server |
+| a11y | `a11y.windows` | read | — | the foreign window list |
+| a11y | `a11y.describe` | read | — | one window's control tree |
+| a11y | `a11y.status` | read | — | whether AT-SPI is answering |
+| a11y | `a11y.act` | change | none | clicks and types in somebody else's window. The graded door is the companion's `window_action` tool (standard), not an action |
+| weather | `weather.current` | read | — | the forecast; the Weather app fetches these seven. `current`, `hourly` and `daily` remember the asked-for place in memory for this run — the same remembering the surface's `set_location` (standard) does |
+| weather | `weather.hourly` | read | — | |
+| weather | `weather.daily` | read | — | |
+| weather | `weather.alerts` | read | — | |
+| weather | `weather.air_quality` | read | — | |
+| weather | `weather.suggest` | read | — | |
+| weather | `weather.geocode` | read | — | |
+| perception | `perception.since` | read | — | the kernel's account of what is happening, long-polled; root-only socket |
+| perception | `perception.snapshot` | read | — | counts, sources, uptime |
+| perception | `perception.scope` | read | — | what it may see and what the kernel is enforcing |
+| perception-journal | `journal.status` | read | — | the stored-observation journal's state |
+| perception-journal | `journal.since` | read | — | stored observations since a sequence |
+<!-- /service-methods -->
+
+The `none`s are the point of the table, and they are not all the same `none`. `email.send_message`
+is a door the app deliberately does not have — `send` is unpublished because mail that has gone
+cannot be taken back — yet the method sends, and that is exactly the asymmetry #161 is about.
+`notes.delete` removes a file outright beside an app whose own deleting goes to Trash; and all
+five notes writers have no desktop caller at all, the Notes app keeping its library folder itself
+— they are candidates for deletion, or for a gate, the day #43 lands. Until then they at least
+stay inside that folder: a note id is one plain file name there, and an id that is a path
+(`../../x`, `/home/…`) is refused, where it used to reach any `.md` file the person owns.
+`notifications.action` and
+`calendar.upsert_remote` are methods whose only caller is the desktop acting for the person — a
+click, a sync — and are listed so that when #43 can tell callers apart, the choice about each one
+is already written down. Nothing in this section changes a grade or a gate decision; it records
+what stands beside them until the methods themselves can be gated.
 
 ## Threading
 

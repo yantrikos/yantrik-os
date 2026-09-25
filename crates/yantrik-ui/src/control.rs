@@ -161,6 +161,99 @@ pub(crate) fn screen_name(id: i32) -> &'static str {
     }
 }
 
+/// Which of the two things `open_app` can do a name does, when it is one of the desktop's own.
+///
+/// `Some` for a name that is part of the shell rather than a program: the screen it lands on and,
+/// for a section of Settings, which section — both in the words `describe shell` uses. Asked of
+/// the dock's route table, which is the table the launch itself dispatches on, so the answer and
+/// the launch cannot disagree about what just happened. `None` means a window is coming: a
+/// program from the catalogue, the browser, Blender, or the launcher, which answers with its own
+/// report before this is ever reached.
+fn switches_the_shell(name: &str) -> Option<(&'static str, Option<&'static str>)> {
+    use crate::wire::dock::Launch;
+    match crate::wire::dock::route(name) {
+        Some(Launch::Screen(id)) => SCREENS.iter().find(|(_, s)| *s == id).map(|(n, _)| (*n, None)),
+        Some(Launch::SettingsSection(id)) => SETTINGS_SECTIONS
+            .iter()
+            .find(|(_, s)| *s == id)
+            .map(|(n, _)| ("settings", Some(*n))),
+        _ => None,
+    }
+}
+
+/// `open_app`'s answer when the name was one of the desktop's own screens.
+///
+/// Two facts the caller needs and could not see from here: that no window is coming, and whether
+/// the switch is in sight. The shell is one ordinary fullscreen toplevel to labwc and cannot
+/// raise itself, so a screen switched while an app window is in front was switched underneath it
+/// — `show_screen` and `open_launcher` both learned that in #71 and report the raise in these
+/// same words. Failing to raise is not an error: the screen did change, it is just covered.
+fn shell_screen_answer(
+    screen: &'static str,
+    section: Option<&'static str>,
+    raised: Result<(), String>,
+) -> serde_json::Value {
+    let mut answer = serde_json::json!({ "showing": screen });
+    if let Some(section) = section {
+        answer["section"] = section.into();
+    }
+    match raised {
+        Ok(()) => answer["raised"] = true.into(),
+        Err(why) => {
+            answer["raised"] = false.into();
+            answer["note"] = format!(
+                "the shell is on `{screen}`, but its own window could not be brought to the \
+                 front, so an app window may still be covering it: {why}"
+            )
+            .into();
+        }
+    }
+    answer
+}
+
+/// Whether the screen showing is one the desktop waits behind for the person: the lock screen
+/// (3) or the login screen (32).
+///
+/// The installed machine autologins on tty1 and starts the shell on the login screen, so the
+/// session is signed in and that screen is the only thing standing between anybody who can
+/// reach this process and the desktop (#203). Locked is therefore a STATE of the shell, read
+/// off the screen it is showing — nothing persists it, so a restart during the login screen
+/// comes back locked — and every door has to hold to it: the socket's dispatch (the state rule
+/// `publish` installs), the keybinds any process can trigger over D-Bus, the toasts that draw
+/// over every screen, the command palette and the morning brief's boot timer.
+pub(crate) fn locked_screen(screen: i32) -> bool {
+    screen == 3 || screen == 32
+}
+
+/// The one sentence every refused call gets while the desktop waits for the person. Exact, so
+/// a caller can branch on the prefix the way it branches on `GRANT:` or `CEILING:`.
+pub(crate) const LOCKED_REFUSAL: &str = "LOCKED: the desktop is waiting for the person to sign in";
+
+/// Whether `action` may run while the desktop is locked.
+///
+/// An allow-list, and the decision is a pure function so a test can ask it without a window:
+/// anything not named here is refused, which means an action added tomorrow is refused by
+/// default and its author has to come here — past a reader — to change that.
+///
+/// The list is empty on purpose. Neither locked screen needs anything from this surface: both
+/// are driven by Slint callbacks (`wire/login.rs` and `on_try_unlock` in `wire/callbacks.rs`),
+/// and `describe` is not an action. `lock` is refused too — at the login screen it would trade
+/// the password gate for the weaker PIN one.
+pub(crate) fn allowed_while_locked(action: &str) -> bool {
+    const ALLOWED: &[&str] = &[];
+    ALLOWED.contains(&action)
+}
+
+/// What the dispatch's state rule answers for `action` while `screen` is showing: the refusal
+/// when the call must not run, `None` when it passes. Pure, for the same reason.
+fn locked_refusal(screen: i32, action: &str) -> Option<String> {
+    if locked_screen(screen) && !allowed_while_locked(action) {
+        Some(LOCKED_REFUSAL.to_string())
+    } else {
+        None
+    }
+}
+
 /// Join names the way a person would read them out: "a", "a and b", "a, b and c".
 ///
 /// This line is the first thing anyone sees of the desktop, and "calendar and email and notes"
@@ -171,6 +264,32 @@ fn list_of(names: &[&str]) -> String {
         [one] => one.to_string(),
         [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
     }
+}
+
+/// The names `describe shell` puts in its "{...} not running" sentence.
+///
+/// The candidates are the machine rail's records — a service the manager says failed or
+/// stopped — but the record is the manager's account of what *it* started, not the machine's
+/// account of what answers. Notes is the standing case: the app keeps its own store and never
+/// asks for notes-service, so the record stayed "stopped, on demand" beside an open Notes
+/// window and a `yos describe notes` that answered. The headline built from it told every
+/// mind, first thing, that notes was not running; Hermes believed it and refused to describe
+/// the app at all (#34). So a name leaves the sentence the moment anything answers it: an
+/// open window with that app id (`open_apps`), or a live socket (`socket_up`, which the
+/// caller extends to the app's own surface — what `yos describe <name>` actually reaches).
+/// A name nothing answers is genuinely not running, trouble or not, and stays; the full
+/// `services` array keeps carrying the raw records for a caller that wants the manager's side.
+fn not_running<'a>(
+    services: &'a [serde_json::Value],
+    open_apps: &[&str],
+    socket_up: impl Fn(&str) -> bool,
+) -> Vec<&'a str> {
+    services
+        .iter()
+        .filter(|s| matches!(s["status"].as_str(), Some("failed") | Some("stopped")))
+        .filter_map(|s| s["id"].as_str())
+        .filter(|id| !open_apps.contains(id) && !socket_up(id))
+        .collect()
 }
 
 /// How much of the conversation `describe` reports, newest last.
@@ -277,14 +396,34 @@ pub fn publish(
                 return View::new("Yantrik — shutting down");
             };
             let screen = ui.get_current_screen();
+
+            // A locked desktop still answers — a caller has to be able to learn that the
+            // machine is waiting for its person rather than hung — but about nothing else.
+            // The conversation, the window titles, the notifications, the agents and the rest
+            // are the person's, and the login screen exists precisely so that whoever is
+            // standing at the machine is not told them (#203). Reading is free, so this cannot
+            // be enforced by refusing the call; it is enforced by having nothing to say.
+            if locked_screen(screen) {
+                return View::new(format!(
+                    "Yantrik — {} screen, waiting for the person",
+                    screen_name(screen)
+                ))
+                .with("locked", true)
+                .with("screen", screen_name(screen))
+                .with("screen_id", screen);
+            }
+
             let bond = describe_bond(&ui.get_bond_data());
 
             // From the launch registry, not the Slint window-list model. The model is only
             // refreshed while the desktop screen is showing, so a describe from any other screen
             // reported "0 windows open" even with apps running — the registry is refreshed by
             // launches and exits, not by which screen is up, so it is right everywhere.
-            let open: Vec<serde_json::Value> = crate::windows::shell_windows()
-                .into_iter()
+            // Held as a list, not just as the published array: the summary below asks it which
+            // apps are standing open, because a window answers for its service's name.
+            let windows = crate::windows::shell_windows();
+            let open: Vec<serde_json::Value> = windows
+                .iter()
                 .map(|w| {
                     serde_json::json!({
                         "title": w.title,
@@ -308,13 +447,15 @@ pub fn publish(
                     .collect()
             };
 
-            let down: Vec<&str> = services
-                .iter()
-                .filter(|s| {
-                    matches!(s["status"].as_str(), Some("failed") | Some("stopped"))
-                })
-                .filter_map(|s| s["id"].as_str())
-                .collect();
+            // Which names the record says are down, minus the ones the machine itself
+            // contradicts: an open window, or a socket that answers — the service's own, or
+            // the app's surface, which is what a caller reaches when it describes the app.
+            // See `not_running` for why the record alone lied (#34).
+            let open_apps: Vec<&str> = windows.iter().map(|w| w.app_id.as_str()).collect();
+            let down: Vec<&str> = not_running(&services, &open_apps, |id| {
+                yantrik_app_runtime::service::is_up(id)
+                    || yantrik_app_runtime::service::is_up(&format!("app-{id}"))
+            });
 
             // What the Files screen is showing. A directory listing is the thing an agent
             // most often needed and could not get without photographing the window.
@@ -509,6 +650,10 @@ pub fn publish(
                 .with("version", yantrik_version::version())
                 .with("windows", serde_json::Value::Array(open))
                 .with("failed_launches", serde_json::Value::Array(failed))
+                // Where the apps a mind opens are drawn (#239): whether minds open them in Mind
+                // View, whether it is up and on which display, what is in it, and why not if it
+                // could not start. Those apps are not in `windows` — they are not on this desktop.
+                .with("mind_view", crate::mind_view::for_describe())
                 // What is waiting on a person right now. Published so a second mind, or a
                 // test, can tell "the machine is waiting for someone to press a button" from
                 // "the machine is hung" — the two look identical from outside otherwise.
@@ -706,10 +851,27 @@ pub fn publish(
     let read_ui = ui_for.clone();
     let panel_ui = ui_for.clone();
     let desk_ui = ui_for.clone();
+    let rule_ui = ui_for.clone();
     let lock_ui = ui_for;
 
     let surface = ControlSurface::new("shell")
         .describe(describe)
+        // The locked-desktop rule, installed on the dispatch every action on this surface
+        // crosses rather than in the actions themselves (#203): the login screen used to be a
+        // picture over a signed-in session, and `yos act shell open_lens` walked the desktop
+        // straight past it. The rule reads the screen the shell is showing — the state IS the
+        // screen, so there is nothing to fall out of sync — and refuses every action the
+        // allow-list in `allowed_while_locked` does not name, which today names none. An
+        // action added to this surface tomorrow is held to it without its author doing
+        // anything; getting out from under it means editing the allow-list, past a reader.
+        .state_rule(move |action| {
+            // Fail closed: a rule that cannot read the screen cannot know the desktop is open.
+            let ui = rule_ui()?;
+            match locked_refusal(ui.get_current_screen(), action) {
+                Some(refusal) => Err(refusal),
+                None => Ok(()),
+            }
+        })
         .action(
             Action::new(
                 "report_problem",
@@ -749,9 +911,9 @@ pub fn publish(
             //
             // `invoke_launch_app` reaches the dock's callback, and most of its branches
             // `spawn()` a process: the window arrives seconds later, if it arrives at all (a
-            // failed spawn is logged, not returned). A couple of branches only switch screens and
-            // do settle on return, but the caller cannot tell which branch it took, so the
-            // conservative claim is the only honest one.
+            // failed spawn is logged, not returned). The branches that only switch one of the
+            // desktop's own screens settle on return, and now say which happened — the caller was
+            // told `launching` either way, and waited for a window that was never coming (#45).
             Action::new("open_app", "Launch an app, or focus it if it is already running")
                 .arg(Param::text("name").describe("App id, e.g. notes, email, terminal, files"))
                 .defers(),
@@ -780,9 +942,21 @@ pub fn publish(
                 // The launcher's own path: it resolves the binary, enforces one window per app,
                 // and focuses the running one instead of starting a second.
                 ui.invoke_launch_app(name.clone().into());
+                // Which of the two that did. A program opens a window; a name that is part of the
+                // desktop switches one of its screens, and no window exists or ever will. The
+                // listing has always said which a name is (`opens: "app"` against `opens: "a
+                // screen of the desktop itself"`); the answer said `launching` for both, so a
+                // caller that opened `files` waited for a window and saw nothing arrive (#45).
+                let mut answer = match switches_the_shell(&name) {
+                    Some((screen, section)) => {
+                        // Asked to come forward like any other window, because a screen switched
+                        // underneath an app window has not been shown to anyone (#71).
+                        shell_screen_answer(screen, section, crate::windows::raise_shell())
+                    }
+                    None => serde_json::json!({ "launching": name }),
+                };
                 // And the name to describe it by once it is up, which is not always the name it
                 // was opened by (`sysmonitor` opens what answers as `system-monitor`).
-                let mut answer = serde_json::json!({ "launching": name });
                 if let Some(surface) = crate::wire::dock::surface_for(&name, &catalogue) {
                     answer["describe_as"] = surface.into();
                 }
@@ -844,8 +1018,11 @@ pub fn publish(
         .action(
             // Parity with the pin on every tile in All apps. Deciding what sits on START is a
             // person's call, and an agent tidying a desktop on someone's behalf needs the same
-            // verb rather than a way to fake the click.
+            // verb rather than a way to fake the click. `sensitive` because the pin list is
+            // written to the shell's settings: the decision outlives the turn that made it and
+            // is still standing after a restart, which is what a stored setting is.
             Action::new("pin_app", "Pin an app to START, or unpin it")
+                .risk("sensitive")
                 .arg(Param::text("name").describe("App id, e.g. notes, files, browser, chromium"))
                 .arg(Param::flag("pinned").describe("true to pin, false to unpin")),
             move |args| {
@@ -1034,8 +1211,12 @@ pub fn publish(
         .action(
             // Parity, deliberately: anything a person can do on the Harnesses screen, an agent
             // can do here. A control surface that could not change which mind is answering would
-            // be the one decision on this desktop reserved for the mouse.
+            // be the one decision on this desktop reserved for the mouse. `sensitive` because the
+            // choice is written to the shell's settings as the preferred mind: it decides who
+            // answers from now on, stands after a restart, and belongs in front of the person
+            // before it happens rather than after.
             Action::new("use_harness", "Choose which mind answers when the shell is asked something")
+                .risk("sensitive")
                 .arg(Param::text("id").describe("Harness id, as `describe shell` lists under `minds`")),
             move |args| {
                 let id = args["id"].as_str().unwrap_or_default().trim().to_string();
@@ -1044,7 +1225,10 @@ pub fn publish(
                 }
                 let host = crate::wire::harness::host()
                     .ok_or_else(|| "the harness host is not running".to_string())?;
-                host.set_active(&id)?;
+                // The same refusal the Settings page's *Use this* gets: a mind whose process
+                // is gone has already left `harnesses`, and choosing it anyway is answered
+                // with what is attached rather than a quiet success (#67).
+                crate::wire::harness::choose(host, &id)?;
                 // The same memory the Settings screen writes. A choice made here is a choice
                 // about the machine, and an agent that switches minds should not have its
                 // decision quietly undone by the next restart any more than a person should.
@@ -1345,6 +1529,38 @@ pub fn publish(
             },
         )
         .action(
+            // The third thing a person does with a window from its bar, and the verb this
+            // surface was missing while the taskbar's own menu (#232) needed it. The menu's
+            // row and this action are one path: both resolve the title the same way and both
+            // end in `windows::maximise`, so a mind and a pointer get the same behaviour and
+            // the same name for it.
+            //
+            // There is no restore half and no toggle, because wlrctl 0.2.2 has no unmaximize:
+            // a maximized window comes back by its app's own button or the compositor's
+            // Super+Up (config/labwc/rc.xml). Deferred because the compositor decides, like
+            // every other window verb here.
+            Action::new(
+                "maximise_window",
+                "Maximise an open window, as pressing its maximise button does. There is no \
+                 unmaximize here — the app's own button or Super+Up restores it",
+            )
+            .defers()
+            .arg(Param::text("title").describe("Window title, or part of one")),
+            move |args| {
+                let want = args["title"].as_str().unwrap_or_default();
+                let open = crate::windows::addressable_titles();
+                let title = crate::windows::window_named(want, &open)?;
+                crate::windows::maximise(&title)?;
+                Ok(serde_json::json!({
+                    "maximised": title,
+                    // Said because a caller looking for the other half of a toggle would
+                    // otherwise assume one exists and search the surface for it.
+                    "note": "the window fills the screen until its app's own button or \
+                             Super+Up restores it; wlrctl has no unmaximize to call.",
+                }))
+            },
+        )
+        .action(
             // The write is the action, and a failed write is a failed action.
             //
             // `settled` is not a field a handler fills in: this surface computes it as
@@ -1359,7 +1575,13 @@ pub fn publish(
             //
             // So the file first, the error propagated, the screen after. An error out of here
             // means the shell is exactly as the caller found it.
+            //
+            // `sensitive` because the setting stands after a restart — the description says so —
+            // and a Do Not Disturb left on by a caller swallows every notification that follows,
+            // quietly, until somebody notices. A lasting change to how the machine behaves is
+            // for the person to see first.
             Action::new("set_do_not_disturb", "Hold or release notifications. Stays after a restart")
+                .risk("sensitive")
                 .arg(Param::flag("on")),
             move |args| {
                 let ui = dnd_ui()?;
@@ -1852,7 +2074,7 @@ mod window_action_tests {
     /// and for `focus` a match on nothing exits zero.
     #[test]
     fn the_window_verbs_resolve_the_title_before_asking_the_compositor() {
-        for name in ["focus_window", "close_window", "minimise_window"] {
+        for name in ["focus_window", "close_window", "minimise_window", "maximise_window"] {
             let handler = action(name);
             assert!(
                 handler.contains("windows::addressable_titles()"),
@@ -1861,6 +2083,26 @@ mod window_action_tests {
                  written:\n{handler}"
             );
         }
+    }
+
+    /// Maximise is the verb the taskbar's menu was missing (#232), and wlrctl 0.2.2 has no
+    /// unmaximize — so the answer has to say the window stays big until something else restores
+    /// it. A caller told only `maximised: <title>` would look for the restore half of a toggle
+    /// and never find it.
+    #[test]
+    fn maximise_window_says_there_is_no_other_half() {
+        let handler = action("maximise_window");
+        assert!(
+            handler.contains("windows::maximise(&title)"),
+            "`maximise_window` must go through `windows::maximise` — the same function the \
+             taskbar menu's row runs, so the menu adds no second path. Handler as \
+             written:\n{handler}"
+        );
+        assert!(
+            handler.contains("unmaximize"),
+            "`maximise_window` must say wlrctl has no unmaximize, so a caller knows the window \
+             stays maximized until its app or Super+Up restores it. Handler as written:\n{handler}"
+        );
     }
 }
 
@@ -2064,5 +2306,593 @@ mod lock_grade_tests {
              publishes no description for this action)\" is what the card in #215 said. \
              Declaration as written:\n{declaration}"
         );
+    }
+}
+
+#[cfg(test)]
+mod summary_running_tests {
+    //! The headline said "notes and perception not running" beside a window list that named
+    //! Notes and a `describe notes` that answered: the sentence was built from what the
+    //! ServiceManager started, and Notes — which keeps its own store and never asks for
+    //! notes-service — left that record at "stopped, on demand" for as long as it was open.
+    //! Hermes read the headline and refused to describe the app (#34).
+    use super::not_running;
+    use serde_json::json;
+
+    fn record(id: &str, status: &str) -> serde_json::Value {
+        json!({ "id": id, "status": status, "note": "on demand" })
+    }
+
+    /// A stopped or failed name that the machine answers is not "not running", whichever
+    /// way it is answered: a window for Notes, a socket for calendar, nothing for perception.
+    #[test]
+    fn a_name_the_machine_answers_is_never_called_not_running() {
+        let services = [
+            record("notes", "stopped"),
+            record("calendar", "stopped"),
+            record("perception", "stopped"),
+        ];
+        let open_apps = ["notes", "terminal"];
+        let socket_up = |id: &str| id == "calendar";
+        assert_eq!(
+            not_running(&services, &open_apps, socket_up),
+            vec!["perception"],
+            "only the name nothing answers belongs in the sentence"
+        );
+    }
+
+    /// Trouble still counts when nothing answers: a failed service and a stopped one stay,
+    /// and a running record is not the headline's business either way.
+    #[test]
+    fn a_name_nothing_answers_still_shows() {
+        let services = [
+            record("weather", "failed"),
+            record("email", "stopped"),
+            record("network", "running"),
+        ];
+        let socket_up = |_id: &str| false;
+        assert_eq!(not_running(&services, &[], socket_up), vec!["weather", "email"]);
+    }
+
+    /// The sentence itself, the way a person — and Hermes — read it.
+    #[test]
+    fn answered_names_drop_out_of_the_read_aloud_list() {
+        let services = [
+            record("calendar", "stopped"),
+            record("email", "stopped"),
+            record("notes", "stopped"),
+            record("perception", "stopped"),
+        ];
+        // The September machine: Calendar, Email and Notes open; nothing serves perception.
+        let open_apps = ["calendar", "email", "notes"];
+        let socket_up = |_id: &str| false;
+        let down = not_running(&services, &open_apps, socket_up);
+        assert_eq!(super::list_of(&down), "perception");
+    }
+
+    /// The pure rule only holds if `describe` feeds it the live accounts. Pinned against the
+    /// source, the way the other describe wirings are: the candidate list must come through
+    /// `not_running` with both open windows and both sockets — the service's own name and the
+    /// app's `app-` surface, which is the one `yos describe <name>` resolves first.
+    #[test]
+    fn describe_builds_the_sentence_from_what_answers() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/control.rs");
+        let whole = std::fs::read_to_string(&path).expect("control.rs is readable");
+        let src = whole.split("#[cfg(test)]").next().unwrap_or_default();
+        let from = src
+            .find("let down: Vec<&str> = not_running(")
+            .expect("`describe` builds its not-running list through `not_running`");
+        let end = src[from..].find("});").expect("the call ends") + 3;
+        let wiring = &src[from..from + end];
+        assert!(
+            wiring.contains("open_apps"),
+            "open windows are one of the accounts:\n{wiring}"
+        );
+        assert!(
+            wiring.contains("service::is_up(id)"),
+            "the service's own socket is the next:\n{wiring}"
+        );
+        assert!(
+            wiring.contains("\"app-{id}\""),
+            "so is the app's surface — `yos describe notes` reaches `app-notes`, and the \
+             headline must not call it not running while it answers:\n{wiring}"
+        );
+        // The windows list the ids are taken from is the same merged one the headline's
+        // `open` count and the published `windows` array use, so the two can never disagree.
+        assert!(
+            src.contains("let windows = crate::windows::shell_windows();"),
+            "`describe` must consult the launch-registry window list for the open apps"
+        );
+    }
+}
+
+#[cfg(test)]
+mod open_app_answer_tests {
+    use super::{shell_screen_answer, switches_the_shell, SCREENS, screen_name};
+    use std::path::Path;
+
+    /// The `open_app` handler, as written above the tests.
+    ///
+    /// The handler needs a live Slint window and a compositor to run, so its wiring is pinned
+    /// against the source the way `window_action_tests` pins the window verbs. What it is pinned
+    /// to call is pure, and tested for real below.
+    fn handler() -> String {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/control.rs");
+        let whole = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
+        let src = whole.split("#[cfg(test)]").next().unwrap_or_default();
+        let from = src
+            .find("\"open_app\"")
+            .expect("the shell still publishes open_app");
+        let rest = &src[from..];
+        let end = rest.find(".action(").unwrap_or(rest.len());
+        rest[..end].to_string()
+    }
+
+    /// A name that is part of the desktop is not a program, and the answer used to say it was.
+    ///
+    /// `open_app name=image-viewer` opened the shell's own Images screen, and `name=text-editor`
+    /// its Editor screen, while both answered `launching` — #45's two shipped binaries no route
+    /// could reach. #253 retired the screens, so the binaries open by their own names now; what
+    /// is left is the other half of the finding, that the names still switching a screen said
+    /// `launching` too. The listing has always said which a name is (`opens: "app"` against
+    /// `opens: "a screen of the desktop itself"`). This is the answer a caller reads after it has
+    /// already asked, which said the same thing either way.
+    #[test]
+    fn a_name_that_is_part_of_the_desktop_is_answered_as_a_screen_switch() {
+        // The shell's own screens, including the spellings a route also answers to.
+        assert_eq!(switches_the_shell("files"), Some(("files", None)));
+        assert_eq!(switches_the_shell("settings"), Some(("settings", None)));
+        assert_eq!(switches_the_shell("device-dashboard"), Some(("devices", None)));
+        assert_eq!(switches_the_shell("report a problem"), Some(("problems", None)));
+        assert_eq!(switches_the_shell("AGENT"), Some(("agents", None)));
+        // Skills is a section of the Settings screen, not a screen of its own.
+        assert_eq!(switches_the_shell("skills"), Some(("settings", Some("skills"))));
+
+        // A program opens a window, so `launching` is the true word and the caller is right to
+        // go looking for it — including for the two binaries #45 could not reach at all.
+        for name in [
+            "notes", "email", "image-viewer", "images", "image", "text-editor", "editor",
+            "system-monitor", "terminal", "browser", "blender",
+        ] {
+            assert_eq!(switches_the_shell(name), None, "`{name}` opens a window");
+        }
+        // The launcher is neither: it answers with its own report, taken before this is reached.
+        assert_eq!(switches_the_shell("launchpad"), None);
+    }
+
+    /// Both doors to a screen report the screen `describe` reports, for every name the shell routes.
+    ///
+    /// `open_app name=about` and `show_screen screen=about` move the same desktop screen, and a
+    /// caller that read one answer should read the other the same way: which screen it is on, and
+    /// whether the shell got in front. The two tables the answer is built from — the route table
+    /// and `SCREENS` — are kept in step here, because a route to an id `SCREENS` does not name
+    /// would answer `launching` again, quietly: the lookup finds nothing and the dispatch falls
+    /// through to the other branch. It drifted once already, with the launcher's two doors (#71).
+    #[test]
+    fn every_screen_a_route_switches_to_is_one_describe_names() {
+        let mut switched = 0;
+        for name in crate::wire::dock::builtin_app_ids() {
+            let Some((screen, _)) = switches_the_shell(name) else {
+                continue;
+            };
+            let id = SCREENS.iter().find(|(n, _)| *n == screen).map(|(_, id)| *id);
+            assert_eq!(
+                id.map(screen_name),
+                Some(screen),
+                "`open_app name={name}` answers `{screen}`, which is not a name describe gives \
+                 any screen"
+            );
+            switched += 1;
+        }
+        assert!(
+            switched >= 15,
+            "only {switched} of the desktop's own names switch a screen; the route table has \
+             changed shape and this test has stopped checking anything"
+        );
+    }
+
+    /// The action has to ask the question, not merely have the answer available beside it.
+    #[test]
+    fn open_app_answers_with_which_of_the_two_a_name_did() {
+        let handler = handler();
+        assert!(
+            handler.contains("switches_the_shell("),
+            "`open_app` must ask which of the two a name did before it answers. Answering \
+             `launching` for a screen switch is #45: the caller waits for a window no route \
+             will ever open. Handler as written:\n{handler}"
+        );
+        assert!(
+            handler.contains("\"launching\""),
+            "`open_app` must still answer `launching` for a program — that is the half of the \
+             distinction that already worked. Handler as written:\n{handler}"
+        );
+        assert!(
+            handler.contains("raise_shell()"),
+            "`open_app` asks the compositor to bring the shell forward when it switches a \
+             screen, as `show_screen` and `open_launcher` do: the shell is one fullscreen \
+             toplevel to labwc and cannot raise itself, so a screen switched underneath an app \
+             window has not been shown to anyone (#71). Handler as written:\n{handler}"
+        );
+    }
+
+    /// What the switch answers, including the case where nobody can see it.
+    #[test]
+    fn a_screen_switch_answers_with_the_screen_and_whether_it_is_in_sight() {
+        let raised = shell_screen_answer("files", None, Ok(()));
+        assert_eq!(raised["showing"], "files");
+        assert_eq!(raised["raised"], true);
+        assert!(
+            raised.get("launching").is_none(),
+            "a screen switch answers `launching`, which is what a caller waits on: {raised}"
+        );
+
+        let section = shell_screen_answer("settings", Some("skills"), Ok(()));
+        assert_eq!(section["showing"], "settings");
+        assert_eq!(section["section"], "skills");
+
+        // The screen DID change, so this is not an error — it is just possibly covered, and a
+        // caller that has been told which screen it is on is owed the difference. The same words
+        // `show_screen` uses, because it is the same fact.
+        let covered = shell_screen_answer("about", None, Err("wlrctl: no compositor".into()));
+        assert_eq!(covered["raised"], false);
+        let note = covered["note"].as_str().unwrap_or_default().to_string();
+        assert!(
+            note.contains("`about`") && note.contains("wlrctl: no compositor"),
+            "the note does not say which screen is up, or why it could not be raised: {note}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod locked_state_tests {
+    //! The installed machine autologins on tty1, so the login screen is the only thing between
+    //! anybody who can reach this process and the desktop — and `yos act shell open_lens` walked
+    //! straight past it: `accepted: True, settled: True`, Lens open, conversation on screen (#203).
+    //! Locked is a state now, read off the screen the shell is showing, held at the dispatch
+    //! every action crosses. These tests are the state's: the pure decision (`locked_refusal`,
+    //! which the dispatch calls with the live screen), the allow-list's default, and — for the
+    //! wiring that needs a window to run — pins against the source, the way
+    //! `do_not_disturb_tests` and `lock_grade_tests` pin theirs.
+    use super::{LOCKED_REFUSAL, allowed_while_locked, locked_refusal, locked_screen};
+    use std::path::Path;
+
+    /// The lock screen and the login screen, and screens that are neither.
+    const LOCKED_SCREENS: &[i32] = &[3, 32];
+    const OPEN_SCREENS: &[i32] = &[0, 1, 2, 4, 8, 9, 16, 21, 34];
+
+    /// This file, without its tests.
+    fn source() -> String {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/control.rs");
+        let whole = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
+        whole.split("#[cfg(test)]").next().unwrap_or_default().to_string()
+    }
+
+    /// Every action name the shell's control modules publish, read off their declarations
+    /// rather than a list kept beside them — the scan `control_approvals` uses, minus its test
+    /// halves so a test's own quoting of `Action::new` cannot feed it.
+    fn published_actions() -> Vec<String> {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut files: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap_or_else(|e| panic!("cannot read {}: {e}", dir.display()))
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| {
+                p.file_name()
+                    .and_then(|n| n.to_str())
+                    .map(|n| n.starts_with("control") && n.ends_with(".rs"))
+                    .unwrap_or(false)
+            })
+            .collect();
+        files.sort();
+        let mut out = Vec::new();
+        for path in files {
+            let whole = std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
+            let src = whole.split("#[cfg(test)]").next().unwrap_or_default();
+            for (index, _) in src.match_indices("Action::new(") {
+                let rest = &src[index + "Action::new(".len()..];
+                // The name is the first string literal after the paren, possibly on the next
+                // line. Anything else is not an action declaration and is skipped.
+                let Some(open) = rest.find('"') else { continue };
+                if rest[..open].chars().any(|c| !c.is_whitespace()) {
+                    continue;
+                }
+                let Some(close) = rest[open + 1..].find('"') else { continue };
+                out.push(rest[open + 1..open + 1 + close].to_string());
+            }
+        }
+        out
+    }
+
+    /// Which screens the desktop waits behind — and the refusal's exact words, because a
+    /// caller branches on the `LOCKED:` prefix the way it branches on `GRANT:` or `CEILING:`,
+    /// and the release-check greps for it.
+    #[test]
+    fn locked_is_the_lock_screen_and_the_login_screen() {
+        for screen in LOCKED_SCREENS {
+            assert!(locked_screen(*screen), "screen {screen} is a locked screen");
+        }
+        for screen in OPEN_SCREENS {
+            assert!(!locked_screen(*screen), "screen {screen} is not a locked screen");
+        }
+        assert_eq!(
+            LOCKED_REFUSAL, "LOCKED: the desktop is waiting for the person to sign in",
+            "the refusal is one exact sentence so every door says the same thing"
+        );
+    }
+
+    /// While the desktop waits for the person, every action it publishes is refused — starting
+    /// with the two the bug report ran from a shell prompt.
+    #[test]
+    fn every_action_the_shell_publishes_is_refused_while_locked() {
+        for screen in LOCKED_SCREENS {
+            for action in ["open_lens", "show_screen"] {
+                assert_eq!(
+                    locked_refusal(*screen, action).as_deref(),
+                    Some(LOCKED_REFUSAL),
+                    "`yos act shell {action}` walked the desktop past screen {screen} (#203)"
+                );
+            }
+        }
+
+        let actions = published_actions();
+        assert!(
+            actions.len() > 30,
+            "only {} actions were found — the scan is not reading the control modules any more, \
+             which would make this test pass by seeing nothing. Found: {actions:?}",
+            actions.len()
+        );
+        for screen in LOCKED_SCREENS {
+            for action in &actions {
+                assert_eq!(
+                    locked_refusal(*screen, action).as_deref(),
+                    Some(LOCKED_REFUSAL),
+                    "`{action}` is not on the allow-list, so screen {screen} must refuse it"
+                );
+            }
+        }
+    }
+
+    /// An action added tomorrow is refused by default: the rule is the surface's, not the
+    /// actions', so its author does not have to remember anything, and getting out from under
+    /// it means editing the allow-list, past a reader.
+    #[test]
+    fn an_action_added_tomorrow_is_refused_by_default() {
+        for screen in LOCKED_SCREENS {
+            assert_eq!(
+                locked_refusal(*screen, "an_action_added_tomorrow").as_deref(),
+                Some(LOCKED_REFUSAL),
+                "a name the allow-list has never seen must be refused on screen {screen}"
+            );
+        }
+        assert!(
+            !allowed_while_locked("lock"),
+            "`lock` while locked is refused too: at the login screen it would trade the \
+             password gate for the weaker PIN one"
+        );
+    }
+
+    /// And the rule holds nothing on an open desktop — it is the lock's rule, not a second
+    /// gate every call pays on the way through.
+    #[test]
+    fn the_rule_refuses_nothing_on_an_open_desktop() {
+        for screen in OPEN_SCREENS {
+            assert!(
+                locked_refusal(*screen, "open_lens").is_none()
+                    && locked_refusal(*screen, "an_action_added_tomorrow").is_none(),
+                "screen {screen} is open; the state rule must refuse nothing on it"
+            );
+        }
+    }
+
+    /// The rule lives on the dispatch — installed once in `publish`, reading the live screen —
+    /// not copied into handlers, where an action added beside them would miss it.
+    #[test]
+    fn the_rule_is_installed_on_the_dispatch() {
+        let src = source();
+        assert!(
+            src.contains(".state_rule(move |action| {"),
+            "`publish` must install the locked-desktop rule on the surface builder, so every \
+             action crosses it whether its handler remembers to or not (#203)"
+        );
+        assert!(
+            src.contains("locked_refusal(ui.get_current_screen(), action)"),
+            "the installed rule must decide with `locked_refusal` against the screen the shell \
+             is showing: the state IS the screen, so there is nothing to fall out of sync"
+        );
+    }
+
+    /// A locked desktop still answers `describe` — a caller must be able to tell "waiting for
+    /// the person" from "hung" — but says `locked: true` and nothing personal: no conversation,
+    /// no window titles, no notifications.
+    #[test]
+    fn describe_says_locked_and_nothing_personal_while_locked() {
+        let src = source();
+        let locked_at = src
+            .find("if locked_screen(screen) {")
+            .expect("the describe closure still cuts itself short while the desktop is locked");
+        let personal_at = src
+            .find(".with(\"conversation\"")
+            .expect("describe still reports the conversation on an open desktop");
+        assert!(
+            locked_at < personal_at,
+            "the locked early-return must sit before the conversation is read: reading is free, \
+             so a locked describe is enforced by having nothing to say, and that only works if \
+             it returns before anything personal is gathered"
+        );
+        let branch = &src[locked_at..personal_at];
+        assert!(
+            branch.contains("return View::new(") && branch.contains(".with(\"locked\", true)"),
+            "the locked describe must return early with `locked: true`. Branch as written:\n{branch}"
+        );
+    }
+
+    /// Nothing persists the state, so a restart during the login screen comes back locked —
+    /// as long as the rule exists before the shell is put on that screen. `main` applies
+    /// `YANTRIK_START_SCREEN` after `publish`, and this pins the order.
+    #[test]
+    fn a_restart_during_the_login_screen_comes_back_locked() {
+        assert!(locked_screen(32), "the login screen is a locked screen; there is no stored `unlocked` to read");
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs");
+        let main = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
+        let publish = main.find("control::publish(").expect("main still publishes the control surface");
+        let start = main.find("YANTRIK_START_SCREEN").expect("main still honours the start screen");
+        assert!(
+            publish < start,
+            "the surface — and with it the locked rule — must be installed before the start \
+             screen is applied, or the shell sits on the login screen with no rule holding it"
+        );
+    }
+
+    /// The login screen has exactly one way off, and it sits under the verified-password
+    /// branch: a PAM-checked login here, or the lock screen's own unlock. No timer, no
+    /// fallback, no other call.
+    #[test]
+    fn only_a_verified_login_leaves_the_login_screen() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/wire/login.rs");
+        let login = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
+        assert_eq!(
+            login.matches("ui.set_current_screen(1);").count(),
+            1,
+            "login.rs must navigate to the desktop in exactly one place; a second one is a \
+             second way past the password"
+        );
+        let at = login.find("ui.set_current_screen(1);").unwrap();
+        assert!(
+            login[..at].contains("if authenticated {"),
+            "and that one place must sit under `if authenticated`, the branch `verify_password` \
+             opened. Login.rs before the navigation:\n{}",
+            &login[..at]
+        );
+    }
+
+    /// The socket's dispatch is the main door, but not the only one: keybinds any process can
+    /// trigger over D-Bus, toasts that draw over every screen, the palette, the morning brief's
+    /// boot timer and Ctrl+K in the markup all move the shell on their own, and #203 names
+    /// them. Each holds to the state through the same pure predicate; these handlers need a
+    /// live window to run, so the placement is pinned against the source.
+    #[test]
+    fn the_doors_that_are_not_the_socket_are_held_to_the_same_state() {
+        fn wire(rel: &str) -> String {
+            let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(rel);
+            std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()))
+        }
+        let needle = "crate::control::locked_screen(ui.get_current_screen())";
+        // (file, how many of its own doors the predicate must hold) — notifications has two:
+        // the toast body and a toast button's action, which reaches an app's own surface.
+        for (file, doors) in [
+            ("src/wire/system_poll.rs", 1),
+            ("src/wire/command_palette.rs", 1),
+            ("src/wire/notifications.rs", 2),
+            ("src/wire/morning_brief.rs", 1),
+        ] {
+            let src = wire(file);
+            assert_eq!(
+                src.matches(needle).count(),
+                doors,
+                "{file} must hold its {doors} door(s) to `locked_screen` while the desktop \
+                 waits for the person (#203); it does so {} time(s)",
+                src.matches(needle).count()
+            );
+        }
+
+        // Ctrl+K in the markup: the arm that walks the shell to the desktop with the Lens open
+        // must give up on the lock and login screens before it navigates anywhere.
+        let app = wire("../yantrik-ui-slint/ui/app.slint");
+        let at = app
+            .find("event.modifiers.control && (event.text == \"k\" || event.text == \"K\")")
+            .expect("app.slint still captures Ctrl+K");
+        let arm = &app[at..];
+        let nav = arm.find("root.navigate(1);").expect("the Ctrl+K arm still goes to the desktop");
+        assert!(
+            arm[..nav].contains("root.current-screen == 3 || root.current-screen == 32"),
+            "Ctrl+K must not walk the shell off lock (3) or login (32) — it was one of the ways \
+             past the login screen (#203). Arm as written:\n{}",
+            &arm[..nav]
+        );
+    }
+}
+
+#[cfg(test)]
+mod lasting_settings_grade_tests {
+    //! #48, on the shell's own surface: the walk of every published action found three that
+    //! write settings which outlive the turn, graded as if they moved a window. `pin_app`
+    //! writes the START pin list, `use_harness` writes the preferred mind — deciding who
+    //! answers after a restart — and `set_do_not_disturb` writes `dnd_mode`, which swallows
+    //! every notification that follows until somebody notices. All three write through
+    //! `crate::wire::settings` into the shell's settings file; the same walk left the show,
+    //! read and window verbs where they were, and left `lock` at `safe` (#215).
+    //!
+    //! The handlers need a live shell to run, so the grades are pinned against the source
+    //! the way `lock_grade_tests` pins `lock`.
+    use std::path::Path;
+
+    /// One action's declaration and handler, from its quoted name to where the next
+    /// `.action(` begins, as written above the tests.
+    fn declaration(name: &str) -> String {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/control.rs");
+        let whole = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
+        let src = whole.split("#[cfg(test)]").next().unwrap_or_default();
+        let quoted = format!("\"{name}\"");
+        let from = src
+            .find(&quoted)
+            .unwrap_or_else(|| panic!("the shell no longer publishes {name}"));
+        let rest = &src[from..];
+        let end = rest.find(".action(").unwrap_or(rest.len());
+        rest[..end].to_string()
+    }
+
+    /// A choice written into the settings file is a choice the person sees first.
+    #[test]
+    fn what_outlives_the_turn_asks_first() {
+        for (name, why) in [
+            ("pin_app", "writes the START pin list into the shell's settings"),
+            (
+                "use_harness",
+                "writes the preferred mind into the shell's settings, deciding which mind \
+                 answers after a restart",
+            ),
+            (
+                "set_do_not_disturb",
+                "writes dnd_mode into the shell's settings, holding every notification that \
+                 follows until somebody notices",
+            ),
+        ] {
+            let declaration = declaration(name);
+            assert!(
+                declaration.contains(".risk(\"sensitive\")"),
+                "`shell.{name}` must be graded sensitive: it {why}, and an effect that \
+                 outlives the turn is at least `sensitive` (#48) — graded `standard`, or \
+                 undeclared and taking the default, it runs unasked in the default mode. \
+                 Declaration as written:\n{declaration}"
+            );
+            assert!(
+                !declaration.contains(".risk(\"standard\")"),
+                "`shell.{name}` is graded standard again (#48). Declaration as \
+                 written:\n{declaration}"
+            );
+        }
+    }
+
+    /// And the walk's keeps are keeps: the shell's show, read and window verbs do not write
+    /// settings, and `set_mind_panel` — which remembers how much of one panel is drawn, in
+    /// the panel's own file — stays `safe` beside them. If one of these ever does start
+    /// writing to the settings file, this is the test that asks what its grade became.
+    #[test]
+    fn showing_and_reading_stay_below_the_line() {
+        for name in ["open_app", "show_screen", "focus_window", "set_mind_panel"] {
+            let declaration = declaration(name);
+            assert!(
+                !declaration.contains(".risk(\"sensitive\")"),
+                "`shell.{name}` shows, reads or moves a window and writes no setting: making \
+                 it a card in `ask` mode is the everyday flow #48 says must keep working. \
+                 Declaration as written:\n{declaration}"
+            );
+        }
     }
 }

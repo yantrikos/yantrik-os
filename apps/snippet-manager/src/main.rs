@@ -279,7 +279,7 @@ fn show_all(ui: &SnippetManagerApp, state: &State) {
 /// which are painted from the store — so this can also be called from the thread hop that brings
 /// the companion's answer back, where the store is not reachable.
 ///
-/// There is no timer behind it and no `is_online` check on the way in: the companion's status
+/// There is no timer behind it and no `reach()` check on the way in: the companion's status
 /// call blocks on the UI thread, and this app has one refresh path — every mutation ends in
 /// [`show_detail`] — so a poll would buy nothing and could freeze the window. `agent-unavailable`
 /// is deliberately not touched here: it belongs to [`ask_companion`], which is the only thing
@@ -913,11 +913,14 @@ fn ask_companion(ui: &SnippetManagerApp, state: &State) {
                     });
                 }
                 Err(e) => {
-                    // Said where the rail says it, and not pretended into an answer.
-                    ui.set_agent_unavailable(companion::OFFLINE_HINT.into());
+                    // Said where the rail says it, and not pretended into an answer. Which
+                    // sentence it is depends on the failure: a shell with no model behind it is
+                    // running, and "start the Yantrik shell" would send the person to start the
+                    // thing already in front of them.
+                    ui.set_agent_unavailable(e.hint().into());
                     ui.set_proposal(AgentProposal {
                         title: "The companion did not answer".into(),
-                        body: e.into(),
+                        body: e.to_string().into(),
                         verb: "Close".into(),
                         ..Default::default()
                     });

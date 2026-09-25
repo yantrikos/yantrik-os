@@ -484,6 +484,11 @@ impl CalendarCreateEventTool {
             color: String::new(),
             is_all_day: all_day,
             attendees: attendees_from(args),
+            // No creator: the companion's tools are not the calendar's surface, and the
+            // record of who made an event belongs to the caller a surface verified (#201).
+            // An event a mind makes through its own tools keeps needing `delete_event`,
+            // which asks, until a tool call learns to establish its agent the same way.
+            creator: None,
         })
     }
 }
@@ -909,6 +914,7 @@ mod tests {
                 recurrence: None,
                 calendar_id: "default".into(),
                 remote_id: None,
+                creator: params.creator.clone(),
             };
             events.push(event.clone());
             Ok(event)
@@ -965,6 +971,7 @@ mod tests {
                 recurrence: None,
                 calendar_id: "default".into(),
                 remote_id: Some(params.remote_id.clone()),
+                creator: None,
             };
             events.push(event.clone());
             Ok(event)

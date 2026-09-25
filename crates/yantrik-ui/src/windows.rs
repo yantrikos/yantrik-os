@@ -39,35 +39,53 @@ pub struct WindowEntry {
 /// the strip while the person is still looking at it.
 const COMPOSITOR_TTL: Duration = Duration::from_secs(9);
 
-/// The last reading of `wlrctl toplevel list`, and when it was taken.
+/// The last reading of the compositor: its window list, which of them it said was in front, and
+/// when it was taken.
 ///
 /// Process-wide, because every surface that asks "what is open" has to get the same answer, and
 /// because the one caller that must never spawn a subprocess — `shell_windows`, which runs inside
 /// the `describe` closure on the UI thread — reads it without refreshing it.
-static COMPOSITOR: Mutex<Option<(Instant, Vec<WindowEntry>)>> = Mutex::new(None);
+///
+/// The front window rides along with the list because the taskbar draws its active underline on
+/// the FIRST entry and `wire::timers` reads that entry as the foreground window. Neither was ever
+/// told which window labwc actually has in front — `toplevel list` carries no focus flag — so the
+/// underline sat under whichever app the merge happened to sort first (#76).
+static COMPOSITOR: Mutex<Option<(Instant, Vec<WindowEntry>, Option<String>)>> = Mutex::new(None);
 
-/// Read the compositor's window list now and keep it. Returns how many windows it found.
+/// Read the compositor now — its window list, and the window it says is in front — and keep both.
+/// Returns how many windows it found.
 ///
 /// Called once at startup (see `main`) and then by the taskbar refresh. The startup call is the
 /// point of this whole mechanism: see `shell_windows` below.
+///
+/// A reading that cannot say what is in front (see [`front_now`]) keeps the last window one that
+/// did: the taskbar's promise is "most recently focused", and that survives the person clicking
+/// back to the desktop, when the only activated toplevel is the shell's own. The stale name
+/// costs nothing when its window is gone — the merge simply finds no entry to move.
 pub fn refresh_compositor_windows() -> usize {
     let found = wlrctl_windows();
     let count = found.len();
+    let front = front_now();
     if let Ok(mut cache) = COMPOSITOR.lock() {
-        *cache = Some((Instant::now(), found));
+        let front = front.or_else(|| cache.as_ref().and_then(|(_, _, f)| f.clone()));
+        *cache = Some((Instant::now(), found, front));
     }
     count
 }
 
-/// The last reading, without taking a new one. Empty until something has refreshed it.
-fn compositor_snapshot() -> Vec<WindowEntry> {
-    COMPOSITOR.lock().ok().and_then(|c| c.as_ref().map(|(_, w)| w.clone())).unwrap_or_default()
+/// The last reading, without taking a new one. Empty list until something has refreshed it.
+fn compositor_snapshot() -> (Vec<WindowEntry>, Option<String>) {
+    COMPOSITOR
+        .lock()
+        .ok()
+        .and_then(|c| c.as_ref().map(|(_, w, f)| (w.clone(), f.clone())))
+        .unwrap_or_default()
 }
 
 /// Take a new reading if the one we have has aged out.
 fn refresh_compositor_if_stale() {
     let stale = match COMPOSITOR.lock() {
-        Ok(cache) => cache.as_ref().is_none_or(|(at, _)| at.elapsed() >= COMPOSITOR_TTL),
+        Ok(cache) => cache.as_ref().is_none_or(|(at, _, _)| at.elapsed() >= COMPOSITOR_TTL),
         Err(_) => return,
     };
     if stale {
@@ -116,7 +134,18 @@ pub fn list_windows_throttled() -> Vec<WindowEntry> {
 /// so on id alone the merge saw two applications and listed a phantom "Browser" beside the real
 /// Chromium window, twice in the taskbar. Our own apps are single-instance (see
 /// `running::mark_launched`), so one id is one window.
-fn merge_windows(launched: &[crate::running::RunningApp], mut discovered: Vec<WindowEntry>) -> Vec<WindowEntry> {
+///
+/// `front` is the window the compositor said is activated, from the same reading as `discovered`.
+/// It comes first in the merged list, which is the whole of what the taskbar underlines by: the
+/// bar draws its active marker on the first entry, and until #76 nothing ordered the list by
+/// focus at all, so the marker sat on whatever the registry's alphabetical sort put first —
+/// Calendar in every screenshot of one person's working morning — while other windows took
+/// turns being the one in front.
+fn merge_windows(
+    launched: &[crate::running::RunningApp],
+    mut discovered: Vec<WindowEntry>,
+    front: Option<&str>,
+) -> Vec<WindowEntry> {
     let mut merged: Vec<WindowEntry> = launched
         .iter()
         .map(|app| {
@@ -144,7 +173,19 @@ fn merge_windows(launched: &[crate::running::RunningApp], mut discovered: Vec<Wi
         })
         .collect();
     merged.append(&mut discovered);
+    put_front_first(&mut merged, front);
     merged
+}
+
+/// Move the window titled `front` to index 0, leaving the rest in order. Does nothing when
+/// there is no answer, or when the named window is not on the list — it closed since the
+/// reading, and the compositor's answer is then no one's focus.
+fn put_front_first(merged: &mut Vec<WindowEntry>, front: Option<&str>) {
+    let Some(i) = front.and_then(|f| merged.iter().position(|w| w.title == f)) else { return };
+    if i != 0 {
+        let window = merged.remove(i);
+        merged.insert(0, window);
+    }
 }
 
 /// Whether a window that declared `wayland_app_id` came from the binary the shell started.
@@ -191,8 +232,18 @@ fn same_program(binary: &str, wayland_app_id: &str) -> bool {
 /// `app_names_agree_everywhere` already enforces against the .desktop files and the app sources,
 /// so the id comes from a lookup rather than a guess. `wlrctl` being absent costs us only what it
 /// cost before: the registry answer, which is what this returned in the first place.
+///
+/// The window the last reading found activated is listed first — see `merge_windows`.
+///
+/// An app drawing in Mind View (#239) is not one of them: it is on the mind's display, inside the
+/// one Mind View window, and a taskbar entry for it would be a button that switches to nothing.
+/// The Mind View window itself is listed, as the compositor sees it.
 pub fn shell_windows() -> Vec<WindowEntry> {
-    merge_windows(&crate::running::running(), compositor_snapshot())
+    let (discovered, front) = compositor_snapshot();
+    let in_mind_view = crate::mind_view::app_pids();
+    let mut launched = crate::running::running();
+    launched.retain(|app| !in_mind_view.contains(&app.pid));
+    merge_windows(&launched, discovered, front.as_deref())
 }
 
 /// The name one of our app ids goes by on screen.
@@ -505,6 +556,19 @@ pub fn minimise(title: &str) -> Result<(), String> {
     ask_compositor(commands_for("minimize", &matchspecs(title, &shell_windows())))
 }
 
+/// Fill the screen with the window called `title`, the way its own maximise button does.
+///
+/// wlrctl 0.2.2 has no unmaximize — `maximize` is the whole of what it can do to a window's
+/// size — so there is no restore half to offer beside this: the window stays maximized until
+/// its app or the compositor's own binding (Super+Up, config/labwc/rc.xml) says otherwise.
+/// Callers that would like a Maximise/Restore toggle cannot have one honestly, because
+/// `toplevel list` does not carry the state to read the toggle back from. On a minimized
+/// window `maximize` is also what brings it back (see `restore_command`), so this doubles
+/// as restore-and-fill.
+pub fn maximise(title: &str) -> Result<(), String> {
+    ask_compositor(commands_for("maximize", &matchspecs(title, &shell_windows())))
+}
+
 // ── Which window a person meant ─────────────────────────────────────
 
 /// Every window a caller may name, the shell's own included.
@@ -635,6 +699,47 @@ fn wlrctl_windows() -> Vec<WindowEntry> {
         .collect()
 }
 
+/// Which toplevel the compositor says is in front, right now, as `wlrctl toplevel list
+/// state:activated`.
+///
+/// `state:activated` is wlrctl's own matcher for the focused toplevel. This trusts it only when
+/// it answers with exactly one line naming a window that is not the shell's: two lines or none
+/// means either the compositor has nothing activated or this wlrctl does not support the matcher
+/// and has listed everything — and both of those are "not knowable", not "probably the first
+/// one". Callers that put a person's screen somewhere based on the answer are right to do
+/// nothing when it is not knowable.
+///
+/// Spawns a process: called from `refresh_compositor_windows`, on the compositor-reading path,
+/// and off the UI thread by the approval cards when they need the answer for THIS moment rather
+/// than the cached one.
+pub(crate) fn front_now() -> Option<String> {
+    let output = std::process::Command::new("wlrctl")
+        .args(["toplevel", "list", "state:activated"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    activated_title(&String::from_utf8_lossy(&output.stdout))
+}
+
+/// The title of the single activated toplevel in a `wlrctl toplevel list state:activated`
+/// answer, or `None` if the answer is not exactly one window outside the shell. Parsed with
+/// [`toplevel_entry`], the same reader the full list uses, so the title is spelled the way the
+/// list spells it — which is what lets the merge match it.
+fn activated_title(text: &str) -> Option<String> {
+    let lines: Vec<&str> = text.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+    if lines.len() != 1 {
+        return None;
+    }
+    let title = toplevel_entry(lines[0]).title;
+    if title.is_empty() || title == SHELL_WINDOW_TITLE {
+        // The person is looking at the desktop. No app window is in front.
+        return None;
+    }
+    Some(title)
+}
+
 /// One `wlrctl toplevel list` line, as `(title, app_id)` — the shell's id, see [`toplevel_entry`].
 fn split_toplevel_line(line: &str) -> (String, String) {
     let window = toplevel_entry(line);
@@ -668,7 +773,12 @@ fn toplevel_entry(line: &str) -> WindowEntry {
     // `images` — none of which is the id the dock keys its running mark by, so after a shell
     // restart those four tiles stayed dark with the apps plainly open on screen. Guessing is now
     // the last resort, for windows that are neither ours nor self-identifying.
-    let app_id = if !declared_id.is_empty() {
+    let app_id = if declared_id == crate::mind_view::NESTED_APP_ID {
+        // The window a nested compositor draws into, which is Mind View. wlroots names it
+        // itself ("wlroots - WL-1") and the title is kept as it is, because the title is what
+        // the taskbar hands `wlrctl` to find it again.
+        crate::mind_view::APP_ID.to_string()
+    } else if !declared_id.is_empty() {
         declared_id.to_lowercase()
     } else if let Some(id) = app_id_for_title(&title) {
         id.to_string()
@@ -736,6 +846,7 @@ pub fn icon_for_app(app_id: &str) -> &'static str {
         "documents" => "YD",
         "presentation" => "YP",
         "yantrik" => "Y",
+        "mind-view" => "\u{25CE}",
         _ => "?",
     }
 }
@@ -768,6 +879,8 @@ fn derive_context(title: &str, app_id: &str) -> String {
                 .unwrap_or("")
                 .to_string()
         }
+        // wlroots titles the window "wlroots - WL-1", which says nothing to a person.
+        "mind-view" => "Mind View".to_string(),
         "files" => {
             if title.contains('/') {
                 title.rsplit('/').next().unwrap_or("").to_string()
@@ -800,6 +913,7 @@ mod tests {
         let merged = merge_windows(
             &[launched("editor", "yantrik-text-editor")],
             seen(&[": Terminal", ": Notes", ": Editor"]),
+            None,
         );
         assert_eq!(merged.iter().map(|w|w.app_id.as_str()).collect::<Vec<_>>(),["editor","terminal","notes"]);
     }
@@ -813,7 +927,7 @@ mod tests {
     #[test]
     fn a_shell_that_has_just_started_still_sees_the_windows_already_open() {
         let restarted_into = seen(&["notes: Notes", ": Terminal", ": Editor", "firefox: Mozilla Firefox"]);
-        let merged = merge_windows(&[], restarted_into);
+        let merged = merge_windows(&[], restarted_into, None);
         assert_eq!(merged.len(), 4, "every window the compositor still holds is open");
         assert_eq!(
             merged.iter().map(|w| w.app_id.as_str()).collect::<Vec<_>>(),
@@ -835,6 +949,7 @@ mod tests {
         let merged = merge_windows(
             &[launched("blender", "/usr/bin/blender")],
             seen(&[": Terminal", "Blender: (Unsaved) - Blender 4.3.2"]),
+            None,
         );
         assert_eq!(merged.len(), 2, "one Blender window, listed once: {merged:?}");
         let blender = &merged[0];
@@ -869,7 +984,7 @@ mod tests {
     /// open — under the name it will have if it is one of ours.
     #[test]
     fn an_app_launched_a_moment_ago_is_listed_from_the_registry_alone() {
-        let merged = merge_windows(&[launched("notes", "yantrik-notes")], seen(&[": Terminal"]));
+        let merged = merge_windows(&[launched("notes", "yantrik-notes")], seen(&[": Terminal"]), None);
         assert_eq!(merged[0].title, "Notes");
         assert_eq!(merged[0].app_id, "notes");
         assert_eq!(merged[0].wayland_app_id, "", "nothing declared, so nothing to fall back to");
@@ -885,6 +1000,7 @@ mod tests {
         let merged = merge_windows(
             &[launched("browser", "chromium")],
             seen(&["chromium: webgl-check.html - Chromium", ": Notes"]),
+            None,
         );
         assert_eq!(merged.len(), 2, "one browser window, listed once: {merged:?}");
         assert_eq!(merged[0].app_id, "browser", "the pin's running mark is keyed by the shell's id");
@@ -893,6 +1009,73 @@ mod tests {
         assert_eq!(merged[0].icon_char, icon_for_app("browser"));
         assert_eq!(matchspecs("webgl-check.html - Chromium", &merged),
             ["title:webgl-check.html - Chromium", "app_id:chromium"]);
+    }
+
+    /// The stuck underline (#76): the taskbar draws its active marker on the FIRST entry of this
+    /// list, and nothing had ever ordered the list by focus — the launch registry sorts itself by
+    /// id, so Calendar sat under the marker in every one of a person's morning screenshots while
+    /// Email, the Editor and Notes took turns being the window actually in front.
+    #[test]
+    fn the_window_the_compositor_says_is_in_front_is_listed_first() {
+        let merged = merge_windows(
+            &[
+                launched("calendar", "yantrik-calendar"),
+                launched("editor", "yantrik-editor"),
+                launched("email", "yantrik-email"),
+            ],
+            seen(&[": Calendar", ": Editor", ": Email"]),
+            Some("Email"),
+        );
+        assert_eq!(
+            merged.iter().map(|w| w.app_id.as_str()).collect::<Vec<_>>(),
+            ["email", "calendar", "editor"],
+            "the front window leads, and the rest keep the order the merge made them in"
+        );
+
+        // A foreign window is named by its title, exactly as the same reading put it on the list.
+        let merged = merge_windows(
+            &[launched("notes", "yantrik-notes")],
+            seen(&[": Notes", "chromium: Ask | Hacker News - Chromium"]),
+            Some("Ask | Hacker News - Chromium"),
+        );
+        assert_eq!(merged[0].app_id, "chromium", "the browser is what labwc has in front");
+    }
+
+    /// No focus answer, or an answer about a window the list does not have, leaves the list
+    /// exactly as the merge made it. A window closed since the reading is nobody's focus; the
+    /// marker falls back to the plain order rather than to a guess.
+    #[test]
+    fn a_focus_answer_that_names_nothing_on_the_list_moves_nothing() {
+        let as_merged = |front: Option<&str>| {
+            merge_windows(
+                &[launched("calendar", "yantrik-calendar"), launched("editor", "yantrik-editor")],
+                seen(&[": Calendar", ": Editor"]),
+                front,
+            )
+        };
+        for (front, named) in [(None, "no focus answer"), (Some("Notes"), "an answer about a closed window")] {
+            assert_eq!(
+                as_merged(front).iter().map(|w| w.app_id.as_str()).collect::<Vec<_>>(),
+                ["calendar", "editor"],
+                "{named} must not reorder the list"
+            );
+        }
+    }
+
+    /// The `state:activated` answer is believed only when it names exactly one window, and names
+    /// it the way the list spells it — same parser, so a title from one can be looked for in the
+    /// other. Nothing activated, an unsupported matcher listing everything, and the desktop
+    /// itself in front are all "not knowable", and say so as `None`.
+    #[test]
+    fn the_activated_answer_is_read_the_way_the_list_is_read() {
+        assert_eq!(activated_title(": Terminal").as_deref(), Some("Terminal"));
+        assert_eq!(
+            activated_title("chromium: Ask | Hacker News - Chromium").as_deref(),
+            Some("Ask | Hacker News - Chromium")
+        );
+        assert_eq!(activated_title(""), None);
+        assert_eq!(activated_title(": Editor\n: Terminal\n"), None);
+        assert_eq!(activated_title(": Yantrik OS"), None);
     }
 
     /// A program's app_id is its binary's name, give or take a distribution's suffix.
@@ -939,6 +1122,14 @@ mod tests {
         assert_eq!(blender.app_id, "blender");
         assert_eq!(blender.wayland_app_id, "Blender");
         assert_eq!(toplevel_entry(": Notes").wayland_app_id, "");
+
+        // The nested compositor's window is Mind View (#239). Its title stays what wlroots
+        // declared, because that is what `wlrctl` finds it by; the subtitle says what it is.
+        let mind_view = toplevel_entry("wlroots: wlroots - WL-1");
+        assert_eq!(mind_view.app_id, "mind-view");
+        assert_eq!(mind_view.title, "wlroots - WL-1");
+        assert_eq!(mind_view.subtitle, "Mind View");
+        assert_eq!(mind_view.wayland_app_id, "wlroots");
         assert_eq!(toplevel_entry("Some Foreign Window").wayland_app_id, "");
     }
 
@@ -1038,6 +1229,18 @@ mod tests {
         assert_eq!(
             toplevel_args("minimize", "Calendar"),
             ["toplevel", "minimize", "title:Calendar"]
+        );
+    }
+
+    /// The same rendezvous for the taskbar menu's Maximise row (#232) and the `maximise_window`
+    /// action beside `minimise_window`. No `state:` on the end, unlike [`restore_args`]: this
+    /// maximizes whatever window answers to the title, minimized or not — and there is no
+    /// unmaximize command line to pin here, because wlrctl 0.2.2 has no such verb.
+    #[test]
+    fn maximise_asks_the_compositor_to_maximize() {
+        assert_eq!(
+            toplevel_args("maximize", "Files"),
+            ["toplevel", "maximize", "title:Files"]
         );
     }
 

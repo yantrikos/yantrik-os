@@ -61,7 +61,9 @@ pub fn is_surface_name(name: &str) -> bool {
 pub struct DesktopEntry {
     /// Display name (Name= field).
     pub name: String,
-    /// Executable command (Exec= field, with field codes stripped).
+    /// Executable command (Exec= field), kept as the entry wrote it — quoting, escapes and
+    /// field codes included. A launch path reads it through [`exec_argv`], which answers the
+    /// field codes and tokenises per the Desktop Entry spec (#304).
     pub exec: String,
     /// `TryExec`: a program that must be on this machine for the entry to be listed at all —
     /// the standard freedesktop rule, carried as written; whoever lists entries asks it
@@ -90,6 +92,10 @@ pub struct DesktopEntry {
     /// `X-Yantrik-Adapter`: the command that provides the surface for this app, when the app
     /// cannot host one. Only kept beside a declared surface: an adapter for nothing is nothing.
     pub adapter: Option<String>,
+    /// `MimeType=`: the file types the app says it opens, as the freedesktop `;`-separated list
+    /// states them. Files' "Open with" list reads these, and so does the answer for a file type
+    /// the shell's own table has no app for (#233). Empty when the file declares none.
+    pub mime_types: Vec<String>,
 }
 
 /// Built-in Yantrik apps that appear in the app grid alongside system apps.
@@ -403,6 +409,7 @@ pub fn parse_desktop_text(stem: &str, content: &str) -> Option<DesktopEntry> {
     let mut purpose = String::new();
     let mut aliases = String::new();
     let mut adapter = String::new();
+    let mut mime_types = String::new();
 
     for line in content.lines() {
         let line = line.trim();
@@ -426,7 +433,9 @@ pub fn parse_desktop_text(stem: &str, content: &str) -> Option<DesktopEntry> {
 
             match key {
                 "Name" => name = value.to_string(),
-                "Exec" => exec = strip_field_codes(value),
+                // Kept as written: where the entry put its field code is what a launch needs
+                // to know, and that is lost if the codes are removed here (#304).
+                "Exec" => exec = value.to_string(),
                 "TryExec" => try_exec = value.to_string(),
                 "Icon" => icon = value.to_string(),
                 "Categories" => categories = value.to_string(),
@@ -438,6 +447,7 @@ pub fn parse_desktop_text(stem: &str, content: &str) -> Option<DesktopEntry> {
                 KEY_PURPOSE => purpose = value.to_string(),
                 KEY_ALIASES => aliases = value.to_string(),
                 KEY_ADAPTER => adapter = value.to_string(),
+                "MimeType" => mime_types = value.to_string(),
                 _ => {}
             }
         }
@@ -450,6 +460,15 @@ pub fn parse_desktop_text(stem: &str, content: &str) -> Option<DesktopEntry> {
     let app_id = stem.to_string();
     let icon_char = derive_icon_char(&categories, &name);
     let (surface, aliases, adapter) = surface_keys(&app_id, &surface, &aliases, &adapter);
+
+    // The freedesktop list, split the way every `;`-separated key splits: trimmed, empty items
+    // dropped, the order the file wrote kept.
+    let mime_types = mime_types
+        .split(';')
+        .map(str::trim)
+        .filter(|m| !m.is_empty())
+        .map(str::to_string)
+        .collect();
 
     Some(DesktopEntry {
         name,
@@ -464,6 +483,7 @@ pub fn parse_desktop_text(stem: &str, content: &str) -> Option<DesktopEntry> {
         purpose,
         aliases,
         adapter,
+        mime_types,
     })
 }
 
@@ -506,23 +526,119 @@ fn surface_keys(
     (Some(id), names, adapter)
 }
 
-fn strip_field_codes(exec: &str) -> String {
-    let mut result = String::new();
+/// The argv one desktop entry's `Exec=` line stands for, read the way the Desktop Entry spec
+/// says: arguments split on unquoted whitespace, `"`-quoted sections kept as one argument with
+/// `\"` and `\\` unescaped, a backslash outside quotes escaping the next character, and the
+/// field codes answered where they stand (#304).
+///
+/// `file` is what `%f`, `%F`, `%u` and `%U` expand to — the one file being opened. A launch
+/// with no file passes `None` and those codes are removed, as the spec says for them; a code
+/// in the middle of the line puts the file there (flatpak's `--file-forwarding … @@u %U @@`
+/// needs exactly that), and only a line with no file code at all gets the file appended as
+/// the last argument. The deprecated codes (`%d %D %n %N %i %c %k
+/// %v %m`) are dropped, `%%` is a literal percent, and a field code inside a quoted argument
+/// is removed rather than expanded — also per the spec.
+///
+/// The result is argv, never a shell command line: no launcher should join it back into a
+/// string for a shell to re-split.
+pub fn exec_argv(exec: &str, file: Option<&str>) -> Vec<String> {
+    const FILE_CODES: &[char] = &['f', 'F', 'u', 'U'];
+    const DEAD_CODES: &str = "dDnNickvm";
+
+    let mut argv: Vec<String> = Vec::new();
+    let mut arg = String::new();
+    // Whether anything besides an empty-expanding file code went into `arg`: an argument that
+    // was only `%f` disappears with no file, while a deliberately quoted `""` stays the empty
+    // argument the entry asked for.
+    let mut literal = false;
+    // Whether the line asked for the file anywhere a code counts (outside quotes): only a
+    // line that did not gets the file appended.
+    let mut saw_file_code = false;
     let mut chars = exec.chars().peekable();
 
     while let Some(c) = chars.next() {
-        if c == '%' {
-            if let Some(&next) = chars.peek() {
-                if "fFuUdDnNickv".contains(next) {
-                    chars.next();
-                    continue;
+        match c {
+            ' ' | '\t' | '\n' => {
+                if literal || !arg.is_empty() {
+                    argv.push(std::mem::take(&mut arg));
+                }
+                literal = false;
+            }
+            '"' => {
+                literal = true;
+                loop {
+                    match chars.next() {
+                        // An unterminated quote swallows the rest of the line, as a shell's
+                        // would not, but a broken entry should not lose its last argument.
+                        None | Some('"') => break,
+                        Some('\\') => match chars.peek() {
+                            // Inside quotes only `"` and `\` are escapes; a backslash before
+                            // anything else stays the backslash the entry wrote.
+                            Some('"') | Some('\\') => arg.push(chars.next().unwrap()),
+                            _ => arg.push('\\'),
+                        },
+                        Some('%') => match chars.peek() {
+                            // The spec: a field code inside a quoted argument is removed,
+                            // never expanded.
+                            Some(c) if FILE_CODES.contains(c) || DEAD_CODES.contains(*c) => {
+                                chars.next();
+                            }
+                            _ => arg.push('%'),
+                        },
+                        Some(c) => arg.push(c),
+                    }
                 }
             }
+            '\\' => {
+                // The general escape rule: outside quotes a backslash makes the next
+                // character literal, whatever it is.
+                literal = true;
+                if let Some(next) = chars.next() {
+                    arg.push(next);
+                }
+            }
+            '%' => match chars.next() {
+                Some('%') => {
+                    arg.push('%');
+                    literal = true;
+                }
+                Some(code) if FILE_CODES.contains(&code) => {
+                    saw_file_code = true;
+                    if let Some(file) = file {
+                        arg.push_str(file);
+                    }
+                }
+                Some(code) if DEAD_CODES.contains(code) => {}
+                // An unknown code is not a code: the percent and its character stay as the
+                // entry wrote them, as `strip_field_codes` left them before.
+                Some(other) => {
+                    arg.push('%');
+                    arg.push(other);
+                    literal = true;
+                }
+                None => {
+                    arg.push('%');
+                    literal = true;
+                }
+            },
+            _ => {
+                literal = true;
+                arg.push(c);
+            }
         }
-        result.push(c);
+    }
+    if literal || !arg.is_empty() {
+        argv.push(arg);
     }
 
-    result.trim().to_string()
+    // Only a line with no file code at all gets the file appended, as the spec's rule for an
+    // application that takes a file but wrote no code.
+    if let Some(file) = file {
+        if !saw_file_code {
+            argv.push(file.to_string());
+        }
+    }
+    argv
 }
 
 fn derive_icon_char(categories: &str, name: &str) -> String {
@@ -654,8 +770,9 @@ X-Yantrik-Surface=not-this-one
         assert_eq!(entry.adapter.as_deref(), Some("/usr/lib/yantrik/adapters/libreoffice --uno"));
         // A key in another group is not the entry's.
         assert_ne!(entry.surface.as_deref(), Some("not-this-one"));
-        // And the ordinary keys are still what they were.
-        assert_eq!(entry.exec, "libreoffice");
+        // And the ordinary keys are still what they were — Exec kept as the file wrote it,
+        // field code included: the launcher answers the code when it runs the command (#304).
+        assert_eq!(entry.exec, "libreoffice %U");
         assert_eq!(entry.app_id, "libreoffice-startcenter");
     }
 
@@ -680,7 +797,7 @@ X-Yantrik-Surface=not-this-one
              Exec=yantrik-libreoffice %U\nTryExec=soffice\n",
         )
         .expect("an app");
-        assert_eq!(entry.exec, "yantrik-libreoffice");
+        assert_eq!(entry.exec, "yantrik-libreoffice %U");
         assert_eq!(entry.try_exec.as_deref(), Some("soffice"));
         // A file that names none carries none, and entries are listed exactly as before.
         let plain =
@@ -807,5 +924,110 @@ X-Yantrik-Surface=not-this-one
         assert_eq!(dirs.last().map(PathBuf::as_path), Some(Path::new(YANTRIK_APPLICATIONS)));
         let unique: std::collections::HashSet<_> = dirs.iter().collect();
         assert_eq!(unique.len(), dirs.len(), "no directory is scanned twice");
+    }
+}
+
+#[cfg(test)]
+mod mime_type_tests {
+    use super::*;
+
+    /// `MimeType=` is read as the freedesktop list it is: trimmed, empties dropped, order kept,
+    /// and only from the entry's own group. Files' "Open with" offers an app exactly for the
+    /// types the app declared (#233).
+    #[test]
+    fn mime_types_are_read_as_a_list() {
+        let entry = parse_desktop_text(
+            "chromium",
+            "[Desktop Entry]\nType=Application\nName=Chromium\nExec=chromium %U\n\
+             MimeType=text/html;text/xml;; application/xhtml+xml ;\n",
+        )
+        .expect("an app");
+        assert_eq!(entry.mime_types, ["text/html", "text/xml", "application/xhtml+xml"]);
+
+        // A key in another group is not the entry's, like every other key.
+        let other_group = parse_desktop_text(
+            "y",
+            "[Desktop Entry]\nType=Application\nName=Y\nExec=y\n\n\
+             [Desktop Action new]\nMimeType=text/plain\n",
+        )
+        .expect("an app");
+        assert!(other_group.mime_types.is_empty());
+
+        // An entry that declares none opens nothing by type, and an empty value declares none.
+        let plain =
+            parse_desktop_text("vim", "[Desktop Entry]\nType=Application\nName=Vim\nExec=vim %F\n")
+                .expect("an app");
+        assert!(plain.mime_types.is_empty());
+        let empty = parse_desktop_text(
+            "x",
+            "[Desktop Entry]\nType=Application\nName=X\nExec=x\nMimeType=;;\n",
+        )
+        .expect("an app");
+        assert!(empty.mime_types.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod exec_argv_tests {
+    use super::exec_argv;
+
+    /// The table #304 lists: plain, quoted path, `%f` mid-line, flatpak's `@@u %U @@`, and no
+    /// field code at all.
+    #[test]
+    fn the_file_goes_where_the_entry_put_its_field_code() {
+        let file = "/home/me/My Documents/report.odt";
+        // No field code: the file is appended, as it always was.
+        assert_eq!(exec_argv("gedit", Some(file)), ["gedit", file]);
+        assert_eq!(exec_argv("app --flag", Some(file)), ["app", "--flag", file]);
+        // A quoted program path stays one argument, and `%f` mid-line is where the file goes —
+        // not after everything else.
+        assert_eq!(
+            exec_argv("\"/opt/My App/bin/app\" --flag %f", Some(file)),
+            ["/opt/My App/bin/app", "--flag", file]
+        );
+        assert_eq!(
+            exec_argv("app --open %f --new-window", Some(file)),
+            ["app", "--open", file, "--new-window"]
+        );
+        // flatpak's exported entries: the file belongs between `@@u` and `@@`, which appending
+        // last put after them, where flatpak reads it as a file name of its own.
+        assert_eq!(
+            exec_argv("/usr/bin/flatpak run --file-forwarding org.x.Y @@u %U @@", Some(file)),
+            ["/usr/bin/flatpak", "run", "--file-forwarding", "org.x.Y", "@@u", file, "@@"]
+        );
+        // All four file codes take the one file, wherever in the line they stand.
+        assert_eq!(exec_argv("app %F", Some(file)), ["app", file]);
+        assert_eq!(exec_argv("app %u", Some(file)), ["app", file]);
+        // A code inside quotes is removed, not expanded — and does not stop the append: the
+        // line still asked for no file.
+        assert_eq!(exec_argv("app \"%f\"", Some(file)), ["app", "", file]);
+    }
+
+    /// A launch with no file removes the file codes, as the spec says, and the deprecated
+    /// codes go whatever the launch carries.
+    #[test]
+    fn codes_expand_to_nothing_when_there_is_no_file() {
+        assert_eq!(exec_argv("libreoffice %U", None), ["libreoffice"]);
+        assert_eq!(exec_argv("app %f", None), ["app"]);
+        // An argument that was only the code disappears; one that carried more keeps its rest.
+        assert_eq!(exec_argv("app --file=%f", None), ["app", "--file="]);
+        assert_eq!(exec_argv("app %d %D %n %N %i %c %k %v %m end", None), ["app", "end"]);
+        // `%%` is a literal percent, and a `%` before anything else stays as written.
+        assert_eq!(exec_argv("app 100%% %z", None), ["app", "100%", "%z"]);
+    }
+
+    /// Quoting and escapes, per the spec's rules rather than a shell's.
+    #[test]
+    fn quoting_and_escapes_follow_the_spec() {
+        // A quoted section can start mid-argument.
+        assert_eq!(exec_argv("app\"two words\"tail", None), ["apptwo wordstail"]);
+        // Inside quotes `\"` and `\\` unescape; a backslash before anything else stays.
+        assert_eq!(exec_argv("app \"a\\\"b\\\\c\\d\"", None), ["app", "a\"b\\c\\d"]);
+        // Outside quotes a backslash makes the next character literal, including a space.
+        assert_eq!(exec_argv("app a\\ b \\<x\\>", None), ["app", "a b", "<x>"]);
+        // A quoted empty string is the empty argument the entry asked for.
+        assert_eq!(exec_argv("app \"\" x", None), ["app", "", "x"]);
+        // An unterminated quote keeps the rest of the line as one argument.
+        assert_eq!(exec_argv("app \"two three", None), ["app", "two three"]);
     }
 }

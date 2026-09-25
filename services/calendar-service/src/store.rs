@@ -206,6 +206,13 @@ impl EventStore {
             recurrence: None,
             calendar_id: "default".to_string(),
             remote_id: None,
+            // Who made this, as the creating surface verified them and nobody since can argue
+            // with: the record `delete_own_event` reads back when a caller asks to take the
+            // event off without anybody being asked (#201). Stored in the event's own file, so
+            // it outlives the app that took the call. This service keeps what it is handed and
+            // decides nothing from it — the rule sits in the surface, which is the only place
+            // that knows who is asking right now.
+            creator: params.creator.clone(),
         };
         self.write_event(&event)?;
         Ok(event)
@@ -261,6 +268,10 @@ impl EventStore {
                 .map(|e| e.calendar_id.clone())
                 .unwrap_or_else(|| "default".to_string()),
             remote_id: Some(params.remote_id.clone()),
+            // A re-sync edits an event; it does not adopt it. An event a surface caller made
+            // and later pushed out to a remote calendar keeps the creator it was stored with,
+            // so a sync cannot hand somebody else's event to the syncer.
+            creator: existing.as_ref().and_then(|e| e.creator.clone()),
         };
         self.write_event(&event)?;
         Ok(event)

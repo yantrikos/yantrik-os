@@ -299,7 +299,10 @@ mod tests {
     /// A harness attached over a socket the kernel named (`harness_pid`) — or over one it could
     /// not (`None`) — with one agent that has been handed a turn: (host, agent, its token).
     fn host_with_an_agent(harness_pid: Option<u32>) -> (Host, AgentId, String) {
-        let host = Host::new(vec![]);
+        // The registry asks the kernel about the process that attached (#67). These tests
+        // invent pids on purpose — the tree below them is invented too — so the host gets a
+        // probe that vouches for the pid the harness claims instead of a faked `/proc`.
+        let host = Host::new(vec![]).with_liveness(move |pid| Some(pid) == harness_pid);
         let attached = host
             .handle_from(protocol::ATTACH, &json!({ "id": "pi", "name": "Pi", "conversations": true }), harness_pid)
             .unwrap();

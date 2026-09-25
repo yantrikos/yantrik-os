@@ -22,6 +22,7 @@
 #   yantrik-update rollback                                  restore the most recent backup
 #   yantrik-update status      [--porcelain]                 channel, host, build, backups
 #   yantrik-update set-channel nightly|beta|stable           change the channel, once, here
+#   yantrik-update reconcile                                 base packages the image ships and this machine lacks
 #   yantrik-update selftest                                  offline checks of the two above
 #
 # It reads its defaults from /opt/yantrik/update.conf (CHANNEL=, HOST=, SCHEME=) when present.
@@ -575,6 +576,10 @@ from it. Change it with: yantrik-update set-channel nightly" ;;
   local_git="$(installed_git)"; local_ver="$(installed_version)"
   if [ "$force" = 0 ] && same_build "$local_git" "$remote_git" "$local_ver" "$remote_ver"; then
     say "Already on $remote_git — nothing to do (use --force to reinstall)"
+    # "Nothing to do" is about the binaries. The base system is the half an up-to-date
+    # machine can still be missing — a 520 has every current Yantrik file and no `ip` —
+    # so a run that found no new build is exactly the moment to look (#210).
+    reconcile_packages || true
     return 0
   fi
 
@@ -765,6 +770,9 @@ EOF
 
   rm -rf "$stage"; rm -f "$dl"
   say "Installed $remote_ver ($remote_git)"
+  # The binaries are current; the base system may not be. Never fails the update over it —
+  # reconcile_packages says in words what it could not do and how to finish it.
+  reconcile_packages || true
 
   if [ "$reboot" = 1 ]; then
     say "Rebooting"
@@ -1156,6 +1164,72 @@ and this is running as $(id -un). Run: sudo yantrik-update set-channel $new"
   info "run 'yantrik-update check' to see what that channel has"
 }
 
+# ── reconcile ─────────────────────────────────────────────────────────────────────────
+#
+# An update replaces /opt/yantrik and nothing else, so a machine installed from an older image
+# keeps that older base system forever: VM 520 was "current" on every deploy and had no `ip`,
+# no `ss`, no `ping`, no editor and no htop, because the ISO gained those packages after 520
+# was installed and no update path ever looked at a Debian package (#210). The fix is not to
+# reinstall the machine every time a package list moves — it is for the updater, which is what
+# the machine trusts to keep it current, to also reconcile the small list below: every package
+# whose command the shipped code shells out to or tells a person to run. release-check
+# (tier ci) asserts the same commands on a booted image, so the two lists cannot drift apart
+# without a nightly turning red.
+
+# Package names, not command names: `ip` and `ss` are both in iproute2, `ping` is in
+# iputils-ping. A package the image's own lists all install.
+REQUIRED_PACKAGES="iproute2 iputils-ping grim curl python3 nano htop"
+
+# Is this package installed, per dpkg? Prints dpkg's own status word, or nothing.
+pkg_installed() {
+  dpkg-query -W -f='${db:Status-Status}' "$1" 2>/dev/null || true
+}
+
+# The REQUIRED_PACKAGES that the status command $1 does not report installed. Split from the
+# apt run and from dpkg itself so the selftest can hand it a whole machine that is missing
+# things and check, package by package, which ones it names — the one decision here that can
+# be wrong in a way a person feels.
+missing_packages() { # <status-command>
+  local pkg missing=""
+  for pkg in $REQUIRED_PACKAGES; do
+    [ "$("$1" "$pkg")" = "installed" ] || missing="$missing $pkg"
+  done
+  printf '%s' "${missing# }"
+}
+
+# Install what this machine drifted from, and never fail the caller over it: a good build is
+# already installed by the time this runs, and a missing `ping` must not read as a failed
+# update. On machines this cannot sudo, it prints the one command that finishes the job.
+reconcile_packages() {
+  # dpkg is the Debian answer. A machine without it (a dev box on another distro, an Alpine
+  # deploy) is not this list's machine, and `apply` must not die asking.
+  command -v dpkg-query >/dev/null 2>&1 || {
+    info "no dpkg-query here — the package reconcile is for Debian machines"
+    return 0
+  }
+  local missing; missing="$(missing_packages pkg_installed)"
+  [ -n "$missing" ] || return 0
+  say "this machine is missing packages the image ships: $missing"
+  # shellcheck disable=SC2086  # a package list, split on purpose
+  if sudo -n env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends $missing; then
+    missing="$(missing_packages pkg_installed)"
+    if [ -z "$missing" ]; then
+      info "base system reconciled"
+      return 0
+    fi
+    warn "still missing after apt-get: $missing"
+    return 1
+  fi
+  warn "could not run apt-get without a password. Finish it once with: sudo apt-get install -y --no-install-recommends $missing"
+  return 1
+}
+
+cmd_reconcile() {
+  say "Reconciling the base system against what the image ships"
+  info "required: $REQUIRED_PACKAGES"
+  reconcile_packages
+}
+
 # ── selftest ────────────────────────────────────────────────────────────────────────────
 #
 # No network, no /opt, no machine. It runs THIS script against a scratch $YANTRIK_PREFIX and
@@ -1306,6 +1380,36 @@ cmd_selftest() {
     "$(version_order nightly-2026-09-23 v0.1.0-456-gca376be)"
   t "and so is no version at all" "unknown" "$(version_order '' v0.1.0-456-gca376be)"
 
+  # 8. The base packages a machine can drift from while every Yantrik file on it is current (#210).
+  #
+  #    VM 520 was installed from an older image and kept "current" by deploys, which replace
+  #    /opt/yantrik and never a Debian package, so it had no ip, ss, ping, nano or htop. The
+  #    decision under test is which packages a given machine lacks — that one is pure, and a
+  #    fake status command stands in for dpkg. The apt run itself is only a caller of it and
+  #    needs a Debian machine, so nothing here touches apt.
+  local old; old="$root/dpkg-520"
+  printf '#!/bin/sh\ncase "$1" in iproute2|curl|python3|grim) echo installed ;; esac\n' > "$old"
+  chmod +x "$old"
+  out="$(missing_packages "$old")"
+  if [ "$out" = "iputils-ping nano htop" ]; then
+    printf '  %sok%s   a 520-style machine is named package by package\n' "$c_grn" "$c_off"
+  else
+    printf '  %sFAIL%s a 520-style machine: wanted %s, got %s\n' \
+      "$c_red" "$c_off" "iputils-ping nano htop" "${out:-nothing}"
+    fails=$((fails + 1))
+  fi
+
+  local whole; whole="$root/dpkg-whole"
+  printf '#!/bin/sh\necho installed\n' > "$whole"
+  chmod +x "$whole"
+  out="$(missing_packages "$whole")"
+  if [ -z "$out" ]; then
+    printf '  %sok%s   a machine built from the current image is missing nothing\n' "$c_grn" "$c_off"
+  else
+    printf '  %sFAIL%s a current machine was told it lacks: %s\n' "$c_red" "$c_off" "$out"
+    fails=$((fails + 1))
+  fi
+
   if [ "$fails" = 0 ]; then
     printf '%sall selftest checks passed%s\n' "$c_grn" "$c_off"
     return 0
@@ -1323,6 +1427,7 @@ usage() {
     "  rollback                                  restore the most recent backup" \
     "  status      [--porcelain]                 channel, host, build, backups" \
     "  set-channel nightly|beta|stable           change the channel (writes $CONF)" \
+    "  reconcile                                 install base packages the image ships and this lacks" \
     "  selftest                                  offline checks, no network" \
     "" \
     "check exits 0 up to date · 10 update available · 11 channel not published ·" \
@@ -1339,9 +1444,10 @@ case "$CMD" in
   # Both spellings, because the control surface names its action set_update_channel and a
   # person at a terminal types the hyphen.
   set-channel|set_channel) cmd_set_channel "$@" ;;
+  reconcile) cmd_reconcile ;;
   selftest) cmd_selftest ;;
   # Printed from a function rather than `sed -n '20,30p' "$0"`, which quietly printed whatever
   # happened to be on those lines after anyone edited the header.
   -h|--help|help) usage ;;
-  *) fail "unknown command '$CMD' (check | apply | rollback | status | set-channel | selftest)" ;;
+  *) fail "unknown command '$CMD' (check | apply | rollback | status | set-channel | reconcile | selftest)" ;;
 esac

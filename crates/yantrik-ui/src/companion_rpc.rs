@@ -11,6 +11,8 @@
 //!
 //! Methods:
 //!   companion.ask    { prompt, timeout_ms? }  → { text }
+//!     — refused with `ERR_NO_MODEL` when the shell has no model behind it; the canned text the
+//!       offline responder would serve never crosses this socket as an answer.
 //!   companion.recall { query, limit? }        → { results: [{ rid, text, score, ... }] }
 //!   companion.status { }                      → { online }
 //!   companion.tools  { }                      → { tools: [{ name, category, permission, ... }] }
@@ -42,7 +44,7 @@ use std::time::Duration;
 use yantrik_ipc_contracts::email::ServiceError;
 use yantrik_ipc_transport::server::{RpcServer, ServiceHandler};
 
-use crate::bridge::CompanionHandle;
+use crate::bridge::{AskError, CompanionHandle};
 
 /// An LLM answer can take a while on a local model; a caller may ask for longer.
 const DEFAULT_TIMEOUT_MS: u64 = 60_000;
@@ -54,6 +56,21 @@ fn bad_request(message: impl Into<String>) -> ServiceError {
 
 fn failed(message: impl Into<String>) -> ServiceError {
     ServiceError { code: -32000, message: message.into() }
+}
+
+/// The wire shape of a failed ask.
+///
+/// No-model gets its own code because it is not a transient failure and its fallback is not an
+/// answer: apps recognised neither from a generic error, showed the canned text the offline
+/// responder produced as the model's words, and wrote it into documents.
+fn ask_failed(e: AskError) -> ServiceError {
+    match e {
+        AskError::NoModel => ServiceError {
+            code: yantrik_ipc_contracts::ERR_NO_MODEL,
+            message: "no AI model answered: check Settings \u{2192} AI".to_string(),
+        },
+        AskError::Failed(reason) => failed(reason),
+    }
 }
 
 struct CompanionRpc {
@@ -91,7 +108,7 @@ impl ServiceHandler for CompanionRpc {
                 let text = self
                     .handle
                     .ask(prompt, Duration::from_millis(timeout_ms))
-                    .map_err(failed)?;
+                    .map_err(ask_failed)?;
                 Ok(serde_json::json!({ "text": text }))
             }
 
@@ -268,6 +285,19 @@ impl ServiceHandler for CompanionRpc {
     }
 }
 
+/// The runtime the companion's RPC answers on.
+///
+/// Multi-threaded, and that is load-bearing: `handle` is synchronous, so a `companion.ask`
+/// occupies whatever thread runs it for as long as the model takes — up to ninety seconds. On
+/// the single thread this used to be, that one call was the whole runtime: every other app's
+/// `companion.status` queued behind it, and apps that call status from their UI thread froze
+/// their windows along with it. Four threads is a ceiling on how many blocking calls can be in
+/// flight at once, not a fix for the queue itself — `companion.submit` and `companion.await`
+/// remain the shape that does not block at all.
+fn runtime() -> std::io::Result<tokio::runtime::Runtime> {
+    tokio::runtime::Builder::new_multi_thread().worker_threads(4).enable_all().build()
+}
+
 /// Publish the companion on the service bus.
 ///
 /// Runs on its own thread with its own small runtime: the shell's main thread belongs to Slint,
@@ -276,7 +306,7 @@ pub fn serve(handle: CompanionHandle) {
     std::thread::Builder::new()
         .name("companion-rpc".into())
         .spawn(move || {
-            let runtime = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+            let runtime = match runtime() {
                 Ok(rt) => rt,
                 Err(e) => {
                     tracing::error!(error = %e, "Companion RPC: no runtime, apps cannot reach the companion");
@@ -295,4 +325,110 @@ pub fn serve(handle: CompanionHandle) {
             });
         })
         .expect("spawn companion-rpc thread");
+}
+
+#[cfg(test)]
+mod error_tests {
+    use super::*;
+
+    /// The no-model case has to travel under its own code: it is the one thing a caller can
+    /// recognise without parsing a message, and a generic failure code is what let the offline
+    /// responder's canned text pass for an answer on the app side.
+    #[test]
+    fn no_model_travels_under_its_own_code() {
+        let e = ask_failed(AskError::NoModel);
+        assert_eq!(e.code, yantrik_ipc_contracts::ERR_NO_MODEL);
+        assert!(!e.message.is_empty(), "the code alone is for machines; the message is for logs");
+    }
+
+    #[test]
+    fn any_other_failure_keeps_the_generic_code_and_its_reason() {
+        let e = ask_failed(AskError::Failed("companion timed out".into()));
+        assert_eq!(e.code, -32000);
+        assert_eq!(e.message, "companion timed out");
+    }
+}
+
+#[cfg(all(test, unix))]
+mod serve_tests {
+    use super::*;
+    use crossbeam_channel::{Receiver, Sender};
+    use yantrik_ipc_transport::SyncRpcClient;
+
+    /// A handler that holds one method open until released, and answers everything else at
+    /// once — the shape of a ninety-second `ask` with a `companion.status` arriving mid-answer.
+    struct Gated {
+        entered: Sender<()>,
+        release: Receiver<()>,
+    }
+
+    impl ServiceHandler for Gated {
+        fn service_id(&self) -> &str {
+            "companion"
+        }
+        fn handle(
+            &self,
+            method: &str,
+            _params: serde_json::Value,
+        ) -> Result<serde_json::Value, ServiceError> {
+            if method == "slow" {
+                let _ = self.entered.send(());
+                let _ = self.release.recv_timeout(Duration::from_secs(30));
+            }
+            Ok(serde_json::json!({ "method": method }))
+        }
+    }
+
+    /// What this pins: while one app's call sits in the handler, another app's call is still
+    /// answered. On the single-threaded runtime this service used to run on, the blocked call
+    /// was the whole runtime — `companion.status` from a UI thread waited out the full ninety
+    /// seconds, and the window asking froze with it.
+    #[test]
+    fn a_slow_call_in_flight_does_not_hold_up_another_apps_call() {
+        let dir = std::env::temp_dir().join(format!("yantrik-companion-rpc-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("companion.sock");
+        let address = path.to_string_lossy().to_string();
+
+        let (entered_tx, entered_rx) = crossbeam_channel::bounded(1);
+        let (release_tx, release_rx) = crossbeam_channel::bounded(1);
+        let handler = Arc::new(Gated { entered: entered_tx, release: release_rx });
+
+        let serve_address = address.clone();
+        std::thread::spawn(move || {
+            let rt = runtime().expect("the runtime the service actually uses");
+            let _ = rt.block_on(RpcServer::new(&serve_address).serve(handler));
+        });
+
+        // Wait for the socket as state, not by sleeping a guessed while.
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while std::os::unix::net::UnixStream::connect(&path).is_err() {
+            assert!(std::time::Instant::now() < deadline, "the server never came up");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+
+        // One caller sits in the slow method...
+        let slow_address = address.clone();
+        let slow = std::thread::spawn(move || {
+            SyncRpcClient::new(&slow_address)
+                .with_timeout(Duration::from_secs(30))
+                .call("slow", serde_json::json!({}))
+                .expect("the slow call answers once released")
+        });
+        entered_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the slow call reached the handler");
+
+        // ...and a second must still be answered while the first is held.
+        let fast = SyncRpcClient::new(&address)
+            .with_timeout(Duration::from_secs(10))
+            .call("fast", serde_json::json!({}))
+            .expect("a fast call must be answered while a slow one is in flight");
+        assert_eq!(fast["method"], "fast");
+
+        let _ = release_tx.send(());
+        let _ = slow.join();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

@@ -102,9 +102,18 @@ export struct AgentDetailsData {
     tokens: string,
     cost: string,
     refused: string,
+    // Behind the count: what arrived and why the store refused it, one line each, oldest of the
+    // kept lines first (#212). "" for an agent nothing was refused for, and for a session saved
+    // before the lines were kept — then the count is all there is, as it was.
+    refused-lines: string,
     basis: string,
     role: string,          // the catalog role it was started as, if any
-    reach: string,         // what that role may touch: "editor, documents and notes · at most safe"
+    reach: string,         // what that role may touch, in words a person reads: "the Editor,
+                           // Documents and Notes, and it may ask for safe acts"
+    // The patterns the words are made from — the ones the doors enforce — one click away under
+    // them (#212): "editor, documents and notes · at most safe". "" when there is no second
+    // form to open.
+    reach-patterns: string,
 }
 
 export struct AgentMindData {
@@ -145,6 +154,9 @@ export global AgentsState {
     in-out property <bool> new-open: false;
     in-out property <string> new-mind: "";
     in-out property <string> new-note: "";
+    // The reach patterns behind the note's words, one click away in the dialog (#212). Empty
+    // for a mind, which has no reach of its own, and for a session saved before words were kept.
+    in-out property <string> new-note-reach: "";
     in-out property <string> new-error: "";
     // New agent → from the catalog: a role instead of a mind.
     in-out property <[AgentRoleData]> roles: [];
@@ -731,6 +743,42 @@ export component AgentDetailsColumn inherits Rectangle {
             font-size: Theme.fs-micro;
             wrap: word-wrap;
         }
+        // The words are made from the patterns the doors enforce; the patterns stay one click
+        // away, in the mono they are written in (#212). The whole box is the toggle, as the
+        // session's "thinking" fold is.
+        if AgentsState.details.reach-patterns != "" : reach-toggle := Rectangle {
+            property <bool> open: false;
+            height: reach-col.preferred-height;
+            reach-col := VerticalLayout {
+                spacing: 2px;
+                HorizontalLayout {
+                    spacing: 4px;
+                    alignment: start;
+                    Text {
+                        text: reach-toggle.open ? "hide the exact patterns" : "the exact patterns";
+                        color: Theme.accent;
+                        font-size: Theme.fs-micro;
+                        vertical-alignment: center;
+                    }
+                    Icon {
+                        commands: reach-toggle.open ? Icons.chevron-down : Icons.chevron-right;
+                        size: 10px;
+                        tint: Theme.text-dim;
+                    }
+                }
+                if reach-toggle.open : Text {
+                    text: AgentsState.details.reach-patterns;
+                    color: Theme.text-dim;
+                    font-family: Theme.font-mono;
+                    font-size: Theme.fs-micro;
+                    wrap: word-wrap;
+                }
+            }
+            TouchArea {
+                mouse-cursor: pointer;
+                clicked => { reach-toggle.open = !reach-toggle.open; }
+            }
+        }
         DetailRow { label: "Mind"; value: AgentsState.details.mind; }
         DetailRow { label: "Model"; value: AgentsState.details.model; }
         DetailRow { label: "Since"; value: AgentsState.details.since; }
@@ -741,7 +789,53 @@ export component AgentDetailsColumn inherits Rectangle {
         DetailRow { label: "Approvals"; value: AgentsState.details.approvals; }
         DetailRow { label: "Tokens"; value: AgentsState.details.tokens; }
         DetailRow { label: "Cost"; value: AgentsState.details.cost; }
-        if AgentsState.details.refused != "" : DetailRow { label: "Refused"; value: AgentsState.details.refused; }
+        // The count, and behind it what arrived and why each was refused (#212). A session with
+        // no kept lines shows the count alone, as it did before.
+        if AgentsState.details.refused != "" : refused-row := Rectangle {
+            property <bool> open: false;
+            height: refused-col.preferred-height;
+            refused-col := VerticalLayout {
+                spacing: 2px;
+                HorizontalLayout {
+                    height: 20px;
+                    spacing: 8px;
+                    Text {
+                        text: "Refused";
+                        width: 76px;
+                        color: Theme.text-dim;
+                        font-size: Theme.fs-caption;
+                        vertical-alignment: center;
+                    }
+                    Text {
+                        text: AgentsState.details.refused;
+                        color: Theme.text-primary;
+                        font-size: Theme.fs-caption;
+                        overflow: elide;
+                        horizontal-stretch: 1;
+                        vertical-alignment: center;
+                    }
+                    if AgentsState.details.refused-lines != "" : VerticalLayout {
+                        alignment: center;
+                        Icon {
+                            commands: refused-row.open ? Icons.chevron-down : Icons.chevron-right;
+                            size: 12px;
+                            tint: Theme.text-dim;
+                        }
+                    }
+                }
+                if refused-row.open && AgentsState.details.refused-lines != "" : Text {
+                    text: AgentsState.details.refused-lines;
+                    color: Theme.text-secondary;
+                    font-family: Theme.font-mono;
+                    font-size: Theme.fs-micro;
+                    wrap: word-wrap;
+                }
+            }
+            if AgentsState.details.refused-lines != "" : TouchArea {
+                mouse-cursor: pointer;
+                clicked => { refused-row.open = !refused-row.open; }
+            }
+        }
         if AgentsState.details.command-lines != "" : Text {
             text: AgentsState.details.command-lines;
             color: Theme.text-secondary;
@@ -1046,6 +1140,7 @@ export component AgentsScreen inherits Rectangle {
                                 AgentsState.pick-mind(AgentsState.new-mind);
                             } else {
                                 AgentsState.new-note = "";
+                                AgentsState.new-note-reach = "";
                             }
                         }
                     }
@@ -1059,6 +1154,7 @@ export component AgentsScreen inherits Rectangle {
                                 AgentsState.pick-role(AgentsState.new-role);
                             } else {
                                 AgentsState.new-note = "";
+                                AgentsState.new-note-reach = "";
                             }
                         }
                     }
@@ -1082,9 +1178,16 @@ export component AgentsScreen inherits Rectangle {
                         clicked => { AgentsState.pick-mind(mind.id); }
                     }
                 }
-                if AgentsState.new-from-catalog : Rectangle {
-                    height: min(AgentsState.roles.length * 50px, 250px);
+                // Every role is reachable: the list scrolls as it did, but now it says so while
+                // more is below the fold, and a thumb on the edge shows where in the list the
+                // window is (#212). The cue goes away at the bottom.
+                if AgentsState.new-from-catalog : roles-box := Rectangle {
+                    property <length> shown-h: min(AgentsState.roles.length * 50px, 250px);
+                    property <bool> more-below: roles-col.preferred-height - roles-box.shown-h > 2px
+                        && -roles-flick.viewport-y < roles-col.preferred-height - roles-box.shown-h - 2px;
+                    height: roles-box.shown-h + (roles-box.more-below ? 14px : 0px);
                     roles-flick := Flickable {
+                        height: roles-box.shown-h;
                         viewport-height: roles-col.preferred-height;
                         Rectangle {
                             width: roles-flick.width;
@@ -1099,12 +1202,60 @@ export component AgentsScreen inherits Rectangle {
                             }
                         }
                     }
+                    if roles-col.preferred-height > roles-box.shown-h + 2px : Rectangle {
+                        x: roles-box.width - 4px;
+                        width: 3px;
+                        // How much of the list the window shows, and where in the list it is.
+                        height: max(20px, roles-box.shown-h * (roles-box.shown-h / roles-col.preferred-height));
+                        y: min(roles-box.shown-h - self.height,
+                               -roles-flick.viewport-y * (roles-box.shown-h / roles-col.preferred-height));
+                        border-radius: 2px;
+                        background: Theme.text-dim;
+                    }
+                    if roles-box.more-below : Text {
+                        y: roles-box.shown-h;
+                        height: 14px;
+                        text: "more roles below — scroll";
+                        color: Theme.text-dim;
+                        font-size: Theme.fs-micro;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
                 }
-                if AgentsState.new-note != "" : Text {
-                    text: AgentsState.new-note;
-                    color: Theme.text-dim;
-                    font-size: Theme.fs-micro;
-                    wrap: word-wrap;
+                if AgentsState.new-note != "" : note-box := Rectangle {
+                    property <bool> show-reach: false;
+                    height: note-col.preferred-height;
+                    note-col := VerticalLayout {
+                        spacing: 2px;
+                        Text {
+                            text: AgentsState.new-note;
+                            color: Theme.text-dim;
+                            font-size: Theme.fs-micro;
+                            wrap: word-wrap;
+                        }
+                        // The note says the reach in words; the patterns the words were made
+                        // from — the ones the doors enforce — are one click away (#212). Only
+                        // this line toggles, not the note around it.
+                        if AgentsState.new-note-reach != "" : Rectangle {
+                            height: reach-link.preferred-height;
+                            reach-link := Text {
+                                text: note-box.show-reach ? "hide the exact patterns" : "the exact patterns";
+                                color: Theme.accent;
+                                font-size: Theme.fs-micro;
+                            }
+                            TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => { note-box.show-reach = !note-box.show-reach; }
+                            }
+                        }
+                        if note-box.show-reach && AgentsState.new-note-reach != "" : Text {
+                            text: AgentsState.new-note-reach;
+                            color: Theme.text-secondary;
+                            font-family: Theme.font-mono;
+                            font-size: Theme.fs-micro;
+                            wrap: word-wrap;
+                        }
+                    }
                 }
                 Rectangle {
                     height: 110px;

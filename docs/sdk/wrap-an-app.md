@@ -134,6 +134,11 @@ Exec=yantrik-libreoffice %U
 # `soffice` lists this entry nowhere: no tile, and no `libreoffice` row for a mind to try
 # `open_app` on (#214).
 TryExec=soffice
+# The office document types LibreOffice opens, as the freedesktop MimeType key states them.
+# The shell's own table has no app for these, so this line is what puts LibreOffice in Files'
+# "Open with" list for an .odt and what makes it the answer at double-click time — and it is
+# what an "Always use this app" choice for one of these types points back at (#233).
+MimeType=application/vnd.oasis.opendocument.text;application/vnd.oasis.opendocument.spreadsheet;application/vnd.oasis.opendocument.presentation;application/msword;application/vnd.ms-excel;application/vnd.ms-powerpoint;application/vnd.openxmlformats-officedocument.wordprocessingml.document;application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;application/vnd.openxmlformats-officedocument.presentationml.presentation;application/rtf;
 Icon=libreoffice-startcenter
 Terminal=false
 Categories=Office;

@@ -128,6 +128,12 @@ reached at all, a small fallback table keeps the tools existing so Pi still star
   own `main`) is its own `pi --mode rpc` process, started when its first message arrives and
   stopped when the agent is stopped. Its environment carries that agent's
   `YANTRIK_AGENT_TOKEN`, so the `yos-mcp` the extension starts can say which agent is asking.
+- Each process runs in the conversation's own directory —
+  `~/.local/share/yantrik/minds/pi/<conversation>` (under `XDG_DATA_HOME` when that is set) —
+  and never in your home folder, because Pi reads the instruction files (`CLAUDE.md`,
+  `AGENTS.md`) of its working directory and its parents: your own `~/CLAUDE.md`, written for
+  your coding work, must not steer the desktop's mind (#183). Instructions for the desktop's
+  Pi belong in that directory, on purpose.
 - A command of the agent's that finishes after its call returned is told to Pi at the start of
   the next turn, in front of your message (`[From the desktop, since your last turn: …]`).
 - A tool execution is a card in the agent's pane — its arguments, its output streamed into it,

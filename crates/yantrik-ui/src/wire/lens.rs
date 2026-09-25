@@ -238,9 +238,12 @@ fn wire_result_selected(ui: &App, ctx: &AppContext) {
         let installed = catalogue.get();
         match lens::resolve_action(&action, &installed) {
             lens::LensAction::Launch(cmd) => {
-                let parts: Vec<&str> = cmd.split_whitespace().collect();
-                let (bin, args) = match parts.split_first() {
-                    Some((b, a)) => (*b, a),
+                // The command is a desktop entry's Exec line, so it is read the way the spec
+                // writes it: field codes survive parsing and must not reach the program as
+                // literal words (#304).
+                let argv = crate::apps::exec_argv(&cmd, None);
+                let (bin, args) = match argv.split_first() {
+                    Some((b, a)) => (b.as_str(), a),
                     None => {
                         tracing::error!("Empty launch command");
                         return;

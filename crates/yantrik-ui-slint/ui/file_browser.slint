@@ -52,6 +52,15 @@ export struct FileRecentData {
     icon-char: string,
 }
 
+/// One app in the "Open with" menu: what the shell offers for the selected file. `id` is the
+/// desktop entry id the launch and the written default both name; `is-default` marks the app a
+/// plain double-click uses (#233).
+export struct OpenWithItem {
+    name: string,
+    id: string,
+    is-default: bool,
+}
+
 // The words on a tile, in one place so the grid, the list and the recent row agree.
 global FileText {
     public pure function items(e: FileEntry) -> string {
@@ -481,14 +490,30 @@ export component FileBrowser inherits Rectangle {
     }
 
     in property <string> notice;
+    // When the notice is about something just created (files.rs `set_notice`), these carry
+    // its name and whether it is a folder, so the footer can offer Open and Rename for it.
+    in property <string> notice-created: "";
+    in property <bool> notice-created-dir: false;
     in property <bool> operation-busy;
     in property <string> operation-text;
     in property <float> operation-progress;
     in property <bool> can-undo;
+    // The dialog panel's height, mirrored out so the ui-preview checks can see that a
+    // naming dialog hugs its contents instead of holding the old fixed height with an
+    // empty band in it. The dialog lives inside an `if`, so it reports its own height
+    // from a changed handler instead of being referenced from out here.
+    out property <length> dialog-height: 0px;
     callback refresh();
     callback cancel-operation();
     callback undo-trash();
     callback open-with(string);
+    // "Always use this app": the desktop id and the name on screen, so the notice that says
+    // it was remembered can use the same words as the row that was clicked (#233).
+    callback open-with-always(string, string);
+    // Asked for the list behind the "Open with" menu, which is rebuilt per opening.
+    callback open-with-requested();
+    // The apps offered for the selected file, first row the one a double-click uses (#233).
+    in property <[OpenWithItem]> open-with-apps: [];
     callback dismiss-notice();
     property <bool> ctrl-held;
     property <bool> shift-held;
@@ -500,6 +525,8 @@ export component FileBrowser inherits Rectangle {
     property <length> tile-w: 160px;
     property <length> tile-h: 148px;
     property <int> columns: max(1, floor(list-area.width / root.tile-w));
+    // The grid's tile rows; the recent strip, when it shows, rides along as one more row.
+    property <int> grid-rows: ceil(root.entries.length / root.columns);
     // How many recent files fit across the row under the grid.
     property <length> recent-card-w: 214px;
     // The width the listing gets, worked out from the screen's own width rather than read
@@ -534,7 +561,7 @@ export component FileBrowser inherits Rectangle {
         else if id == "refresh" { root.refresh(); }
         else if id == "hidden" { root.toggle-hidden(); }
         else if id == "new-tab" { root.file-new-tab(); }
-        else if id == "open-with" { root.open-with-visible = true; }
+        else if id == "open-with" { root.open-with-requested(); root.open-with-visible = true; }
         else if id == "restore" { root.file-restore-from-trash(root.selected-index); }
         else if id == "empty-trash" { root.dialog-kind = "Empty Trash"; }
     }
@@ -667,22 +694,10 @@ export component FileBrowser inherits Rectangle {
                     }
                 }
             }
-            if root.notice != "" : Rectangle {
-                height: max(44px, notice-label.preferred-height + 20px); background: Theme.bg-elevated;
-                HorizontalLayout { padding-left: 16px; padding-right: 8px; spacing: 8px;
-                    notice-label := Text { wrap: word-wrap; text: root.notice; color: Theme.text-primary; font-size: 12px; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
-                    if root.can-undo : YButton { label: "Undo trash"; variant: 1; size: 0; disabled: root.operation-busy; clicked => { root.undo-trash(); } }
-                    YButton { label: "Dismiss message"; icon-path: Icons.close; icon-only: true; variant: 2; size: 0; clicked => { root.dismiss-notice(); } }
-                }
-            }
-            if root.operation-busy : Rectangle {
-                height: 48px; background: Theme.bg-surface;
-                HorizontalLayout { padding-left: 16px; padding-right: 12px; spacing: 12px;
-                    Text { text: root.operation-text; color: Theme.text-secondary; font-size: 12px; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
-                    YButton { label: "Cancel"; variant: 1; size: 0; clicked => { root.cancel-operation(); } }
-                }
-                Rectangle { y: parent.height - 2px; height: 2px; width: max(4px, parent.width * root.operation-progress); background: Theme.accent; }
-            }
+            // Notices and the running operation used to be bands here, above the listing.
+            // Each band appearing pushed the whole grid down under the pointer, so the next
+            // double-click landed on the neighbour tile (issue #208). They live in the
+            // footer now, which never changes height.
             HorizontalLayout { spacing: 0px;
                 // ── Places ──
                 if root.width >= 620px : Rectangle {
@@ -763,14 +778,22 @@ export component FileBrowser inherits Rectangle {
                                     selected: entry.selected; focused: listing.has-focus && index == root.selected-index;
                                     clicked => { listing.focus(); root.multi-select-clicked(index, root.ctrl-held, root.shift-held); }
                                     activate => { root.selected-index = index; root.open-selected(); }
-                                    context => { root.multi-select-clicked(index, false, false); root.open-with-visible = true; }
+                                    context => { root.multi-select-clicked(index, false, false); root.open-with-requested(); root.open-with-visible = true; }
                                 }
                             }
+                            // The recent strip is the grid's last row, so the two scroll as
+                            // one: outside the scroll area it took a fixed 104px off the
+                            // viewport and cut the third row's labels in half on a 1280x800
+                            // screen (issue #208). The grid stays a ListView — only the rows
+                            // on screen are built, which matters in folders like /usr/lib
+                            // with thousands of entries — and a ListView accepts only a
+                            // single `for`, so the strip is one more row of it, taller than
+                            // a tile row, rather than a second child.
                             grid-list := ListView {
                                 visible: !root.is-loading && root.grid-view;
-                                for row in (root.grid-view && !root.is-loading ? ceil(root.entries.length / root.columns) : 0) : Rectangle {
-                                    height: root.tile-h;
-                                    HorizontalLayout { spacing: 0px; alignment: start;
+                                for row in (root.grid-view && !root.is-loading ? root.grid-rows + (root.show-recent ? 1 : 0) : 0) : Rectangle {
+                                    height: row < root.grid-rows ? root.tile-h : 104px;
+                                    if row < root.grid-rows : HorizontalLayout { spacing: 0px; alignment: start;
                                         for col in root.columns : cell := Rectangle {
                                             width: list-area.width / root.columns; height: root.tile-h;
                                             property <int> index: row * root.columns + col;
@@ -783,32 +806,33 @@ export component FileBrowser inherits Rectangle {
                                             }
                                         }
                                     }
+                                    // ── Recent: the files in this folder that changed last ──
+                                    //
+                                    // Under the grid and scrolling with it, as the design has
+                                    // it. Real files by their real times (filebrowser.rs
+                                    // `most_recent`); hidden while a search narrows the view,
+                                    // in Trash, and when the folder holds no files at all.
+                                    if row >= root.grid-rows : Rectangle {
+                                        width: 100%; height: 100%;
+                                        Rectangle { x: 16px; width: parent.width - 32px; y: 0px; height: 1px; background: Theme.border-subtle; }
+                                        VerticalLayout { padding-left: 16px; padding-right: 16px; padding-top: 12px; padding-bottom: 14px; spacing: 10px;
+                                            Text { text: "Recent in this folder"; color: Theme.text-secondary; font-size: 12px; font-weight: 600; }
+                                            HorizontalLayout { spacing: 10px; alignment: start;
+                                                for file[i] in root.recent : RecentCard {
+                                                    visible: i < root.recent-fit;
+                                                    width: i < root.recent-fit ? root.recent-card-w : 0px;
+                                                    file: file;
+                                                    activate => { root.open-file(file.name); }
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
                             }
                             if root.is-loading || root.entries.length == 0 : YEmptyState {
                                 icon-path: root.is-loading ? Icons.folder : root.file-trash-mode ? Icons.trash : root.search-text != "" ? Icons.search : Icons.folder;
                                 title: root.is-loading ? "Opening folder…" : root.search-text != "" ? "No matching files" : root.file-trash-mode ? "Trash is empty" : "This folder is empty";
                                 description: root.is-loading ? "Reading this folder’s contents." : root.search-text != "" ? "Try another name. Search stays in this folder." : root.file-trash-mode ? "Items moved to Trash can be restored here." : "Create a folder or paste files to get started.";
-                            }
-                        }
-                        // ── Recent: the files in this folder that changed last ──
-                        //
-                        // Under the grid, as the design has it. Real files by their real times
-                        // (filebrowser.rs `most_recent`); hidden while a search narrows the view,
-                        // in Trash, and when the folder holds no files at all.
-                        if root.show-recent : Rectangle {
-                            height: 104px;
-                            Rectangle { x: 16px; width: parent.width - 32px; y: 0px; height: 1px; background: Theme.border-subtle; }
-                            VerticalLayout { padding-left: 16px; padding-right: 16px; padding-top: 12px; padding-bottom: 14px; spacing: 10px;
-                                Text { text: "Recent in this folder"; color: Theme.text-secondary; font-size: 12px; font-weight: 600; }
-                                HorizontalLayout { spacing: 10px; alignment: start;
-                                    for file[i] in root.recent : RecentCard {
-                                        visible: i < root.recent-fit;
-                                        width: i < root.recent-fit ? root.recent-card-w : 0px;
-                                        file: file;
-                                        activate => { root.open-file(file.name); }
-                                    }
-                                }
                             }
                         }
                     }
@@ -834,8 +858,35 @@ export component FileBrowser inherits Rectangle {
                     }
                 }
             }
-            Rectangle { height: 30px; background: Theme.bg-surface;
-                HorizontalLayout { padding-left: 16px; padding-right: 16px; spacing: 16px;
+            // ── Footer ──
+            //
+            // One line that never changes height: the running operation, else any notice,
+            // else the plain status. A notice about something just created names it and
+            // offers Open and Rename (issue #208) — they act on `notice-created`, which the
+            // Rust side sets together with the message.
+            Rectangle {
+                height: 30px; background: Theme.bg-surface;
+                if root.operation-busy : Rectangle { y: 0px; height: 2px; width: max(4px, parent.width * root.operation-progress); background: Theme.accent; }
+                if root.operation-busy : HorizontalLayout {
+                    padding-left: 16px; padding-right: 8px; spacing: 8px;
+                    Text { text: root.operation-text; color: Theme.text-secondary; font-size: 11px; vertical-alignment: center; horizontal-stretch: 1; min-width: 0px; overflow: elide; }
+                    YButton { label: "Cancel"; variant: 1; size: 0; clicked => { root.cancel-operation(); } }
+                }
+                if !root.operation-busy && root.notice != "" : HorizontalLayout {
+                    padding-left: 16px; padding-right: 8px; spacing: 8px;
+                    Text { text: root.notice; color: Theme.text-primary; font-size: 11px; vertical-alignment: center; horizontal-stretch: 1; min-width: 0px; overflow: elide; }
+                    if root.notice-created != "" : YButton { label: "Open"; variant: 1; size: 0; clicked => {
+                        if root.notice-created-dir { root.navigate-dir(root.notice-created); }
+                        else { root.open-file(root.notice-created); }
+                    } }
+                    if root.notice-created != "" : YButton { label: "Rename"; variant: 2; size: 0; clicked => {
+                        root.dialog-kind = "Rename"; root.dialog-old = root.notice-created; root.dialog-value = root.notice-created;
+                    } }
+                    if root.can-undo : YButton { label: "Undo trash"; variant: 1; size: 0; disabled: root.operation-busy; clicked => { root.undo-trash(); } }
+                    YButton { label: "Dismiss message"; icon-path: Icons.close; icon-only: true; variant: 2; size: 0; clicked => { root.dismiss-notice(); } }
+                }
+                if !root.operation-busy && root.notice == "" : HorizontalLayout {
+                    padding-left: 16px; padding-right: 16px; spacing: 16px;
                     Text { text: root.is-loading ? "Loading…" : "\{root.entries.length} items"; color: Theme.text-secondary; font-size: 11px; vertical-alignment: center; }
                     Text { text: root.selection-count > 0 ? root.selection-size-text : root.current-path; color: Theme.text-dim; font-size: 11px; overflow: elide; vertical-alignment: center; horizontal-stretch: 1; }
                     if root.width >= 850px : Text { text: "Enter  Open   ·   Space  Preview   ·   Ctrl L  Location"; color: Theme.text-dim; font-size: 11px; vertical-alignment: center; }
@@ -846,12 +897,21 @@ export component FileBrowser inherits Rectangle {
     if root.dialog-kind != "" || root.file-quick-look-open || root.open-with-visible : FocusScope {
         key-pressed(e) => { if e.text == Key.Escape { root.dialog-kind = ""; root.file-close-quick-look(); root.open-with-visible = false; listing.focus(); return accept; } reject }
         Rectangle { background: #00000088; TouchArea {} }
-        Rectangle {
+        dlg := Rectangle {
             width: root.file-quick-look-open ? min(680px, root.width - 48px) : min(430px, root.width - 48px);
-            height: root.file-quick-look-open ? min(480px, root.height - 48px) : root.open-with-visible ? 310px : 200px;
+            // Sized to what it holds. A fixed 200px left the layout slack, and the layout
+            // spent it stretching the title's cell: the empty band between "New folder" and
+            // the name field (issue #208). The body layout's preferred height already counts
+            // its padding, its spacing and whichever of the conditional rows are showing.
+            height: root.file-quick-look-open ? min(480px, root.height - 48px)
+                // The "Open with" list has as many rows as this machine has apps for the
+                // type, so the dialog hugs the rows it actually got, up to the screen (#233).
+                : root.open-with-visible ? min(dlg-body.preferred-height, root.height - 48px)
+                : dlg-body.preferred-height;
+            changed height => { root.dialog-height = self.height; }
             x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
             background: Theme.bg-elevated; border-radius: 12px; border-width: 1px; border-color: Theme.border-strong;
-            VerticalLayout { padding: 20px; spacing: 14px;
+            dlg-body := VerticalLayout { padding: 20px; spacing: 14px;
                 Text { text: root.file-quick-look-open ? root.file-quick-look-name : root.open-with-visible ? root.selected-name : root.dialog-kind; color: Theme.text-primary; font-size: 18px; font-weight: 600; overflow: elide; }
                 if root.dialog-kind != "" && root.dialog-kind != "Empty Trash" : YInput { init => { self.focus(); } value <=> root.dialog-value; placeholder: "Name"; accepted(_) => { if root.dialog-value != "" { root.submit-dialog(); } } }
                 if root.dialog-kind == "Empty Trash" : Text { text: "Permanently remove all items in Trash? This cannot be undone."; color: Theme.text-secondary; font-size: 13px; wrap: word-wrap; }
@@ -859,8 +919,20 @@ export component FileBrowser inherits Rectangle {
                     preview := Text { width: parent.width; text: root.file-quick-look-content; color: Theme.text-secondary; font-family: Theme.font-mono; font-size: 13px; wrap: word-wrap; }
                 }
                 if root.open-with-visible : VerticalLayout { spacing: 8px;
-                    YButton { init => { self.focus(); } label: "Open with default app"; icon-path: Icons.link; variant: 1; clicked => { root.open-with-visible = false; root.open-selected(); } }
-                    YButton { label: "Open with Text Editor"; icon-path: Icons.editor; variant: 1; disabled: root.file-trash-mode || (root.selected-index >= 0 && root.entries[root.selected-index].is-dir); clicked => { root.open-with-visible = false; root.open-with("editor"); } }
+                    // The apps this machine has for the selected file, the one a double-click
+                    // uses first and marked as it. Folders and the Trash get no list, so they
+                    // get the empty state instead of a row that cannot launch (#233).
+                    if root.open-with-apps.length == 0 : Text { text: "No app is offered for this item."; color: Theme.text-secondary; font-size: 13px; wrap: word-wrap; }
+                    for app[index] in root.open-with-apps : HorizontalLayout { spacing: 8px;
+                        YButton {
+                            init => { if index == 0 { self.focus(); } }
+                            label: app.is-default ? "Open with " + app.name + " (default)" : "Open with " + app.name;
+                            icon-path: Icons.link; variant: 1; horizontal-stretch: 1;
+                            clicked => { root.open-with-visible = false; root.open-with(app.id); }
+                        }
+                        YButton { label: "Always use"; variant: 2; size: 0; disabled: root.file-trash-mode;
+                            clicked => { root.open-with-visible = false; root.open-with-always(app.id, app.name); } }
+                    }
                     YButton { label: "Rename"; icon-path: Icons.editor; variant: 2; disabled: root.file-trash-mode || root.operation-busy; clicked => { root.open-with-visible = false; root.command("rename"); } }
                     YButton { label: "Move to Trash"; icon-path: Icons.trash; variant: 2; disabled: root.file-trash-mode || root.operation-busy; clicked => { root.open-with-visible = false; root.delete-selected(); } }
                 }

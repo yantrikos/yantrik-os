@@ -2185,7 +2185,6 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "chrono",
- "html2text",
  "imap",
  "lettre",
  "mailparse",
@@ -2194,6 +2193,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "ureq 2.12.1",
+ "yantrik-email-text",
  "yantrik-ipc-contracts",
  "yantrik-service-sdk",
 ]
@@ -10414,6 +10414,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "yantrik-calendar-core-tests"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "serde",
+ "serde_json",
+ "uuid7",
+ "yantrik-ipc-contracts",
+]
+
+[[package]]
 name = "yantrik-chat"
 version = "0.1.0"
 dependencies = [
@@ -10434,7 +10445,6 @@ dependencies = [
  "anyhow",
  "chrono",
  "crossbeam-channel",
- "html2text",
  "imap",
  "lettre",
  "mailparse",
@@ -10455,6 +10465,7 @@ dependencies = [
  "yantrik-companion-cortex",
  "yantrik-companion-instincts",
  "yantrik-companion-tools",
+ "yantrik-email-text",
  "yantrik-ipc-contracts",
  "yantrik-ipc-transport",
  "yantrik-ml",
@@ -10521,6 +10532,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "yantrik-container-core-tests"
+version = "0.1.0"
+
+[[package]]
 name = "yantrik-container-manager"
 version = "0.1.0"
 dependencies = [
@@ -10541,11 +10556,22 @@ name = "yantrik-design-tokens"
 version = "0.1.0"
 
 [[package]]
+name = "yantrik-document-core-tests"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "pulldown-cmark",
+ "regex",
+ "serde",
+ "serde_json",
+ "yantrik-file-follow",
+]
+
+[[package]]
 name = "yantrik-document-editor"
 version = "0.1.0"
 dependencies = [
  "libc",
- "notify",
  "pulldown-cmark",
  "regex",
  "serde",
@@ -10555,6 +10581,7 @@ dependencies = [
  "tracing",
  "yantrik-app-runtime",
  "yantrik-design-tokens",
+ "yantrik-file-follow",
  "yantrik-ipc-contracts",
  "yantrik-ipc-transport",
  "yantrik-ui-kit",
@@ -10602,6 +10629,43 @@ dependencies = [
 ]
 
 [[package]]
+name = "yantrik-email-core-tests"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "chrono",
+ "mailparse",
+ "serde",
+ "serde_json",
+ "sha2",
+ "yantrik-ipc-contracts",
+]
+
+[[package]]
+name = "yantrik-email-text"
+version = "0.1.0"
+dependencies = [
+ "html2text",
+]
+
+[[package]]
+name = "yantrik-file-follow"
+version = "0.1.0"
+dependencies = [
+ "notify",
+ "tracing",
+]
+
+[[package]]
+name = "yantrik-files-core-tests"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "serde_json",
+ "tracing",
+]
+
+[[package]]
 name = "yantrik-harness"
 version = "0.1.0"
 dependencies = [
@@ -10620,6 +10684,13 @@ version = "0.1.0"
 dependencies = [
  "kamadak-exif",
  "tracing",
+]
+
+[[package]]
+name = "yantrik-image-core-tests"
+version = "0.1.0"
+dependencies = [
+ "yantrik-image-core",
 ]
 
 [[package]]
@@ -10717,6 +10788,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "yantrik-network-core-tests"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "yantrik-ipc-contracts",
+]
+
+[[package]]
 name = "yantrik-network-manager"
 version = "0.1.0"
 dependencies = [
@@ -10768,6 +10848,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "yantrik-performance-core-tests"
+version = "0.1.0"
+dependencies = [
+ "crossbeam-channel",
+ "serde",
+ "sysinfo",
+ "tracing",
+]
+
+[[package]]
 name = "yantrik-presentation"
 version = "0.1.0"
 dependencies = [
@@ -10784,6 +10874,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "yantrik-presentation-core-tests"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "yantrik-service-sdk"
 version = "0.1.0"
 dependencies = [
@@ -10795,6 +10893,14 @@ dependencies = [
  "yantrik-ipc-contracts",
  "yantrik-ipc-transport",
  "yantrik-surface",
+]
+
+[[package]]
+name = "yantrik-settings-core-tests"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "serde_yaml",
 ]
 
 [[package]]
@@ -10819,6 +10925,14 @@ dependencies = [
  "yantrik-ipc-contracts",
  "yantrik-ipc-transport",
  "yantrik-ui-kit",
+]
+
+[[package]]
+name = "yantrik-snippets-core-tests"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -10874,6 +10988,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "yantrik-sysmon-core-tests"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "serde_json",
+]
+
+[[package]]
 name = "yantrik-system-monitor"
 version = "0.1.0"
 dependencies = [
@@ -10926,6 +11048,7 @@ dependencies = [
  "tracing",
  "yantrik-app-runtime",
  "yantrik-design-tokens",
+ "yantrik-file-follow",
  "yantrik-ipc-contracts",
  "yantrik-ipc-transport",
  "yantrik-ui-kit",
@@ -11014,6 +11137,18 @@ dependencies = [
  "yantrik-ipc-transport",
  "yantrik-ui-kit",
 ]
+
+[[package]]
+name = "yantrik-weather-core-tests"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "yantrik-windows-core-tests"
+version = "0.1.0"
 
 [[package]]
 name = "yantrikdb"

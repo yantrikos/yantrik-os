@@ -69,6 +69,7 @@ export struct EmailDetailData {
     has-attachment: bool,
     attachment-names: string,   // comma-separated list
     thread-count: int,
+    has-html: bool,             // sender delivered an HTML original; gates "Open original"
 }
 
 export struct EmailAttachmentData {
@@ -211,7 +212,7 @@ export component EmailClient inherits Rectangle {
     callback mark-read(int);
     callback mark-flagged(int);
     callback summarize-email();
-    callback enhance-text(string);
+    callback enhance-text(string);       // the tone to rewrite in — the handler reads the body from the composer itself
     callback ai-draft(string);           // generate email from prompt
     callback ai-reply-suggest();         // suggest reply
     callback search-emails(string);
@@ -220,6 +221,11 @@ export component EmailClient inherits Rectangle {
     callback add-account();              // open setup for an additional account
     callback cancel-setup();             // leave the setup form without saving
     callback toggle-thread-message(int); // collapse/expand a thread message
+
+    // Open the open message's HTML original in a browser, for the mail whose layout the
+    // reading pane's text cannot carry. The app strips remote images from the file it writes
+    // first — a browser loading a sender's pixel is an open tracker — and its notice says so.
+    callback open-original();
 
     // V41: Enterprise callbacks
     //
@@ -1590,7 +1596,7 @@ export component EmailClient inherits Rectangle {
                                 width: 65px; height: 28px; border-radius: 6px;
                                 background: Theme.bg-card;
                                 TouchArea {
-                                    clicked => { root.enhance-text(root.compose-body); }
+                                    clicked => { root.enhance-text("clearer and more polished"); }
                                     mouse-cursor: pointer;
                                 }
                                 Text {
@@ -1605,7 +1611,7 @@ export component EmailClient inherits Rectangle {
                                 width: 75px; height: 28px; border-radius: 6px;
                                 background: Theme.bg-card;
                                 TouchArea {
-                                    clicked => { root.enhance-text("Make this email professional and formal:\n\n" + root.compose-body); }
+                                    clicked => { root.enhance-text("professional and formal"); }
                                     mouse-cursor: pointer;
                                 }
                                 Text { text: "Professional"; color: Theme.text-dim; font-size: Theme.fs-micro; horizontal-alignment: center; vertical-alignment: center; }
@@ -1616,7 +1622,7 @@ export component EmailClient inherits Rectangle {
                                 width: 50px; height: 28px; border-radius: 6px;
                                 background: Theme.bg-card;
                                 TouchArea {
-                                    clicked => { root.enhance-text("Make this email casual and friendly:\n\n" + root.compose-body); }
+                                    clicked => { root.enhance-text("casual and friendly"); }
                                     mouse-cursor: pointer;
                                 }
                                 Text { text: "Casual"; color: Theme.text-dim; font-size: Theme.fs-micro; horizontal-alignment: center; vertical-alignment: center; }
@@ -1627,7 +1633,7 @@ export component EmailClient inherits Rectangle {
                                 width: 55px; height: 28px; border-radius: 6px;
                                 background: Theme.bg-card;
                                 TouchArea {
-                                    clicked => { root.enhance-text("Make this email shorter and more concise:\n\n" + root.compose-body); }
+                                    clicked => { root.enhance-text("shorter and more concise"); }
                                     mouse-cursor: pointer;
                                 }
                                 Text { text: "Concise"; color: Theme.text-dim; font-size: Theme.fs-micro; horizontal-alignment: center; vertical-alignment: center; }
@@ -1741,6 +1747,14 @@ export component EmailClient inherits Rectangle {
                             YIconButton { icon-path: Icons.trash; variant: 2; clicked => { root.delete-email(root.email-detail.id); } }
                             YIconButton { icon-path: root.email-detail.is-read ? Icons.mail : Icons.mail-open; variant: 2; clicked => { root.mark-read(root.email-detail.id); } }
                             YIconButton { icon-path: Icons.star; variant: root.email-detail.is-flagged ? 1 : 2; clicked => { root.mark-flagged(root.email-detail.id); } }
+
+                            // Only for a message that has an HTML original to open; a plain-text
+                            // mail's original is the text already on screen.
+                            if root.email-detail.has-html : YButton {
+                                label: "Open original";
+                                icon-path: Icons.browser; variant: 2; size: 0;
+                                clicked => { root.open-original(); }
+                            }
 
                             Rectangle { horizontal-stretch: 1; }
 

@@ -324,7 +324,8 @@ fn extract_text_from_mime(parsed: &mailparse::ParsedMail) -> String {
             if ctype.contains("text/plain") {
                 return body;
             } else if ctype.contains("text/html") {
-                return html2text::from_read(body.as_bytes(), 80);
+                // The reading-pane conversion rule, shared with the email service (#275).
+                return yantrik_email_text::readable_text(&body);
             }
         }
         return String::new();
@@ -355,8 +356,39 @@ fn extract_text_from_mime(parsed: &mailparse::ParsedMail) -> String {
     if !plain_text.is_empty() {
         plain_text
     } else if !html_text.is_empty() {
-        html2text::from_read(html_text.as_bytes(), 80)
+        yantrik_email_text::readable_text(&html_text)
     } else {
         String::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::extract_text_from_mime;
+
+    #[test]
+    fn multipart_alternative_prefers_the_senders_plain_text() {
+        let raw = b"From: sender@example.com\r\nSubject: Both\r\nMIME-Version: 1.0\r\nContent-Type: multipart/alternative; boundary=\"B\"\r\n\r\n--B\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nThe sender's own plain text.\r\n--B\r\nContent-Type: text/html; charset=utf-8\r\n\r\n<p>The HTML version.</p>\r\n--B--\r\n";
+        let parsed = mailparse::parse_mail(raw).unwrap();
+        let text = extract_text_from_mime(&parsed);
+        assert!(text.contains("The sender's own plain text."), "plain part lost: {text:?}");
+        assert!(!text.contains("HTML version"), "plain part present but HTML won: {text:?}");
+    }
+
+    #[test]
+    fn html_only_mail_is_converted_for_reading_not_for_a_terminal() {
+        // The companion's copy of the conversion used html2text's terminal defaults, so
+        // notifications and summaries quoted the box-drawn, footnoted, 80-column text the
+        // reading pane used to show (#275).
+        let raw = b"From: news@example.com\r\nSubject: Newsletter\r\nMIME-Version: 1.0\r\nContent-Type: text/html; charset=utf-8\r\n\r\n<table border=\"1\"><tr><td><img src=\"https://news.example/logo.png\" alt=\"Company Logo\"></td></tr><tr><td><a href=\"https://news.example/story\">The story everyone is reading this week</a></td></tr><tr><td>24 upvotes</td><td>21 comments</td></tr></table>";
+        let parsed = mailparse::parse_mail(raw).unwrap();
+        let text = extract_text_from_mime(&parsed);
+        for c in "─│┼┬┐└├┤┴┘".chars() {
+            assert!(!text.contains(c), "table border {c:?} in:\n{text}");
+        }
+        assert!(!text.contains("Company Logo"), "image alt in:\n{text}");
+        assert!(!text.contains('[') && !text.contains(']'), "footnote bracket in:\n{text}");
+        assert!(text.contains("The story everyone is reading this week"), "title missing:\n{text}");
+        assert!(text.contains("24 upvotes") && text.contains("21 comments"), "cells missing:\n{text}");
     }
 }

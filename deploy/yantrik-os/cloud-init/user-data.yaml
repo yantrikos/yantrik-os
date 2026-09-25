@@ -121,6 +121,17 @@ packages:
   # (crates/yantrik-ui/src/mime_dispatch.rs), so a machine without mpv plays no media at all —
   # which was every machine, because no provisioning path installed it (#255).
   - mpv
+  # `ip`, `ss` and `ping`. The mind's network tools call all three
+  # (crates/yantrik-companion-tools/src/networking.rs), and the ISO has installed both
+  # packages since 2c598ad while this list never did — so a machine provisioned from here
+  # could not show its addresses or ping its gateway, the same drift VM 520 hit from the
+  # other direction (#210).
+  - iproute2
+  - iputils-ping
+  # A person's first hour: an editor for the terminal (yantrik-session exports EDITOR=nano)
+  # and a process view beside the System Monitor app. The image shipped neither (#210).
+  - nano
+  - htop
 
 write_files:
   - path: /etc/yantrik/install.env

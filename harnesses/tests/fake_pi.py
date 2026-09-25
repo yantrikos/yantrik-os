@@ -29,8 +29,9 @@ SCENARIO = os.environ.get("FAKE_PI_SCENARIO") or (sys.argv[1] if len(sys.argv) >
 ARGV_DUMP = os.environ.get("FAKE_PI_ARGV_DUMP")
 # Every command line the harness sends, for the dialog and abort assertions.
 COMMANDS_DUMP = os.environ.get("FAKE_PI_COMMANDS_DUMP")
-# One line per process started — its pid and the agent token in its environment — so a test can
-# see one process per conversation and which agent each one is.
+# One line per process started — its pid, the agent token in its environment and the directory
+# it was started in — so a test can see one process per conversation, which agent each one is,
+# and where in the filesystem it runs (#183).
 ENV_DUMP = os.environ.get("FAKE_PI_ENV_DUMP")
 # One line per prompt, with this process's pid, so a test can see which process answered.
 PROMPTS_DUMP = os.environ.get("FAKE_PI_PROMPTS_DUMP")
@@ -159,7 +160,8 @@ def handle_prompt(command):
 def main():
     record(ARGV_DUMP, json.dumps(sys.argv[1:]))
     record(ENV_DUMP, json.dumps({"pid": os.getpid(),
-                                 "token": os.environ.get("YANTRIK_AGENT_TOKEN")}))
+                                 "token": os.environ.get("YANTRIK_AGENT_TOKEN"),
+                                 "cwd": os.getcwd()}))
     for line in sys.stdin:
         line = line.strip()
         if not line:

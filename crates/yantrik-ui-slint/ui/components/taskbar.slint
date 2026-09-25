@@ -50,6 +50,12 @@ export component Taskbar inherits Rectangle {
     callback activate-window(string);
     callback open-companion();
     callback show-desktop();
+    // A right-click — or the Menu key — on a window entry (#232). The shell answers with what
+    // the menu holds, because which rows there are depends on state only Rust can read (is the
+    // app pinned), and asks for it at the entry's corner. The coordinates are the entry's
+    // position in the WINDOW: the menu is drawn by app.slint over everything, not inside this
+    // 40px bar, where a menu could only open off the edge of the screen.
+    callback window-menu(string, string, length, length);
 
     height: Theme.taskbar-height;
     // Glass, for the same reason the status bar is: the wallpaper should carry on
@@ -143,17 +149,28 @@ export component Taskbar inherits Rectangle {
                     }
                 }
 
-                for w[i] in root.windows : win := TouchArea {
+                // Three children, in the pairing file_browser.slint's sidebar uses: what the
+                // entry draws, a FocusScope for its keyboard half, and the TouchArea ON TOP for
+                // the pointer half. The order matters — a FocusScope over a TouchArea swallows
+                // its clicks — so the scope sits under and the TouchArea hands it the focus
+                // when the entry is pressed.
+                for w[i] in root.windows : win := Rectangle {
                     property <bool> is-active: i == 0;
+                    // A right press opens the menu and must not ALSO act as the entry's own
+                    // click, which brings the window forward under the menu being opened for
+                    // it. TouchArea's `clicked` does not say which button released it, so the
+                    // pointer-event that sees the right press leaves this note, and the next
+                    // `clicked` reads it. A left press clears it: a right press dragged off
+                    // the entry releases elsewhere and never reaches `clicked`, and the note
+                    // must not outlive the press that left it.
+                    property <bool> menu-press: false;
                     width: min(220px, win-row.preferred-width + 22px);
-                    mouse-cursor: pointer;
-                    clicked => { root.activate-window(w.title); }
 
                     Rectangle {
                         width: 100%; height: 100%;
                         border-radius: Theme.r-sm;
                         background: win.is-active ? Theme.hover-fill-strong
-                                  : win.has-hover ? Theme.hover-fill
+                                  : win-touch.has-hover ? Theme.hover-fill
                                   : transparent;
                         clip: true;
 
@@ -178,7 +195,7 @@ export component Taskbar inherits Rectangle {
                                 app-id: w.app-id;
                                 glyph: Icons.app-or-window(w.app-id);
                                 dimmed: !win.is-active;
-                                hovered: win.has-hover;
+                                hovered: win-touch.has-hover;
                                 y: (parent.height - self.height) / 2;
                             }
                             Text {
@@ -189,6 +206,49 @@ export component Taskbar inherits Rectangle {
                                 vertical-alignment: center;
                                 overflow: elide;
                                 max-width: 170px;
+                            }
+                        }
+                    }
+
+                    win-key := FocusScope {
+                        width: 100%; height: 100%;
+                        key-pressed(e) => {
+                            // The Menu key and Shift+F10 are what a keyboard calls a
+                            // right-click; both open the entry's menu (#232). Escape is not
+                            // handled here — it belongs to the shell's global scope, which
+                            // closes whatever menu is open.
+                            if (e.text == Key.Menu || (e.text == Key.F10 && e.modifiers.shift)) {
+                                root.window-menu(w.title, w.app-id, win.absolute-position.x, win.absolute-position.y);
+                                return accept;
+                            }
+                            // A tab stop that cannot be pressed is a trap, so Enter and Space
+                            // do what a left-click does.
+                            if (e.text == Key.Return || e.text == " ") {
+                                root.activate-window(w.title);
+                                return accept;
+                            }
+                            reject
+                        }
+                    }
+
+                    win-touch := TouchArea {
+                        width: 100%; height: 100%;
+                        mouse-cursor: pointer;
+                        clicked => {
+                            if (win.menu-press) { win.menu-press = false; return; }
+                            win-key.focus();
+                            root.activate-window(w.title);
+                        }
+                        // The same press that opens the desktop's own menu opens this one.
+                        pointer-event(e) => {
+                            if (e.kind == PointerEventKind.down) {
+                                if (e.button == PointerEventButton.right) {
+                                    win.menu-press = true;
+                                    win-key.focus();
+                                    root.window-menu(w.title, w.app-id, win.absolute-position.x, win.absolute-position.y);
+                                } else {
+                                    win.menu-press = false;
+                                }
                             }
                         }
                     }

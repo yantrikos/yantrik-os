@@ -1,0 +1,8 @@
+[package]
+name = "yantrik-email-text"
+version = "0.1.0"
+edition = "2021"
+description = "What an HTML mail body looks like as text a person can read"
+
+[dependencies]
+html2text = { workspace = true }

@@ -20,7 +20,7 @@ import { LoginScreen } from "login.slint";
 import { SettingsScreen, SettingsCategoryItem, AIProviderData, AIModelData, AIStatusData, HarnessData, HarnessRowData } from "settings.slint";
 import { SkillData } from "skill_store.slint";
 import { MemoryBrowser, MemoryItem } from "memory_browser.slint";
-import { FileBrowser, FileEntry, BreadcrumbSegment, FileDetailData, FileTabData, FileOpItem, FilePlaceData, FileRecentData } from "file_browser.slint";
+import { FileBrowser, FileEntry, BreadcrumbSegment, FileDetailData, FileTabData, FileOpItem, FilePlaceData, FileRecentData, OpenWithItem } from "file_browser.slint";
 import { NotificationCenter, NotificationData, NotifActionData } from "notification_center.slint";
 import { SystemDashboard, ProcessData } from "system_dashboard.slint";
 import { VoiceOverlay } from "voice_overlay.slint";
@@ -57,7 +57,7 @@ export { MindPanelState, MindPanelNow, MindPanelAgent, MindPanelRecipe, MindPane
 import { WindowFrame } from "components/window_frame.slint";
 import { YSidebarItem, YSidebarSection } from "components/y_sidebar.slint";
 import { YTabItem } from "components/y_tabs.slint";
-import { YMenuAction } from "components/y_context_menu.slint";
+import { YMenuAction, YContextMenu } from "components/y_context_menu.slint";
 import { Icons } from "components/icon.slint";
 import { Tr } from "translations.slint";
 
@@ -115,6 +115,10 @@ export component App inherits Window {
     in property <bool> is-speaking: false;
     in property <bool> is-listening: false;
     in property <bool> companion-online: true;  // LLM backend reachable
+    // #30: a shell whose assistant has no model says so where the person can see it —
+    // one persistent status-bar line that clicks straight into Settings → AI. Rust sets
+    // it from `assistant_offline_notice` and clears it when a model answers again.
+    in property <string> assistant-offline-notice: "";
 
     // Chat state
     in property <[MessageData]> messages: [];
@@ -177,6 +181,8 @@ export component App inherits Window {
     in property <string> mind-mode-means: "";
     /// The machine's own wall, shown beside the mode because neither is understandable alone.
     in property <string> mind-ceiling: "sensitive";
+    /// Whether the apps a mind opens go into Mind View (#239) rather than onto this desktop.
+    in property <bool> mind-view-on: true;
     in property <[MindRule]> mind-session-rules: [];
     in property <[MindAuditEntry]> mind-audit: [];
     in-out property <bool> mind-menu-open: false;
@@ -192,12 +198,18 @@ export component App inherits Window {
         root.mind-menu-open = false;
         root.mind-menu-confirming = false;
         root.mind-menu-audit-open = false;
+        // The taskbar entry's menu belongs to the screen it was opened over for the same
+        // reason (#232) — and a lock is a screen change, so a menu can never survive onto the
+        // lock screen, where its Close would act on a machine nobody has unlocked.
+        root.taskbar-menu-open = false;
     }
     /// These three are the only way this desktop becomes MORE permissive. They are callbacks,
     /// reached by a pointer; nothing on the control surface can raise the mode or make a rule.
     callback mind-mode-chosen(string);
     callback mind-bypass-chosen(string);
     callback mind-rule-revoked(string, string);
+    /// Where a mind's apps open. A person's choice, reached by a pointer like the three above.
+    callback mind-view-chosen(bool);
 
     // ── The mind panel: where it is drawn, how open, and the room it takes ──
     //
@@ -336,6 +348,24 @@ export component App inherits Window {
     in-out property <bool> window-switcher-open: false;
     in property <[WindowItem]> window-list: [];
     callback switch-window(string);
+
+    // The taskbar entry's own right-click menu (#232). Rust builds the rows — which ones there
+    // are depends on whether the window's app is pinned — and every row's id is the name of the
+    // `shell` control action that runs it, so the menu is a second VIEW of one surface and not
+    // a second path. Drawn at the end of this file, over everything, like the desktop's own
+    // menu is over its screen.
+    in-out property <bool> taskbar-menu-open: false;
+    in-out property <[YMenuAction]> taskbar-menu-actions: [];
+    in-out property <string> taskbar-menu-title: "";
+    in-out property <string> taskbar-menu-app-id: "";
+    in-out property <length> taskbar-menu-x: 0;
+    in-out property <length> taskbar-menu-y: 0;
+    // An entry was right-clicked (or the Menu key pressed on it): title, app id, and the
+    // entry's corner in window coordinates.
+    callback window-menu(string, string, length, length);
+    // A menu row was chosen: the row's id — a control action's name — and the window it was
+    // opened over.
+    callback window-menu-action(string, string, string);
 
     // Dock items (for running indicators)
     in property <[DockItem]> dock-items: [];
@@ -576,6 +606,10 @@ export component App inherits Window {
 
     // File browser state (screen 8)
     in property <string> file-notice;
+    // When the notice is about something just created, its name and whether it is a
+    // folder, so the Files footer can offer Open and Rename for it.
+    in property <string> file-notice-created;
+    in property <bool> file-notice-created-dir;
     in property <bool> file-operation-busy;
     in property <string> file-operation-text;
     in property <float> file-operation-progress;
@@ -585,6 +619,11 @@ export component App inherits Window {
     callback file-cancel-operation();
     callback file-undo-trash();
     callback file-open-with(string);
+    // "Always use this app": the desktop id and the row's display name (#233).
+    callback file-open-with-always(string, string);
+    // The Files screen asks for the "Open with" list; the shell rebuilds it per opening.
+    callback file-open-with-requested();
+    in property <[OpenWithItem]> file-open-with-apps: [];
     callback file-dismiss-notice();
 
     in property <string> file-browser-path: "~";
@@ -1119,6 +1158,13 @@ export component App inherits Window {
                 // first; opening it any other way (the ask bar, the orb, the taskbar anchor)
                 // does exactly these two lines.
                 if event.modifiers.control && (event.text == "k" || event.text == "K") {
+                    // Not from the lock or login screen (#203): these two lines used to walk
+                    // the shell off either one straight to the desktop with the Lens open and
+                    // no password, exactly what `yos act shell open_lens` did over the socket.
+                    // The key is swallowed rather than rejected so it reaches nothing else.
+                    if root.current-screen == 3 || root.current-screen == 32 {
+                        return accept;
+                    }
                     if root.current-screen != 1 {
                         root.current-screen = 1;
                         root.navigate(1);
@@ -1131,6 +1177,14 @@ export component App inherits Window {
             }
 
             key-pressed(event) => {
+                // Escape puts the taskbar's window menu away (#232). Handled here rather than
+                // in the menu: YContextMenu is no PopupWindow, so nothing closes it for free,
+                // and this scope is the one ancestor every focused element in the shell has —
+                // whichever entry opened the menu, the key walks up to here.
+                if root.taskbar-menu-open && event.text == Key.Escape {
+                    root.taskbar-menu-open = false;
+                    return accept;
+                }
                 // Ctrl+Space as voice hotkey (more reliable than Super across platforms)
                 if event.modifiers.control && event.text == " " {
                     root.voice-hotkey-pressed();
@@ -1741,6 +1795,8 @@ export component App inherits Window {
             FileBrowser {
                 width: 100%; height: 100%;
                 notice: root.file-notice;
+                notice-created: root.file-notice-created;
+                notice-created-dir: root.file-notice-created-dir;
                 operation-busy: root.file-operation-busy;
                 operation-text: root.file-operation-text;
                 operation-progress: root.file-operation-progress;
@@ -1749,6 +1805,9 @@ export component App inherits Window {
                 cancel-operation => { root.file-cancel-operation(); }
                 undo-trash => { root.file-undo-trash(); }
                 open-with(app) => { root.file-open-with(app); }
+                open-with-apps: root.file-open-with-apps;
+                open-with-always(id, name) => { root.file-open-with-always(id, name); }
+                open-with-requested() => { root.file-open-with-requested(); }
                 dismiss-notice => { root.file-dismiss-notice(); }
                 current-path: root.file-browser-path;
                 entries: root.file-browser-entries;
@@ -2366,6 +2425,7 @@ export component App inherits Window {
             notifications-clicked => { root.current-screen = 9; root.navigate(9); }
             companion-status: root.companion-status;
             companion-online: root.companion-online;
+            assistant-offline-notice: root.assistant-offline-notice;
             battery-available: root.battery-available;
             battery-level: root.battery-level;
             battery-charging: root.battery-charging;
@@ -2407,6 +2467,12 @@ export component App inherits Window {
             // Straight to the section, not to the front door of Settings.
             active-mind-clicked => {
                 root.settings-category = 8;
+                root.current-screen = 7;
+                root.navigate(7);
+            }
+            // The "no model" notice goes to the AI section, where a model is set up (#30).
+            assistant-offline-clicked => {
+                root.settings-category = 1;
                 root.current-screen = 7;
                 root.navigate(7);
             }
@@ -2466,6 +2532,10 @@ export component App inherits Window {
                     root.app-grid-open = !root.app-grid-open;
                 }
                 activate-window(title) => { root.switch-window(title); }
+                // The entry's right-click menu (#232). Straight to Rust, which knows whether
+                // the window's app is pinned and answers with the rows; the menu itself is
+                // drawn at the end of this file, over everything.
+                window-menu(title, app-id, x, y) => { root.window-menu(title, app-id, x, y); }
                 // The chat, from anywhere. The Lens is drawn on the desktop screen, so from any
                 // other screen this used to open nothing a person could see; it goes to the
                 // desktop first, as Apps does (#219, #241). The shell's handler for the Lens
@@ -2775,6 +2845,12 @@ export component App inherits Window {
 
                     for item in root.pending-approvals : ApprovalCard {
                         data: item;
+                        // The room this corner actually has: from the card's top edge (one sp-4
+                        // under the status bar) down to one sp-4 above the taskbar. A card that
+                        // grew past it would run its buttons under the taskbar, which is the
+                        // same failure the Lens had in #218 — the details scroll instead.
+                        height-limit: root.height - Theme.status-bar-height - Theme.taskbar-height
+                            - 2 * Theme.sp-4;
                         allow => { root.approval-allow(item.id); }
                         allow-session => { root.approval-allow-session(item.id); }
                         deny => { root.approval-deny(item.id); }
@@ -2879,7 +2955,25 @@ export component App inherits Window {
                 mode-chosen(m) => { root.mind-mode-chosen(m); root.mind-menu-open = false; }
                 bypass-chosen(d) => { root.mind-bypass-chosen(d); root.mind-menu-open = false; }
                 rule-revoked(app, action) => { root.mind-rule-revoked(app, action); }
+                mind-view-on: root.mind-view-on;
+                mind-view-chosen(on) => { root.mind-view-chosen(on); }
             }
+        }
+
+        // The taskbar entry's own menu (#232). Last in the file so it draws over everything,
+        // the way the desktop's instance is last in its file — a menu that opened under the bar
+        // it was summoned from would be worse than no menu. Clamped inside the screen like that
+        // one, and the clamp is doing real work here: the taskbar sits at the bottom edge, so
+        // `height - 200px` is what puts the panel ABOVE the bar instead of off the display.
+        if root.taskbar-menu-open : YContextMenu {
+            open: true;
+            actions: root.taskbar-menu-actions;
+            menu-x: min(root.taskbar-menu-x, root.width - 232px);
+            menu-y: min(root.taskbar-menu-y, root.height - 200px);
+            action-clicked(id) => {
+                root.window-menu-action(id, root.taskbar-menu-title, root.taskbar-menu-app-id);
+            }
+            close-menu => { root.taskbar-menu-open = false; }
         }
 
             // Debug: navigate to screen from Rust

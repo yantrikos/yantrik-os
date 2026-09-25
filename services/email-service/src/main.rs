@@ -12,13 +12,20 @@
 //!   email.oauth_cancel    { flow_id }                              → { cancelled }
 //!   email.list_folders    { account_id }                           → Vec<EmailFolder>
 //!   email.list_messages   { account_id, folder, page?, per_page? } → Vec<EmailSummary>
-//!   email.get_message     { account_id, message_id }               → EmailDetail
+//!   email.get_message     { account_id, folder?, message_id }      → EmailDetail
 //!   email.send_message    { account_id, to, subject, body, ... }   → ()
-//!   email.mark_read       { account_id, message_id, read }         → ()
-//!   email.mark_starred    { account_id, message_id, starred }      → ()
-//!   email.move_message    { account_id, message_id, target_folder } → ()
-//!   email.delete_message  { account_id, message_id }               → ()
-//!   email.search          { account_id, query }                    → Vec<EmailSummary>
+//!   email.mark_read       { account_id, folder?, message_id, read } → ()
+//!   email.mark_starred    { account_id, folder?, message_id, starred }       → ()
+//!   email.move_message    { account_id, folder?, message_id, target_folder } → ()
+//!   email.delete_message  { account_id, folder?, message_id }                → ()
+//!   email.search          { account_id, folder?, query }                     → Vec<EmailSummary>
+//!
+//! Every method that acts on listed messages takes an optional `folder`: IMAP UIDs are
+//! per-mailbox, so a message listed from Spam can only be fetched from Spam. Omitted means
+//! INBOX, which is all older callers ever asked about (#275). Star, move, delete and search
+//! hardcoded INBOX for longer, and a delete of a Spam row could destroy a different INBOX
+//! message; they take the folder too now, and the two that cannot be undone log it whenever a
+//! caller still leans on the default (#288).
 //!
 //! `email.accounts` is the one that had to exist. Everything else here needs a mail server, so
 //! the only question the app could ask was one whose failure meant three different things at
@@ -411,8 +418,9 @@ impl ServiceHandler for EmailHandler {
             }
             "email.get_message" => {
                 let account = self.get_account(account_id)?;
+                let folder = folder_or_inbox(&params);
                 let message_id = require_str(&params, "message_id")?;
-                let detail = imap_get_message(&account, message_id)?;
+                let detail = imap_get_message(&account, folder, message_id)?;
                 Ok(serde_json::to_value(detail).unwrap())
             }
             "email.send_message" => {
@@ -427,35 +435,40 @@ impl ServiceHandler for EmailHandler {
             }
             "email.mark_read" => {
                 let account = self.get_account(account_id)?;
+                let folder = folder_or_inbox(&params);
                 let message_id = require_str(&params, "message_id")?;
                 let read = params["read"].as_bool().unwrap_or(true);
-                imap_mark_read(&account, message_id, read)?;
+                imap_mark_read(&account, folder, message_id, read)?;
                 Ok(serde_json::json!(null))
             }
             "email.mark_starred" => {
                 let account = self.get_account(account_id)?;
+                let folder = folder_or_inbox(&params);
                 let message_id = require_str(&params, "message_id")?;
                 let starred = params["starred"].as_bool().unwrap_or(true);
-                imap_mark_starred(&account, message_id, starred)?;
+                imap_mark_starred(&account, folder, message_id, starred)?;
                 Ok(serde_json::json!(null))
             }
             "email.move_message" => {
                 let account = self.get_account(account_id)?;
+                let folder = folder_or_inbox_logged(&params, method);
                 let message_id = require_str(&params, "message_id")?;
                 let target = require_str(&params, "target_folder")?;
-                imap_move_message(&account, message_id, target)?;
+                imap_move_message(&account, folder, message_id, target)?;
                 Ok(serde_json::json!(null))
             }
             "email.delete_message" => {
                 let account = self.get_account(account_id)?;
+                let folder = folder_or_inbox_logged(&params, method);
                 let message_id = require_str(&params, "message_id")?;
-                imap_delete_message(&account, message_id)?;
+                imap_delete_message(&account, folder, message_id)?;
                 Ok(serde_json::json!(null))
             }
             "email.search" => {
                 let account = self.get_account(account_id)?;
+                let folder = folder_or_inbox(&params);
                 let query = require_str(&params, "query")?;
-                let results = imap_search(&account, query)?;
+                let results = imap_search(&account, folder, query)?;
                 Ok(serde_json::to_value(results).unwrap())
             }
             _ => Err(ServiceError {
@@ -471,6 +484,30 @@ fn require_str<'a>(params: &'a serde_json::Value, key: &str) -> Result<&'a str, 
         code: -32602,
         message: format!("Missing '{key}' parameter"),
     })
+}
+
+/// Whether the caller named the folder its message is in. Reads the parameter exactly as
+/// [`folder_or_inbox`] does: absent, empty, whitespace or a non-string all count as unsaid.
+fn names_a_folder(params: &serde_json::Value) -> bool {
+    params["folder"].as_str().map(str::trim).filter(|f| !f.is_empty()).is_some()
+}
+
+/// The folder a call that cannot be undone acts on, with the default said out loud.
+///
+/// `delete_message` and `move_message` keep [`folder_or_inbox`]'s INBOX default only for
+/// callers written before the parameter existed. UIDs are per-mailbox, so a caller leaning on
+/// the default is either holding a message that really is in INBOX or is about to destroy or
+/// displace a different message than the one it named; the log line is what tells the two
+/// apart afterwards (#288).
+fn folder_or_inbox_logged<'a>(params: &'a serde_json::Value, method: &str) -> &'a str {
+    if !names_a_folder(params) {
+        tracing::warn!(
+            method,
+            "no folder given; acting on INBOX. UIDs are per-mailbox — send the folder the \
+             message was listed from, or this can act on the wrong message"
+        );
+    }
+    folder_or_inbox(params)
 }
 
 // ── Setting an account up ────────────────────────────────────────────
@@ -771,6 +808,7 @@ fn imap_list_messages(
 
 fn imap_get_message(
     account: &Account,
+    folder: &str,
     message_id: &str,
 ) -> Result<EmailDetail, ServiceError> {
     let uid: u32 = message_id.parse().map_err(|_| ServiceError {
@@ -779,7 +817,13 @@ fn imap_get_message(
     })?;
 
     let mut session = imap_connect(account)?;
-    session.select("INBOX").ok();
+    // The message's own folder, not INBOX, and a refused SELECT is an error rather than
+    // something to shrug off: UIDs are per-mailbox, so opening a message that was listed from
+    // Spam fetched whatever wore this UID in INBOX — the wrong message, or none at all (#275).
+    session.select(folder).map_err(|e| ServiceError {
+        code: -32000,
+        message: format!("IMAP SELECT {folder} failed: {e}"),
+    })?;
 
     let messages = session
         .uid_fetch(uid.to_string(), "(RFC822 FLAGS)")
@@ -847,10 +891,7 @@ fn imap_get_message(
 
     extract_parts(&parsed, &mut body_text, &mut body_html, &mut attachments);
 
-    // If only HTML, convert to text
-    if body_text.is_empty() && !body_html.is_empty() {
-        body_text = html2text::from_read(body_html.as_bytes(), 80);
-    }
+    let body_text = plain_body(&body_text, &body_html);
 
     let _ = session.logout();
 
@@ -869,6 +910,20 @@ fn imap_get_message(
         is_read,
         is_starred,
     })
+}
+
+/// The body the reading pane shows: the sender's own plain text when the mail has one, and
+/// otherwise the HTML turned into text by the reading-pane rule in `yantrik-email-text`.
+///
+/// The rule used to be html2text's defaults, which render for a fixed-width terminal: layout
+/// tables came back drawn in box characters, every link left a `[1]` footnote, every logo
+/// became `[Subreddit Icon]`, and lines were hard-wrapped at column 80 — in a proportional-font
+/// pane that wraps on its own, so it showed mail broken in places the sender never chose (#275).
+fn plain_body(body_text: &str, body_html: &str) -> String {
+    if !body_text.is_empty() {
+        return body_text.to_string();
+    }
+    yantrik_email_text::readable_text(body_html)
 }
 
 fn extract_parts(
@@ -1030,8 +1085,20 @@ fn smtp_transport(
     })
 }
 
+/// The SELECT target and UID STORE argument for one flag change, as a pair.
+///
+/// A STORE runs in whichever mailbox was last SELECTed, and UIDs are per-mailbox, so the two
+/// halves of one change belong together: the hardcoded `select("INBOX")` that used to sit
+/// beside these commands starred and deleted whichever message wore the same UID in INBOX,
+/// whatever folder the person had chosen the message from (#288). Built apart from the
+/// session so that the pair can be held to this without a mail server.
+fn flag_change(folder: &str, set: bool, flag: &str) -> (String, String) {
+    (folder.to_string(), format!("{}FLAGS ({flag})", if set { "+" } else { "-" }))
+}
+
 fn imap_mark_read(
     account: &Account,
+    folder: &str,
     message_id: &str,
     read: bool,
 ) -> Result<(), ServiceError> {
@@ -1041,7 +1108,12 @@ fn imap_mark_read(
     })?;
 
     let mut session = imap_connect(account)?;
-    session.select("INBOX").ok();
+    // The message's own folder, for get_message's reason: the app marks a message read right
+    // after opening it, and flagging INBOX's UID would touch a stranger's mail (#275).
+    session.select(folder).map_err(|e| ServiceError {
+        code: -32000,
+        message: format!("IMAP SELECT {folder} failed: {e}"),
+    })?;
 
     let flag = "+FLAGS (\\Seen)";
     let unflag = "-FLAGS (\\Seen)";
@@ -1058,6 +1130,7 @@ fn imap_mark_read(
 
 fn imap_mark_starred(
     account: &Account,
+    folder: &str,
     message_id: &str,
     starred: bool,
 ) -> Result<(), ServiceError> {
@@ -1066,13 +1139,18 @@ fn imap_mark_starred(
         message: "Invalid message ID".to_string(),
     })?;
 
+    let (mailbox, store) = flag_change(folder, starred, "\\Flagged");
     let mut session = imap_connect(account)?;
-    session.select("INBOX").ok();
+    // The mailbox the message was listed from, and a refused SELECT is an error rather than
+    // something to shrug off: starring ran in INBOX whatever folder was on screen, so it
+    // moved the star on whichever message wore this UID there (#288).
+    session.select(&mailbox).map_err(|e| ServiceError {
+        code: -32000,
+        message: format!("IMAP SELECT {mailbox} failed: {e}"),
+    })?;
 
-    let flag = "+FLAGS (\\Flagged)";
-    let unflag = "-FLAGS (\\Flagged)";
     session
-        .uid_store(uid.to_string(), if starred { flag } else { unflag })
+        .uid_store(uid.to_string(), &store)
         .map_err(|e| ServiceError {
             code: -32000,
             message: format!("IMAP STORE failed: {e}"),
@@ -1084,6 +1162,7 @@ fn imap_mark_starred(
 
 fn imap_move_message(
     account: &Account,
+    folder: &str,
     message_id: &str,
     target_folder: &str,
 ) -> Result<(), ServiceError> {
@@ -1093,7 +1172,13 @@ fn imap_move_message(
     })?;
 
     let mut session = imap_connect(account)?;
-    session.select("INBOX").ok();
+    // The mailbox the message is actually in: a move of a row listed from Spam moved
+    // whichever message wore this UID in INBOX, and left the person's own mail where it was
+    // (#288).
+    session.select(folder).map_err(|e| ServiceError {
+        code: -32000,
+        message: format!("IMAP SELECT {folder} failed: {e}"),
+    })?;
 
     session
         .uid_mv(uid.to_string(), target_folder)
@@ -1108,6 +1193,7 @@ fn imap_move_message(
 
 fn imap_delete_message(
     account: &Account,
+    folder: &str,
     message_id: &str,
 ) -> Result<(), ServiceError> {
     let uid: u32 = message_id.parse().map_err(|_| ServiceError {
@@ -1115,11 +1201,19 @@ fn imap_delete_message(
         message: "Invalid message ID".to_string(),
     })?;
 
+    let (mailbox, store) = flag_change(folder, true, "\\Deleted");
     let mut session = imap_connect(account)?;
-    session.select("INBOX").ok();
+    // The mailbox the message was listed from, and a refused SELECT stops the call instead of
+    // being shrugged off: delete SELECTed INBOX whatever folder was on screen, and the EXPUNGE
+    // below made the mistake permanent — deleting a Spam row could destroy a different INBOX
+    // message (#288).
+    session.select(&mailbox).map_err(|e| ServiceError {
+        code: -32000,
+        message: format!("IMAP SELECT {mailbox} failed: {e}"),
+    })?;
 
     session
-        .uid_store(uid.to_string(), "+FLAGS (\\Deleted)")
+        .uid_store(uid.to_string(), &store)
         .map_err(|e| ServiceError {
             code: -32000,
             message: format!("IMAP delete flag failed: {e}"),
@@ -1135,10 +1229,17 @@ fn imap_delete_message(
 
 fn imap_search(
     account: &Account,
+    folder: &str,
     query: &str,
 ) -> Result<Vec<EmailSummary>, ServiceError> {
     let mut session = imap_connect(account)?;
-    session.select("INBOX").ok();
+    // The folder the caller is looking at: search SELECTed INBOX whichever folder was on
+    // screen, so searching with Spam open answered with mail from a mailbox nobody was
+    // looking at (#288).
+    session.select(folder).map_err(|e| ServiceError {
+        code: -32000,
+        message: format!("IMAP SELECT {folder} failed: {e}"),
+    })?;
 
     // IMAP search by subject or from
     let search_query = format!("OR SUBJECT \"{}\" FROM \"{}\"", query, query);
@@ -1218,11 +1319,105 @@ fn imap_search(
             is_read,
             is_starred,
             has_attachments: false,
-            folder: "INBOX".to_string(),
+            // The folder that was searched, which is the folder the UID belongs to: the app
+            // reads this back when a result is opened, starred or deleted.
+            folder: folder.to_string(),
             thread_id: None,
         });
     }
 
     let _ = session.logout();
     Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{extract_parts, flag_change, names_a_folder, plain_body};
+    use yantrik_ipc_contracts::email::EmailAttachment;
+
+    /// A mail whose sender supplied both parts, the way multipart/alternative is meant to be
+    /// read: the plain text is the sender's own words for this reader, so it wins and no
+    /// conversion runs.
+    const ALTERNATIVE: &[u8] = b"From: sender@example.com\r\nSubject: Both parts\r\nMIME-Version: 1.0\r\nContent-Type: multipart/alternative; boundary=\"BOUND\"\r\n\r\n--BOUND\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nThe sender wrote this plain text for people; it is not a conversion of the HTML.\r\n--BOUND\r\nContent-Type: text/html; charset=utf-8\r\n\r\n<html><body><p>The <b>HTML</b> version of the same words.</p></body></html>\r\n--BOUND--\r\n";
+
+    /// A table-laid-out newsletter with no plain part: the shape that reached the reading pane
+    /// drawn in box characters with `[1]` footnotes under it (#275).
+    const HTML_ONLY: &[u8] = b"From: news@example.com\r\nSubject: Newsletter\r\nMIME-Version: 1.0\r\nContent-Type: text/html; charset=utf-8\r\n\r\n<table border=\"1\" cellpadding=\"4\"><tr><td><a href=\"https://news.example/home\"><img src=\"https://news.example/logo.png\" alt=\"Company Logo\"></a></td></tr><tr><td><a href=\"https://news.example/story\">The story everyone is reading this week</a></td></tr><tr><td><p>It arrived as a table-laid-out newsletter, and this sentence in its cell is far longer than eighty columns so a terminal-width conversion would have to break it somewhere.</p></td></tr><tr><td><a href=\"https://news.example/up\">24 upvotes</a> <a href=\"https://news.example/c\">21 comments</a></td></tr></table>";
+
+    fn parts(raw: &[u8]) -> (String, String, Vec<EmailAttachment>) {
+        let parsed = mailparse::parse_mail(raw).unwrap();
+        let mut body_text = String::new();
+        let mut body_html = String::new();
+        let mut attachments = Vec::new();
+        extract_parts(&parsed, &mut body_text, &mut body_html, &mut attachments);
+        (body_text, body_html, attachments)
+    }
+
+    #[test]
+    fn multipart_alternative_prefers_the_senders_plain_text() {
+        let (body_text, body_html, _) = parts(ALTERNATIVE);
+        assert!(body_text.contains("The sender wrote this plain text"), "plain part missing: {body_text:?}");
+        assert!(body_html.contains("<b>HTML</b>"), "html part missing: {body_html:?}");
+        let shown = plain_body(&body_text, &body_html);
+        assert_eq!(shown, body_text, "the sender's own plain text must win over any conversion");
+    }
+
+    #[test]
+    fn html_only_mail_is_converted_for_the_reading_pane() {
+        let (body_text, body_html, _) = parts(HTML_ONLY);
+        assert!(body_text.is_empty(), "an HTML-only mail has no plain part");
+        assert!(!body_html.is_empty());
+
+        let shown = plain_body(&body_text, &body_html);
+        for c in "─│┼┬┐└├┤┴┘".chars() {
+            assert!(!shown.contains(c), "table border {c:?} in:\n{shown}");
+        }
+        // Every bracket the old conversion produced was a footnote reference, a link target or
+        // an image alt; nothing in this mail's words has one.
+        assert!(!shown.contains('[') && !shown.contains(']'), "bracket in:\n{shown}");
+        assert!(!shown.contains("Company Logo"), "image alt in:\n{shown}");
+        assert!(!shown.contains("https://"), "footnote URL in:\n{shown}");
+
+        let title = shown.find("The story everyone is reading this week").expect("title missing");
+        let body = shown.find("It arrived as a table-laid-out newsletter").expect("body missing");
+        assert!(title < body, "cells out of order in:\n{shown}");
+        assert!(shown.contains("24 upvotes") && shown.contains("21 comments"), "footer cells missing:\n{shown}");
+
+        let sentence = "this sentence in its cell is far longer than eighty columns so a terminal-width conversion would have to break it somewhere.";
+        assert!(shown.lines().any(|l| l.contains(sentence)), "sentence hard-wrapped in:\n{shown}");
+    }
+
+    /// The heart of #288: the mailbox a star or a delete runs in is the one the message was
+    /// listed from. Every per-message call SELECTed INBOX before it, whatever folder was on
+    /// screen, so acting on a Spam row acted on whichever INBOX message wore the same UID.
+    #[test]
+    fn a_message_listed_from_a_folder_is_acted_on_in_that_folder() {
+        assert_eq!(
+            flag_change("Spam", true, "\\Flagged"),
+            ("Spam".to_string(), "+FLAGS (\\Flagged)".to_string())
+        );
+        assert_eq!(
+            flag_change("[Gmail]/Sent Mail", false, "\\Flagged"),
+            ("[Gmail]/Sent Mail".to_string(), "-FLAGS (\\Flagged)".to_string())
+        );
+        assert_eq!(
+            flag_change("Spam", true, "\\Deleted"),
+            ("Spam".to_string(), "+FLAGS (\\Deleted)".to_string())
+        );
+    }
+
+    /// Delete and move keep the INBOX default for callers written before `folder` existed and
+    /// log whenever one leans on it; this predicate is what the log hangs off. It has to read
+    /// the parameter exactly as `folder_or_inbox` does, or the log fires on calls that did
+    /// name a folder and stays quiet on the ones that did not.
+    #[test]
+    fn a_destructive_call_that_left_the_folder_unsaid_is_recognisable() {
+        assert!(!names_a_folder(&serde_json::json!({})));
+        assert!(!names_a_folder(&serde_json::json!({"folder": ""})));
+        assert!(!names_a_folder(&serde_json::json!({"folder": "   "})));
+        assert!(!names_a_folder(&serde_json::json!({"folder": null})));
+        assert!(!names_a_folder(&serde_json::json!({"folder": 7})));
+        assert!(names_a_folder(&serde_json::json!({"folder": "Spam"})));
+        assert!(names_a_folder(&serde_json::json!({"folder": "[Gmail]/Sent Mail"})));
+    }
 }

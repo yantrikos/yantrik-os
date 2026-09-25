@@ -215,6 +215,98 @@ fn recovery_preserves_drafts_without_touching_originals() {
     document::checkpoint(&path, &[]).unwrap();
     assert!(document::recover(&path).unwrap().is_empty());
 }
+// ── A file moved while it was open (#86) ────────────────────────────────────
+//
+// What Files does with cut and paste: `rename` carries the file out from under the tab, and the
+// pair that stranded the work was `save` refusing because the original was gone and Save As
+// refusing because the file was already sitting at the path it had been moved to. Both
+// refusals were true; between them there was no way to keep the edit.
+
+#[test]
+fn a_file_moved_while_open_can_still_be_saved_to_where_it_went() {
+    let dir = std::fs::canonicalize(fixture("moved")).unwrap();
+    let from = dir.join("notes.txt");
+    std::fs::write(&from, "first\n").unwrap();
+    let archive = dir.join("archive");
+    std::fs::create_dir(&archive).unwrap();
+    let to = archive.join("notes.txt");
+
+    let mut d = Document::open(&from).unwrap();
+    d.edit("second\n".into());
+    std::fs::rename(&from, &to).unwrap(); // what Files does
+
+    // Saving to the old path refuses — but the refusal names where the bytes went, and the way
+    // through is a Save As onto that path rather than a dead end.
+    let refused = d.save(&from).unwrap_err();
+    assert!(
+        refused.contains(&to.display().to_string()),
+        "the refusal has to name where the file went: {refused}"
+    );
+    assert!(refused.contains("Save As"), "refusal: {refused}");
+    assert!(refused.contains("draft is intact"), "refusal: {refused}");
+
+    // And that Save As is not refused as a clobber: the file at `to` is this tab's own, moved,
+    // so writing into it is what a plain Save would have done.
+    let saved = d
+        .save(&to)
+        .expect("the tab's own file, moved, is not somebody else's file");
+    assert_eq!(saved.path.as_deref(), Some(to.as_path()));
+    assert!(!saved.dirty());
+    assert_eq!(std::fs::read_to_string(&to).unwrap(), "second\n");
+}
+
+#[test]
+fn save_as_onto_an_existing_path_refuses_without_overwrite_and_succeeds_with_it() {
+    let dir = std::fs::canonicalize(fixture("clobber")).unwrap();
+    let occupied = dir.join("occupied.txt");
+    std::fs::write(&occupied, "somebody else's\n").unwrap();
+
+    let mut d = Document::blank();
+    d.edit("fresh\n".into());
+
+    let refused = d.save(&occupied).unwrap_err();
+    assert!(refused.contains("already exists"), "refusal: {refused}");
+    assert!(
+        refused.contains("nothing was overwritten"),
+        "refusal: {refused}"
+    );
+    assert!(
+        refused.contains("overwrite=true"),
+        "the refusal has to name the way through it: {refused}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&occupied).unwrap(),
+        "somebody else's\n",
+        "a refused save changes nothing on disk"
+    );
+
+    let saved = d
+        .save_over(&occupied)
+        .expect("`overwrite` is the caller having read that refusal and answered it");
+    assert!(!saved.dirty());
+    assert_eq!(std::fs::read_to_string(&occupied).unwrap(), "fresh\n");
+}
+
+#[test]
+fn a_file_really_deleted_under_the_draft_is_written_back_with_permission() {
+    let dir = std::fs::canonicalize(fixture("deleted")).unwrap();
+    let path = dir.join("draft.txt");
+    std::fs::write(&path, "kept\n").unwrap();
+    let d = Document::open(&path).unwrap();
+    std::fs::remove_file(&path).unwrap();
+
+    // Nothing with this name and these bytes is anywhere near, so the search comes back empty
+    // and the refusal says the file is gone rather than guessing where it went.
+    let refused = d.save(&path).unwrap_err();
+    assert!(refused.contains("moved or deleted"), "refusal: {refused}");
+    assert!(refused.contains("draft is intact"), "refusal: {refused}");
+    assert!(refused.contains("overwrite=true"), "refusal: {refused}");
+
+    d.save_over(&path)
+        .expect("writing the draft back where it came from");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "kept\n");
+}
+
 #[test]
 fn real_editor_keyboard_tabs_search_save_close_and_recovery() {
     let window = MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer);
@@ -496,6 +588,39 @@ fn the_editor_answers_with_what_it_wrote(
     assert!(
         summary.contains("tab "),
         "and which tab of how many: {summary:?}"
+    );
+
+    // #86, on the surface a mind reads: a file already at the path is refused, the refusal
+    // names the way through it, and nothing is overwritten until the caller says so.
+    let occupied = dir.join("occupied.txt");
+    std::fs::write(&occupied, "somebody else's\n").unwrap();
+    let refused = act_on(
+        published,
+        "save_as",
+        serde_json::json!({ "path": occupied.display().to_string() }),
+    )
+    .expect_err("save_as onto an existing file must be refused without `overwrite`");
+    assert!(refused.contains("already exists"), "refusal: {refused}");
+    assert!(
+        refused.contains("overwrite=true"),
+        "the refusal has to name the way through it: {refused}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&occupied).unwrap(),
+        "somebody else's\n",
+        "a refused save_as changes nothing on disk"
+    );
+    let replaced = act_on(
+        published,
+        "save_as",
+        serde_json::json!({ "path": occupied.display().to_string(), "overwrite": true }),
+    )
+    .expect("`overwrite: true` replaces the file that was there");
+    assert_eq!(replaced["path"], occupied.display().to_string(), "answer: {replaced}");
+    assert_eq!(replaced["matches_disk"], true, "answer: {replaced}");
+    assert_eq!(
+        std::fs::read_to_string(&occupied).unwrap(),
+        "omega\nbeta\nomega\n"
     );
 
     // A refusal names what it could not do, and reaches the screen.

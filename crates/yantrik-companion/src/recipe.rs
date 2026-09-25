@@ -726,23 +726,31 @@ pub fn waited_on(
 }
 
 /// When a WaitFor that begins at `from` wakes: after its duration, or at the next time of day
-/// it names (UTC, as every clock in the engine is) — and no later than its timeout. None when it
-/// has nothing to wait for: a zero duration, or the very minute it names.
+/// it names — read on a clock `offset_secs` east of UTC, the machine's own — and no later than
+/// its timeout. None when it has nothing to wait for: a zero duration, or the very minute it
+/// names.
 ///
 /// A time of day already gone by today is tomorrow's. It used to count as met, so "wait until
 /// 09:00" set at 10:00 went on at once, and a daily loop around it spun.
-pub fn wakes_at(condition: &WaitCondition, timeout_secs: Option<u64>, from: f64) -> Option<f64> {
+///
+/// The offset is the one in force at `from`: a wait that crosses a daylight-saving switch wakes
+/// an hour off the named time, which is the price of not carrying a zone database here.
+pub fn wakes_at_in(condition: &WaitCondition, timeout_secs: Option<u64>, from: f64, offset_secs: i64) -> Option<f64> {
     let due = match condition {
         WaitCondition::Duration { seconds: 0 } => return None,
         WaitCondition::Duration { seconds } => from + *seconds as f64,
         WaitCondition::Time { hour, minute } => {
-            let today = (from / 86_400.0).floor() * 86_400.0 + f64::from(*hour) * 3600.0 + f64::from(*minute) * 60.0;
-            if from < today {
-                today
-            } else if from < today + 60.0 {
+            // A time of day is read on the machine's clock, so the instant is shifted into
+            // local seconds, the named time is found there, and the answer is shifted back.
+            let off = offset_secs as f64;
+            let local = from + off;
+            let today = (local / 86_400.0).floor() * 86_400.0 + f64::from(*hour) * 3600.0 + f64::from(*minute) * 60.0;
+            if local < today {
+                today - off
+            } else if local < today + 60.0 {
                 return None;
             } else {
-                today + 86_400.0
+                today + 86_400.0 - off
             }
         }
     };
@@ -752,10 +760,46 @@ pub fn wakes_at(condition: &WaitCondition, timeout_secs: Option<u64>, from: f64)
     })
 }
 
-/// A unix time as the engine's clock reads it: "08:15 UTC".
+/// When a WaitFor that begins at `from` wakes, on this machine's clock ([`wakes_at_in`]).
+///
+/// It used to be UTC, as every clock in the engine was: a recipe told to wait "until 09:00"
+/// waited until 09:00 UTC, and a person who meant their own morning got somebody else's (#187).
+pub fn wakes_at(condition: &WaitCondition, timeout_secs: Option<u64>, from: f64) -> Option<f64> {
+    wakes_at_in(condition, timeout_secs, from, local_offset_secs(from))
+}
+
+/// A unix time as a clock `offset_secs` east of UTC reads it: "08:15".
+pub fn clock_text_at(ts: f64, offset_secs: i64) -> String {
+    let of_day = ((ts.floor() as i64) + offset_secs as i64).rem_euclid(86_400);
+    format!("{:02}:{:02}", of_day / 3600, (of_day % 3600) / 60)
+}
+
+/// A unix time as this machine's clock reads it: "08:15". It used to say "08:15 UTC" — a time
+/// nobody east or west of Greenwich had set, shown as though they had (#187).
 pub fn clock_text(ts: f64) -> String {
-    let of_day = (ts.floor() as i64).rem_euclid(86_400);
-    format!("{:02}:{:02} UTC", of_day / 3600, (of_day % 3600) / 60)
+    clock_text_at(ts, local_offset_secs(ts))
+}
+
+/// How far east of UTC this machine's clock runs at `ts`, in seconds (west is negative) — the
+/// same convention `tm_gmtoff` and the shell's clock object use. An instant the calendar cannot
+/// read falls back to UTC rather than refusing the time.
+pub fn local_offset_secs(ts: f64) -> i64 {
+    chrono::DateTime::from_timestamp(ts as i64, 0)
+        .map(|dt| dt.with_timezone(&chrono::Local).offset().local_minus_utc() as i64)
+        .unwrap_or(0)
+}
+
+/// Whether a cron trigger is due: the first occurrence of `expression` strictly after `floor`
+/// has arrived at or before `now`.
+///
+/// A recipe's schedule is read on the machine's clock — "0 9 * * *" means nine in the morning
+/// where the machine stands — while `cron_mini` decomposes timestamps as UTC, shared as it is
+/// with the scheduler, whose schedules stay UTC. So both ends are shifted by the local offset
+/// going in and the answer is shifted back coming out. An expression that does not parse is
+/// never due.
+pub fn cron_due(expression: &str, floor: f64, now: f64, offset_secs: i64) -> bool {
+    let off = offset_secs as f64;
+    crate::cron_mini::next_cron(expression, floor + off).is_some_and(|next| next - off <= now)
 }
 
 /// What each step of a recipe did, run by run — `_trail`, keyed by the step's index: how many
@@ -1506,14 +1550,106 @@ impl RecipeStore {
         .collect()
     }
 
-    /// Record that a trigger fired.
-    pub fn record_trigger_fired(conn: &Connection, recipe_id: &str) {
-        let now = now_ts();
+    /// Record that a trigger fired, at the moment it fired for: `now` for a schedule, the
+    /// leader's completion time for a RecipeComplete — so the same event never fires it twice.
+    pub fn record_trigger_fired(conn: &Connection, recipe_id: &str, at: f64) {
         conn.execute(
             "UPDATE recipe_triggers SET last_fired = ?1 WHERE recipe_id = ?2",
-            params![now, recipe_id],
+            params![at, recipe_id],
         )
         .ok();
+    }
+
+    /// When a leader recipe last finished, by id or by name: the newest `updated_at` among the
+    /// done recipes that carry its name. A run of a template, or of a recipe that has run
+    /// before, is a copy sharing the leader's name (`start_run`), so a chain formed on the first
+    /// run keeps forming on every later one. A name nothing carries is a leader that never
+    /// finished: None.
+    pub fn completion_since(conn: &Connection, leader: &str) -> Option<f64> {
+        conn.query_row(
+            "SELECT MAX(updated_at) FROM recipes
+             WHERE status = 'done' AND name IN (SELECT name FROM recipes WHERE id = ?1 OR name = ?1)",
+            params![leader],
+            |row| row.get::<_, Option<f64>>(0),
+        )
+        .ok()
+        .flatten()
+    }
+
+    /// Start every recipe whose trigger is due at `now`, and return the runs started — the
+    /// wiring the stored triggers never had (#187): `get_enabled_triggers` had no caller, so a
+    /// Cron schedule or a RecipeComplete chain was written down and then ignored. The executor's
+    /// clock calls this each tick ([`crate::recipe_executor::due_at`]).
+    ///
+    /// A trigger that has never fired waits for its first occurrence after the recipe existed
+    /// (`last_fired` floors at `created_at`): a schedule made this afternoon does not fire for
+    /// this morning, and a boot does not fire yesterday's. A schedule missed while the machine
+    /// was off fires once at the next tick, not once per occurrence missed.
+    pub fn fire_due_triggers_at(conn: &Connection, now: f64) -> Vec<String> {
+        let offset = local_offset_secs(now);
+        let mut started = Vec::new();
+        for (recipe_id, trigger, last_fired) in Self::get_enabled_triggers(conn) {
+            let Some(recipe) = Self::get(conn, &recipe_id) else { continue };
+            let floor = last_fired.max(recipe.created_at);
+            let due = match &trigger {
+                TriggerType::Cron { expression } => cron_due(expression, floor, now, offset),
+                TriggerType::RecipeComplete { recipe_id: leader } => {
+                    Self::completion_since(conn, leader).is_some_and(|at| at > floor)
+                }
+                // Manual waits for a person; Event waits for its event
+                // (`fire_event_triggers`), not for the clock.
+                TriggerType::Manual | TriggerType::Event { .. } => false,
+            };
+            if !due {
+                continue;
+            }
+            match Self::start_run(conn, &recipe_id, None) {
+                Ok((_, run)) => {
+                    // A chain fires on the completion it answers, so that same completion can
+                    // never fire it again; a schedule fires on the clock it was read against.
+                    let at = match &trigger {
+                        TriggerType::RecipeComplete { recipe_id: leader } => {
+                            Self::completion_since(conn, leader).unwrap_or(now)
+                        }
+                        _ => now,
+                    };
+                    Self::record_trigger_fired(conn, &recipe_id, at);
+                    tracing::info!(recipe_id = %recipe_id, run = %run, trigger = ?trigger, "Recipe trigger fired");
+                    started.push(run);
+                }
+                // A recipe already in flight is not started over itself (`start_run`); nothing
+                // is recorded, so the trigger is asked again at the next tick.
+                Err(why) => tracing::debug!(recipe_id = %recipe_id, %why, "A due trigger could not start its recipe"),
+            }
+        }
+        started
+    }
+
+    /// Start every recipe whose Event trigger names `event_type` — and whose filter, if it has
+    /// one, the event's data satisfies — and return the runs started. Called where system events
+    /// arrive; the started runs are picked up by the executor's clock like any other.
+    pub fn fire_event_triggers(conn: &Connection, event_type: &str, event_data: &serde_json::Value, now: f64) -> Vec<String> {
+        let mut started = Vec::new();
+        for (recipe_id, trigger, _) in Self::get_enabled_triggers(conn) {
+            let TriggerType::Event { event_type: named, filter } = &trigger else { continue };
+            if named != event_type {
+                continue;
+            }
+            if let Some(want) = filter.as_ref().and_then(|f| f.as_object()) {
+                if !want.iter().all(|(key, value)| event_data.get(key) == Some(value)) {
+                    continue;
+                }
+            }
+            match Self::start_run(conn, &recipe_id, None) {
+                Ok((_, run)) => {
+                    Self::record_trigger_fired(conn, &recipe_id, now);
+                    tracing::info!(recipe_id = %recipe_id, run = %run, event = %event_type, "Recipe event trigger fired");
+                    started.push(run);
+                }
+                Err(why) => tracing::debug!(recipe_id = %recipe_id, %why, "An event trigger could not start its recipe"),
+            }
+        }
+        started
     }
 
     /// Count running/waiting recipes.
@@ -1710,12 +1846,13 @@ fn now_ts() -> f64 {
         .as_secs_f64()
 }
 
-/// Get current hour and minute (local time).
+/// Get current hour and minute on this machine's clock. It said "local time" and computed UTC,
+/// so a JumpIf on "after 17:00" answered against somebody else's evening (#187).
 fn chrono_now() -> (u8, u8) {
-    let secs = now_ts() as i64;
-    // Simple UTC-based time (good enough for single-user OS)
-    let hour = ((secs % 86400) / 3600) as u8;
-    let minute = ((secs % 3600) / 60) as u8;
+    let now = now_ts();
+    let secs = now as i64 + local_offset_secs(now) as i64;
+    let hour = (secs.rem_euclid(86_400) / 3_600) as u8;
+    let minute = (secs.rem_euclid(3_600) / 60) as u8;
     (hour, minute)
 }
 
@@ -1776,9 +1913,10 @@ mod tests {
     #[test]
     fn a_time_of_day_already_gone_waits_for_tomorrow() {
         let conn = store();
-        let of_day = (now_ts() as i64).rem_euclid(86_400);
+        let now = now_ts();
+        let of_day = (now as i64 + local_offset_secs(now)).rem_euclid(86_400);
         if of_day < 180 {
-            // The first minutes after midnight UTC: nothing today has gone by yet.
+            // The first minutes after midnight on the machine's clock: nothing today has gone by yet.
             return;
         }
         let gone = of_day - 120;
@@ -1797,25 +1935,131 @@ mod tests {
         RecipeStore::update_status(&conn, &id, &RecipeStatus::Waiting, 1);
         assert!(
             RecipeStore::get_expired_waiting(&conn).is_empty(),
-            "{hour:02}:{minute:02} UTC has gone by today, so it waits for tomorrow's"
+            "{hour:02}:{minute:02} has gone by the machine's today, so it waits for tomorrow's"
         );
     }
 
-    /// When a wait begun at a moment wakes, to the second.
+    /// When a wait begun at a moment wakes, to the second — on a clock at UTC with no offset,
+    /// and on a machine's clock east of it, where the time of day it names is the machine's
+    /// (#187).
     #[test]
     fn a_wait_wakes_at_its_next_time() {
         let day = 20_719.0 * 86_400.0; // 2026-09-23 00:00 UTC
         let at = |h: f64, m: f64, s: f64| day + h * 3600.0 + m * 60.0 + s;
         let nine = WaitCondition::Time { hour: 9, minute: 0 };
-        assert_eq!(wakes_at(&nine, None, at(8.0, 0.0, 0.0)), Some(at(9.0, 0.0, 0.0)), "later today");
-        assert_eq!(wakes_at(&nine, None, at(10.0, 0.0, 0.0)), Some(at(33.0, 0.0, 0.0)), "gone by: tomorrow's");
-        assert_eq!(wakes_at(&nine, None, at(9.0, 0.0, 30.0)), None, "this very minute: no wait");
-        assert_eq!(wakes_at(&nine, Some(600), at(8.0, 0.0, 0.0)), Some(at(8.0, 10.0, 0.0)), "no later than its timeout");
+        assert_eq!(wakes_at_in(&nine, None, at(8.0, 0.0, 0.0), 0), Some(at(9.0, 0.0, 0.0)), "later today");
+        assert_eq!(wakes_at_in(&nine, None, at(10.0, 0.0, 0.0), 0), Some(at(33.0, 0.0, 0.0)), "gone by: tomorrow's");
+        assert_eq!(wakes_at_in(&nine, None, at(9.0, 0.0, 30.0), 0), None, "this very minute: no wait");
+        assert_eq!(wakes_at_in(&nine, Some(600), at(8.0, 0.0, 0.0), 0), Some(at(8.0, 10.0, 0.0)), "no later than its timeout");
         let quarter = WaitCondition::Duration { seconds: 900 };
-        assert_eq!(wakes_at(&quarter, None, at(8.0, 0.0, 0.0)), Some(at(8.0, 15.0, 0.0)));
-        assert_eq!(wakes_at(&WaitCondition::Duration { seconds: 0 }, None, 5.0), None);
-        assert_eq!(clock_text(at(8.0, 15.0, 0.0)), "08:15 UTC");
-        assert_eq!(clock_text(at(33.0, 0.0, 0.0)), "09:00 UTC");
+        assert_eq!(wakes_at_in(&quarter, None, at(8.0, 0.0, 0.0), 0), Some(at(8.0, 15.0, 0.0)));
+        assert_eq!(wakes_at_in(&WaitCondition::Duration { seconds: 0 }, None, 5.0, 0), None);
+        assert_eq!(clock_text_at(at(8.0, 15.0, 0.0), 0), "08:15");
+        assert_eq!(clock_text_at(at(33.0, 0.0, 0.0), 0), "09:00");
+
+        // Five and a half hours east, 08:00 UTC is already 13:30 in the afternoon: today's
+        // 09:00 has gone by, and tomorrow's is 03:30 UTC. The clock reads 13:45, not 08:15.
+        let ist = 19_800;
+        assert_eq!(wakes_at_in(&nine, None, at(8.0, 0.0, 0.0), ist), Some(at(27.0, 30.0, 0.0)), "the next local 09:00");
+        assert_eq!(clock_text_at(at(8.0, 15.0, 0.0), ist), "13:45");
+    }
+
+    /// A schedule is read on the machine's clock (#187): 09:00 where the machine stands, which
+    /// east of Greenwich is earlier in the UTC day — not 09:00 UTC, a time nobody there set.
+    #[test]
+    fn a_cron_schedule_is_read_on_the_machines_clock() {
+        let day = 20_719.0 * 86_400.0; // 2026-09-23 00:00 UTC
+        let ist = 19_800;
+        // 09:00 local east of Greenwich is 03:30 UTC.
+        let half_past_three_utc = day + 3.5 * 3_600.0;
+        assert!(!cron_due("0 9 * * *", day, half_past_three_utc - 61.0, ist), "a minute early is not due");
+        assert!(cron_due("0 9 * * *", day, half_past_three_utc, ist), "on the local nine o'clock");
+        // The same expression on a clock at UTC waits for the UTC nine o'clock.
+        assert!(!cron_due("0 9 * * *", day, half_past_three_utc, 0));
+        assert!(cron_due("0 9 * * *", day, day + 9.0 * 3_600.0, 0));
+        // The occurrence at the floor itself has been answered; an expression that does not
+        // parse is never due.
+        assert!(!cron_due("0 9 * * *", day + 9.0 * 3_600.0, day + 9.0 * 3_600.0, 0));
+        assert!(!cron_due("nonsense", day, day + 86_400.0, 0));
+    }
+
+    /// Triggers were stored and never fired (#187): `get_enabled_triggers` had no caller. A due
+    /// schedule starts its recipe once, and not again before its next occurrence; a trigger that
+    /// has never fired waits for the first occurrence after the recipe existed.
+    #[test]
+    fn a_due_schedule_starts_its_recipe_once() {
+        let conn = store();
+        let day = 20_719.0 * 86_400.0; // 2026-09-23 00:00 UTC
+        let steps = [RecipeStep::Notify { message: "digest".into() }];
+        // Every minute: a schedule that reads the same whatever zone the test machine is in.
+        let id = RecipeStore::create(&conn, "Digest", "", &steps, Some(&TriggerType::Cron { expression: "* * * * *".into() }));
+        // create() stamps with the real clock; this recipe lives on the test's calendar.
+        conn.execute("UPDATE recipes SET created_at = ?1 WHERE id = ?2", params![day - 120.0, id]).unwrap();
+
+        assert!(RecipeStore::fire_due_triggers_at(&conn, day - 61.0).is_empty(), "not due before the first occurrence after it existed");
+        assert_eq!(RecipeStore::fire_due_triggers_at(&conn, day), vec![id.clone()], "the due occurrence starts the recipe");
+        assert_eq!(RecipeStore::get(&conn, &id).map(|r| r.status), Some(RecipeStatus::Running));
+        assert!(RecipeStore::fire_due_triggers_at(&conn, day).is_empty(), "the same occurrence does not fire twice");
+        assert!(RecipeStore::fire_due_triggers_at(&conn, day + 59.0).is_empty(), "nor before the next one");
+
+        // The next occurrence, once the first run has finished, is a run of its own — a copy
+        // sharing the name, as every re-run is (`start_run`).
+        RecipeStore::complete_step(&conn, &id, 0, "digest");
+        RecipeStore::update_status(&conn, &id, &RecipeStatus::Done, 1);
+        let next = RecipeStore::fire_due_triggers_at(&conn, day + 60.0);
+        assert_eq!(next.len(), 1, "the schedule fires again at its next occurrence");
+        assert_ne!(next[0], id, "a re-run is a recipe of its own");
+        assert_eq!(RecipeStore::get(&conn, &next[0]).map(|r| r.name), Some("Digest".to_string()));
+    }
+
+    /// A leader's completion starts the recipe chained behind it — including when the leader's
+    /// run is a copy sharing its name, which is how every run after the first happens.
+    #[test]
+    fn a_recipe_complete_trigger_starts_the_recipe_it_chains() {
+        let conn = store();
+        let steps = [RecipeStep::Notify { message: "sat".into() }];
+        let leader = RecipeStore::create(&conn, "Council", "", &steps, None);
+        let follower = RecipeStore::create(&conn, "Chair", "", &steps, Some(&TriggerType::RecipeComplete { recipe_id: leader.clone() }));
+        assert_eq!(RecipeStore::completion_since(&conn, "no such recipe"), None);
+
+        // The leader in flight, nothing finished: nothing fires.
+        RecipeStore::update_status(&conn, &leader, &RecipeStatus::Running, 0);
+        assert!(RecipeStore::fire_due_triggers_at(&conn, now_ts()).is_empty());
+
+        // The leader finishes; the clock sees it and starts the follower.
+        RecipeStore::complete_step(&conn, &leader, 0, "sat");
+        RecipeStore::update_status(&conn, &leader, &RecipeStatus::Done, 1);
+        assert_eq!(RecipeStore::fire_due_triggers_at(&conn, now_ts()), vec![follower.clone()], "the completion starts the chained recipe");
+        assert!(RecipeStore::fire_due_triggers_at(&conn, now_ts()).is_empty(), "one completion fires once");
+
+        // The follower finishes, the leader runs again as a copy of itself, and its completion
+        // chains again — found by the name the copies share.
+        RecipeStore::complete_step(&conn, &follower, 0, "sat");
+        RecipeStore::update_status(&conn, &follower, &RecipeStatus::Done, 1);
+        let first_done = RecipeStore::completion_since(&conn, &leader).expect("the leader finished");
+        let (_, rerun) = RecipeStore::start_run(&conn, &leader, None).expect("a re-run");
+        assert_ne!(rerun, leader);
+        RecipeStore::complete_step(&conn, &rerun, 0, "sat");
+        RecipeStore::update_status(&conn, &rerun, &RecipeStatus::Done, 1);
+        // Stamp the copy's completion after the first one, however fast the store was.
+        conn.execute("UPDATE recipes SET updated_at = ?1 WHERE id = ?2", params![first_done + 60.0, rerun]).unwrap();
+        let started = RecipeStore::fire_due_triggers_at(&conn, now_ts());
+        assert_eq!(started.len(), 1, "the copy's completion chains too");
+        assert_ne!(started[0], follower, "and the follower's second run is a recipe of its own");
+    }
+
+    /// An event trigger fires on the event it names, and only when its filter — if it has one —
+    /// is satisfied by the event's data.
+    #[test]
+    fn an_event_trigger_fires_on_its_event_and_its_filter() {
+        let conn = store();
+        let steps = [RecipeStep::Notify { message: "read".into() }];
+        let id = RecipeStore::create(&conn, "On mail", "", &steps, Some(&TriggerType::Event { event_type: "system/mail".into(), filter: Some(json!({"importance": 0.9})) }));
+        assert!(RecipeStore::fire_event_triggers(&conn, "system/other", &json!({}), now_ts()).is_empty(), "another event passes by");
+        assert!(RecipeStore::fire_event_triggers(&conn, "system/mail", &json!({"importance": 0.5}), now_ts()).is_empty(), "the filter has a say");
+        let started = RecipeStore::fire_event_triggers(&conn, "system/mail", &json!({"importance": 0.9, "text": "hello"}), now_ts());
+        assert_eq!(started, vec![id.clone()], "its event, with data the filter accepts");
+        assert_eq!(RecipeStore::get(&conn, &id).map(|r| r.status), Some(RecipeStatus::Running));
     }
 
     /// A new version's definition still reaches a built-in that has never run, and a copy of a

@@ -87,6 +87,8 @@ mod markdown;
 mod mind_mode;
 /// The right edge of every screen: the answering mind, what is at work, what it did.
 mod mind_panel;
+/// A desktop of the mind's own, inside one window: where the apps a mind opens are drawn (#239).
+mod mind_view;
 mod notifications;
 mod onboarding;
 mod icons;

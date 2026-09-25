@@ -211,7 +211,9 @@ standing instructions, the task and the context as its first turn. `describe she
 under `catalog`. The same rules as `new_agent` apply, and the role's **reach** caps it further: its
 agent is held to the role's surfaces and grade ceiling on every door that carries its token, and
 anything else is refused with `REACH:` (the bridge relays that as a policy answer, and never puts a
-question outside the reach to the person). With `wait_seconds` the call waits for the role's
+question outside the reach to the person) — except that the role may open an app its reach names:
+`shell.open_app` with its name is within the reach, whatever the ceiling, because a closed app
+cannot be read and opening a window is not an act on its data. With `wait_seconds` the call waits for the role's
 answer and hands it back — which counts as reading private state — so a client allows
 `wait_seconds` more, as for `run_command`.
 

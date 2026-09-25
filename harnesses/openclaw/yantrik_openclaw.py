@@ -94,7 +94,7 @@ _LIB = Path(__file__).resolve().parent.parent / "lib"
 if _LIB.is_dir() and str(_LIB) not in sys.path:
     sys.path.insert(0, str(_LIB))
 
-from yantrik_harness import Handler, Harness, Turn  # noqa: E402
+from yantrik_harness import Handler, Harness, Turn, mind_directory  # noqa: E402
 
 VERSION = "1.1"
 
@@ -932,9 +932,17 @@ class CliRoute:
     def begin(self, text: str, session: str, q: "queue.Queue[Signal]") -> None:
         argv = self.config.cli_argv(text, session)
         try:
+            # A directory of the desktop's own, never the harness's working directory ($HOME
+            # under the user service). `openclaw agent` is a coding agent like pi: the
+            # directory it runs in is the project it reads instruction files from, and a
+            # person's own ~/CLAUDE.md or ~/AGENTS.md must not steer the desktop's mind (#183).
+            cwd = mind_directory("openclaw")
+        except OSError as exc:
+            raise RouteError("could not make openclaw's working directory: %s" % exc) from None
+        try:
             proc = subprocess.Popen(
                 argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                text=True, env=self.config.environ(),
+                text=True, env=self.config.environ(), cwd=cwd,
             )
         except OSError as exc:
             raise RouteError(

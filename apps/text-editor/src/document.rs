@@ -86,7 +86,22 @@ impl Document {
             redo: vec![],
         })
     }
+    /// Write the tab to `path`, refusing rather than replacing anything it was not told about.
     pub fn save(&self, path: &Path) -> Result<Self, String> {
+        self.write(path, false)
+    }
+    /// The same write, told to replace whatever is already at `path`.
+    ///
+    /// This exists because of the one situation where every refusal was correct and there was
+    /// still no way to keep the work. Files moves a file with `rename`, so the file under an open
+    /// tab can be carried off: `save` then refuses because the original is gone, and Save As to
+    /// where it went refuses because something is already there. Both sentences are true; between
+    /// them the work is stuck (#86 — the same pair yDoc had in #75). `overwrite` is how the
+    /// second refusal is answered, and the refusal itself names it.
+    pub fn save_over(&self, path: &Path) -> Result<Self, String> {
+        self.write(path, true)
+    }
+    fn write(&self, path: &Path, overwrite: bool) -> Result<Self, String> {
         validate(&self.text)?;
         if !path.is_absolute() {
             return Err("Use an absolute file path.".into());
@@ -95,26 +110,36 @@ impl Document {
             .map_err(|e| format!("Cannot open folder: {e}"))?;
         let path = parent.join(path.file_name().ok_or("Choose a file name.")?);
         let own = self.path.as_ref() == Some(&path);
+        let mut replace = false;
         let mut permissions = None;
-        if own {
-            let meta = fs::symlink_metadata(&path)
-                .map_err(|e| format!("Original file unavailable: {e}. Use Save As."))?;
-            if !meta.is_file() || meta.nlink() > 1 {
-                return Err("This path is linked or is not a regular file. Use Save As.".into());
+        match fs::symlink_metadata(&path) {
+            // The tab's own file is not where it was opened from any more. That is almost never
+            // a deletion — Files moves with `rename` — so the refusal goes looking for it, and
+            // `overwrite` is the caller having read that and said write it here anyway.
+            Err(_) if own && !overwrite => return Err(self.stranded(&path)),
+            Err(_) => {}
+            Ok(_) if !own && !overwrite && !self.is_its_own_moved_file(&path) => {
+                return Err(
+                    "That file already exists. Choose another name; nothing was overwritten. \
+                     Save As with overwrite=true replaces it."
+                        .into(),
+                );
             }
-            if meta.permissions().readonly() {
-                return Err("This file is read-only. Use Save As.".into());
+            Ok(meta) => {
+                if !meta.is_file() || meta.nlink() > 1 {
+                    return Err("This path is linked or is not a regular file. Use Save As.".into());
+                }
+                if meta.permissions().readonly() {
+                    return Err("This file is read-only. Use Save As.".into());
+                }
+                if own && read(&path)? != self.baseline {
+                    return Err("File changed on disk. Your draft is intact; use Save As to keep both versions.".into());
+                }
+                replace = true;
+                permissions = Some(meta.permissions());
             }
-            if read(&path)? != self.baseline {
-                return Err("File changed on disk. Your draft is intact; use Save As to keep both versions.".into());
-            }
-            permissions = Some(meta.permissions());
-        } else if fs::symlink_metadata(&path).is_ok() {
-            return Err(
-                "That file already exists. Choose another name; nothing was overwritten.".into(),
-            );
         }
-        atomic_write(&path, self.text.as_bytes(), own, permissions)?;
+        atomic_write(&path, self.text.as_bytes(), replace, permissions)?;
         Ok(Self {
             path: Some(path),
             text: self.text.clone(),
@@ -124,6 +149,50 @@ impl Document {
             redo: vec![],
         })
     }
+    /// Why a save cannot write to the file this tab came from, when that file is not there.
+    ///
+    /// The old message was "Original file unavailable: … Use Save As." — true, and the Save As
+    /// it recommended was itself refused, because the file was already sitting at the path it had
+    /// been moved to. A refusal with no next step in it is the same as losing the work, so this
+    /// one goes and looks for where the file went and names it.
+    fn stranded(&self, path: &Path) -> String {
+        match moved_to(path, &self.baseline) {
+            Some(now) => format!(
+                "{} is not there any more — the same file looks to be at {} now. Nothing was \
+                 written and your draft is intact: Save As to {} to write your changes into it.",
+                path.display(),
+                now.display(),
+                now.display()
+            ),
+            None => format!(
+                "{} was moved or deleted, so there is nothing there to write into. Nothing was \
+                 written and your draft is intact: Save As with overwrite=true to write it here, \
+                 or Save As to wherever it went.",
+                path.display()
+            ),
+        }
+    }
+    /// Is the file at `path` this tab's own, carried there by a move?
+    ///
+    /// True only when the file this tab was opened from is no longer where it was, AND what is
+    /// at `path` has the same name and exactly the bytes the tab last agreed with. That is not a
+    /// coincidence anyone should have to argue with: it is this document, moved. Writing into it
+    /// is what a plain Save would have done, so a Save As onto it is not a clobber and is not
+    /// refused as one — no `overwrite` needed for the file that is already this tab's.
+    fn is_its_own_moved_file(&self, path: &Path) -> bool {
+        let Some(origin) = &self.path else { return false };
+        origin.file_name() == path.file_name()
+            && fs::symlink_metadata(origin).is_err()
+            && read(path).ok().as_deref() == Some(self.baseline.as_str())
+    }
+}
+/// Where the file that used to be at `original` probably is now, or `None`.
+///
+/// The shared search — the same name and exactly these bytes, bounded, and out of hidden
+/// folders — reading candidate files the way this editor reads them, so a file this editor
+/// would refuse to open is never reported as where the document went.
+pub fn moved_to(original: &Path, baseline: &str) -> Option<PathBuf> {
+    yantrik_file_follow::moved_to(original, baseline, read)
 }
 pub fn validate(text: &str) -> Result<(), String> {
     if text.len() > MAX_BYTES {

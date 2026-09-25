@@ -18,6 +18,9 @@ slint = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
+# The folder watch and the move decisions, shared with yDoc so a file moved in Files does not
+# strand the tab holding it open (#86). Carries the notify dependency with it.
+yantrik-file-follow = { workspace = true }
 libc = "0.2"
 regex = "1"
 

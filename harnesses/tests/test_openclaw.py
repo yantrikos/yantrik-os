@@ -354,6 +354,20 @@ class CliRouteTests(HarnessCase):
         argv = self.argv()[-1]
         self.assertEqual(argv[argv.index("--session-key") + 1], "yantrik-desktop-1")
 
+    def test_the_cli_runs_in_a_directory_of_the_desktops_own_never_in_the_home_folder(self):
+        # `openclaw agent` is a coding agent like pi: the directory it runs in is the project
+        # whose instruction files it reads, and the harness's own directory is $HOME under the
+        # user service, so the default must be a directory of the desktop's own (#183).
+        self.cli("text", env={"FAKE_OPENCLAW_CWD_DUMP": os.path.join(self.work, "cwd")})
+        turn = self.desktop.ask("what is open?")
+        self.assertEqual(self.desktop.wait_closed(turn, timeout=8)[1], "complete")
+        with open(os.path.join(self.work, "cwd"), encoding="utf-8") as handle:
+            cwds = [os.path.realpath(line.strip()) for line in handle if line.strip()]
+        expected = os.path.realpath(os.path.join(os.environ["XDG_DATA_HOME"],
+                                                 "yantrik", "minds", "openclaw", "main"))
+        self.assertEqual(cwds, [expected])
+        self.assertNotEqual(expected, os.path.realpath(os.path.expanduser("~")))
+
 
 class ConfigTests(unittest.TestCase):
     def test_the_silence_budget_exceeds_the_longest_an_approval_card_can_wait(self):

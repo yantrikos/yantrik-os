@@ -277,8 +277,13 @@ pub struct RoleMeta {
     pub id: String,
     /// The role's name as a person reads it (`Reviewer`).
     pub name: String,
-    /// Its reach in words: "editor, documents and notes · at most safe".
+    /// Its reach as the patterns the doors enforce: "editor, documents and notes · at most safe".
     pub reach: String,
+    /// The same reach as a sentence a person reads (#212): "the Editor, Documents and Notes, and
+    /// it may ask for safe acts". Empty in a session saved before the words were kept — a view
+    /// then falls back to `reach`, which reads as the patterns it is.
+    #[serde(default)]
+    pub reach_words: String,
     /// Its budget: turns, and minutes from its start.
     pub turns: u32,
     pub minutes: u32,
@@ -999,6 +1004,10 @@ pub struct Agent {
     /// Events the lifecycle refused: for a turn that had ended, output after a call's end, a
     /// second start or a second end. Counted, never silently lost.
     pub refused: u32,
+    /// The newest refusals as lines — what arrived, and why the lifecycle would not take it
+    /// (#212). The count above is the whole truth; these are what the details column opens
+    /// into, the newest `REFUSED_LINES` of them.
+    pub refusals: Vec<String>,
     pub approvals_asked: u32,
     pub approvals_answered: u32,
     /// Approval requests asked and not yet answered, by request id.
@@ -1040,6 +1049,8 @@ pub struct Details {
     pub approvals_answered: u32,
     pub usage: Usage,
     pub refused: u32,
+    /// The newest refusals as lines, oldest first: what arrived, and why it was refused (#212).
+    pub refusals: Vec<String>,
 }
 
 #[cfg(test)]

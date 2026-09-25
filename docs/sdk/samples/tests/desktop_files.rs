@@ -39,8 +39,9 @@ fn libreoffice_names_the_adapter_that_serves_it() {
     assert_eq!(e.surface.as_deref(), Some("libreoffice"));
     assert_eq!(e.aliases, vec!["writer".to_string(), "calc".to_string()]);
     assert_eq!(e.adapter.as_deref(), Some("yantrik-libreoffice-adapter"));
-    // `%U` is LibreOffice's; the shell strips field codes before it runs the command.
-    assert_eq!(e.exec, "yantrik-libreoffice");
+    // `%U` is kept as the entry wrote it: the shell substitutes the file where the code
+    // stands when it runs the command, and removes the code when there is no file (#304).
+    assert_eq!(e.exec, "yantrik-libreoffice %U");
     // The wrapper the Exec runs ships with the adapter and is always installed, so only
     // TryExec — naming the app it wraps — hides the entry from a machine with no LibreOffice
     // (#214).

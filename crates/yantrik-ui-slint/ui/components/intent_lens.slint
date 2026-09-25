@@ -63,9 +63,23 @@ export struct ApprovalRequest {
     discrepancies: [string],
     app: string,
     action: string,
+    // The action's own first sentence — one person-facing line (#218). The paragraph below is
+    // what the protocol detail looks like to a person: `run_recipe`'s card led with "A formation
+    // — Council, Red team, Build, Writers' room; `describe shell` → `recipes` → `formations`
+    // lists each with its `inputs`…". Picked out of the published description in approvals.rs
+    // (`summary_of`), so it is the app's own words and not a third name for the action. Empty
+    // when the app publishes nothing; the card then hides this row rather than inventing one.
+    summary: string,
     purpose: string,        // the action's own published description
     grade: string,          // safe | standard | sensitive | dangerous
     args: [string],         // one `key: value` per entry, each already cut to fit one line
+    // What one of those arguments stands for, in the app's own words:
+    // `id 01a0c718… is "Dentist, Fri 25 Sep 13:00"` (#54). The card for a delete asked BY ID
+    // showed only the uuid, which is nothing a person can answer a question about. This is a
+    // sentence about the arguments, drawn beside them — never one more thing the grant binds
+    // to — and empty when the app publishes no name index or names none of these values, in
+    // which case the card hides the row rather than drawing a blank.
+    target: string,
     warning: string,        // "" unless there is something that cannot be undone
     // Whether "Allow for this session" may be offered at all. False for `dangerous` and for any
     // action whose own published sentence says it cannot be undone — the same predicate that
@@ -109,11 +123,34 @@ export component ApprovalCard inherits Rectangle {
     callback deny();
 
     property <bool> waiting: root.data.decision == "";
-    // How tall the purpose block may grow before it scrolls. 585 characters — the longest
-    // description any app here publishes — wrap to about nine lines at caption size in this
-    // card's width, around 130px, so they are read without scrolling; the cap is what keeps a
-    // card with eight arguments and every optional row up inside an 800px screen.
-    property <length> purpose-max: 160px;
+
+    // ── The card fits the panel it is drawn in, or it does not answer (#218) ──
+    //
+    // The Lens card for `shell.run_recipe` — the app's paragraph of a description, an agent
+    // row, two arguments, the session row — came out taller than the Lens panel at 1280×800.
+    // The card sets its own height and a layout cannot shrink it below that, so the panel's
+    // VerticalLayout simply ran out of room at the bottom: the reply box went off the edge and
+    // the Deny/Allow row showed as a 3px sliver above it. Scrolling could not help — the Lens
+    // was already at its bottom — and a person could not answer the card at all.
+    //
+    // So whoever draws the card says how tall it may be, and the card keeps that promise by
+    // making ONE part of itself yield: the details in the middle scroll, while the identity
+    // rows above (who is asking, what the action is) and the buttons below stay pinned where
+    // the layout put them. The default asks for more than any screen has, which leaves the
+    // card exactly as tall as it likes in a pane that scrolls itself (the Agents screen).
+    // Not called `max-height`: that name belongs to the Rectangle this inherits from, where it
+    // is a layout constraint, and Slint refuses to let a component shadow a built-in property.
+    in property <length> height-limit: 10000px;
+
+    // How much of the purpose block shows before "show more" takes over: three caption lines,
+    // at their 14px line pitch — a rounder number clips the fourth line mid-glyph.
+    // The summary row above already carries the description's first sentence, so the clamped
+    // paragraph is for whoever wants the rest of it — and they ask, instead of the card
+    // spending a sixth of the screen on protocol detail (#218, item 3). It used to be 160px
+    // with a scroll of its own, which is what made the card too tall for the Lens; a scroll
+    // inside the scrolling details section would also fight the outer one for the gesture.
+    property <length> purpose-clamp: 42px;
+    property <bool> purpose-open: false;
 
     height: body.preferred-height;
     background: transparent;
@@ -159,11 +196,21 @@ export component ApprovalCard inherits Rectangle {
             : Theme.glass-border-strong;
         drop-shadow-blur: 18px;
         drop-shadow-color: Theme.overlay-shadow;
-        height: card-body.preferred-height;
+        // The promise to the panel: never taller than it was told it may be. What yields is the
+        // details section in the middle (see its height below); the rows above it and the
+        // buttons under it keep their arithmetic heights, so the buttons are the one thing on
+        // the card that is always where the layout put them (#218).
+        height: min(card-body.preferred-height, root.height-limit);
 
         card-body := VerticalLayout {
             padding: Theme.sp-3;
             spacing: Theme.sp-2;
+
+            // Pinned top: who is asking, and what the action is in one line. Everything here is
+            // fixed single-line rows (or the summary's bounded sentence), so this section's
+            // height is arithmetic and the details below can be sized by subtracting it.
+            identity := VerticalLayout {
+                spacing: Theme.sp-2;
 
             // Who is asking — said twice, on purpose, because the two answers are not the same
             // kind of thing and the card must not let one pass for the other.
@@ -294,52 +341,133 @@ export component ApprovalCard inherits Rectangle {
                 wrap: word-wrap;
             }
 
-            // What it does, in the app's own sentence — the whole sentence.
+            // What it does, in one line a person can read (#218): the app's own first sentence,
+            // picked out of the published description in approvals.rs. Pinned with the identity
+            // rows rather than down in the details, because the line that says what this call
+            // does is the one thing on the card that must never be what a person has to scroll
+            // or press "show more" for. The label says where the line came from, in the same
+            // voice as the labels around it — it is the app's words, not a third name for the
+            // action beside `app.action` and the paragraph below.
+            // Not behind an `if`: conditional, the pair's last line never reached this
+            // section's preferred height, and the details below started on top of the label.
+            // An empty summary collapses the box to zero height instead, and the clip keeps
+            // the collapsed box from spilling whatever it still draws.
+            Rectangle {
+                height: root.data.summary != "" ? summary-pair.preferred-height : 0px;
+                clip: true;
+
+                summary-pair := VerticalLayout {
+                    spacing: 0px;
+
+                    Text {
+                        text: root.data.summary;
+                        color: Theme.text-primary;
+                        font-size: Theme.fs-caption;
+                        wrap: word-wrap;
+                    }
+                    Text {
+                        text: "what it does · the app's own first sentence";
+                        color: Theme.text-dim;
+                        font-size: Theme.fs-micro;
+                        wrap: no-wrap;
+                        overflow: elide;
+                    }
+                }
+            }
+
+            }   // identity — pinned; everything under here gives way first
+
+            // The scrolling middle: the app's whole paragraph, every argument, the warning and
+            // the grade line.
+            //
+            // This is the one part of the card that yields when the card may not be as tall as
+            // it likes (#218): its height is what is left of `height-limit` once the pinned rows
+            // above, the pinned buttons below and the card's own padding and spacing are
+            // subtracted — the 2×sp-3 and 2×sp-2 are exactly those, two paddings and the two
+            // gaps between the three sections. When the details fit — every card on a full
+            // screen, and all of them in a pane that scrolls itself, where `height-limit` is
+            // left at its out-of-reach default — the section is precisely as tall as its
+            // content and nothing scrolls anywhere.
+            Rectangle {
+                height: min(details.preferred-height,
+                            max(0px, root.height-limit - identity.preferred-height
+                                - decide.preferred-height
+                                - 2 * Theme.sp-3 - 2 * Theme.sp-2));
+                clip: true;
+
+                // A Flickable has no preferred height of its own, so the sizing Rectangle is
+                // around it and the layout inside is what gets measured.
+                Flickable {
+                    // Only the vertical scrolls, and the viewport's width has to be said so:
+                    // left at its default it follows the content's minimum width, and the
+                    // wrapping purpose text measures its height from the width it is given —
+                    // width into height into width, which Slint rejects as a binding loop.
+                    viewport-width: self.width;
+                    viewport-height: details.preferred-height;
+
+                    details := VerticalLayout {
+                        spacing: Theme.sp-2;
+
+            // What it does, in the app's own sentence — the whole sentence, all of it readable.
             //
             // This used to be a bare wrapping Text fed a purpose cut to 240 characters, and
             // Studio's `set_backend` publishes 585: the card read "…naming a hosted service means
             // the sentences typed into this app will leav… (585 characters in full)", cut
             // mid-word at the clause that said why the grade is what it is, with no way to read
             // the rest. So the text is no longer cut to fit the card (see `PURPOSE_CHARS` in
-            // approvals.rs). Instead the card bounds the block's HEIGHT: it wraps, grows to fit
-            // the longest sentence any app on this desktop publishes, and past `purpose-max` it
-            // scrolls rather than pushing the buttons off the screen. The cap is what keeps the
-            // whole card inside an 800px screen with eight arguments and every optional row up.
-            //
-            // A fixed-height Rectangle rather than the Flickable straight in the layout: a
-            // Flickable has no preferred height of its own, so the layout would give it nothing.
-            // `purpose-text.preferred-height` is the wrapped height at the width the layout gave
-            // it, which is what the block wants to be until the cap says otherwise.
+            // approvals.rs). It is still clamped, though — to three lines under "show more"
+            // (#218) — because `run_recipe`'s paragraph is protocol detail for minds, and on
+            // the card it pushed the buttons under the edge of the Lens. What changed since
+            // 22 September is that nothing is lost by the clamp any more: the summary line
+            // above carries the first sentence, "show more" opens the rest in full, and the
+            // section scrolls once the card is at the height its panel allows.
             //
             // The label under it says what kind of thing the sentence is, because the two cards
             // of 22 September were read as the OS warning about THIS call when the sentence is
             // the app's description of the ACTION and reads the same for `kind: fake` as for a
             // hosted service. The arguments underneath are what change; their label says so.
-            // When the sentence is taller than the block, the label says that instead, since a
-            // Flickable gives no other sign that there is more. Same value-over-label pair, with
-            // spacing 0 inside, as the verified row above.
             VerticalLayout {
                 spacing: 0px;
 
                 Rectangle {
-                    height: min(purpose-text.preferred-height, root.purpose-max);
+                    height: root.purpose-open ? purpose-text.preferred-height
+                        : min(purpose-text.preferred-height, root.purpose-clamp);
+                    clip: true;
 
-                    Flickable {
-                        viewport-height: purpose-text.preferred-height;
+                    purpose-text := Text {
+                        width: parent.width;
+                        // Pinned to the box's top edge, both axes: left to its own geometry the
+                        // paragraph centers itself on the clamped box, and the window then
+                        // shows the middle lines of it instead of the first ones.
+                        y: 0px;
+                        text: root.data.purpose;
+                        color: Theme.text-secondary;
+                        font-size: Theme.fs-caption;
+                        wrap: word-wrap;
+                        vertical-alignment: top;
+                    }
+                }
+                // "show more" rather than a scroll of its own: a second Flickable inside the
+                // scrolling details section would fight the outer one for the same gesture, and
+                // a scrollbar-less clamp gives no sign that there is more. Same shape as the
+                // small hit areas in the Lens header — a TouchArea sized to its label.
+                if purpose-text.preferred-height > root.purpose-clamp : more-hit := TouchArea {
+                    width: more-label.preferred-width + 16px;
+                    height: 20px;
+                    mouse-cursor: pointer;
+                    clicked => { root.purpose-open = !root.purpose-open; }
 
-                        purpose-text := Text {
-                            width: parent.width;
-                            text: root.data.purpose;
-                            color: Theme.text-secondary;
-                            font-size: Theme.fs-caption;
-                            wrap: word-wrap;
-                        }
+                    more-label := Text {
+                        width: parent.width;
+                        height: parent.height;
+                        text: root.purpose-open ? "show less" : "show more";
+                        color: more-hit.has-hover ? Theme.amber-light : Theme.text-dim;
+                        font-size: Theme.fs-micro;
+                        vertical-alignment: center;
                     }
                 }
                 Text {
-                    text: purpose-text.preferred-height > root.purpose-max
-                        ? "says the app about the action · scroll for the rest"
-                        : "says the app about the action · the same for every call of it";
+                    text: "says the app about the action · the same for every call of it";
                     color: Theme.text-dim;
                     font-size: Theme.fs-micro;
                     wrap: no-wrap;
@@ -384,6 +512,29 @@ export component ApprovalCard inherits Rectangle {
                 }
             }
 
+            // What the handle in the box above means, in the words of the app that owns it
+            // (#54) — a line for each handle the app names, so a delete asked by id reads as
+            // the event itself. One Text, `no-wrap` and elided, like every other row: the
+            // card's height is arithmetic, and the line arrives already cut to fit (see
+            // `TARGET_CHARS` in approvals.rs). Hidden when empty, which is the ordinary case.
+            if root.data.target != "" : VerticalLayout {
+                spacing: 0px;
+                Text {
+                    text: root.data.target;
+                    color: Theme.text-primary;
+                    font-size: Theme.fs-caption;
+                    wrap: no-wrap;
+                    overflow: elide;
+                }
+                Text {
+                    text: "says the app what its handle means · the grant binds to the arguments above, not to this line";
+                    color: Theme.text-dim;
+                    font-size: Theme.fs-micro;
+                    wrap: no-wrap;
+                    overflow: elide;
+                }
+            }
+
             if root.data.warning != "" : HorizontalLayout {
                 spacing: Theme.sp-2;
                 Rectangle {
@@ -405,6 +556,16 @@ export component ApprovalCard inherits Rectangle {
                 font-size: Theme.fs-micro;
                 wrap: word-wrap;
             }
+
+                    }   // details
+                }   // Flickable
+            }   // the scrolling middle
+
+            // Pinned bottom: the answer. Below the scroll, outside it, at a height the card's
+            // arithmetic already reserved — the buttons are the one thing that cannot end up
+            // somewhere a person has to look for it (#218).
+            decide := VerticalLayout {
+                spacing: Theme.sp-2;
 
             // Deny first, and neither button dressed up as the obvious one.
             //
@@ -492,6 +653,8 @@ export component ApprovalCard inherits Rectangle {
                     overflow: elide;
                 }
             }
+
+            }   // decide
         }
     }
 
@@ -744,6 +907,13 @@ export component IntentLens inherits Rectangle {
     // Internal state
     in-out property <string> input-text: "";
     in-out property <int> selected-index: 0;   // keyboard-navigable cursor
+
+    // The least the conversation transcript keeps in chat mode. While a card is waiting the
+    // transcript gives up most of its floor and the card gets the room instead: the card is the
+    // thing the panel is waiting on, and its buttons have to fit (#218). One number, used twice
+    // — as the ListView's floor and in the card's own height-limit arithmetic below — so the two
+    // cannot drift apart and leave either an overlap or a gap.
+    property <length> transcript-min: root.approvals.length > 0 ? 96px : 200px;
 
     /// Move the highlight through the result feed, stepping over divider rows.
     ///
@@ -1778,10 +1948,11 @@ export component IntentLens inherits Rectangle {
                     }
                 }
 
-                // Messages — fills available panel height
+                // Messages — fills available panel height, down to `transcript-min` while a
+                // card is waiting (see the property at the top of the component).
                 ListView {
                     vertical-stretch: 1;
-                    min-height: 200px;
+                    min-height: root.transcript-min;
 
                     for msg[idx] in root.messages : MessageBubble {
                         data: msg;
@@ -1803,6 +1974,19 @@ export component IntentLens inherits Rectangle {
 
                     for item[idx] in root.approvals : ApprovalCard {
                         data: item;
+                        // The tallest the card may be and still leave the panel showing
+                        // everything else it owes: the header, the transcript sliver above and
+                        // the reply box below — the reply box was what went off the bottom edge
+                        // in #218, with the card's buttons a 3px sliver above it. The panel is
+                        // the window between the two bars; from it go the header row, the reply
+                        // bar at whatever height it has grown to, the transcript's floor, this
+                        // block's padding with its "N more waiting" line (40px), and one row
+                        // (32px) per decided record sharing this block with the card. The floor
+                        // keeps a card's identity rows and buttons on any panel tall enough to
+                        // hold them at all.
+                        height-limit: max(240px, root.height - Theme.status-bar-height
+                            - Theme.taskbar-height - Theme.lens-input-height - chat-bar.height
+                            - root.transcript-min - 40px - 32px * root.approvals.length);
                         allow => { root.approval-allow(item.id); }
                         allow-session => { root.approval-allow-session(item.id); }
                         deny => { root.approval-deny(item.id); }
@@ -1855,8 +2039,10 @@ export component IntentLens inherits Rectangle {
                     }
                 }
 
-                // Input bar for chat mode. Grows with the field inside it (see `chat-input`).
-                Rectangle {
+                // Input bar for chat mode. Grows with the field inside it (see `chat-input`),
+                // and named because the approval card's height-limit above subtracts what it is
+                // actually holding, not a guess at it.
+                chat-bar := Rectangle {
                     height: max(48px, min(118px, chat-input.preferred-height + 14px) + 16px);
                     background: Theme.bg-deep;
 

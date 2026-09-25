@@ -123,8 +123,12 @@ echo "   verified: no cloud kernel left in /boot"
 say "Packages"
 # One layer, one apt run: the desktop, the eyes, the ears, and what yos needs to talk CDP.
 # mpv: Files opens sound and video in mpv's own window (#255); the image shipped no player.
+# nano, htop: the person's editor (yantrik-session exports EDITOR=nano) and process viewer;
+# the image shipped neither (#210). iproute2, iputils-ping: `ip`, `ss` and `ping`, named by
+# the mind's network tools — installed here as well so all three provisioning paths lay
+# down the same base system rather than drifting from each other (#210).
 virt-customize -a "$IMAGE" \
-  --install labwc,seatd,mesa-utils,foot,chromium,pipewire-pulse,wireplumber,pulseaudio-utils,python3-websocket,qemu-guest-agent,curl,ca-certificates,fontconfig,grim,wlrctl,wlr-randr,mpv \
+  --install labwc,seatd,mesa-utils,foot,chromium,pipewire-pulse,wireplumber,pulseaudio-utils,python3-websocket,qemu-guest-agent,curl,ca-certificates,fontconfig,grim,wlrctl,wlr-randr,mpv,nano,htop,iproute2,iputils-ping \
 
 echo "   desktop, browser, audio, agent surface deps"
 

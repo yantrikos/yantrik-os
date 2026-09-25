@@ -28,14 +28,18 @@ use yantrik_ipc_transport::peer_identity::{self, basename, clip, is_bridge, line
 
 /// One mind the shell has attached, as far as matching a process against it is concerned.
 ///
-/// The harness registry records no pid and no executable (`yantrik_harness::host::Entry` is id,
-/// name, detail, builtin, active, capabilities), so a match is by name against the ancestry —
-/// weaker than a pid comparison and honestly weaker than it sounds. If the registry ever grows
-/// a pid, `mind_for` is the one place that has to change.
+/// The pid is the kernel's word: the host records it from `SO_PEERCRED` when the harness
+/// attaches, and a caller whose walked ancestry contains it is that harness or a process it
+/// started — the same descent `HostTokens` requires before it believes an agent token. The
+/// name is the fallback for a harness the host has no pid for, and it is weaker than it sounds:
+/// a name with no distinctive word in it ("Pi") matches no command line at all (#206).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Mind {
     pub id: String,
     pub name: String,
+    /// The process that attached, as the kernel reported it. `None` for built-ins and for
+    /// transports that could not say (the TCP dev path).
+    pub pid: Option<u32>,
 }
 
 /// What this machine established about whoever opened the socket.
@@ -154,11 +158,26 @@ pub fn identify(chain: Vec<ProcessFacts>, minds: &[Mind]) -> CallerIdentity {
 
 /// Which attached mind, if any, this ancestry belongs to.
 ///
-/// By name, because the registry holds no pid — see [`Mind`]. Only tokens of four characters or
-/// more count, so a mind called "AI" or "OS" cannot match half the process table, and our own
-/// bridge processes are excluded from the search: a mind's name appearing in the path of the
-/// program we wrote to talk to it would prove nothing.
+/// By pid first: the chain was walked up from the caller, so a harness's recorded pid appearing
+/// in it means the caller IS that harness or runs under it — the descent `HostTokens` requires
+/// before it believes an agent token. That is the only match there is for a mind whose name
+/// cannot appear in a command line: the card for a genuine call from pi said “Pi” is attached
+/// here — this is not it, because "pi" is two characters and the name tokens below require four
+/// (#206). The chain is the outer loop so that the harness nearest the caller wins if two of
+/// them are somehow in one ancestry.
+///
+/// By name when the host has no pid for the harness. Only tokens of four characters or more
+/// count, so a mind called "AI" or "OS" cannot match half the process table, and our own bridge
+/// processes are excluded from the search: a mind's name appearing in the path of the program we
+/// wrote to talk to it would prove nothing.
 fn mind_for(chain: &[ProcessFacts], minds: &[Mind]) -> Option<String> {
+    for facts in chain {
+        if let Some(mind) =
+            minds.iter().find(|m| m.pid.is_some_and(|pid| pid > 0 && pid as i32 == facts.pid))
+        {
+            return Some(mind.name.clone());
+        }
+    }
     for facts in chain {
         if is_bridge(facts) || is_this_desktop(facts) {
             continue;
@@ -236,7 +255,9 @@ pub fn resolve_with(pid: i32, minds: &[Mind]) -> CallerIdentity {
 /// The minds attached to this desktop, as the picker shows them.
 pub fn attached_minds() -> Vec<Mind> {
     crate::wire::harness::host()
-        .map(|host| host.list().into_iter().map(|e| Mind { id: e.id, name: e.name }).collect())
+        .map(|host| {
+            host.list().into_iter().map(|e| Mind { id: e.id, name: e.name, pid: e.pid }).collect()
+        })
         .unwrap_or_default()
 }
 
@@ -255,8 +276,8 @@ mod caller_identity_tests {
 
     fn hermes() -> Vec<Mind> {
         vec![
-            Mind { id: "companion".into(), name: "Companion".into() },
-            Mind { id: "hermes".into(), name: "Hermes Agent".into() },
+            Mind { id: "companion".into(), name: "Companion".into(), pid: None },
+            Mind { id: "hermes".into(), name: "Hermes Agent".into(), pid: None },
         ]
     }
 
@@ -341,9 +362,9 @@ mod caller_identity_tests {
             facts(8000, "/opt/yantrik/bin/yantrik-ui", "/opt/yantrik/bin/yantrik-ui /opt/yantrik/config.yaml"),
         ];
         let minds = vec![
-            Mind { id: "companion".into(), name: "Yantrik Companion".into() },
-            Mind { id: "hermes".into(), name: "Hermes Agent".into() },
-            Mind { id: "mind".into(), name: "Yantrik Mind".into() },
+            Mind { id: "companion".into(), name: "Yantrik Companion".into(), pid: None },
+            Mind { id: "hermes".into(), name: "Hermes Agent".into(), pid: None },
+            Mind { id: "mind".into(), name: "Yantrik Mind".into(), pid: None },
         ];
         assert_eq!(mind_for(&chain, &minds), None, "the desktop's own binaries name no mind");
         // ...while a real Hermes gateway process still matches by its own command line.
@@ -357,8 +378,8 @@ mod caller_identity_tests {
         // yantrik@notty (pid 638879) · the attached mind". "yantrik" is a token of every
         // built-in mind's name, and it is also the username, the home directory and /opt/yantrik.
         let minds = vec![
-            Mind { id: "companion".into(), name: "Yantrik Companion".into() },
-            Mind { id: "hermes".into(), name: "Hermes Agent".into() },
+            Mind { id: "companion".into(), name: "Yantrik Companion".into(), pid: None },
+            Mind { id: "hermes".into(), name: "Hermes Agent".into(), pid: None },
         ];
         let ssh = vec![
             facts(5400, "/usr/bin/bash", "bash -c python3 /home/yantrik/forge.py"),
@@ -409,12 +430,13 @@ mod caller_identity_tests {
     fn caller_identity_a_short_mind_name_cannot_match_half_the_process_table() {
         // A mind called "AI" would otherwise match `/usr/bin/chain` and every path with an `ai`
         // in it. Four characters is the bar, and an id gets the same treatment as a name.
-        let minds = vec![Mind { id: "ai".into(), name: "AI".into() }];
+        let minds = vec![Mind { id: "ai".into(), name: "AI".into(), pid: None }];
         let who = identify(hermes_chain(), &minds);
         assert_eq!(who.attached_mind, None);
 
         // While a real name matches on any one of its distinctive words.
-        let who = identify(hermes_chain(), &[Mind { id: "h".into(), name: "Hermes".into() }]);
+        let who =
+            identify(hermes_chain(), &[Mind { id: "h".into(), name: "Hermes".into(), pid: None }]);
         assert_eq!(who.attached_mind.as_deref(), Some("Hermes"));
     }
 
@@ -477,6 +499,7 @@ mod caller_identity_tests {
         let long = vec![Mind {
             id: "x".into(),
             name: "A Mind With A Preposterously Long Self Chosen Name Indeed".into(),
+            pid: None,
         }];
         let chain = vec![facts(2001, "/usr/bin/curl", "curl")];
         let said = mismatch(&long[0].name, &identify(chain, &long), &long);
@@ -494,5 +517,74 @@ mod caller_identity_tests {
         // `yos`, which has usually exited before anybody looks at the card.
         let gone = resolve(0);
         assert_eq!(gone.line(), "could not be identified");
+    }
+
+    // ── The mind the kernel can name when the command line cannot (#206) ──
+
+    #[test]
+    fn a_call_from_pi_itself_is_the_attached_mind_however_short_its_name() {
+        // The live card of #206: pi called for itself, verified by pid and by its agent token
+        // `pi:main`, and the card still said in red that "Pi" is attached here and this is not
+        // it. The name "Pi" has no token of four characters, so matching it against a command
+        // line can never succeed; the pid the kernel stamped at attach is the match that can.
+        let minds = vec![
+            Mind { id: "companion".into(), name: "Yantrik Companion".into(), pid: None },
+            Mind { id: "pi".into(), name: "Pi".into(), pid: Some(4242) },
+        ];
+        let adapter = || facts(4242, "/usr/bin/python3.11", "python3 yantrik_pi.py");
+        let pi = || facts(102549, "/usr/local/bin/pi", "pi --mode agent");
+
+        // The adapter itself: the process that attached is the peer.
+        let who = identify(vec![adapter()], &minds);
+        assert_eq!(who.attached_mind.as_deref(), Some("Pi"));
+        assert_eq!(mismatch("Pi 1.0", &who, &minds), "", "the real Pi is not an impostor");
+
+        // Its child: pi running a turn.
+        let who = identify(vec![pi(), adapter()], &minds);
+        assert_eq!(who.attached_mind.as_deref(), Some("Pi"));
+        assert_eq!(mismatch("Pi 1.0", &who, &minds), "");
+
+        // The grandchild chain a real act arrives over: yos ← yos-mcp ← pi ← the adapter.
+        let who = identify(
+            vec![
+                facts(102600, "/usr/bin/python3.11", "python3 yos act files delete name=x"),
+                facts(102590, "/usr/bin/python3.11", "python3 yos-mcp"),
+                pi(),
+                adapter(),
+            ],
+            &minds,
+        );
+        assert_eq!(who.attached_mind.as_deref(), Some("Pi"));
+        assert_eq!(mismatch("Pi 1.0", &who, &minds), "");
+        assert!(who.line().contains("the attached mind"), "{}", who.line());
+
+        // An unrelated process claiming the name is still called out: no descent, and a name
+        // this short cannot match anything by accident — which is the point of keeping the
+        // pid the kernel gave rather than softening the claim check.
+        let who = identify(
+            vec![
+                facts(9001, "/usr/bin/python3.13", "python3 forge.py"),
+                facts(9000, "/usr/bin/bash", "bash"),
+            ],
+            &minds,
+        );
+        assert_eq!(who.attached_mind, None);
+        assert!(mismatch("Pi 1.0", &who, &minds).contains("is attached here"), "{who:?}");
+    }
+
+    #[test]
+    fn a_harness_the_host_has_no_pid_for_still_matches_by_name() {
+        // Attached over the TCP dev path, or a built-in: nothing to descend from, so the
+        // ancestry is matched the weaker way it always was — and a claim it does not support
+        // is still called out.
+        let who = identify(hermes_chain(), &hermes());
+        assert_eq!(who.attached_mind.as_deref(), Some("Hermes Agent"));
+        assert_eq!(mismatch("Hermes Agent 0.14.0", &who, &hermes()), "");
+
+        // A pid of zero is no pid: the transport writes 0 when the kernel gave none, and 0
+        // must not match whatever the walk makes of a process it could not read.
+        let zero = vec![Mind { id: "pi".into(), name: "Pi".into(), pid: Some(0) }];
+        let who = identify(vec![facts(9001, "/usr/bin/curl", "curl")], &zero);
+        assert_eq!(who.attached_mind, None);
     }
 }

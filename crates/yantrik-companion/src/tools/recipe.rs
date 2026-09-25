@@ -49,7 +49,7 @@ impl Tool for CreateRecipeTool {
                                 PREFER on_error={\"action\":\"Replan\"} for critical steps — it auto-diagnoses failures and generates new steps. \
                                 Think steps need: prompt (use {{var}} for variable references), store_as. \
                                 JumpIf steps need: condition (object with 'op' field), target_step (index). \
-                                WaitFor steps need: condition ({\"type\":\"Duration\",\"seconds\":N} or {\"type\":\"Time\",\"hour\":H,\"minute\":M} in UTC), timeout_secs (optional). \
+                                WaitFor steps need: condition ({\"type\":\"Duration\",\"seconds\":N} or {\"type\":\"Time\",\"hour\":H,\"minute\":M} in the machine's local time), timeout_secs (optional). \
                                 Notify steps need: message (use {{var}} for variables). \
                                 AskUser steps need: question, store_as, choices (optional list). \
                                 Branch steps need: condition (a variable name: set and not empty, false or 0 takes then_steps), then_steps, else_steps (lists of steps). \
@@ -62,8 +62,9 @@ impl Tool for CreateRecipeTool {
                         "trigger": {
                             "type": "object",
                             "description": "Optional trigger. Types: 'Manual' (default), \
-                                'Cron' (needs 'expression' like '0 9 * * *'), \
-                                'Event' (needs 'event_type' like 'email:new')."
+                                'Cron' (needs 'expression' like '0 9 * * *', read on the machine's local clock), \
+                                'Event' (needs 'event_type' like 'email:new'), \
+                                'RecipeComplete' (needs 'recipe_id' of the recipe whose completion starts this one)."
                         }
                     },
                     "required": ["name", "steps"]

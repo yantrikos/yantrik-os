@@ -1,0 +1,53 @@
+<?xml version="1.0"?>
+<!--
+  Mind View — the nested labwc a mind's apps are drawn in (#239).
+
+  Run by yantrik-ui as `labwc -C /opt/yantrik/share/labwc-mind -s <seat script>` with
+  WLR_BACKENDS=wayland: on the person's compositor it is one ordinary window, and inside that
+  window is a display of its own. An app a mind opens is started on that display, so it lands in
+  Mind View instead of over the person's work. See crates/yantrik-ui/src/mind_view.rs.
+
+  The same theme as the person's desktop (config/labwc/rc.xml), so a window reads as this OS's
+  wherever it is drawn. What differs is deliberate:
+
+  - No <margin>. There is no status bar or taskbar in here to keep clear of.
+  - Two keybindings, not the desktop's thirty. The person's compositor sees every key first, so
+    their own shortcuts — lock, screenshot, the launcher — keep working while Mind View has the
+    keyboard; the only keys that reach this one are ones the person's compositor did not bind.
+    Defining any <keybind> also stops labwc loading its stock set, whose Super+Return starts a
+    terminal nobody installed.
+-->
+<labwc_config>
+  <theme>
+    <name>Yantrik</name>
+    <cornerRadius>10</cornerRadius>
+    <dropShadows>no</dropShadows>
+    <font place="ActiveWindow">
+      <name>Barlow</name>
+      <size>10</size>
+      <weight>medium</weight>
+    </font>
+    <font place="InactiveWindow">
+      <name>Barlow</name>
+      <size>10</size>
+    </font>
+    <font place="MenuItem">
+      <name>Barlow</name>
+      <size>10</size>
+    </font>
+  </theme>
+
+  <!-- As on the desktop: an agent moving the pointer must not move the keyboard. -->
+  <focus>
+    <followMouse>no</followMouse>
+  </focus>
+
+  <keyboard>
+    <keybind key="A-Tab">
+      <action name="NextWindow" />
+    </keybind>
+    <keybind key="A-F4">
+      <action name="Close" />
+    </keybind>
+  </keyboard>
+</labwc_config>

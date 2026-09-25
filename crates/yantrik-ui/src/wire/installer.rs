@@ -7,6 +7,8 @@ use slint::ComponentHandle;
 use std::process::Command;
 
 use crate::app_context::AppContext;
+use crate::wire::ai_onboarding::auth_type_for;
+use crate::wire::settings::{provider_preset, ProviderStore, ProviderStoreEntry};
 use crate::App;
 
 /// Wire the installer callbacks.
@@ -75,6 +77,26 @@ pub fn wire(ui: &App, _ctx: &AppContext) {
                 });
             }
 
+            // The AI pages save whatever the person picked as the primary provider the
+            // moment they pick it (wire::ai_onboarding::save_primary), and that store is
+            // the only record of the choice — this callback is handed the identity fields
+            // but no AI ones. The installer used to start with an empty ai_provider, so
+            // configure_ai skipped the AI section and the installed config.yaml kept the
+            // image's default endpoint, which nothing serves on a machine built without
+            // --with-llm: the wizard's choice never reached the installed system.
+            let wizard = ProviderStore::load().primary().cloned();
+            let (ai_provider, ai_base_url, ai_api_key) = match wizard {
+                Some(p) => (p.provider_type, p.base_url, p.api_key.unwrap_or_default()),
+                None => (String::new(), String::new(), String::new()),
+            };
+            // The endpoint is not a secret; the key is, so only its presence is logged.
+            tracing::info!(
+                ai_provider = %ai_provider,
+                ai_endpoint = %ai_base_url,
+                has_key = !ai_api_key.is_empty(),
+                "Installer: AI choice carried over from the wizard"
+            );
+
             let state = InstallerState {
                 username: username.clone(),
                 password,
@@ -84,8 +106,9 @@ pub fn wire(ui: &App, _ctx: &AppContext) {
                 locale: String::new(),
                 target_disk: target_disk.clone(),
                 partition_scheme: "auto".into(),
-                ai_provider: String::new(),
-                ai_api_key: String::new(),
+                ai_provider,
+                ai_base_url,
+                ai_api_key,
             };
 
             let weak2 = weak.clone();
@@ -156,6 +179,9 @@ pub struct InstallerState {
     pub target_disk: String,      // e.g. "sda"
     pub partition_scheme: String,  // "auto" or "manual"
     pub ai_provider: String,
+    /// The endpoint the wizard saved for the provider. Empty means nobody chose
+    /// one, and the provider's well-known URL is used if a provider is set.
+    pub ai_base_url: String,
     pub ai_api_key: String,
 }
 
@@ -640,90 +666,49 @@ fi
     Ok(())
 }
 
-/// Write AI provider config and user_name into the installed system's config.yaml.
+/// Write AI provider config and user_name into the installed system's config.yaml,
+/// and the provider entry — key included — into the new user's providers.yaml.
 fn configure_ai(mount_dir: &str, state: &InstallerState) {
     let config_path = format!("{mount_dir}/opt/yantrik/config.yaml");
-    let Ok(content) = std::fs::read_to_string(&config_path) else {
-        return;
-    };
-
-    let mut new_content = content;
-
-    // ── Write user_name ─────────────────────────────────────────
-    let display_name = if !state.full_name.is_empty() {
-        &state.full_name
-    } else if !state.username.is_empty() {
-        &state.username
-    } else {
-        "User"
-    };
-
-    if let Some(start) = new_content.find("user_name:") {
-        // Replace existing user_name line
-        if let Some(end) = new_content[start..].find('\n') {
-            let line_end = start + end;
-            new_content.replace_range(start..line_end, &format!("user_name: \"{}\"", display_name));
-        }
-    } else {
-        // No user_name line exists — insert at the top of the file
-        new_content.insert_str(0, &format!("user_name: \"{}\"\n", display_name));
+    if let Ok(content) = std::fs::read_to_string(&config_path) {
+        let _ = sudo_write(&config_path, &installed_config_yaml(&content, state));
     }
 
-    // ── Write AI provider settings ──────────────────────────────
-    if !state.ai_provider.is_empty() {
-        // Resolve the API base URL for the provider
-        let base_url = provider_base_url(&state.ai_provider);
-        let model = provider_default_model(&state.ai_provider);
-
-        // Replace api_base_url
-        if let Some(start) = new_content.find("api_base_url:") {
-            if let Some(end) = new_content[start..].find('\n') {
-                let line_end = start + end;
-                new_content.replace_range(start..line_end, &format!("api_base_url: \"{base_url}\""));
-            }
-        }
-
-        // Replace api_model
-        if let Some(start) = new_content.find("api_model:") {
-            if let Some(end) = new_content[start..].find('\n') {
-                let line_end = start + end;
-                new_content.replace_range(start..line_end, &format!("api_model: \"{model}\""));
-            }
-        }
-
-        // Write API key if provided
-        if !state.ai_api_key.is_empty() {
-            // Add api_key field after api_model line
-            if let Some(pos) = new_content.find("api_model:") {
-                if let Some(end) = new_content[pos..].find('\n') {
-                    let insert_at = pos + end + 1;
-                    new_content.insert_str(insert_at, &format!("  api_key: \"{}\"\n", state.ai_api_key));
-                }
-            }
-        }
-    }
-
-    let _ = sudo_write(&config_path, &new_content);
-
-    // ── Also write user_name to per-user settings.yaml ──────────
+    let display_name = installed_display_name(state);
     let username = if state.username.is_empty() { "yantrik" } else { &state.username };
     let settings_dir = format!("{mount_dir}/home/{username}/.config/yantrik");
     let settings_path = format!("{settings_dir}/settings.yaml");
     let _ = run_cmd("mkdir", &["-p", &settings_dir]);
 
+    // ── The wizard's provider, key included, into the user's providers.yaml ──
+    // The key goes where Settings keeps provider keys — the person's own
+    // ~/.config/yantrik/providers.yaml — and not into config.yaml above, which
+    // is world-readable under /opt. It is written fresh rather than left to the
+    // rsync'd copy of the live session: when the person chose a username other
+    // than the live user's, create_user deleted that home with `userdel -r` and
+    // the store went with it.
+    if let Some(yaml) = installed_providers_yaml(state) {
+        let providers_path = format!("{settings_dir}/providers.yaml");
+        if sudo_write(&providers_path, &yaml).is_ok() {
+            // sudo tee creates the file world-readable; it holds a secret.
+            let _ = run_cmd("chmod", &["600", &providers_path]);
+        }
+    }
+
+    // ── Also write user_name to per-user settings.yaml ──────────
     let settings_content = if let Ok(existing) = std::fs::read_to_string(&settings_path) {
         let mut s = existing;
         if let Some(start) = s.find("user_name:") {
             if let Some(end) = s[start..].find('\n') {
                 let line_end = start + end;
-                s.replace_range(start..line_end, &format!("user_name: \"{}\"", display_name));
+                s.replace_range(start..line_end, &format!("user_name: \"{display_name}\""));
             }
         } else {
-            s.insert_str(0, &format!("user_name: \"{}\"\n", display_name));
+            s.insert_str(0, &format!("user_name: \"{display_name}\"\n"));
         }
         s
     } else {
-        format!("user_name: \"{}\"\n", display_name)
+        format!("user_name: \"{display_name}\"\n")
     };
 
     let _ = sudo_write(&settings_path, &settings_content);
@@ -731,6 +716,93 @@ fn configure_ai(mount_dir: &str, state: &InstallerState) {
     let _ = chroot_cmd(mount_dir, &["chown", "-R",
         &format!("{username}:{username}"),
         &format!("/home/{username}/.config/yantrik")]);
+}
+
+/// Whose name the installed system should show: the full name if one was given,
+/// the username if not, and a neutral fallback after that.
+fn installed_display_name(state: &InstallerState) -> &str {
+    if !state.full_name.is_empty() {
+        &state.full_name
+    } else if !state.username.is_empty() {
+        &state.username
+    } else {
+        "User"
+    }
+}
+
+/// Produce the installed /opt/yantrik/config.yaml: the image's file with the
+/// wizard's answers written over the defaults.
+///
+/// The person's name replaces `user_name`; their AI choice replaces the primary
+/// `api_base_url` and `api_model`. The endpoint the wizard saved wins over the
+/// provider's well-known URL, because for a local runtime it may be a remote
+/// host the person configured — the same preference save_primary applies. The
+/// API key is never written here: this file is world-readable under /opt, and
+/// the key belongs in the person's providers.yaml (`installed_providers_yaml`).
+fn installed_config_yaml(content: &str, state: &InstallerState) -> String {
+    let mut out = content.to_string();
+
+    let display_name = installed_display_name(state);
+    if !replace_yaml_line(&mut out, "user_name:", &format!("user_name: \"{display_name}\"")) {
+        // No user_name line exists — insert at the top of the file
+        out.insert_str(0, &format!("user_name: \"{display_name}\"\n"));
+    }
+
+    if !state.ai_provider.is_empty() {
+        let base_url = if !state.ai_base_url.is_empty() {
+            state.ai_base_url.as_str()
+        } else {
+            provider_base_url(&state.ai_provider)
+        };
+        // The wizard does not ask for a model — the AI pages pick a provider and
+        // a key, and Settings offers the model list later — so the provider's
+        // default is what the installed system starts on.
+        let model = provider_default_model(&state.ai_provider);
+        replace_yaml_line(&mut out, "api_base_url:", &format!("api_base_url: \"{base_url}\""));
+        replace_yaml_line(&mut out, "api_model:", &format!("api_model: \"{model}\""));
+    }
+
+    out
+}
+
+/// Replace the first line containing `key` with `line`, keeping the indentation
+/// before it. Reports whether anything was replaced.
+fn replace_yaml_line(content: &mut String, key: &str, line: &str) -> bool {
+    let Some(start) = content.find(key) else { return false };
+    let Some(end) = content[start..].find('\n') else { return false };
+    content.replace_range(start..start + end, line);
+    true
+}
+
+/// The wizard's provider as an entry of the installed person's providers.yaml —
+/// the same shape, id and auth scheme `save_primary` wrote in the live session,
+/// so the installed machine's Settings shows the provider they chose, with the
+/// key they typed. `None` when they never got to the AI pages.
+fn installed_providers_yaml(state: &InstallerState) -> Option<String> {
+    if state.ai_provider.is_empty() {
+        return None;
+    }
+    let (name, preset_url) = provider_preset(&state.ai_provider);
+    let base_url = if !state.ai_base_url.is_empty() {
+        state.ai_base_url.as_str()
+    } else {
+        preset_url
+    };
+    if base_url.is_empty() {
+        return None;
+    }
+    let entry = ProviderStoreEntry {
+        id: format!("{}-onboarding", state.ai_provider),
+        name: name.to_string(),
+        provider_type: state.ai_provider.clone(),
+        base_url: base_url.to_string(),
+        api_key: (!state.ai_api_key.is_empty()).then(|| state.ai_api_key.clone()),
+        auth_type: auth_type_for(&state.ai_provider).to_string(),
+        is_primary: true,
+        is_fallback: false,
+    };
+    let store = ProviderStore { entries: vec![entry] };
+    serde_yaml::to_string(&store).ok()
 }
 
 /// Resolve provider name to default API base URL.
@@ -1039,14 +1111,17 @@ fn list_block_devices() -> String {
         .unwrap_or_else(|_| "lsblk unavailable".into())
 }
 
-struct DiskInfo {
-    name: String,
+pub(crate) struct DiskInfo {
+    /// Kernel name, e.g. "sda" — the picker shows it and the installer takes it.
+    pub(crate) name: String,
     size: String,
     model: String,
 }
 
-/// Detect available disks and return structured info.
-fn detect_disks() -> Vec<DiskInfo> {
+/// Detect available disks and return structured info. Also what the onboarding
+/// hardware scan measures its Disk row against, so the scan and the picker can
+/// never disagree about which disks are candidates.
+pub(crate) fn detect_disks() -> Vec<DiskInfo> {
     // Use lsblk with JSON output for reliable parsing
     let output = Command::new("lsblk")
         .args(["-dn", "-o", "NAME,SIZE,MODEL,TYPE,RO,RM", "--json", "-e", "7,11"])
@@ -1120,4 +1195,106 @@ fn detect_disks_fallback() -> Vec<DiskInfo> {
         });
     }
     disks
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Shaped like the llm section of config-default.yaml, which the image ships
+    /// as /opt/yantrik/config.yaml: the primary endpoint first, a fallback block
+    /// after it.
+    const IMAGE_CONFIG: &str = "\
+user_name: \"User\"
+
+llm:
+  backend: \"api\"
+  api_base_url: \"http://127.0.0.1:8341/v1\"
+  api_model: \"yantrik-4b\"
+  max_tokens: 1024
+  fallback:
+    backend: \"api\"
+    api_base_url: \"http://127.0.0.1:8341/v1\"
+    api_model: \"yantrik-4b\"
+";
+
+    fn wizard_state(provider: &str, base_url: &str, key: &str) -> InstallerState {
+        InstallerState {
+            username: "ada".into(),
+            full_name: "Ada Lovelace".into(),
+            ai_provider: provider.into(),
+            ai_base_url: base_url.into(),
+            ai_api_key: key.into(),
+            ..InstallerState::default()
+        }
+    }
+
+    #[test]
+    fn installed_config_carries_the_wizard_choice() {
+        let out = installed_config_yaml(
+            IMAGE_CONFIG,
+            &wizard_state("openai", "https://api.openai.com/v1", "sk-secret-123"),
+        );
+        assert!(out.contains("user_name: \"Ada Lovelace\""), "{out}");
+        assert!(out.contains("api_base_url: \"https://api.openai.com/v1\""), "{out}");
+        assert!(out.contains("api_model: \"gpt-4o-mini\""), "{out}");
+        // Only the primary endpoint is replaced; the fallback block is the
+        // image's own and the wizard said nothing about it.
+        assert!(out.contains("    api_base_url: \"http://127.0.0.1:8341/v1\""), "{out}");
+    }
+
+    #[test]
+    fn saved_endpoint_wins_over_the_preset() {
+        // A remote Ollama the wizard saved, where the preset says localhost.
+        let out = installed_config_yaml(
+            IMAGE_CONFIG,
+            &wizard_state("ollama", "http://192.168.4.35:11434/v1", ""),
+        );
+        assert!(out.contains("api_base_url: \"http://192.168.4.35:11434/v1\""), "{out}");
+    }
+
+    #[test]
+    fn the_key_never_reaches_the_world_readable_config() {
+        let out = installed_config_yaml(
+            IMAGE_CONFIG,
+            &wizard_state("openai", "https://api.openai.com/v1", "sk-secret-123"),
+        );
+        assert!(!out.contains("sk-secret-123"), "{out}");
+        assert!(!out.contains("api_key"), "{out}");
+    }
+
+    #[test]
+    fn skipped_ai_leaves_the_image_default() {
+        let out = installed_config_yaml(IMAGE_CONFIG, &InstallerState::default());
+        assert!(out.contains("api_base_url: \"http://127.0.0.1:8341/v1\""), "{out}");
+        assert!(installed_providers_yaml(&InstallerState::default()).is_none());
+    }
+
+    #[test]
+    fn providers_yaml_carries_the_key_where_settings_keeps_it() {
+        let yaml = installed_providers_yaml(&wizard_state(
+            "openai",
+            "https://api.openai.com/v1",
+            "sk-secret-123",
+        ))
+        .expect("a chosen provider produces a store");
+        let store: ProviderStore = serde_yaml::from_str(&yaml).expect("valid YAML");
+        let primary = store.primary().expect("the entry is primary");
+        assert_eq!(primary.provider_type, "openai");
+        assert_eq!(primary.base_url, "https://api.openai.com/v1");
+        assert_eq!(primary.api_key.as_deref(), Some("sk-secret-123"));
+        assert_eq!(primary.auth_type, "bearer");
+    }
+
+    #[test]
+    fn anthropic_keys_are_marked_for_the_header_they_use() {
+        let yaml = installed_providers_yaml(&wizard_state(
+            "anthropic",
+            "https://api.anthropic.com/v1",
+            "sk-ant-1",
+        ))
+        .expect("a chosen provider produces a store");
+        let store: ProviderStore = serde_yaml::from_str(&yaml).expect("valid YAML");
+        assert_eq!(store.primary().expect("primary").auth_type, "x-api-key");
+    }
 }

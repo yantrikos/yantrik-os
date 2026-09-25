@@ -156,7 +156,12 @@ impl Tool for RecallTool {
         }
 
         match ctx.db.recall_text(query, 5) {
+            // V25's domain rule (#88): every tool call is also written to memory as an
+            // audit line, and unfiltered this tool handed those lines straight back to
+            // the model — "Tool: recall(query=…) → Found memories: - Tool: recall(…)".
+            // The audit log must not feed back into what the companion reads.
             Ok(results) => {
+                let results = crate::memory_evolution::filter_recall_results(results);
                 if results.is_empty() {
                     "No memories found matching that query.".to_string()
                 } else {
@@ -892,5 +897,52 @@ mod tests {
         assert!(registry
             .missing_required_args("recall", &serde_json::json!({ "query": "morning brief" }))
             .is_empty());
+    }
+
+    #[test]
+    fn recall_does_not_hand_the_audit_log_back_to_the_model() {
+        // Seen on the VM on 24 September (#88): `recall` returned
+        // "Tool: recall(query=…) → Found memories: - Tool: recall(query=…)".
+        // Every tool call is written to memory as an audit line (domain "audit/tools"),
+        // and the tool answered from those lines — the audit log feeding itself back
+        // into what the companion reads. V25 already excludes those domains from
+        // context recall; the `recall` tool must apply the same rule.
+        // 64 is the bundled embedder's dim: it auto-attaches only when the store opens at
+        // its own dimension, and without an embedder record/recall answer NoEmbedder and
+        // the test would prove nothing. Bundled weights — no download, no network.
+        let db = yantrikdb_core::YantrikDB::new(":memory:", 64).expect("in-memory database");
+
+        // An ordinary memory, recorded the way RememberTool records one.
+        db.record_text(
+            "User enjoys testing the audit filter with rust code",
+            "semantic", 0.7, 0.2, 604800.0, &serde_json::json!({}),
+            "default", 0.9, "conversation", "companion", None,
+        ).expect("record ordinary memory");
+
+        // An audit line, recorded exactly the way audit_log in companion-core records one.
+        db.record_text(
+            "Tool: recall(query=testing the audit filter) → Found memories: - User enjoys rust",
+            "semantic", 0.3, 0.0, 604800.0, &serde_json::json!({}),
+            "default", 0.9, "audit/tools", "self", None,
+        ).expect("record audit line");
+
+        let ctx = ToolContext {
+            db: &db,
+            max_permission: PermissionLevel::Safe,
+            registry_metadata: None,
+            task_manager: None,
+            incognito: true,
+            agent_spawner: None,
+        };
+        let out = RecallTool.execute(&ctx, &serde_json::json!({ "query": "testing the audit filter" }));
+
+        assert!(
+            !out.contains("Tool: recall("),
+            "recall returned an audit line to the model: {out}"
+        );
+        assert!(
+            out.contains("User enjoys testing"),
+            "ordinary memories must still be recalled: {out}"
+        );
     }
 }

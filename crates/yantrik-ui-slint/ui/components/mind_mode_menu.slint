@@ -148,6 +148,12 @@ export component MindModeMenu inherits Rectangle {
     callback bypass-chosen(string);    // 15m | 1h | restart
     callback rule-revoked(string, string);   // app, action
 
+    // Where the apps a mind opens are drawn (#239): in Mind View, a desktop of the mind's own
+    // inside one window, or on the person's desktop over their work. A person's choice, so a
+    // callback like the modes — nothing on the socket can set it.
+    in property <bool> mind-view-on: true;
+    callback mind-view-chosen(bool);
+
     width: 340px;
     height: body.preferred-height;
     border-radius: Theme.r-lg;
@@ -421,6 +427,42 @@ export component MindModeMenu inherits Rectangle {
                     vertical-alignment: center;
                     wrap: no-wrap;
                     overflow: elide;
+                }
+            }
+
+            // ── Where its apps open ──
+            // Last, so every row above keeps the y the design doc gives it. One row, one press,
+            // flips it; the right-hand word says which way it is now.
+            Rectangle { height: 1px; background: Theme.border-subtle; }
+            Rectangle {
+                height: 28px;
+                border-radius: Theme.r-sm;
+                background: mind-view-ta.has-hover ? Theme.hover-fill : transparent;
+                mind-view-ta := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => { root.mind-view-chosen(!root.mind-view-on); }
+                }
+                HorizontalLayout {
+                    padding-left: Theme.sp-2;
+                    padding-right: Theme.sp-2;
+                    spacing: Theme.sp-2;
+                    Text {
+                        text: "Apps it opens go";
+                        color: Theme.text-secondary;
+                        font-size: Theme.fs-caption;
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                        wrap: no-wrap;
+                        overflow: elide;
+                    }
+                    Text {
+                        text: root.mind-view-on ? "in Mind View" : "on my desktop";
+                        color: root.mind-view-on ? Theme.accent : Theme.text-primary;
+                        font-size: Theme.fs-caption;
+                        font-weight: 600;
+                        vertical-alignment: center;
+                        wrap: no-wrap;
+                    }
                 }
             }
         }

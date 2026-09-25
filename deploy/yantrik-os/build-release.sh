@@ -229,6 +229,10 @@ cp "$PROJECT_ROOT/config/labwc/"*.png "$ROOT/share/labwc/" 2>/dev/null \
 # What starts with the desktop: the polkit agent, and the note saying why no notification
 # daemon is started beside it — the notifications service holds that bus name.
 cp "$PROJECT_ROOT/config/labwc/autostart" "$ROOT/share/labwc/autostart"
+# Mind View's own compositor (#239): the nested labwc a mind's apps are drawn in. yantrik-ui runs
+# it with -C on this directory; without it, a mind's apps open on the person's desktop as before.
+mkdir -p "$ROOT/share/labwc-mind"
+cp "$PROJECT_ROOT/config/labwc-mind/rc.xml" "$ROOT/share/labwc-mind/rc.xml"
 # Barlow is embedded in each app binary, which the compositor cannot read a font out of, so the
 # same files also ship loose for fontconfig.
 cp "$PROJECT_ROOT/crates/yantrik-design-tokens/slint/fonts/"*.ttf "$ROOT/share/fonts/"
@@ -416,8 +420,12 @@ mkdir -p "$ROOT/share"
   echo
   echo "_${CHANGE_SINCE}; built $(date -u +%Y-%m-%d), git $GITREV._"
   echo
+  # git stops at 200 itself rather than being cut off by `head`: under `set -o pipefail`, head
+  # closing the pipe early kills git with SIGPIPE, the pipeline exits 141 and `set -e` ends the
+  # whole build with no message, as soon as more than 200 changes lie since the previous tag
+  # (608 did on 24 September). A later `-n` in CHANGE_RANGE (the no-tag case) still wins.
   # shellcheck disable=SC2086
-  git -C "$PROJECT_ROOT" log --no-merges --format='- %s' $CHANGE_RANGE 2>/dev/null | head -200
+  git -C "$PROJECT_ROOT" log --no-merges --format='- %s' -n 200 $CHANGE_RANGE 2>/dev/null
 } > "$ROOT/share/CHANGELOG.md"
 echo "   + share/CHANGELOG.md ($(grep -c '^- ' "$ROOT/share/CHANGELOG.md") changes, $CHANGE_SINCE)"
 

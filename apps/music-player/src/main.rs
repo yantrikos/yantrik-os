@@ -177,9 +177,25 @@ fn wire(app: &MusicPlayerApp) {
         });
     }
 
-    // AI stubs
-    app.on_ai_explain_pressed(|| { tracing::info!("AI explain requested (standalone mode)"); });
-    app.on_ai_dismiss(|| {});
+    // AI, shelved: the panel is in the markup, but nothing behind it asks anything — the
+    // handler wrote a log line and returned, so the button opened a panel that stayed empty
+    // forever, which reads as a request in flight. Until this app grows a real AI action, the
+    // button says that plainly, in the panel it opens — the same sentence the other shelved
+    // apps say.
+    app.on_ai_explain_pressed({
+        let weak = app.as_weak();
+        move || {
+            if let Some(ui) = weak.upgrade() {
+                ui.set_ai_response(companion::NOT_BUILT_YET.into());
+            }
+        }
+    });
+    app.on_ai_dismiss({
+        let weak = app.as_weak();
+        move || {
+            if let Some(ui) = weak.upgrade() { ui.set_ai_response("".into()); }
+        }
+    });
 
     // A design fixture so the library, queue and transport can be reviewed without a music
     // collection or a playback backend. Runs last: it overrides the initial state above.
@@ -310,5 +326,30 @@ mod demo {
         app.set_browse_sub_header(SharedString::default());
         app.set_music_folder_watch_active(true);
         app.set_music_folder_watch_status("Watching 2 folders".into());
+    }
+}
+
+#[cfg(test)]
+mod ai_stub_tests {
+    /// Everything above the first test module: the wiring assertions read this, so test code
+    /// mentioning the same names cannot satisfy them.
+    fn main_source() -> String {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/src/main.rs");
+        let src = std::fs::read_to_string(path).expect("this file");
+        src.split("#[cfg(test)]").next().unwrap_or_default().to_string()
+    }
+
+    /// The defect: the AI button opened a panel that stayed empty forever — the handler wrote a
+    /// log line and returned. The panel must carry the shared not-available-yet sentence.
+    #[test]
+    fn the_ai_button_says_it_is_not_available_yet() {
+        let src = main_source();
+        let start = src.find("on_ai_explain_pressed").expect("the AI button is wired");
+        let body = &src[start..];
+        let end = body.find("});").map(|e| e + 3).unwrap_or(body.len());
+        assert!(
+            body[..end].contains("companion::NOT_BUILT_YET"),
+            "the AI button must put the not-available-yet sentence in the panel"
+        );
     }
 }

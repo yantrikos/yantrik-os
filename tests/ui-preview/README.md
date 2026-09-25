@@ -140,3 +140,55 @@ Finished tab with the failed recipe opened, and the light theme beside the outpu
 ```sh
 cargo run --manifest-path tests/ui-preview/Cargo.toml --profile fast -- target/recipes.png 1280 1000 verify-recipes
 ```
+
+## Approvals
+
+`verify-approval-card` draws the Lens waiting on the longest real approval card — the paragraph
+`shell` publishes for `run_recipe`, an agent row, two arguments, the session row — at 1280×800,
+and sends real pointer events: it scans for Deny and Allow the way a person looks for them and
+asserts both answer, on one row, with the whole button inside the panel above the reply box, that
+the session row answers too, and that the card leads with the description's first sentence (#218).
+
+```sh
+cargo run --manifest-path tests/ui-preview/Cargo.toml --profile fast -- target/approval-card.png 1280 800 verify-approval-card
+```
+
+## Taskbar window menu
+
+`verify-taskbar-menu` draws the whole shell — app.slint's `App` — with two fixture windows on
+the taskbar and sends real pointer and key events (#232): a right press on an entry opens that
+window's menu without activating it, the menu draws above the bar, choosing Close fires the
+action callback under the control surface's own name for it (`close_window`), Escape puts the
+menu away, a left click still activates the window, and the Menu key and Shift+F10 open the
+focused entry's menu. It writes the shell with the menu open, and with it opened from the
+keyboard, beside the output path.
+
+```sh
+cargo run --manifest-path tests/ui-preview/Cargo.toml --profile fast -- target/taskbar-menu.png 1280 800 verify-taskbar-menu
+```
+
+## System Monitor
+
+`verify-monitor` draws the production System Monitor screen from fixture data — four cores and
+two disks at part usage, three processes — and pins the layout a person complained about (#220):
+every bar fill (health, swap, each core, each disk) starts at x=0 of its track instead of being
+centred inside it, selecting a process does not grow the header or move the list under the
+pointer, an empty list echoes the filter word ("No process matches 'xylo'") and only a machine
+that reported nothing says "No process data", and the AI workloads card says plainly that nothing
+is measured while no source feeds it, and drops that line the moment a model name reports.
+
+```sh
+cargo run --manifest-path tests/ui-preview/Cargo.toml --profile fast -- verify-monitor
+```
+
+## Weather
+
+`verify-weather` draws the production Weather dashboard from fixture data with the context rail
+open, the way the running app has it, and measures the hero's stat-tile grid against the space
+the rail leaves (#220). At the app's default 1000×720 window the tiles' right edge must stay
+inside the content area — they used to run under the rail — while remaining wide enough to read;
+at 1400 wide the grid must return to its 499px design width.
+
+```sh
+cargo run --manifest-path tests/ui-preview/Cargo.toml --profile fast -- verify-weather
+```

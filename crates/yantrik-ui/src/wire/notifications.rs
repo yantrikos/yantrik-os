@@ -217,6 +217,15 @@ fn wire_toasts(ui: &App) {
     let weak = ui.as_weak();
     ui.on_toast_clicked(move |id| {
         let Some(ui) = weak.upgrade() else { return };
+        // Toasts draw over every screen — the banner has no screen condition — so a toast
+        // still standing when the screen locked is clickable from the lock screen, and this
+        // handler walks straight to the notifications screen or launches the sender's app
+        // (#203). While the desktop waits for the person the click is dropped; the toast stays
+        // and can be clicked once they are back.
+        if crate::control::locked_screen(ui.get_current_screen()) {
+            tracing::debug!("Toast click dropped — the desktop is waiting for the person to sign in");
+            return;
+        }
         let id = id.to_string();
         // The "+N more" row sends an empty id: it is not a notification, it is a way in.
         if id.is_empty() {
@@ -278,6 +287,16 @@ fn wire_toasts(ui: &App) {
 ///   the call the button stands for, on the app's own control surface, with the arguments the
 ///   notification carried. It is the same call the button inside that app's window makes.
 fn invoke_action(weak: &slint::Weak<App>, id: &str, action_id: &str) {
+    // A toast's buttons draw on every screen, the lock screen included, and pressing one
+    // forwards to the sender's own control surface — starting the app if it is closed — so
+    // this is a path that must not act while the desktop waits for the person (#203). The
+    // press is dropped; the notification itself stays filed in the centre.
+    if let Some(ui) = weak.upgrade() {
+        if crate::control::locked_screen(ui.get_current_screen()) {
+            tracing::debug!(id, action_id, "Notification action dropped — the desktop is waiting for the person to sign in");
+            return;
+        }
+    }
     act(
         yantrik_ipc_contracts::notifications::ACTION,
         serde_json::json!({ "id": id, "action_id": action_id }),

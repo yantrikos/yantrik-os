@@ -10,6 +10,7 @@ members = [
     "crates/yantrik-design-tokens",
     "crates/yantrik-ipc-contracts",
     "crates/yantrik-image-core",
+    "crates/yantrik-email-text",
     "crates/yantrik-manifest",
     "crates/yantrik-version",
     "crates/yantrik-shell-core",
@@ -35,6 +36,9 @@ members = [
     "services/perception-journal",
     "services/a11y-service",
     "crates/yantrik-app-runtime",
+    # The folder watch and the move decisions shared by yDoc and the Text Editor, so a file
+    # moved in Files does not strand the editor holding it open (#75, #86).
+    "crates/yantrik-file-follow",
     "apps/notes",
     "apps/arcade",
     "apps/container-manager",
@@ -61,6 +65,26 @@ members = [
     "examples/hello-window",
     "templates/rust-surface",
     "docs/sdk/samples",
+    # The per-app core test crates. Each carried a `[workspace]` table of its own, which made
+    # it a workspace root invisible to `cargo test --workspace` — the only cargo test step CI
+    # has — so their tests ran only when somebody remembered to cd there. tests/document-core
+    # alone held 66 of them, never once run by CI, sixteen added after #84 showed the gap (#85).
+    # Members now, so `cargo test --workspace` is enough to run everything; the guard test
+    # `a_test_crate_runs_when_ci_runs` in crates/yantrik-ui-kit keeps new ones from drifting.
+    "tests/calendar-core",
+    "tests/container-core",
+    "tests/document-core",
+    "tests/email-core",
+    "tests/files-core",
+    "tests/image-core",
+    "tests/network-core",
+    "tests/performance-core",
+    "tests/presentation-core",
+    "tests/settings-core",
+    "tests/snippets-core",
+    "tests/sysmon-core",
+    "tests/weather-core",
+    "tests/windows-core",
 ]
 
 # ── Shared dependencies ──────────────────────────────────────────────
@@ -134,12 +158,14 @@ yantrik-companion-tools = { path = "crates/yantrik-companion-tools" }
 yantrik-design-tokens = { path = "crates/yantrik-design-tokens" }
 yantrik-ipc-contracts = { path = "crates/yantrik-ipc-contracts" }
 yantrik-image-core = { path = "crates/yantrik-image-core" }
+yantrik-email-text = { path = "crates/yantrik-email-text" }
 yantrik-shell-core = { path = "crates/yantrik-shell-core" }
 yantrik-ui-kit = { path = "crates/yantrik-ui-kit" }
 yantrik-ipc-transport = { path = "crates/yantrik-ipc-transport" }
 yantrik-service-sdk = { path = "crates/yantrik-service-sdk" }
 yantrik-surface = { path = "crates/yantrik-surface" }
 yantrik-app-runtime = { path = "crates/yantrik-app-runtime" }
+yantrik-file-follow = { path = "crates/yantrik-file-follow" }
 yantrik-manifest = { path = "crates/yantrik-manifest" }
 yantrik-version = { path = "crates/yantrik-version" }
 yantrik-chat = { path = "crates/yantrik-chat" }

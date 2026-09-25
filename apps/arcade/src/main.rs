@@ -633,7 +633,7 @@ fn specs() -> Vec<Action> {
         Action::new("play", "Open a built game in the desktop Browser and confirm it draws; if the Browser has no WebGL, say so and take a headless screenshot instead")
             .defers()
             .arg(Param::text("game").describe("Title or slug of a built game")),
-        Action::new("verify", "Run the headless gates: boots, clean console, frame renders, input moves, bot wins, bot loses, frame budget. Each gate ends passed, failed or inconclusive; inconclusive means this machine could not settle it (too slow to run a bot to the end of its simulated budget) and is not a verdict on the game, though it is not a pass either")
+        Action::new("verify", "Run the headless gates: boots, clean console, frame renders, input moves, bot wins, bot loses, frame budget. Each gate ends passed, failed or inconclusive; inconclusive means this machine could not settle it (too slow to run a bot to the end of its simulated budget, or too slow for the frame budget to judge the game at all) and is not a verdict on the game, though it is not a pass either")
             .defers()
             .arg(Param::text("game").describe("Title or slug of a built game")),
         Action::new("screenshot", "Take a headless PNG of a built game")

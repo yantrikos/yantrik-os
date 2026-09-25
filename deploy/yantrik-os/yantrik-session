@@ -68,6 +68,12 @@ case ":$PATH:" in
   *) export PATH="/opt/yantrik/bin:$PATH" ;;
 esac
 
+# The editor every program in the session opens when it needs one. The image ships nano for
+# exactly this (#210); with EDITOR unset — which is what the live VM showed — `git commit`,
+# `crontab -e` and every $EDITOR prompt fall back to vi, which no Yantrik image installs
+# either, and die. The `:-` so a person's own EDITOR, set above this session, still wins.
+export EDITOR="${EDITOR:-nano}"
+
 # ── The desktop's own chrome ────────────────────────────────────────────────────────────
 # For apps the answer is a themed frame rather than no frame. labwc reads its config from the
 # user's home, so this needs no root and re-applies on every start; a machine deployed before

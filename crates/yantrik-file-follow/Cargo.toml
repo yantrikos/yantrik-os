@@ -1,0 +1,11 @@
+[package]
+name = "yantrik-file-follow"
+version = "0.1.0"
+edition = "2021"
+description = "Following an open file when something else moves it — the folder watch and the decisions behind it, shared by yDoc and the Text Editor"
+
+[dependencies]
+# inotify on the folder the open file lives in, so moving the file in Files does not strand it.
+# Already in this tree at the same major version — crates/yantrik-os watches ~/Documents with it.
+notify = "7"
+tracing = { workspace = true }

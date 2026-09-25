@@ -6,6 +6,8 @@ is written again from scratch: it stops breathing while it works, and it swallow
 arrives while it is working.
 """
 
+import os
+import tempfile
 import threading
 import time
 import unittest
@@ -406,8 +408,11 @@ class ConversationTests(unittest.TestCase):
         self.start(yantrik_harness.PerConversation(minds.make))
         a = self.desktop.ask("hi", conversation="c-aaaaaa", agent_token="a" * 32)
         b = self.desktop.ask("hi", conversation="c-bbbbbb", agent_token="b" * 32)
+        # The second message to c-aaaaaa goes only once the first has closed: sent while it is
+        # still running, it is rightly answered "still working", which is a different test.
+        self.desktop.wait_closed(a)
         again = self.desktop.ask("again", conversation="c-aaaaaa", agent_token="a" * 32)
-        for turn in (a, b, again):
+        for turn in (b, again):
             self.desktop.wait_closed(turn)
         self.assertEqual(self.desktop.text(a), "c-aaaaaa heard hi")
         self.assertEqual(self.desktop.text(b), "c-bbbbbb heard hi")
@@ -592,7 +597,6 @@ class NoteTests(unittest.TestCase):
 class SocketDiscoveryTests(unittest.TestCase):
     def test_an_explicit_socket_is_honoured_and_nothing_else_is_looked_at(self):
         # Pointing a harness at one desktop must never silently fall through to another.
-        import os
         old = os.environ.get("YANTRIK_HARNESS_SOCKET")
         os.environ["YANTRIK_HARNESS_SOCKET"] = "/nowhere/harness.sock"
         try:
@@ -602,6 +606,48 @@ class SocketDiscoveryTests(unittest.TestCase):
                 os.environ.pop("YANTRIK_HARNESS_SOCKET", None)
             else:
                 os.environ["YANTRIK_HARNESS_SOCKET"] = old
+
+
+class MindDirectoryTests(unittest.TestCase):
+    """Where an agent process is started (#183): the desktop's own data directory, never $HOME.
+
+    A coding agent reads the instruction files of its working directory and its parents, so a
+    directory that is not the desktop's own — the harness service's $HOME above all — lets a
+    person's own ~/CLAUDE.md steer the mind.
+    """
+
+    def setUp(self):
+        self.data = tempfile.mkdtemp(prefix="mind-dir-")
+        self.previous = os.environ.get("XDG_DATA_HOME")
+        os.environ["XDG_DATA_HOME"] = self.data
+        self.addCleanup(self.restore)
+
+    def restore(self):
+        if self.previous is None:
+            os.environ.pop("XDG_DATA_HOME", None)
+        else:
+            os.environ["XDG_DATA_HOME"] = self.previous
+
+    def test_a_conversation_gets_its_own_made_directory_under_the_data_home(self):
+        where = yantrik_harness.mind_directory("pi", "c-abc123")
+        self.assertEqual(where, os.path.join(self.data, "yantrik", "minds", "pi", "c-abc123"))
+        self.assertTrue(os.path.isdir(where))
+        self.assertNotEqual(where, os.path.expanduser("~"))
+
+    def test_an_id_from_the_wire_cannot_name_a_directory_outside_the_tree(self):
+        # The conversation id arrives over the harness socket; one carrying a path must stay a
+        # single name inside minds/<harness>, whatever it spells.
+        for sneaky in ("../../etc", "..", ".", "/home/me"):
+            where = yantrik_harness.mind_directory("pi", sneaky)
+            self.assertEqual(os.path.dirname(where),
+                             os.path.join(self.data, "yantrik", "minds", "pi"))
+            self.assertTrue(os.path.isdir(where))
+
+    def test_a_harness_with_one_conversation_still_gets_a_directory_of_its_own(self):
+        where = yantrik_harness.mind_directory("openclaw")
+        self.assertEqual(where,
+                         os.path.join(self.data, "yantrik", "minds", "openclaw", "main"))
+        self.assertTrue(os.path.isdir(where))
 
 
 if __name__ == "__main__":

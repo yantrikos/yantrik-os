@@ -903,10 +903,7 @@ fn wire(app: &PresentationApp, state: &Shared, recovery: &Rc<slint::Timer>) -> s
                         ui.set_notice(SharedString::new());
                     }
                     Err(e) => {
-                        ui.set_notice(
-                            format!("The companion did not answer: {e}. Is the Yantrik shell running?")
-                                .into(),
-                        );
+                        ui.set_notice(e.to_string().into());
                     }
                 });
             });

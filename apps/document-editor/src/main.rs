@@ -20,7 +20,6 @@
 //! backed by any of that are off the screen, each with the reason at the site it left.
 
 mod document;
-mod follow;
 
 use document::{Document, Format, Saved};
 use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
@@ -32,6 +31,9 @@ use std::{
     time::Duration,
 };
 use yantrik_app_runtime::prelude::*;
+// The watch on the folder the document lives in, and the decisions behind following a move.
+// Shared with the Text Editor (#86); it was this app's own `follow.rs` until then.
+use yantrik_file_follow as follow;
 
 slint::include_modules!();
 
@@ -195,9 +197,9 @@ fn refresh_agent_rail(ui: &DocumentEditorApp, text: &str, title: &str) {
     ui.set_agent_context(ModelRc::new(VecModel::from(context.clone())));
 
     let has_text = document::word_count(text) > 0;
-    let online = companion::is_online();
+    let reach = companion::reach();
     let mut next: Vec<AgentSuggestion> = Vec::new();
-    if has_text && online {
+    if has_text && reach == companion::Reach::Ready {
         next.push(AgentSuggestion {
             id: "summarize".into(),
             label: "Summarise it".into(),
@@ -217,13 +219,14 @@ fn refresh_agent_rail(ui: &DocumentEditorApp, text: &str, title: &str) {
     }
     ui.set_agent_suggestions(ModelRc::new(VecModel::from(next)));
 
-    ui.set_agent_unavailable(if online || !has_text {
-        SharedString::new()
-    } else {
-        companion::OFFLINE_HINT.into()
+    ui.set_agent_unavailable(match reach.hint() {
+        Some(hint) if has_text => hint.into(),
+        _ => SharedString::new(),
     });
 
-    if online && has_text {
+    // Memory is a search, not a generation: it answers from the shell even when no model does,
+    // so only a missing shell takes it away.
+    if reach != companion::Reach::NoShell && has_text {
         let query = title.to_string();
         if query.trim().is_empty() {
             return;
@@ -1114,7 +1117,7 @@ fn wire(ui: &DocumentEditorApp, recovery: PathBuf, have_argv: bool) -> State {
         let st = state.clone();
         ui.on_doc_ai_submit(move |prompt| {
             let Some(ui) = weak.upgrade() else { return };
-            ask_companion(&ui, &st, &prompt);
+            ask_companion(&ui, &st, &prompt, AskKind::Rewrite);
         });
     }
 
@@ -1123,7 +1126,12 @@ fn wire(ui: &DocumentEditorApp, recovery: PathBuf, have_argv: bool) -> State {
         let st = state.clone();
         ui.on_doc_ai_summarize(move || {
             let Some(ui) = weak.upgrade() else { return };
-            ask_companion(&ui, &st, "Summarise this document in at most five bullet points.");
+            ask_companion(
+                &ui,
+                &st,
+                "Summarise this document in at most five bullet points.",
+                AskKind::Summary,
+            );
         });
     }
 
@@ -1136,6 +1144,7 @@ fn wire(ui: &DocumentEditorApp, recovery: PathBuf, have_argv: bool) -> State {
                 &ui,
                 &st,
                 "Rewrite this document to be shorter and clearer, keeping every fact.",
+                AskKind::Rewrite,
             );
         });
     }
@@ -1183,13 +1192,17 @@ fn wire(ui: &DocumentEditorApp, recovery: PathBuf, have_argv: bool) -> State {
         ui.on_agent_suggestion_activated(move |id| {
             let Some(ui) = weak.upgrade() else { return };
             match id.as_str() {
-                "summarize" => {
-                    ask_companion(&ui, &st, "Summarise this document in at most five bullet points.")
-                }
+                "summarize" => ask_companion(
+                    &ui,
+                    &st,
+                    "Summarise this document in at most five bullet points.",
+                    AskKind::Summary,
+                ),
                 "tighten" => ask_companion(
                     &ui,
                     &st,
                     "Rewrite this document to be shorter and clearer, keeping every fact.",
+                    AskKind::Rewrite,
                 ),
                 other => tracing::warn!(id = other, "unknown rail suggestion"),
             }
@@ -1255,13 +1268,86 @@ fn format_button(
     );
 }
 
-/// Ask the companion to rewrite this document, off the UI thread.
+/// What kind of answer an ask is for, which decides both the prompt's closing line and what the
+/// proposal offers to do with the answer.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum AskKind {
+    /// The answer is a new version of the document, and applying it replaces what is on screen.
+    Rewrite,
+    /// The answer is about the document — a summary. It is shown beside the document and there
+    /// is nothing to apply: swapping a five-bullet summary in for the thing it summarises is
+    /// losing the document, whatever the card calls itself.
+    Summary,
+}
+
+/// The ask, built. Split out because the closing line is the one that used to be wrong: every
+/// ask, summaries included, ended with "Reply with the rewritten document only", so the model
+/// answered a summary request with a rewrite and the card offered to swap it in.
+fn ask_prompt(prompt: &str, body: &str, kind: AskKind) -> String {
+    let closing = match kind {
+        AskKind::Rewrite => "Reply with the rewritten document only.",
+        AskKind::Summary => "Reply with the summary only.",
+    };
+    format!(
+        "{prompt}\n\nHere is the document. Use only what it says; invent nothing. \
+         {closing}\n\n{body}"
+    )
+}
+
+/// The card an answer turns into, and what applying it would write — `None` when there is
+/// nothing to apply. Pure so a test can hold the contract without a window: a summary proposes
+/// no replacement, and a failure proposes nothing at all.
+fn proposal_for(
+    outcome: Result<String, companion::AskError>,
+    kind: AskKind,
+) -> (AgentProposal, Option<String>) {
+    match outcome {
+        Ok(text) if kind == AskKind::Rewrite => {
+            let words = document::word_count(&text);
+            (
+                AgentProposal {
+                    title: "Rewritten document".into(),
+                    body: text.clone().into(),
+                    source: "from this document".into(),
+                    // This one really does replace what is on screen, so it says so and says
+                    // how big the replacement is.
+                    impact: format!("Replaces the document with {words} words, unsaved").into(),
+                    destructive: false,
+                    verb: "Replace".into(),
+                },
+                Some(text),
+            )
+        }
+        Ok(text) => (
+            AgentProposal {
+                title: "Summary".into(),
+                body: text.into(),
+                source: "from this document".into(),
+                impact: "The document itself is left alone".into(),
+                destructive: false,
+                verb: "Close".into(),
+            },
+            None,
+        ),
+        Err(e) => (
+            AgentProposal {
+                title: "The companion did not answer".into(),
+                body: e.to_string().into(),
+                verb: "Close".into(),
+                ..Default::default()
+            },
+            None,
+        ),
+    }
+}
+
+/// Ask the companion about this document, off the UI thread.
 ///
-/// The answer arrives as a proposal that says what applying it would do — which here is "replace
-/// the document", so it says that before the button is pressed. Nothing on the control surface
-/// waits on this: an action has three seconds (`UI_ROUNDTRIP` in control.rs) and a language model
-/// does not.
-fn ask_companion(ui: &DocumentEditorApp, state: &State, prompt: &str) {
+/// The answer arrives as a proposal that says what applying it would do — which for a rewrite is
+/// "replace the document", so it says that before the button is pressed, and for a summary is
+/// nothing: it is read, not applied. Nothing on the control surface waits on this: an action has
+/// three seconds (`UI_ROUNDTRIP` in control.rs) and a language model does not.
+fn ask_companion(ui: &DocumentEditorApp, state: &State, prompt: &str, kind: AskKind) {
     let (body, pending) = {
         let b = state.borrow();
         (b.doc.text.clone(), b.pending.clone())
@@ -1278,45 +1364,28 @@ fn ask_companion(ui: &DocumentEditorApp, state: &State, prompt: &str) {
 
     ui.set_proposal_working(true);
     ui.set_proposal(AgentProposal {
-        title: "Rewriting".into(),
+        title: match kind {
+            AskKind::Rewrite => "Rewriting".into(),
+            AskKind::Summary => "Summarising".into(),
+        },
         source: "from this document".into(),
         ..Default::default()
     });
 
-    let ask = format!(
-        "{prompt}\n\nHere is the document. Use only what it says; invent nothing. \
-         Reply with the rewritten document only.\n\n{body}"
-    );
+    let ask = ask_prompt(prompt, &body, kind);
     let back = ui.as_weak();
     std::thread::spawn(move || {
         let outcome = companion::ask(&ask);
         let _ = back.upgrade_in_event_loop(move |ui| {
             ui.set_proposal_working(false);
-            match outcome {
-                Ok(text) => {
-                    let words = document::word_count(&text);
-                    ui.set_proposal(AgentProposal {
-                        title: "Rewritten document".into(),
-                        body: text.clone().into(),
-                        source: "from this document".into(),
-                        // This one really does replace what is on screen, so it says so and says
-                        // how big the replacement is.
-                        impact: format!("Replaces the document with {words} words, unsaved").into(),
-                        destructive: false,
-                        verb: "Replace".into(),
-                    });
-                    if let Ok(mut p) = pending.lock() {
-                        *p = text;
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, "Companion call failed");
-                    ui.set_proposal(AgentProposal {
-                        title: "The companion did not answer".into(),
-                        body: format!("{e}\n\nIs the Yantrik shell running?").into(),
-                        verb: "Close".into(),
-                        ..Default::default()
-                    });
+            if let Err(e) = &outcome {
+                tracing::warn!(error = %e, "Companion call failed");
+            }
+            let (proposal, write) = proposal_for(outcome, kind);
+            ui.set_proposal(proposal);
+            if let Some(text) = write {
+                if let Ok(mut p) = pending.lock() {
+                    *p = text;
                 }
             }
         });
@@ -1512,4 +1581,50 @@ fn publish_control(ui: &DocumentEditorApp, state: State) {
     }
 
     app.serve();
+}
+
+#[cfg(test)]
+mod ask_tests {
+    use super::{ask_prompt, proposal_for, AskKind};
+    use yantrik_app_runtime::companion::{AskError, NO_MODEL_HINT};
+
+    const DOC: &str = "First line of the document. Second line of it.";
+
+    /// The defect: Summarize asked for a rewritten document and offered to replace the document
+    /// with the answer — applying a five-bullet summary destroyed the prose it summarised.
+    #[test]
+    fn a_summary_is_shown_beside_the_document_and_never_swaps_into_it() {
+        let (proposal, write) = proposal_for(Ok("- one\n- two".to_string()), AskKind::Summary);
+        assert_eq!(write, None, "a summary must leave nothing to apply");
+        assert_eq!(proposal.verb, "Close");
+        assert_eq!(proposal.body, "- one\n- two");
+        assert!(!proposal.impact.to_string().contains("Replaces"));
+    }
+
+    #[test]
+    fn a_rewrite_still_offers_to_replace_the_document() {
+        let (proposal, write) = proposal_for(Ok("Shorter.".to_string()), AskKind::Rewrite);
+        assert_eq!(write.as_deref(), Some("Shorter."));
+        assert_eq!(proposal.verb, "Replace");
+    }
+
+    /// A missing model is a refusal, not an answer: the card says the one sentence that points
+    /// at Settings → AI, and nothing is staged for replacement.
+    #[test]
+    fn no_model_leaves_the_document_alone() {
+        let (proposal, write) = proposal_for(Err(AskError::NoModel), AskKind::Rewrite);
+        assert_eq!(write, None);
+        assert_eq!(proposal.body, NO_MODEL_HINT);
+        assert_eq!(proposal.verb, "Close");
+    }
+
+    #[test]
+    fn the_prompt_asks_for_what_the_kind_can_use() {
+        let summary = ask_prompt("Summarise it.", DOC, AskKind::Summary);
+        assert!(summary.contains("Reply with the summary only."));
+        assert!(!summary.contains("rewritten document"));
+        let rewrite = ask_prompt("Tighten it.", DOC, AskKind::Rewrite);
+        assert!(rewrite.contains("Reply with the rewritten document only."));
+        assert!(rewrite.ends_with(DOC));
+    }
 }

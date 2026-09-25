@@ -25,6 +25,7 @@ and `run_command` / `command_status` / `command_input` / `command_kill` are offe
 acts for" below.
 """
 
+import hashlib
 import json
 import os
 import re
@@ -153,6 +154,49 @@ def yos_env():
     else:
         env.pop(AGENT_TOKEN_ENV, None)
     return env
+
+
+def reach_file():
+    """Where the shell publishes every live agent's reach, beside its settings.
+
+    Worked out per call rather than at import, because `reach_names` is advice in a sentence
+    and must read the file as it stands when the failure happens, not as it stood when this
+    process started — the shell rewrites it as roles come and go.
+    """
+    home = os.environ.get("HOME") or os.path.expanduser("~")
+    return os.path.join(home, ".config", "yantrik", "agent-reach.json")
+
+
+def reach_names(app):
+    """Whether this bridge's own agent reach names `app` — the wording of one sentence, not a
+    decision.
+
+    A role told "notes is closed, open it first" once tried and was refused for trying (#195).
+    The door has since learned that a reach may open the apps it names, whatever its ceiling
+    (`yantrik_ipc_transport::reach::within`); this mirrors that one rule so the way forward can
+    say the open will be allowed, where the role reads it. The file keeps the SHA-256 of each
+    token, never the token. Every way of not knowing — no token here, no file, no entry, a file
+    that will not parse — answers False and the sentence then promises nothing; the door, which
+    reads the same file, remains the only thing that decides.
+    """
+    if not AGENT_TOKEN or not isinstance(app, str):
+        return False
+    digest = hashlib.sha256(AGENT_TOKEN.strip().encode("utf-8")).hexdigest()
+    try:
+        with open(reach_file(), encoding="utf-8") as fh:
+            entries = json.load(fh).get("agents") or []
+    except (OSError, ValueError, AttributeError):
+        return False
+    wanted = app.strip().lower()
+    for entry in entries:
+        if not isinstance(entry, dict) or entry.get("token_sha256") != digest:
+            continue
+        # A surface `app`, `app.action` or `app.prefix*` names the app before its first dot,
+        # exactly as the door's rule reads it.
+        for surface in entry.get("surfaces") or []:
+            if isinstance(surface, str) and surface.split(".", 1)[0].strip().lower() == wanted:
+                return True
+    return False
 
 
 def log(message):
@@ -2102,9 +2146,15 @@ def run_tool(tool, args, present=None):
         # The second live drive: told the app was not running ("no socket for 'notes'"), the
         # model described it twice more and gave up. The way forward belongs in the failure
         # itself, where it is read, rather than only in a tool description read turns earlier.
+        #
+        # A role held to a reach followed this sentence and was then refused for the very open
+        # it advised (#195). The door now lets a reach open the apps it names, and when this
+        # bridge acts for such a role and the app is one of them, the sentence says the open is
+        # within the reach — the reassurance the role actually needed before it dared try.
+        may = " Your reach names %s, so you may open it." % app if reach_names(app) else ""
         return (prefix(note, "%s is not running, so it cannot be described or acted on yet. "
                             "Open it first with os_act: app \"shell\", action \"open_app\", "
-                            "args {\"name\": \"%s\"}; then describe it." % (app, app))), True
+                            "args {\"name\": \"%s\"}; then describe it.%s" % (app, app, may))), True
     if p.returncode != 0 and tool["name"] == "os_act" and "GRANT:" in err:
         # The app's own dispatch refused: the grant did not hold, or — when this bridge had
         # decided nobody needed asking — the desktop's mode as the app read it disagreed. A

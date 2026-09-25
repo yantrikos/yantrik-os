@@ -9,7 +9,11 @@ person types in as a `prompt`, and carries what comes back to the panel.
 Each conversation the desktop starts with Pi is its own `pi --mode rpc` process — Pi's RPC mode
 is one session per process — started when the conversation's first message arrives, with that
 agent's token in its environment (`YANTRIK_AGENT_TOKEN`) so the `yos-mcp` its extension starts can
-say which agent is asking, and stopped when the desktop ends the conversation.
+say which agent is asking, and stopped when the desktop ends the conversation. Each process is
+started in a directory of the desktop's own — `~/.local/share/yantrik/minds/pi/<conversation>` —
+and never in `$HOME`, because Pi reads the instruction files (`CLAUDE.md`, `AGENTS.md`) of its
+working directory and its parents, and a brief the person left at home for their own coding work
+must not steer the desktop's mind (#183).
 
 What Pi does inside a turn reaches the desktop as events as well as text: each
 `tool_execution_start / _update / _end` becomes a tool call's card, keyed by Pi's `toolCallId`,
@@ -49,8 +53,8 @@ if _LIB.is_dir() and str(_LIB) not in sys.path:
     sys.path.insert(0, str(_LIB))
 
 from yantrik_harness import (  # noqa: E402
-    AGENT_TOKEN_ENV, Handler, Harness, PerConversation, Turn, end_process, summary_line,
-    tool_target,
+    AGENT_TOKEN_ENV, MAIN, Handler, Harness, PerConversation, Turn, end_process,
+    mind_directory, summary_line, tool_target,
 )
 
 VERSION = "1.0"
@@ -206,11 +210,12 @@ class PiProcess:
 
     def __init__(self, argv: Sequence[str], env: Dict[str, str],
                  on_event: Callable[[Dict[str, Any]], None],
-                 log: Callable[[str], None]) -> None:
+                 log: Callable[[str], None], conversation: str = MAIN) -> None:
         self.argv = list(argv)
         self.env = env
         self.on_event = on_event
         self.log = log
+        self.conversation = conversation or MAIN
         self.proc: Optional[subprocess.Popen] = None
         self._write_lock = threading.Lock()
         self._command_id = 0
@@ -223,9 +228,18 @@ class PiProcess:
         if self.alive:
             return
         try:
+            # Started in a directory of the desktop's own, never in the harness's own working
+            # directory ($HOME under the user service): Pi reads the instruction files of its
+            # working directory and its parents, so a person's own ~/CLAUDE.md would steer the
+            # desktop's mind (#183). Made here rather than once, so a Pi that exited mid-turn
+            # and is started again gets its directory back even if it was deleted meanwhile.
+            cwd = mind_directory("pi", self.conversation)
+        except OSError as exc:
+            raise RuntimeError("could not make pi's working directory: %s" % exc) from exc
+        try:
             self.proc = subprocess.Popen(
                 self.argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL, text=True, bufsize=1, env=self.env,
+                stderr=subprocess.DEVNULL, text=True, bufsize=1, env=self.env, cwd=cwd,
             )
         except OSError as exc:
             self.proc = None
@@ -276,13 +290,15 @@ class PiMind(Handler):
 
     `token` is the agent's, from the desktop; it goes into the process's environment and nowhere
     else, so the tools Pi's extension starts inherit it and the model never sees it.
+    `conversation` names the directory the process runs in (`mind_directory`), one per
+    conversation like the process itself.
     """
 
     # Pi's RPC mode runs one agent. Two turns at once would interleave into one conversation.
     concurrent = False
 
     def __init__(self, config: PiConfig, log: Optional[Callable[[str], None]] = None,
-                 token: str = "") -> None:
+                 token: str = "", conversation: str = MAIN) -> None:
         self.config = config
         self.log = log or (lambda m: print("[pi] %s" % m, file=sys.stderr))
         env = config.environ()
@@ -291,7 +307,8 @@ class PiMind(Handler):
         env.pop(AGENT_TOKEN_ENV, None)
         if token:
             env[AGENT_TOKEN_ENV] = token
-        self.proc = PiProcess(config.argv(), env, self._event, self.log)
+        self.proc = PiProcess(config.argv(), env, self._event, self.log,
+                              conversation=conversation)
         self._lock = threading.Lock()
         self._turn: Optional[Turn] = None
         self._done = threading.Event()
@@ -562,8 +579,10 @@ def _count(value: Any) -> int:
 def handler(config: PiConfig, log: Optional[Callable[[str], None]] = None,
             limit: int = MAX_CONVERSATIONS) -> PerConversation:
     """Pi as the desktop runs it: one `PiMind`, and so one `pi` process, per conversation."""
-    return PerConversation(lambda conversation, token: PiMind(config, log=log, token=token),
-                           limit=limit, log=log)
+    return PerConversation(
+        lambda conversation, token: PiMind(config, log=log, token=token,
+                                           conversation=conversation),
+        limit=limit, log=log)
 
 
 def _dialog_text(event: Dict[str, Any]) -> str:

@@ -3,12 +3,13 @@ name = "yantrik-document-core-tests"
 version = "0.1.0"
 edition = "2021"
 publish = false
-[workspace]
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 libc = "0.2"
 regex = "1"
 pulldown-cmark = { version = "0.13.1", default-features = false, features = ["html"] }
+# document.rs delegates moved_to to the shared crate, and the follow_rename tests call it there.
+yantrik-file-follow = { path = "../../crates/yantrik-file-follow" }
 [lib]
 path = "lib.rs"

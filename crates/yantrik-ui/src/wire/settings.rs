@@ -75,6 +75,13 @@ pub struct UserSettings {
     /// mode it will fall back to; see `mind_mode::persist`.
     #[serde(default)]
     pub mind_mode: String,
+    /// Where an app a mind opens goes: into Mind View, a desktop of the mind's own inside one
+    /// window (#239), or onto the person's desktop over whatever they were doing.
+    ///
+    /// On by default, as the issue asked: a mind acting on its own should not be putting windows
+    /// over the person's work. It is a UI-only choice, like the mode — nothing on the socket sets
+    /// it — because "put your windows on my desktop" is the person's to say.
+    pub minds_open_in_mind_view: bool,
 }
 
 impl Default for UserSettings {
@@ -100,6 +107,7 @@ impl Default for UserSettings {
             // The behaviour that shipped before modes existed, so an upgrade changes nothing
             // about a machine somebody already trusts.
             mind_mode: "ask".into(),
+            minds_open_in_mind_view: true,
         }
     }
 }
@@ -267,6 +275,27 @@ pub fn set_mind_mode(mode: &str) {
     }
     settings.mind_mode = mode.to_string();
     save(&settings);
+}
+
+/// Whether apps a mind opens go into Mind View rather than onto the person's desktop.
+pub fn minds_open_in_mind_view() -> bool {
+    match LIVE.get().and_then(|s| s.lock().ok()) {
+        Some(settings) => settings.minds_open_in_mind_view,
+        None => load().minds_open_in_mind_view,
+    }
+}
+
+/// Record where apps a mind opens should go. Reached from the mode menu's row and nothing else.
+pub fn set_minds_open_in_mind_view(on: bool) -> Result<(), String> {
+    if let Some(shared) = LIVE.get() {
+        if let Ok(mut settings) = shared.lock() {
+            settings.minds_open_in_mind_view = on;
+        }
+        return persist(shared);
+    }
+    let mut settings = load();
+    settings.minds_open_in_mind_view = on;
+    save(&settings)
 }
 
 /// Shared handle for persisting settings from callbacks.

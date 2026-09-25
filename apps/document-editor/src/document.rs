@@ -372,78 +372,18 @@ fn slug(title: &str) -> String {
 //
 // A document open in yDoc is a file somebody else can move while it is open — Files does
 // exactly that, with `rename`, which keeps the bytes and the inode and changes only the name.
-// Nothing below watches anything; these are the two decisions the watcher makes, separated from
-// the events that trigger them so they can be tested with a temporary directory and no inotify.
-
-/// How far the search for a moved document is allowed to go.
-///
-/// A person moving a document in Files moves it near where it was: into a folder beside it,
-/// usually one they have just made. That is what this looks for. The bounds are what stop "where
-/// did my document go" from walking a whole home directory — four levels under the folder it used
-/// to be in, and two thousand entries, whichever runs out first.
-const SEARCH_DEPTH: usize = 4;
-const SEARCH_ENTRIES: usize = 2000;
+// The decisions a move needs live in `yantrik-file-follow`, shared with the Text Editor so that
+// #86 is fixed with one search and one rename rule rather than two to keep in step. What stays
+// here is the one part that is this app's: what counts as reading the same bytes back.
 
 /// Where the file that used to be at `original` probably is now, or `None`.
 ///
 /// The same name and exactly the bytes the document last agreed with, somewhere under the folder
-/// it used to live in. Both halves matter: the name on its own would point at any file called
-/// `notes.md`, and the bytes on their own would point at a backup copy under a different name.
-/// `None` is an honest answer and the callers say so rather than guessing.
+/// it used to live in — bounded, out of hidden folders, and honest (`None`) rather than guessing.
+/// The search itself is the shared one; `read` is this app's, so a file this editor would refuse
+/// to open is never reported as where the document went.
 pub fn moved_to(original: &Path, baseline: &str) -> Option<PathBuf> {
-    let name = original.file_name()?;
-    // The folder it lived in — or, when that folder is itself the thing that was moved, the one
-    // above it. No further up than that: a search that climbs is a search with no bound.
-    let start = original.parent().filter(|p| p.is_dir()).or_else(|| {
-        original
-            .parent()
-            .and_then(|p| p.parent())
-            .filter(|p| p.is_dir())
-    })?;
-
-    let mut queue = vec![(start.to_path_buf(), 0usize)];
-    let mut seen = 0usize;
-    while let Some((folder, depth)) = queue.pop() {
-        let Ok(entries) = fs::read_dir(&folder) else { continue };
-        for entry in entries.flatten() {
-            seen += 1;
-            if seen > SEARCH_ENTRIES {
-                return None;
-            }
-            let path = entry.path();
-            // symlink_metadata, so a link pointing back up the tree cannot turn this walk into
-            // a loop: a symlinked folder is neither descended into nor read as a document.
-            let Ok(meta) = fs::symlink_metadata(&path) else { continue };
-            if meta.is_dir() {
-                // Hidden folders are skipped. A `.git` or a `.cache` beside the document would
-                // spend the whole entry budget on somewhere nobody moved a document to.
-                let hidden = entry.file_name().to_string_lossy().starts_with('.');
-                if !hidden && depth < SEARCH_DEPTH {
-                    queue.push((path, depth + 1));
-                }
-            } else if meta.is_file()
-                && entry.file_name() == name
-                && meta.len() == baseline.len() as u64
-                && path.as_path() != original
-                && read(&path).ok().as_deref() == Some(baseline)
-            {
-                return Some(path);
-            }
-        }
-    }
-    None
-}
-
-/// Where an open document lives after a rename the folder around it reported.
-///
-/// Two cases, and the second is the one that catches people out: the document's own file was
-/// renamed, or a folder it sits inside was. Moving a folder in Files strands every document in it
-/// exactly as thoroughly as moving one document does, and it is the same fix.
-pub fn follow_rename(current: &Path, from: &Path, to: &Path) -> Option<PathBuf> {
-    if current == from {
-        return Some(to.to_path_buf());
-    }
-    current.strip_prefix(from).ok().map(|rest| to.join(rest))
+    yantrik_file_follow::moved_to(original, baseline, read)
 }
 
 /// How many characters of `text` the file does not have.

@@ -514,10 +514,33 @@ fn extract_tool_arguments(
     }
 }
 
+/// Logs LLM reachability once per state change, not once per failed call (#30).
+///
+/// A desktop whose backend was down all day wrote a "LLM offline" warning for every
+/// message and every think cycle — 650+ identical lines — while the shell showed
+/// nothing. The transition is worth one warning; the repeats go to debug, and the
+/// moment the model answers again is worth one info line.
+#[derive(Default)]
+struct OfflineLogGate {
+    offline: bool,
+}
+
+impl OfflineLogGate {
+    /// Records a reachability observation. Returns `true` only when the state
+    /// changed — i.e. when this call is the transition worth a real log line.
+    fn note(&mut self, offline: bool) -> bool {
+        let changed = offline != self.offline;
+        self.offline = offline;
+        changed
+    }
+}
+
 /// The companion agent — memory + inference + instincts + bond + evolution in one struct.
 pub struct CompanionService {
     pub db: YantrikDB,
     pub llm: std::sync::Arc<dyn LLMBackend>,
+    /// Reachability of `llm`, so a dead backend logs once per state change (#30).
+    llm_offline_log: OfflineLogGate,
     pub config: CompanionConfig,
     pub urge_queue: UrgeQueue,
     instincts: Vec<Box<dyn Instinct>>,
@@ -526,7 +549,9 @@ pub struct CompanionService {
     conversation_history: Vec<ChatMessage>,
     last_interaction_ts: f64,
     session_turn_count: usize,
-    proactive_message: Option<ProactiveMessage>,
+    // Pending messages queue up instead of sharing one slot: a recipe's Notify step and its
+    // completion message used to overwrite each other, and only the last was ever said (#187).
+    proactive_messages: std::collections::VecDeque<ProactiveMessage>,
 
     // Cached from last think()
     pending_triggers: Vec<serde_json::Value>,
@@ -877,13 +902,14 @@ impl CompanionService {
         Self {
             db,
             llm,
+            llm_offline_log: OfflineLogGate::default(),
             config,
             urge_queue,
             instincts,
             conversation_history: Vec::new(),
             last_interaction_ts,
             session_turn_count: 0,
-            proactive_message: None,
+            proactive_messages: std::collections::VecDeque::new(),
             pending_triggers: Vec::new(),
             active_patterns: Vec::new(),
             open_conflicts_count: 0,
@@ -1269,11 +1295,28 @@ impl CompanionService {
             .iter()
             .filter(|s| matches!(s, RecipeStep::Tool { .. }))
             .count();
+        // The only names a {{placeholder}} could ever resolve to: the loop below stores into
+        // `vars` from Tool and Think steps and nothing else. A recipe template arrives with its
+        // required_vars never bound, so `{"query": "{{topic}}"}` — which the schema check passes,
+        // the argument being present — used to reach the tool with the braces in it (#88). A step
+        // nothing in the plan can fill is as unrunnable as a step missing its argument.
+        let bound_names: Vec<&str> = steps
+            .iter()
+            .filter_map(|s| match s {
+                RecipeStep::Tool { store_as, .. } | RecipeStep::Think { store_as, .. } => {
+                    Some(store_as.as_str())
+                }
+                _ => None,
+            })
+            .collect();
         let runnable_tools = steps
             .iter()
             .filter(|s| match s {
                 RecipeStep::Tool { tool_name, args, .. } => {
                     self.registry.missing_required_args(tool_name, args).is_empty()
+                        && placeholders_in(&serde_json::to_string(args).unwrap_or_default())
+                            .iter()
+                            .all(|name| bound_names.contains(&name.as_str()))
                 }
                 _ => false,
             })
@@ -1310,6 +1353,23 @@ impl CompanionService {
                         vars.insert(
                             store_as.clone(),
                             format!("(not gathered — the plan gave no {})", missing.join(", ")),
+                        );
+                        continue;
+                    }
+
+                    // Whatever is still a placeholder after resolution is a hole nothing in the
+                    // run filled — the step it referenced stored nothing, or stores later. The
+                    // braces must not reach the tool, so the step is skipped like the one above
+                    // and the synthesis step is told what was not gathered (#88).
+                    if resolved_args_str.contains("{{") {
+                        let holes = placeholders_in(&resolved_args_str);
+                        tracing::warn!(
+                            step = i, tool = tool_name.as_str(), holes = ?holes,
+                            "QueryPlanner: step not run — nothing in the plan binds its remaining placeholders"
+                        );
+                        vars.insert(
+                            store_as.clone(),
+                            format!("(not gathered — the plan binds no {})", holes.join(", ")),
                         );
                         continue;
                     }
@@ -1410,6 +1470,24 @@ impl CompanionService {
             tool_calls_made,
             offline_mode: false,
         })
+    }
+
+    /// Log a failed LLM call: a warning on the first failure after the model was
+    /// reachable, debug afterwards. The offline state itself belongs on the screen —
+    /// the status bar shows it — so the log only has to record the transitions (#30).
+    fn note_llm_offline(&mut self, ctx: &str, err: &impl std::fmt::Display) {
+        if self.llm_offline_log.note(true) {
+            tracing::warn!("LLM offline{ctx}: {err:#}");
+        } else {
+            tracing::debug!("LLM offline{ctx}: {err:#}");
+        }
+    }
+
+    /// Log the model answering again — one info line per recovery, not per call.
+    fn note_llm_reachable(&mut self) {
+        if self.llm_offline_log.note(false) {
+            tracing::info!("LLM reachable again");
+        }
     }
 
     /// The 9-step message pipeline.
@@ -1950,9 +2028,12 @@ impl CompanionService {
                 None
             };
             let llm_response = match self.llm.chat(&messages, &gen_config, tools_param) {
-                Ok(r) => r,
+                Ok(r) => {
+                    self.note_llm_reachable();
+                    r
+                }
                 Err(e) => {
-                    tracing::warn!("LLM offline: {e:#}");
+                    self.note_llm_offline("", &e);
                     response_text = OfflineResponder::respond(
                         &self.db,
                         user_text,
@@ -2751,6 +2832,7 @@ impl CompanionService {
 
         match llm_response {
             Ok(r) => {
+                self.note_llm_reachable();
                 let full_text = if !streamed_text.is_empty() { &streamed_text } else { &r.text };
 
                 // Use native tool_calls if available, fall back to text parsing.
@@ -2870,6 +2952,7 @@ impl CompanionService {
                         };
                         match self.llm.chat(&messages, &gen_config, tools_param) {
                             Ok(r2) => {
+                                self.note_llm_reachable();
                                 let tc2: Vec<ToolCall> = if !r2.tool_calls.is_empty() {
                                     r2.tool_calls.clone()
                                 } else {
@@ -2962,7 +3045,7 @@ impl CompanionService {
                             }
                             Err(_) if !response_text.is_empty() => break,
                             Err(e) => {
-                                tracing::warn!("LLM offline during tool follow-up: {e:#}");
+                                self.note_llm_offline(" during tool follow-up", &e);
                                 response_text = OfflineResponder::respond(
                                     &self.db, user_text, &self.system_context,
                                     &memories, &urges, &self.config.user_name,
@@ -3010,7 +3093,7 @@ impl CompanionService {
                 }
             }
             Err(e) => {
-                tracing::warn!("LLM offline: {e:#}");
+                self.note_llm_offline("", &e);
                 response_text = OfflineResponder::respond(
                     &self.db,
                     user_text,
@@ -3188,11 +3271,11 @@ impl CompanionService {
 
     /// Build a state snapshot for instinct evaluation.
     pub fn build_state(&self) -> CompanionState {
-        let memory_count = self
-            .db
-            .stats(None)
-            .map(|s| s.active_memories)
-            .unwrap_or(0);
+        // The person's memories, not the machine's telemetry (#31): the count
+        // the Memory screen, `describe shell` and the instincts all read used to
+        // be every active row in the store, and on the live machine 1 339 of
+        // 2 709 rows were one identical "Connected to network" line.
+        let memory_count = personal_memory_count(&self.db.conn());
 
         // Time fields
         let now = now_ts();
@@ -3355,14 +3438,30 @@ impl CompanionService {
         self.silence_policy.dampening_for(source)
     }
 
-    /// Take the pending proactive message (if any).
+    /// Take the next pending proactive message (if any).
     pub fn take_proactive_message(&mut self) -> Option<ProactiveMessage> {
-        self.proactive_message.take()
+        self.proactive_messages.pop_front()
     }
 
-    /// Set a proactive message (called by background cognition).
+    /// Queue a proactive message (called by background cognition). The queue is bounded; when it
+    /// is full the oldest undelivered message gives way — nothing may grow without limit here.
+    ///
+    /// A thought the content rule refuses never enters the queue (#88). Every consumer reads from
+    /// here — the bridge, the Telegram relay, the HTTP server — and only the bridge applied the
+    /// rule before delivery, so a refused message still reached the other two. Judging at the one
+    /// place thoughts are queued means no consumer can miss it.
     pub fn set_proactive_message(&mut self, msg: ProactiveMessage) {
-        self.proactive_message = Some(msg);
+        const MAX_PENDING: usize = 32;
+        if let Some(why) = crate::proactive::must_not_be_said(&msg.text) {
+            tracing::warn!(why, text = %msg.text.chars().take(40).collect::<String>(), "Proactive thought refused at the queue, not delivered");
+            return;
+        }
+        if self.proactive_messages.len() >= MAX_PENDING {
+            if let Some(dropped) = self.proactive_messages.pop_front() {
+                tracing::warn!(pending = MAX_PENDING, text = %dropped.text.chars().take(40).collect::<String>(), "Proactive queue full, oldest message dropped");
+            }
+        }
+        self.proactive_messages.push_back(msg);
     }
 
     // ---- Natural Communication helpers ----
@@ -4463,6 +4562,34 @@ fn count_recent_interactions(conn: &rusqlite::Connection, since_ts: f64) -> u32 
     }
 }
 
+/// Count the person's memories: active rows that are not system telemetry (#31).
+///
+/// The store holds both what the companion learned about the person and what the
+/// machine observed about itself — network announcements, process lifecycle,
+/// hourly snapshots — written with `source = 'system'` and a `system/*` domain.
+/// The Memory screen's count, `describe shell`'s "memories", and the instincts'
+/// "does the companion know enough yet" gates all read this figure, and counting
+/// telemetry made it a measure of how chatty the network was: 1 339 of 2 709
+/// rows were one identical "Connected to network 'Wired connection 1'" line.
+/// "Active" matches the engine's own `stats().active_memories` exactly, so this
+/// is that count minus the telemetry, not a different idea of active. A count
+/// that cannot be read is reported as 0, and says so in the log.
+fn personal_memory_count(conn: &rusqlite::Connection) -> i64 {
+    match conn.query_row(
+        "SELECT COUNT(*) FROM memories \
+         WHERE consolidation_status = 'active' \
+         AND COALESCE(source, '') <> 'system'",
+        [],
+        |row| row.get::<_, i64>(0),
+    ) {
+        Ok(count) => count,
+        Err(e) => {
+            tracing::error!(error = %e, "personal memory count could not be read; showing 0");
+            0
+        }
+    }
+}
+
 /// Query recent maintenance log entries (last 24h, unreported first).
 fn query_maintenance_log(conn: &rusqlite::Connection) -> Vec<serde_json::Value> {
     let mut stmt = match conn.prepare(
@@ -4625,6 +4752,27 @@ fn resolve_template_vars(template: &str, vars: &std::collections::HashMap<String
         result = result.replace(&format!("{{{{{}}}}}", key), value);
     }
     result
+}
+
+/// The {{names}} a template string references, deduplicated, in order of appearance.
+///
+/// `resolve_template_vars` replaces what it has and passes the rest through literally, so a
+/// recipe template whose required_vars were never bound hands the tool `{"query": "{{topic}}"}`
+/// and the tool answers the braces as if the person had typed them (#88). Callers use this to
+/// tell a reference something in the run will fill from a hole nothing will.
+fn placeholders_in(text: &str) -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
+    let mut rest = text;
+    while let Some(open) = rest.find("{{") {
+        rest = &rest[open + 2..];
+        let Some(close) = rest.find("}}") else { break };
+        let name = rest[..close].trim();
+        if !name.is_empty() && !names.iter().any(|n| n == name) {
+            names.push(name.to_string());
+        }
+        rest = &rest[close + 2..];
+    }
+    names
 }
 
 fn strip_think_tags(text: &str) -> String {
@@ -5243,5 +5391,381 @@ mod recent_interaction_count_tests {
             ("e3", "milestone", now - 60.0),
         ]);
         assert_eq!(count_recent_interactions(&conn, now - 3600.0), 1);
+    }
+}
+
+#[cfg(test)]
+mod personal_memory_count_tests {
+    //! The Memory screen's "memories" counted every active row in the store, and
+    //! the store was mostly the machine talking to itself: 1 339 of 2 709 rows
+    //! were one identical "Connected to network 'Wired connection 1'" line, and
+    //! nothing was about the person (#31). The count is the person's side of the
+    //! store. Pure in-memory SQLite: no model, no embedder, no files.
+
+    use super::*;
+
+    /// A `memories` table with the given (rid, consolidation_status, source) rows.
+    /// Only the columns the count reads are created; the engine's real schema has
+    /// more, but this is the whole of what `personal_memory_count` looks at.
+    fn store_with_memories(rows: &[(&str, &str, Option<&str>)]) -> rusqlite::Connection {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE memories (
+                rid TEXT PRIMARY KEY,
+                consolidation_status TEXT,
+                source TEXT
+            );",
+        )
+        .unwrap();
+        for (rid, status, source) in rows {
+            conn.execute(
+                "INSERT INTO memories (rid, consolidation_status, source) VALUES (?1, ?2, ?3)",
+                rusqlite::params![rid, status, source],
+            )
+            .unwrap();
+        }
+        conn
+    }
+
+    #[test]
+    fn system_telemetry_is_not_counted_as_a_memory() {
+        // Two things the companion knows about the person, and one connection the
+        // network announced 136 times.
+        let conn = store_with_memories(&[
+            ("p1", "active", Some("user")),
+            ("p2", "active", Some("companion")),
+        ]);
+        for i in 0..136 {
+            conn.execute(
+                "INSERT INTO memories (rid, consolidation_status, source) \
+                 VALUES (?1, 'active', 'system')",
+                rusqlite::params![format!("s{i}")],
+            )
+            .unwrap();
+        }
+        assert_eq!(
+            personal_memory_count(&conn),
+            2,
+            "136 identical network rows must not count as memories"
+        );
+    }
+
+    #[test]
+    fn only_the_persons_active_rows_count() {
+        let conn = store_with_memories(&[
+            ("a1", "active", Some("user")),
+            ("a2", "active", Some("self")),
+            // Not active, so not counted whatever their source.
+            ("t1", "tombstoned", Some("user")),
+            ("c1", "consolidated", Some("companion")),
+            // Telemetry, active, still not the person's.
+            ("s1", "active", Some("system")),
+            // A row with no source is the person's until proven otherwise.
+            ("n1", "active", None),
+        ]);
+        assert_eq!(personal_memory_count(&conn), 3, "a1, a2 and n1");
+    }
+}
+
+#[cfg(test)]
+mod proactive_queue_tests {
+    //! A recipe that notifies mid-run and then says its completion message produces two
+    //! proactive messages back to back, and the companion held only one: the second
+    //! overwrote the first, so the person saw only the last thing any recipe had to say
+    //! (#187). Pending messages queue now. Pure in-memory: no model, no files.
+
+    use super::*;
+    use yantrik_ml::LLMResponse;
+
+    /// A mind that answers every prompt the same way; the queue itself needs no model.
+    struct Echo;
+
+    impl LLMBackend for Echo {
+        fn chat(
+            &self,
+            _messages: &[ChatMessage],
+            _config: &GenerationConfig,
+            _tools: Option<&[serde_json::Value]>,
+        ) -> anyhow::Result<LLMResponse> {
+            Ok(LLMResponse {
+                text: "Noted.".into(),
+                prompt_tokens: 0,
+                completion_tokens: 1,
+                tool_calls: vec![],
+                api_tool_calls: vec![],
+                stop_reason: "stop".into(),
+            })
+        }
+
+        fn chat_streaming(
+            &self,
+            messages: &[ChatMessage],
+            config: &GenerationConfig,
+            tools: Option<&[serde_json::Value]>,
+            on_token: &mut dyn FnMut(&str),
+        ) -> anyhow::Result<LLMResponse> {
+            on_token("Noted.");
+            self.chat(messages, config, tools)
+        }
+
+        fn count_tokens(&self, text: &str) -> anyhow::Result<usize> {
+            Ok(text.len())
+        }
+
+        fn backend_name(&self) -> &str {
+            "echo"
+        }
+    }
+
+    fn companion() -> CompanionService {
+        let db = YantrikDB::new(":memory:", 384).expect("in-memory database");
+        let mut config = CompanionConfig::default();
+        config.tools.enabled = false;
+        CompanionService::new(db, std::sync::Arc::new(Echo), config)
+    }
+
+    fn msg(text: &str) -> ProactiveMessage {
+        ProactiveMessage { text: text.into(), urge_ids: vec![], generated_at: now_ts() }
+    }
+
+    #[test]
+    fn a_second_message_does_not_swallow_the_first() {
+        let mut c = companion();
+        c.set_proactive_message(msg("step says: backup finished"));
+        c.set_proactive_message(msg("recipe says: nightly backup done"));
+        assert_eq!(
+            c.take_proactive_message().map(|m| m.text),
+            Some("step says: backup finished".to_string()),
+            "the first message survives the second, and goes first"
+        );
+        assert_eq!(
+            c.take_proactive_message().map(|m| m.text),
+            Some("recipe says: nightly backup done".to_string())
+        );
+        assert!(c.take_proactive_message().is_none(), "and then the queue is empty");
+    }
+
+    #[test]
+    fn the_queue_is_bounded_and_the_oldest_gives_way() {
+        let mut c = companion();
+        for i in 0..40 {
+            c.set_proactive_message(msg(&format!("message {i}")));
+        }
+        let mut drained = Vec::new();
+        while let Some(m) = c.take_proactive_message() {
+            drained.push(m.text);
+        }
+        assert_eq!(drained.len(), 32, "an undrained queue may not grow without limit");
+        assert_eq!(drained[0], "message 8", "the oldest undelivered messages gave way");
+        assert_eq!(drained[31], "message 39", "and the newest are all kept, in order");
+    }
+
+    #[test]
+    fn a_thought_that_says_nothing_never_enters_the_queue() {
+        // The VM posted notifications titled "[empty]" and "(empty)" with no body (#88). Every
+        // consumer — the bridge, the Telegram relay, the HTTP server — reads from this queue, so
+        // a refused thought has to be dropped here rather than left to each consumer's diligence.
+        let mut c = companion();
+        c.set_proactive_message(msg("[empty]"));
+        c.set_proactive_message(msg("(empty)"));
+        c.set_proactive_message(msg(""));
+        assert!(
+            c.take_proactive_message().is_none(),
+            "a placeholder that says nothing must not be delivered to anyone"
+        );
+
+        // A real thought still queues; the gate refuses contentless messages, not messages.
+        c.set_proactive_message(msg("The nightly backup failed — the disk is almost full."));
+        assert_eq!(
+            c.take_proactive_message().map(|m| m.text),
+            Some("The nightly backup failed — the disk is almost full.".to_string())
+        );
+    }
+}
+
+#[cfg(test)]
+mod offline_log_gate_tests {
+    use super::OfflineLogGate;
+
+    #[test]
+    fn a_dead_backend_logs_once_per_state_change_not_every_call() {
+        // #30: a desktop with nothing listening on 8341 wrote "LLM offline" for
+        // every message and every think cycle — 650+ identical lines in a day —
+        // while the shell showed nothing. The log should carry the transitions,
+        // not the repeats.
+        let mut gate = OfflineLogGate::default();
+
+        assert!(gate.note(true), "the first failure is a state change — it warns");
+        assert!(!gate.note(true), "the next failure changes nothing — debug");
+        assert!(!gate.note(true), "a backend dead all day stays one line");
+
+        assert!(gate.note(false), "a model answering again is a state change — it infos");
+        assert!(!gate.note(false), "continued success does not re-log");
+
+        assert!(gate.note(true), "and a new outage warns again");
+    }
+
+    #[test]
+    fn a_healthy_backend_never_announces_itself() {
+        // The gate starts online: the first successful call must not log a
+        // "reachable again" recovery that never happened.
+        let mut gate = OfflineLogGate::default();
+        assert!(!gate.note(false));
+        assert!(!gate.note(false));
+    }
+}
+
+#[cfg(test)]
+mod recipe_placeholder_tests {
+    //! Recipe templates ran with their placeholders still in them (#88). The router hands a
+    //! template's steps straight to `execute_recipe_sync`, which starts with an empty `vars` and
+    //! never binds the template's `required_vars` — so `{"query": "{{topic}}"}` reached the tool
+    //! with the braces in it, the tool answered the braces, and the audit log stored that call
+    //! as a memory. A step nothing in the plan binds is now skipped before its tool is called,
+    //! and a plan whose every tool step is such a step is abandoned before any of them run.
+    //! Pure in-memory: Echo model, no files, no network.
+
+    use super::*;
+    use crate::recipe::{ErrorAction, RecipeStep};
+    use yantrik_ml::LLMResponse;
+
+    /// Answers every prompt the same way; the placeholder rules need no real model.
+    struct Echo;
+
+    impl LLMBackend for Echo {
+        fn chat(
+            &self,
+            _messages: &[ChatMessage],
+            _config: &GenerationConfig,
+            _tools: Option<&[serde_json::Value]>,
+        ) -> anyhow::Result<LLMResponse> {
+            Ok(LLMResponse {
+                text: "Noted.".into(),
+                prompt_tokens: 0,
+                completion_tokens: 1,
+                tool_calls: vec![],
+                api_tool_calls: vec![],
+                stop_reason: "stop".into(),
+            })
+        }
+
+        fn chat_streaming(
+            &self,
+            messages: &[ChatMessage],
+            config: &GenerationConfig,
+            tools: Option<&[serde_json::Value]>,
+            on_token: &mut dyn FnMut(&str),
+        ) -> anyhow::Result<LLMResponse> {
+            on_token("Noted.");
+            self.chat(messages, config, tools)
+        }
+
+        fn count_tokens(&self, text: &str) -> anyhow::Result<usize> {
+            Ok(text.len())
+        }
+
+        fn backend_name(&self) -> &str {
+            "echo"
+        }
+    }
+
+    /// A companion whose registry knows `recall` and nothing else — enough to run a memory step,
+    /// and no tool in these tests can reach the network. The store opens at the bundled
+    /// embedder's own dim (64) so it attaches: every tool call is written to memory as an audit
+    /// line, and these tests read those lines back to see what reached a tool.
+    fn companion_with_recall() -> CompanionService {
+        let db = YantrikDB::new(":memory:", 64).expect("in-memory database");
+        let mut config = CompanionConfig::default();
+        config.tools.enabled = false;
+        let mut c = CompanionService::new(db, std::sync::Arc::new(Echo), config);
+        c.registry.register(Box::new(crate::tools::memory::RecallTool));
+        c
+    }
+
+    fn tool_step(tool: &str, args: serde_json::Value, store_as: &str) -> RecipeStep {
+        RecipeStep::Tool {
+            tool_name: tool.into(),
+            args,
+            store_as: store_as.into(),
+            on_error: ErrorAction::Skip,
+        }
+    }
+
+    fn think_step(prompt: &str, store_as: &str) -> RecipeStep {
+        RecipeStep::Think { prompt: prompt.into(), store_as: store_as.into(), fallback_template: None }
+    }
+
+    /// How many stored memories mention the needle. The registry writes every tool call to the
+    /// store as an audit line, so a placeholder that reached a tool is still findable afterwards.
+    fn memories_containing(c: &CompanionService, needle: &str) -> i64 {
+        c.db.conn()
+            .query_row(
+                "SELECT COUNT(*) FROM memories WHERE text LIKE ?",
+                rusqlite::params![format!("%{needle}%")],
+                |r| r.get(0),
+            )
+            .unwrap_or(-1)
+    }
+
+    #[test]
+    fn placeholder_names_come_out_of_a_template_string() {
+        assert_eq!(placeholders_in(r#"{"query": "{{topic}}"}"#), vec!["topic".to_string()]);
+        assert_eq!(
+            placeholders_in("{{a}} then {{b}} then {{a}} again"),
+            vec!["a".to_string(), "b".to_string()]
+        );
+        assert!(placeholders_in("no braces at all").is_empty());
+        assert!(placeholders_in("an unclosed {{ stays put").is_empty());
+    }
+
+    #[test]
+    fn a_plan_whose_only_tool_step_is_a_hole_is_abandoned_before_anything_runs() {
+        // The shape the router hits with a template: every tool step references a var nothing
+        // binds. Before the fix the recall ran with `{{topic}}` as its literal query — the audit
+        // line below is the trace it left — and only afterwards was the run thrown away because
+        // no template step stores `final_answer`.
+        let mut c = companion_with_recall();
+        let steps = vec![
+            tool_step("recall", serde_json::json!({ "query": "{{topic}}" }), "existing"),
+            think_step("Summarize {{existing}}.", "final_answer"),
+        ];
+        assert!(
+            c.execute_recipe_sync("tell me about rust", &steps, "research a topic").is_none(),
+            "nothing in the plan binds topic, so the plan gathers nothing and must be abandoned"
+        );
+        assert_eq!(
+            memories_containing(&c, "{{topic}}"),
+            0,
+            "the braces must not reach the tool — the audit log would still hold them"
+        );
+    }
+
+    #[test]
+    fn in_a_mixed_plan_the_holed_step_is_skipped_and_the_runnable_one_still_runs() {
+        // The planner's version of the same fault: one step it could fill, one with a hole in
+        // it. The runnable step must still run — the fix skips the hole, not the plan.
+        let mut c = companion_with_recall();
+        let steps = vec![
+            tool_step("recall", serde_json::json!({ "query": "rust programming" }), "known"),
+            tool_step("recall", serde_json::json!({ "query": "{{topic}}" }), "hole"),
+            think_step("Compare {{known}} and {{hole}}.", "final_answer"),
+        ];
+        let out = c
+            .execute_recipe_sync("compare two things", &steps, "compare")
+            .expect("the runnable step still gathers, so the plan still answers");
+        assert_eq!(
+            out.tool_calls_made,
+            vec!["recall".to_string()],
+            "exactly one of the two planned recalls may reach a tool"
+        );
+        assert_eq!(
+            memories_containing(&c, "{{topic}}"),
+            0,
+            "the holed step must not reach the tool"
+        );
+        assert!(
+            memories_containing(&c, "rust programming") > 0,
+            "and the runnable step ran — its audit line is in the store"
+        );
     }
 }

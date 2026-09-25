@@ -38,6 +38,10 @@ pub const TURNS_KEPT: usize = 200;
 pub const FULL_OUTPUTS: usize = 32;
 pub const OLD_OUTPUT: usize = 64 * 1024;
 
+/// How many of the newest refusals keep their line, what arrived and why it was refused (#212).
+/// The count keeps all of them.
+pub const REFUSED_LINES: usize = 6;
+
 /// What is kept on disk: this many agents, the newest of each one's turns, and the newest part of
 /// any one text or output.
 pub const KEEP_AGENTS: usize = 24;
@@ -165,6 +169,7 @@ impl Store {
                     turns: Vec::new(),
                     usage: Usage::default(),
                     refused: 0,
+                    refusals: Vec::new(),
                     approvals_asked: 0,
                     approvals_answered: 0,
                     pending_approvals: Vec::new(),
@@ -233,7 +238,7 @@ impl Store {
         let now = self.now();
         let agent = &mut self.agents[i];
         let Some(turn) = agent.turns.last_mut().filter(|t| t.open()) else {
-            agent.refused += 1;
+            refuse(agent, "some of its text — no turn was open".to_string());
             self.mark(i);
             return;
         };
@@ -250,8 +255,8 @@ impl Store {
         let Some(i) = self.index(id) else { return };
         let now = self.now();
         let agent = &mut self.agents[i];
-        if !apply(agent, event, provenance, now) {
-            agent.refused += 1;
+        if let Err(line) = apply(agent, event, provenance, now) {
+            refuse(agent, line);
         }
         self.mark(i);
     }
@@ -307,7 +312,7 @@ impl Store {
         let now = self.now();
         let agent = &mut self.agents[i];
         let Some(turn) = agent.turns.last_mut().filter(|t| t.open()) else {
-            agent.refused += 1;
+            refuse(agent, format!("a call read from its text (`{}`) — no turn was open", call.name));
             self.mark(i);
             return;
         };
@@ -345,7 +350,8 @@ impl Store {
             Some(card) => card.args = args,
             None => {
                 let start = Event::ToolStart { call: job.into(), name: "agent_run".into(), target: String::new(), args };
-                apply(agent, &start, Provenance::Verified, now);
+                // Cannot be refused: no card exists for this job yet, which is the branch we are in.
+                let _ = apply(agent, &start, Provenance::Verified, now);
             }
         }
         self.mark(i);
@@ -362,7 +368,7 @@ impl Store {
         let bytes = &bytes[..bytes.len().min(EVENT_CAP)];
         match find_card(agent, job, Provenance::Verified) {
             Some(card) if card.running() => card.output.push(Stream::Terminal, bytes),
-            Some(_) => agent.refused += 1,
+            Some(_) => refuse(agent, format!("terminal bytes for `{job}` — the command had already ended")),
             None => {
                 let mut card = Card::new(job, "agent_run", "", serde_json::json!({}), Provenance::Verified, now);
                 card.output.push(Stream::Terminal, bytes);
@@ -392,7 +398,8 @@ impl Store {
                 target: String::new(),
                 args: serde_json::json!({ "command": command }),
             };
-            apply(agent, &start, Provenance::Verified, now);
+            // Cannot be refused: no card exists for this job yet, which is the branch we are in.
+            let _ = apply(agent, &start, Provenance::Verified, now);
         }
         let summary = match (killed, exit_code) {
             (true, _) => "stopped".to_string(),
@@ -400,8 +407,8 @@ impl Store {
             (false, None) => "ended by a signal".to_string(),
         };
         let end = Event::ToolEnd { call: job.into(), ok: !killed && exit_code == Some(0), summary, exit_code };
-        if !apply(agent, &end, Provenance::Verified, now) {
-            agent.refused += 1;
+        if let Err(line) = apply(agent, &end, Provenance::Verified, now) {
+            refuse(agent, line);
         }
         self.mark(i);
     }
@@ -566,6 +573,7 @@ impl Store {
             approvals_answered: agent.approvals_answered,
             usage: agent.usage.clone(),
             refused: agent.refused,
+            refusals: agent.refusals.clone(),
             ..Details::default()
         };
         for card in agent.cards() {
@@ -888,19 +896,43 @@ fn find_card<'a>(agent: &'a mut Agent, call: &str, provenance: Provenance) -> Op
     }
 }
 
-/// Apply one event. `false` means the lifecycle refused it.
-fn apply(agent: &mut Agent, event: &Event, provenance: Provenance, now: u64) -> bool {
+/// Count a refusal and keep its line: what arrived, and why the lifecycle would not take it
+/// (#212). The count never lies; the newest [`REFUSED_LINES`] lines are what the details column
+/// can open into.
+fn refuse(agent: &mut Agent, line: String) {
+    agent.refused += 1;
+    agent.refusals.push(line);
+    if agent.refusals.len() > REFUSED_LINES {
+        agent.refusals.remove(0);
+    }
+}
+
+/// What an event is, in a few words, for a refusal line.
+fn what_event(event: &Event) -> String {
+    match event {
+        Event::ToolStart { call, name, .. } => format!("a start for `{name}` (`{call}`)"),
+        Event::ToolOutput { call, .. } => format!("output for `{call}`"),
+        Event::ToolEnd { call, .. } => format!("an end for `{call}`"),
+        Event::Thinking { .. } => "some thinking".to_string(),
+        Event::Status { text } => format!("a status line ({})", clip_text(text, 40)),
+        Event::Usage { .. } => "a usage report".to_string(),
+    }
+}
+
+/// Apply one event. `Err` is the refusal line: what arrived, and why the lifecycle would not
+/// take it.
+fn apply(agent: &mut Agent, event: &Event, provenance: Provenance, now: u64) -> Result<(), String> {
     // A harness speaks only inside a turn.
     if provenance == Provenance::Reported {
         match agent.turns.last_mut().filter(|t| t.open()) {
             Some(turn) => turn.events = true,
-            None => return false,
+            None => return Err(format!("{} — no turn was open", what_event(event))),
         }
     }
     match event {
         Event::ToolStart { call, name, target, args } => {
             if find_card(agent, call, provenance).is_some_and(|c| c.running() || provenance == Provenance::Reported) {
-                return false; // a second start
+                return Err(format!("a second start for `{call}`"));
             }
             let card = Card::new(call, name, target, args.clone(), provenance, now);
             let turn = turn_for(agent, provenance, now);
@@ -923,7 +955,7 @@ fn apply(agent: &mut Agent, event: &Event, provenance: Provenance, now: u64) -> 
             let delta = cap(delta);
             match find_card(agent, call, provenance) {
                 Some(card) if card.running() => card.output.push(*stream, delta.as_bytes()),
-                Some(_) => return false, // output after its end
+                Some(_) => return Err(format!("output for `{call}` — its call had already ended")),
                 None => {
                     let mut card = Card::new(call, "(unknown call)", call, serde_json::Value::Null, provenance, now);
                     card.mark = Some(Mark::OutputWithoutStart);
@@ -942,7 +974,7 @@ fn apply(agent: &mut Agent, event: &Event, provenance: Provenance, now: u64) -> 
             };
             match find_card(agent, call, provenance) {
                 Some(card) if card.running() => settle(card),
-                Some(_) => return false, // a second end
+                Some(_) => return Err(format!("a second end for `{call}`")),
                 None => {
                     let mut card = Card::new(call, "(unknown call)", call, serde_json::Value::Null, provenance, now);
                     card.mark = Some(Mark::EndWithoutStart);
@@ -961,7 +993,9 @@ fn apply(agent: &mut Agent, event: &Event, provenance: Provenance, now: u64) -> 
             compact(agent);
         }
         Event::Thinking { delta } => {
-            let Some(turn) = agent.turns.last_mut().filter(|t| t.open()) else { return false };
+            let Some(turn) = agent.turns.last_mut().filter(|t| t.open()) else {
+                return Err("some thinking — no turn was open".to_string());
+            };
             append(&mut turn.items, cap(delta), true);
         }
         Event::Status { text } => agent.status = cap(text).to_string(),
@@ -979,7 +1013,7 @@ fn apply(agent: &mut Agent, event: &Event, provenance: Provenance, now: u64) -> 
             }
         }
     }
-    true
+    Ok(())
 }
 
 /// The turn an event's card goes in.
@@ -1076,6 +1110,8 @@ struct AgentRecord {
     usage: UsageRecord,
     #[serde(default)]
     refused: u32,
+    #[serde(default)]
+    refusals: Vec<String>,
     #[serde(default)]
     approvals_asked: u32,
     #[serde(default)]
@@ -1184,6 +1220,7 @@ fn serialize(agent: &Agent) -> String {
             reported: agent.usage.reported,
         },
         refused: agent.refused,
+        refusals: agent.refusals.clone(),
         approvals_asked: agent.approvals_asked,
         approvals_answered: agent.approvals_answered,
         touched: agent.touched,
@@ -1272,6 +1309,7 @@ fn parse(text: &str, now: u64) -> Option<Agent> {
             reported: record.usage.reported,
         },
         refused: record.refused,
+        refusals: record.refusals,
         approvals_asked: record.approvals_asked,
         approvals_answered: record.approvals_answered,
         pending_approvals: Vec::new(),
@@ -1472,6 +1510,66 @@ mod tests {
         s.event(&pi, &output("b", "too late"), Provenance::Reported);
         s.text(&pi, "too late");
         assert_eq!(s.agent(&pi).unwrap().refused, before + 2);
+    }
+
+    /// #212: the details column said "Refused 121 events" and nothing else — no way to see what
+    /// was refused, or why. Every refusal now keeps a line saying both; the newest few are kept,
+    /// the count stays the whole truth, and the lines survive a restart like the count does.
+    #[test]
+    fn a_refusal_keeps_a_line_that_says_what_arrived_and_why_it_was_refused() {
+        let (mut s, _) = store();
+        let pi = id("pi:main");
+        s.upsert_agent(AgentMeta::new(pi.clone(), "pi"));
+        s.event(&pi, &start("early", "bash", json!({})), Provenance::Reported);
+        assert_eq!(s.agent(&pi).unwrap().refusals, ["a start for `bash` (`early`) — no turn was open"]);
+
+        s.open_turn(&pi, "go");
+        s.event(&pi, &start("a", "bash", json!({})), Provenance::Reported);
+        s.event(&pi, &start("a", "bash", json!({})), Provenance::Reported);
+        s.event(&pi, &end("a", true, Some(0)), Provenance::Reported);
+        s.event(&pi, &end("a", false, Some(1)), Provenance::Reported);
+        s.event(&pi, &output("a", "late"), Provenance::Reported);
+        s.close_turn(&pi, true);
+        s.text(&pi, "after the end");
+        assert_eq!(
+            s.details(&pi).unwrap().refusals,
+            [
+                "a start for `bash` (`early`) — no turn was open",
+                "a second start for `a`",
+                "a second end for `a`",
+                "output for `a` — its call had already ended",
+                "some of its text — no turn was open",
+            ],
+            "every refusal says what arrived and why it was refused"
+        );
+        assert_eq!(s.agent(&pi).unwrap().refused, 5);
+
+        // A command's bytes after its exit get their own line.
+        s.command_started(&pi, "job-1", "make", "/home/pranab/src");
+        s.command_finished(&pi, "job-1", "make", Some(0), false);
+        s.command_output(&pi, "job-1", b"late bytes");
+        assert_eq!(
+            s.details(&pi).unwrap().refusals.last().unwrap(),
+            "terminal bytes for `job-1` — the command had already ended"
+        );
+
+        // The newest REFUSED_LINES are kept; the count keeps all of them.
+        for _ in 0..REFUSED_LINES {
+            s.text(&pi, "still talking");
+        }
+        let agent = s.agent(&pi).unwrap();
+        assert_eq!(agent.refusals.len(), REFUSED_LINES, "the lines are bounded");
+        assert_eq!(agent.refused, 12, "the count is not");
+        assert!(agent.refusals.iter().all(|l| l == "some of its text — no turn was open"), "{:?}", agent.refusals);
+
+        let dir = scratch_dir("refusals");
+        s.save(&dir).unwrap();
+        let back = Store::load(&dir, Box::new(|| 1_790_999_999));
+        let agent = back.agent(&pi).unwrap();
+        assert_eq!(agent.refused, 12);
+        assert_eq!(agent.refusals.len(), REFUSED_LINES);
+        assert_eq!(agent.refusals[0], "some of its text — no turn was open");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -1791,6 +1889,7 @@ mod tests {
             id: "coder".into(),
             name: "Coder".into(),
             reach: "shell.agent_* and editor · at most sensitive".into(),
+            reach_words: "its own terminal and the Editor, and it may ask for sensitive acts".into(),
             turns: 12,
             minutes: 45,
         };

@@ -170,15 +170,18 @@ person installs this.
 
 ### Hardware
 
-The image is about **1.31 GiB**. What it has actually been booted on:
+The image is about **1.31 GiB**. The Minimum column is what the first-boot hardware scan
+checks — the disk figure against the whole size of the disk the installer will write to,
+not against free space on the live session. The other two columns are what the image has
+actually been booted on:
 
-| | CI's boot test, every published image | The project's test machine |
-|--|---------------------------------------|----------------------------|
-| **CPU** | 4 | 4 |
-| **RAM** | 4 GB | 8 GB |
-| **GPU** | none (virtio-vga, software rendering) | none (virtio-gpu, software rendering) |
-| **Disk** | none — boots live | 32 GB |
-| **Firmware** | BIOS | BIOS |
+| | Minimum | CI's boot test, every published image | The project's test machine |
+|--|---------|---------------------------------------|----------------------------|
+| **CPU** | 2 cores | 4 | 4 |
+| **RAM** | 4 GB | 4 GB | 8 GB |
+| **GPU** | none | none (virtio-vga, software rendering) | none (virtio-gpu, software rendering) |
+| **Disk** | 6 GB, to install | none — boots live | 32 GB |
+| **Firmware** | BIOS (UEFI is built, untested) | BIOS | BIOS |
 
 Real hardware, the UEFI path and any GPU other than QEMU's are **not measured** — nobody has
 checked. [docs/hardware-requirements.md](docs/hardware-requirements.md) says exactly which

@@ -295,6 +295,32 @@ class PiEventTests(unittest.TestCase):
         self.desktop.wait_closed(self.desktop.ask("hi"), timeout=8)
         self.assertEqual([p["token"] for p in self.dump("env")], [None])
 
+    def test_pi_runs_in_a_directory_of_the_desktops_own_never_in_the_home_folder(self):
+        # pi reads the instruction files — CLAUDE.md, AGENTS.md — of its working directory and
+        # of every parent, and the harness itself runs in $HOME, so a brief a person left at
+        # ~/CLAUDE.md for their own coding work would steer the desktop's mind (#183). Each
+        # conversation's pi starts in its own directory under the desktop's data directory.
+        data = tempfile.mkdtemp(prefix="pi-data-")
+        previous = os.environ["XDG_DATA_HOME"]
+        os.environ["XDG_DATA_HOME"] = data
+        self.addCleanup(os.environ.__setitem__, "XDG_DATA_HOME", previous)
+        self.start(yantrik_pi.handler(self.config("text"), log=lambda message: None))
+        for conversation in ("c-aaaaaa", "c-bbbbbb"):
+            turn = self.desktop.ask("hi", conversation=conversation,
+                                    agent_token=conversation * 4)
+            self.desktop.wait_closed(turn, timeout=8)
+        started = self.dump("env")
+        self.assertEqual(len(started), 2, started)
+        minds = os.path.join(data, "yantrik", "minds", "pi")
+        home = os.path.realpath(os.path.expanduser("~"))
+        self.assertEqual(sorted(os.path.realpath(p["cwd"]) for p in started),
+                         sorted(os.path.realpath(os.path.join(minds, c))
+                                for c in ("c-aaaaaa", "c-bbbbbb")))
+        for process in started:
+            cwd = os.path.realpath(process["cwd"])
+            self.assertTrue(cwd.startswith(minds + os.sep), cwd)
+            self.assertNotEqual(cwd, home)
+
 
 class PiConfigTests(unittest.TestCase):
     def test_the_silence_budget_exceeds_the_longest_an_approval_card_can_wait(self):

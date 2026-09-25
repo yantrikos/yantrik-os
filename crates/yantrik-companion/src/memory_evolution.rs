@@ -167,14 +167,16 @@ impl SmartRecallResult {
 ///
 /// Audit logs and system domains pollute recall with operational noise.
 /// Self-reflections have their own recall path (Step 3 introspect).
-fn is_excluded_domain(domain: &str) -> bool {
+/// Shared with the `recall` tool (#88) so the model never reads back its own
+/// tool-audit lines — the same rule, one definition.
+pub(crate) fn is_excluded_domain(domain: &str) -> bool {
     domain.starts_with("audit/")
         || domain.starts_with("system/")
         || domain == "self-reflection"
 }
 
 /// Filter out excluded domains from recall results, preserving order.
-fn filter_recall_results(results: Vec<RecallResult>) -> Vec<RecallResult> {
+pub(crate) fn filter_recall_results(results: Vec<RecallResult>) -> Vec<RecallResult> {
     results.into_iter()
         .filter(|r| !is_excluded_domain(&r.domain))
         .collect()

@@ -42,9 +42,9 @@ fn refresh_agent_rail(ui: &ContainerManagerApp) {
     ui.set_agent_context(ModelRc::new(VecModel::from(context)));
 
     let has_logs = !ui.get_log_text().to_string().trim().is_empty();
-    let online = companion::is_online();
+    let reach = companion::reach();
     let mut next: Vec<AgentSuggestion> = Vec::new();
-    if online && has_logs {
+    if reach == companion::Reach::Ready && has_logs {
         next.push(AgentSuggestion {
             id: "logs".into(),
             label: "Explain these logs".into(),
@@ -55,10 +55,9 @@ fn refresh_agent_rail(ui: &ContainerManagerApp) {
         });
     }
     ui.set_agent_suggestions(ModelRc::new(VecModel::from(next)));
-    ui.set_agent_unavailable(if online || !has_logs {
-        SharedString::new()
-    } else {
-        companion::OFFLINE_HINT.into()
+    ui.set_agent_unavailable(match reach.hint() {
+        Some(hint) if has_logs => hint.into(),
+        _ => SharedString::new(),
     });
 }
 
@@ -725,7 +724,7 @@ fn wire(app: &ContainerManagerApp, health: &Health) {
                     ui.set_ai_response(
                         match outcome {
                             Ok(text) => text,
-                            Err(e) => format!("The companion did not answer: {e}"),
+                            Err(e) => e.to_string(),
                         }
                         .into(),
                     );

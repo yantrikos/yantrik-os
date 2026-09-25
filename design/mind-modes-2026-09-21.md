@@ -370,6 +370,11 @@ every row a fixed height:
 | "This machine never allows a caller past …" (30px) | 277…307 | — |
 | *(with no session rules)* separator | 315 | — |
 | *(with no session rules)* "See what it did without asking" (28px) | 324…352 | **(1098, 338)** |
+| *(with no session rules)* separator | 360 | — |
+| *(with no session rules)* "Apps it opens go … in Mind View / on my desktop" (28px, #239) | 369…397 | **(1098, 383)** |
+
+The Mind View row is last so that no row above it moved when it was added. It also moves down
+while the audit list is open, by that list's height.
 
 `x = 1098` is the horizontal centre of the content column (`940 + 316/2`); any `x` in 940…1256
 lands on the same row.

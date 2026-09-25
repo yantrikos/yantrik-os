@@ -1127,3 +1127,35 @@ def end_process(proc: Optional[subprocess.Popen]) -> None:
             proc.kill()
         except Exception:
             pass
+
+
+# ── Where an agent process runs ─────────────────────────────────────────────────────────
+
+
+def mind_directory(harness_id: str, conversation: str = MAIN) -> str:
+    """The working directory for one conversation's agent processes, made if it is missing.
+
+    A coding agent reads the instruction files of the directory it is started in and of every
+    parent — pi reads `CLAUDE.md` and `AGENTS.md`, and other agents read the same names or
+    their own. A harness runs as a user service, whose working directory is `$HOME`, so an
+    agent started with no directory of its own reads whatever brief the person left in
+    `~/CLAUDE.md` or `~/AGENTS.md` for their own coding work, and that brief steers the
+    desktop's mind (#183: one made pi answer a readiness check with a manifesto and start a
+    Blender render). So every agent process is started here instead: under the desktop's own
+    data directory, where the only instructions are the ones put there on purpose. A task
+    about a project may still pass the project's directory explicitly; `$HOME` is never the
+    default.
+
+    The conversation id crossed the wire, so it is reduced to a plain name: a directory
+    outside this tree is never what an id may ask for.
+    """
+    name = "".join(ch if (ch.isalnum() or ch in "-_.") else "-"
+                   for ch in str(conversation or MAIN))
+    if not name.strip("."):
+        name = "conversation"
+    data = os.environ.get("XDG_DATA_HOME", "").strip()
+    root = (Path(os.path.expanduser(data)) if data
+            else Path(os.path.expanduser("~")) / ".local" / "share")
+    where = root / "yantrik" / "minds" / str(harness_id) / name
+    where.mkdir(parents=True, exist_ok=True)
+    return str(where)

@@ -103,6 +103,18 @@ fn wire_brief_card(ui: &App, ctx: &AppContext) {
 
     let timer = Timer::default();
     timer.start(TimerMode::SingleShot, Duration::from_secs(3), move || {
+        // On an installed machine this fires behind the login screen: it would claim the day,
+        // run the LLM round and compose a brief nobody has signed in to see, and the reply
+        // would arrive as a notification over the lock (#203). Dropped, not queued — and
+        // dropped before the claim, so a shell the person restarts after signing in still
+        // delivers the day's brief.
+        if let Some(ui) = ui_weak.upgrade() {
+            if crate::control::locked_screen(ui.get_current_screen()) {
+                tracing::info!("Morning brief dropped — the desktop is waiting for the person to sign in");
+                return;
+            }
+        }
+
         // Only show if companion is online
         if !bridge.is_online() {
             tracing::info!("Morning brief card skipped — companion offline");

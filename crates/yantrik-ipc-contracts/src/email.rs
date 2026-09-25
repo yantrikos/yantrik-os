@@ -208,6 +208,27 @@ pub fn without_secrets(text: &str, secrets: &[&str]) -> String {
     out
 }
 
+/// The folder a per-message method acts on: the optional `folder` parameter, defaulting to
+/// `INBOX`.
+///
+/// IMAP UIDs are per-mailbox, so "message 412" only means anything together with the folder it
+/// was listed from. Callers that show a folder's own listing pass that folder; the default is
+/// INBOX because that is all earlier callers ever asked about, and their calls must keep
+/// working unchanged (#275).
+///
+/// Every per-message method takes the parameter, not only the two #275 added: star, move,
+/// delete and search all acted on INBOX whatever folder was on screen (#288). The default is
+/// kept for old callers of the two that cannot be undone — `delete_message` and `move_message`
+/// — and the service logs it whenever one leans on it, so a wrong-mailbox delete leaves a
+/// trace.
+pub fn folder_or_inbox(params: &serde_json::Value) -> &str {
+    params["folder"]
+        .as_str()
+        .map(str::trim)
+        .filter(|f| !f.is_empty())
+        .unwrap_or("INBOX")
+}
+
 /// An email message summary (for list views).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EmailSummary {
@@ -321,13 +342,24 @@ pub struct ComposeRequest {
 pub trait EmailService: Send + Sync {
     fn list_folders(&self, account_id: &str) -> Result<Vec<EmailFolder>, ServiceError>;
     fn list_messages(&self, account_id: &str, folder: &str, page: u32, per_page: u32) -> Result<Vec<EmailSummary>, ServiceError>;
-    fn get_message(&self, account_id: &str, message_id: &str) -> Result<EmailDetail, ServiceError>;
+    /// Read one message from `folder` — the folder its summary was listed from; UIDs are
+    /// per-mailbox, so the same id in another folder is another message (#275).
+    fn get_message(&self, account_id: &str, folder: &str, message_id: &str) -> Result<EmailDetail, ServiceError>;
     fn send_message(&self, account_id: &str, compose: ComposeRequest) -> Result<(), ServiceError>;
-    fn mark_read(&self, account_id: &str, message_id: &str, read: bool) -> Result<(), ServiceError>;
-    fn mark_starred(&self, account_id: &str, message_id: &str, starred: bool) -> Result<(), ServiceError>;
-    fn move_message(&self, account_id: &str, message_id: &str, target_folder: &str) -> Result<(), ServiceError>;
-    fn delete_message(&self, account_id: &str, message_id: &str) -> Result<(), ServiceError>;
-    fn search(&self, account_id: &str, query: &str) -> Result<Vec<EmailSummary>, ServiceError>;
+    /// Flag one message in `folder`, for the same reason [`EmailService::get_message`] takes it.
+    fn mark_read(&self, account_id: &str, folder: &str, message_id: &str, read: bool) -> Result<(), ServiceError>;
+    /// Star one message in `folder`, for the same reason [`EmailService::get_message`] takes
+    /// it: starring ran in INBOX whatever folder was on screen, so it moved the star on a
+    /// different message than the one that was clicked (#288).
+    fn mark_starred(&self, account_id: &str, folder: &str, message_id: &str, starred: bool) -> Result<(), ServiceError>;
+    /// Move one message out of `folder`, for the same reason — and destructively: a move of a
+    /// row listed from Spam moved whichever message wore this UID in INBOX (#288).
+    fn move_message(&self, account_id: &str, folder: &str, message_id: &str, target_folder: &str) -> Result<(), ServiceError>;
+    /// Delete one message from `folder`, for [`EmailService::move_message`]'s reason (#288).
+    fn delete_message(&self, account_id: &str, folder: &str, message_id: &str) -> Result<(), ServiceError>;
+    /// Search `folder` — the one on the caller's screen. Searching ran in INBOX whichever
+    /// folder was open (#288).
+    fn search(&self, account_id: &str, folder: &str, query: &str) -> Result<Vec<EmailSummary>, ServiceError>;
 }
 
 /// Shared error type for all services.
@@ -344,3 +376,26 @@ impl std::fmt::Display for ServiceError {
 }
 
 impl std::error::Error for ServiceError {}
+
+#[cfg(test)]
+mod tests {
+    use super::folder_or_inbox;
+
+    #[test]
+    fn folder_param_defaults_to_inbox_so_old_callers_keep_working() {
+        assert_eq!(folder_or_inbox(&serde_json::json!({})), "INBOX");
+        assert_eq!(folder_or_inbox(&serde_json::json!({"folder": ""})), "INBOX");
+        assert_eq!(folder_or_inbox(&serde_json::json!({"folder": "  "})), "INBOX");
+        assert_eq!(folder_or_inbox(&serde_json::json!({"folder": null})), "INBOX");
+        assert_eq!(folder_or_inbox(&serde_json::json!({"folder": 7})), "INBOX");
+    }
+
+    #[test]
+    fn folder_param_names_the_folder_the_message_was_listed_from() {
+        assert_eq!(folder_or_inbox(&serde_json::json!({"folder": "Spam"})), "Spam");
+        assert_eq!(
+            folder_or_inbox(&serde_json::json!({"folder": "[Gmail]/Sent Mail"})),
+            "[Gmail]/Sent Mail"
+        );
+    }
+}

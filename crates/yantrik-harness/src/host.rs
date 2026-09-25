@@ -9,7 +9,8 @@
 //! # A harness exists because it is attached
 //!
 //! There is no registry file, no list of known harnesses, nothing to install. `mind` appears in
-//! the picker when `mind` attaches and disappears when it stops polling. This is the whole
+//! the picker when `mind` attaches and disappears when it stops polling — or at once, whatever
+//! the grace, when the kernel says the process that attached is gone. This is the whole
 //! correction: the OS was configuring endpoints and models that the harnesses already manage
 //! themselves, and now it holds the one thing it actually owns — which mind the person is
 //! talking to.
@@ -258,8 +259,17 @@ struct Attached {
 }
 
 impl Attached {
-    fn present(&self) -> bool {
+    /// Whether this session still stands for a mind that can poll.
+    ///
+    /// The grace of missed polls is for a harness that hiccuped — a slow turn or a blip must not
+    /// drop it. It must not outlive the process itself, though: `systemctl stop` kills the
+    /// harness, and the session used to sit out its whole grace anyway, long enough for the
+    /// shell to keep offering a mind that is gone as the one answering (#67). What the
+    /// liveness probe — the kernel, unless a test injected its own truth — says about the pid
+    /// ends the grace at once.
+    fn present(&self, alive: &(dyn Fn(u32) -> bool + Send + Sync)) -> bool {
         self.last_seen.elapsed() < Duration::from_secs(protocol::PRESENCE_TIMEOUT_SECS)
+            && self.pid.map_or(true, alive)
     }
 
     fn remember_finished(&mut self, turn_id: u64) {
@@ -290,6 +300,24 @@ impl Attached {
     }
 }
 
+/// Whether the process the kernel reported at attach still runs: the default liveness probe
+/// every [`Host`] carries, replaceable per-host by [`Host::with_liveness`] for tests that
+/// invent pids.
+///
+/// On Linux `/proc/<pid>` goes away with the process — the same fact `systemctl stop` leaves
+/// behind, asked of the kernel rather than inferred from a unit file, so a harness started by
+/// hand is as alive as one its unit runs. Anywhere else there is no `/proc` to ask and presence
+/// stays the grace of missed polls alone; the crate builds and its other tests run unchanged.
+#[cfg(target_os = "linux")]
+fn pid_alive(pid: u32) -> bool {
+    std::path::Path::new("/proc").join(pid.to_string()).exists()
+}
+
+#[cfg(not(target_os = "linux"))]
+fn pid_alive(_pid: u32) -> bool {
+    true
+}
+
 /// One row of the picker.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Entry {
@@ -300,6 +328,11 @@ pub struct Entry {
     pub builtin: bool,
     pub active: bool,
     pub capabilities: Capabilities,
+    /// The process that attached, as the kernel reported it at accept (`SO_PEERCRED`). `None`
+    /// for a built-in, which never attaches, and for a harness that attached over a transport
+    /// the kernel could not speak for (the TCP dev path). The shell matches an approval's
+    /// caller against it: a caller descending from that process is that mind (#206).
+    pub pid: Option<u32>,
 }
 
 /// What an agent is doing, as far as the host can see from the wire.
@@ -377,6 +410,9 @@ struct State {
 pub struct Host {
     builtins: Arc<Vec<Arc<dyn Harness>>>,
     state: Arc<Mutex<State>>,
+    /// Asks whether the process that attached still runs — the kernel's `pid_alive` by default,
+    /// unless a test injected its own with [`Host::with_liveness`].
+    liveness: Arc<dyn Fn(u32) -> bool + Send + Sync>,
 }
 
 impl Host {
@@ -395,7 +431,17 @@ impl Host {
                 issued: HashSet::new(),
                 events: EventCounts::default(),
             })),
+            liveness: Arc::new(pid_alive),
         }
+    }
+
+    /// The same host, asking `probe` whether a process that attached still runs instead of
+    /// asking the kernel. For tests that invent pids — a fake process tree has no `/proc`
+    /// behind it, and the invented harness must not be reaped for that (#67). Production
+    /// takes the default and never comes through here.
+    pub fn with_liveness(mut self, probe: impl Fn(u32) -> bool + Send + Sync + 'static) -> Host {
+        self.liveness = Arc::new(probe);
+        self
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, State> {
@@ -407,11 +453,11 @@ impl Host {
     }
 
     /// Forget harnesses that stopped polling. Called before anything that reads the list.
-    fn reap(state: &mut State) {
+    fn reap(&self, state: &mut State) {
         let gone: Vec<String> = state
             .attached
             .iter()
-            .filter(|(_, a)| !a.present())
+            .filter(|(_, a)| !a.present(&*self.liveness))
             .map(|(id, _)| id.clone())
             .collect();
         for id in gone {
@@ -429,7 +475,7 @@ impl Host {
     /// Everything selectable right now: built-ins, then whoever is attached.
     pub fn list(&self) -> Vec<Entry> {
         let mut state = self.lock();
-        Self::reap(&mut state);
+        self.reap(&mut state);
         let active = state.active.clone();
 
         let mut rows: Vec<Entry> = self
@@ -442,6 +488,7 @@ impl Host {
                 builtin: true,
                 active: h.id() == active,
                 capabilities: h.capabilities(),
+                pid: None,
             })
             .collect();
 
@@ -459,6 +506,7 @@ impl Host {
                     tools: a.announced.tools,
                     memory: a.announced.memory,
                 },
+                pid: a.pid,
             });
         }
         rows
@@ -516,7 +564,7 @@ impl Host {
             ));
         }
         let mut state = self.lock();
-        Self::reap(&mut state);
+        self.reap(&mut state);
         let st = &mut *state;
         let live: usize = st.attached.values().map(|a| a.agents.len()).sum();
         let Some(harness) = st.attached.get_mut(harness_id) else {
@@ -569,7 +617,7 @@ impl Host {
         }
         let conversation = agent.conversation().to_string();
         let mut state = self.lock();
-        Self::reap(&mut state);
+        self.reap(&mut state);
         let st = &mut *state;
         let harness = st
             .attached
@@ -607,7 +655,7 @@ impl Host {
     /// Every live agent, oldest first.
     pub fn agents(&self) -> Vec<AgentEntry> {
         let mut state = self.lock();
-        Self::reap(&mut state);
+        self.reap(&mut state);
         let mut rows = Vec::new();
         for (harness_id, harness) in &state.attached {
             for (conversation, agent) in &harness.agents {
@@ -655,7 +703,7 @@ impl Host {
             return None;
         }
         let mut state = self.lock();
-        Self::reap(&mut state);
+        self.reap(&mut state);
         for (harness_id, harness) in &state.attached {
             for (conversation, agent) in &harness.agents {
                 if same_secret(&agent.token, token) {
@@ -671,7 +719,7 @@ impl Host {
     /// own: a harness that holds one has only the person's own conversation to offer.
     pub fn holds_conversations(&self, harness_id: &str) -> Option<bool> {
         let mut state = self.lock();
-        Self::reap(&mut state);
+        self.reap(&mut state);
         state.attached.get(harness_id).map(|h| h.announced.conversations)
     }
 
@@ -680,7 +728,7 @@ impl Host {
     /// itself goes no further than `f`. `None` for an agent that is not live.
     pub fn with_agent_token<R>(&self, agent: &AgentId, f: impl FnOnce(&str) -> R) -> Option<R> {
         let mut state = self.lock();
-        Self::reap(&mut state);
+        self.reap(&mut state);
         let token = state
             .attached
             .get(agent.harness())
@@ -708,7 +756,7 @@ impl Host {
             return false;
         }
         let mut state = self.lock();
-        Self::reap(&mut state);
+        self.reap(&mut state);
         let Some(live) = state
             .attached
             .get_mut(agent.harness())
@@ -731,7 +779,7 @@ impl Host {
     /// cap is free. Returns whether there was anything to stop.
     pub fn stop_agent(&self, agent: &AgentId) -> bool {
         let mut state = self.lock();
-        Self::reap(&mut state);
+        self.reap(&mut state);
         let Some(harness) = state.attached.get_mut(agent.harness()) else { return false };
         let conversation = agent.conversation();
         let existed = harness.agents.remove(conversation).is_some();
@@ -769,7 +817,7 @@ impl Host {
             return builtin.health();
         }
         let mut state = self.lock();
-        Self::reap(&mut state);
+        self.reap(&mut state);
         match state.attached.get(id) {
             Some(_) => Health::Ready,
             None => Health::Unreachable("not attached".into()),
@@ -836,7 +884,7 @@ impl Host {
         }
 
         let mut state = self.lock();
-        Self::reap(&mut state);
+        self.reap(&mut state);
         let session = format!("s{}", state.next_session);
         state.next_session += 1;
 
@@ -902,7 +950,7 @@ impl Host {
     /// one at a time per conversation. `/stop` alone skips the line.
     fn poll(&self, params: &serde_json::Value) -> Result<serde_json::Value, String> {
         let mut state = self.lock();
-        Self::reap(&mut state);
+        self.reap(&mut state);
         let harness = Self::touch(&mut state.attached, params)?;
 
         let busy: HashSet<String> = harness
@@ -1506,6 +1554,7 @@ mod tests {
         assert!(!row.capabilities.memory);
         assert_eq!(row.detail.as_deref(), Some("qwen2.5"));
         assert!(!row.builtin);
+        assert_eq!(row.pid, None, "`handle` brings no peer for the kernel to name");
     }
 
     // ── Order: first in, first out, one at a time per conversation ─────
@@ -1883,7 +1932,9 @@ mod tests {
 
     #[test]
     fn an_agent_token_names_its_agent_and_the_process_that_attached() {
-        let host = host_with_nothing();
+        // A fabricated pid, held alive by an injected probe: this test is about tokens, not
+        // presence, and the registry asks the kernel about real ones (#67).
+        let host = host_with_nothing().with_liveness(|pid| pid == 4242);
         let session = host
             .handle_from(protocol::ATTACH, &json!({ "id": "pi", "name": "Pi", "conversations": true }), Some(4242))
             .unwrap()["session"]
@@ -1902,6 +1953,9 @@ mod tests {
         assert_ne!(token_one, token_two);
         assert_eq!(host.agent_for_token(&token_one), Some((first.clone(), Some(4242))));
         assert_eq!(host.agent_for_token(&token_two), Some((second, Some(4242))));
+        // The picker's row carries the same pid: the shell matches an approval's caller
+        // against it, which is what told the real Pi apart from an impostor (#206).
+        assert_eq!(host.list().into_iter().find(|e| e.id == "pi").unwrap().pid, Some(4242));
 
         // Not a prefix, not a guess, not empty.
         assert_eq!(host.agent_for_token(&token_one[..31]), None);
@@ -1940,6 +1994,48 @@ mod tests {
         let _a = host.send_to(&agent, Turn::new("one")).unwrap();
         let token = poll(&host, &session)["agent_token"].as_str().unwrap().to_string();
         assert_eq!(host.agent_for_token(&token), Some((agent, None)));
+    }
+
+    // ── Presence: the kernel's word about the process (#67) ─────────────
+
+    /// A harness whose process died leaves the list at once rather than sitting out the grace of
+    /// missed polls. `systemctl --user stop yantrik-pi.service` kills the attaching process, and
+    /// the registry used to hold the session for up to 90 s — long enough for the Settings page
+    /// to say "attached", offer *Use this*, and hand the next question to nobody.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_harness_whose_process_died_leaves_the_list_without_waiting_out_the_grace() {
+        let host = host_with_nothing();
+        let mut child = std::process::Command::new("sleep")
+            .arg("60")
+            .spawn()
+            .expect("the test machine can start a sleeper");
+        host.handle_from(protocol::ATTACH, &json!({ "id": "pi", "name": "Pi" }), Some(child.id()))
+            .unwrap();
+        assert!(host.list().iter().any(|e| e.id == "pi"), "listed while its process lives");
+
+        // Stopped the way systemctl stops it, and waited for the kernel to reap it. The wait is
+        // on state, not on time: once `wait` returns, `/proc/<pid>` is gone.
+        child.kill().expect("the sleeper can be killed");
+        child.wait().expect("the sleeper can be waited for");
+
+        let ids: Vec<String> = host.list().into_iter().map(|e| e.id).collect();
+        assert!(!ids.contains(&"pi".to_string()), "still listed after its process died: {ids:?}");
+        // And a question for it is refused with what is attached, not queued for a poll that
+        // will never come.
+        assert!(host.set_active("pi").is_err());
+    }
+
+    #[test]
+    fn a_harness_attached_with_a_live_pid_stays_listed() {
+        let host = host_with_nothing();
+        // Its own pid, as the kernel reports for a harness started by hand from a terminal while
+        // its unit file sits installed and stopped. Presence asks the process, never the unit.
+        host.handle_from(protocol::ATTACH, &json!({ "id": "pi", "name": "Pi" }), Some(std::process::id()))
+            .unwrap();
+        assert!(host.list().iter().any(|e| e.id == "pi"));
+        host.set_active("pi").unwrap();
+        assert_eq!(host.active_id(), "pi");
     }
 
     #[test]

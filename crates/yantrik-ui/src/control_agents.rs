@@ -761,7 +761,11 @@ fn allowed_on_card(origin: &RecipeOrigin, call: &AgentCall<'_>, role: &catalog::
         role.budget.minutes,
         role.mind.join(" or ")
     );
-    match approvals::request(&origin.label(), verified, "shell", "hand_off", args, "sensitive", &purpose) {
+    // No naming line: the shell publishes no id→name index, and `hand_off`'s arguments name
+    // themselves — the recipe a person is being asked to start is in the `purpose` above.
+    match approvals::request(
+        &origin.label(), verified, "shell", "hand_off", args, "sensitive", &purpose, "",
+    ) {
         Ok(asked) => {
             asks.insert(key, asked.id);
             Err(AgentRefusal::Ask(waiting))
@@ -980,12 +984,22 @@ impl Handed {
     }
 }
 
-/// Whether `agent` may be shown asking for `app.action`, graded `grade`: an agent held to a
-/// role's reach is refused, in the reach's words, before a card for an act its reach refuses
-/// would reach the person — the act itself would be refused on its door whatever they pressed.
-pub fn within_reach(agent: &AgentId, app: &str, action: &str, grade: &str) -> Result<(), String> {
+/// Whether `agent` may be shown asking for `app.action` with these `args`, graded `grade`: an
+/// agent held to a role's reach is refused, in the reach's words, before a card for an act its
+/// reach refuses would reach the person — the act itself would be refused on its door whatever
+/// they pressed.
+///
+/// `args` are the ones the card would be bound to, and the reach reads one act's: a role may ask
+/// to open an app its reach names, as it may open one itself (#195).
+pub fn within_reach(
+    agent: &AgentId,
+    app: &str,
+    action: &str,
+    grade: &str,
+    args: &Value,
+) -> Result<(), String> {
     match reaches::of(agent) {
-        Some(reach) => yantrik_ipc_transport::reach::within(&reach, app, action, grade),
+        Some(reach) => yantrik_ipc_transport::reach::within(&reach, app, action, grade, args),
         None => Ok(()),
     }
 }
@@ -1094,17 +1108,23 @@ mod tests {
         assert!(!std::fs::read_to_string(reaches::path()).unwrap().contains(&token), "the file keeps a digest, never the token");
 
         use yantrik_ipc_transport::reach::within;
-        assert!(within(&held, "notes", "list_notes", "safe").is_ok(), "in reach");
-        let err = within(&held, "files", "move", "safe").unwrap_err();
+        assert!(within(&held, "notes", "list_notes", "safe", &json!({})).is_ok(), "in reach");
+        let err = within(&held, "files", "move", "safe", &json!({})).unwrap_err();
         assert!(err.starts_with("REACH: files.move is outside the Reviewer's reach") && err.contains(&handed.agent.0), "{err}");
-        let err = within(&held, "notes", "new_note", "standard").unwrap_err();
+        let err = within(&held, "notes", "new_note", "standard", &json!({})).unwrap_err();
         assert!(err.contains("above the Reviewer's `safe` ceiling"), "{err}");
-        let err = within(&held, "shell", "agent_run", "sensitive").unwrap_err();
+        let err = within(&held, "shell", "agent_run", "sensitive", &json!({})).unwrap_err();
         assert!(err.starts_with("REACH: shell.agent_run is outside"), "a reviewer runs no commands: {err}");
+        // An app its reach names it may open, `safe` ceiling or not, and one it does not name it
+        // may not (#195): a closed Notes was a Notes it could never read.
+        assert!(within(&held, "shell", "open_app", "standard", &json!({ "name": "notes" })).is_ok());
+        let err = within(&held, "shell", "open_app", "standard", &json!({ "name": "terminal" })).unwrap_err();
+        assert!(err.starts_with("REACH: shell.open_app opens `terminal`"), "{err}");
         // Asking the person about an act its reach refuses is refused too, in the same words.
-        let err = within_reach(&handed.agent, "files", "move", "sensitive").unwrap_err();
+        let err = within_reach(&handed.agent, "files", "move", "sensitive", &json!({})).unwrap_err();
         assert!(err.starts_with("REACH:"), "{err}");
-        assert!(within_reach(&AgentId("pi:c-noreach".into()), "files", "move", "sensitive").is_ok(), "an agent with no role has no reach");
+        assert!(within_reach(&handed.agent, "shell", "open_app", "standard", &json!({ "name": "editor" })).is_ok(), "it may ask to open what it may open");
+        assert!(within_reach(&AgentId("pi:c-noreach".into()), "files", "move", "sensitive", &json!({})).is_ok(), "an agent with no role has no reach");
 
         let answer = handed.answer(None);
         let said = answer["said"].as_str().unwrap();

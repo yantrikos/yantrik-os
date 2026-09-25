@@ -170,6 +170,16 @@ fn wire_selected(ui: &App, ctx: &AppContext) {
             None => return,
         };
 
+        // The palette only draws on the desktop screen, but the rule is that nothing moves the
+        // shell off login or lock on its own (#203), and this handler is one of the paths the
+        // bug report names: every branch below navigates, locks, toggles or opens the Lens.
+        // While the desktop waits for the person the choice is dropped, not queued — there is
+        // no person's choice to keep, since the palette could not have been drawn.
+        if crate::control::locked_screen(ui.get_current_screen()) {
+            tracing::debug!(action = %action, "Command palette dropped — the desktop is waiting for the person to sign in");
+            return;
+        }
+
         // Close palette
         ui.set_command_palette_open(false);
 

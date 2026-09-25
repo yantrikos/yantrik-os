@@ -884,7 +884,7 @@ export component OnboardingScreen inherits Rectangle {
                             Icon {
                                 commands: root.hw-scan-step >= 4 ? Icons.check : Icons.clock;
                                 size: 14px;
-                                tint: root.hw-scan-step >= 4 ? Theme.color-success : Theme.text-dim;
+                                tint: root.hw-scan-step >= 4 ? (root.ai-hw-disk-ok ? Theme.color-success : Theme.amber) : Theme.text-dim;
                                 y: (parent.height - self.height) / 2;
                             }
                             Text {

@@ -308,9 +308,12 @@ fn agents_row_and_card(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Bo
         discrepancies: lines(&[]),
         app: "notes".into(),
         action: "list_notes".into(),
+        summary: "List the notes in a folder.".into(),
         purpose: "List the notes in a folder.".into(),
         grade: "safe".into(),
         args: lines(&["folder: release"]),
+        // `folder: release` is already the thing itself; no naming line to draw (#54).
+        target: "".into(),
         warning: "".into(),
         can_session: false,
         decision: "".into(),

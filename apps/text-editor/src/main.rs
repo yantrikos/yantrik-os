@@ -11,11 +11,14 @@ use std::{
 };
 use yantrik_app_runtime::control::{Action, App, Param, View};
 use yantrik_app_runtime::prelude::*;
+// The watch on the folder the open file lives in, and the decisions behind following a move.
+// Shared with yDoc (#86): the Text Editor's stranded-save pair was the one yDoc had in #75.
+use yantrik_file_follow as follow;
 slint::include_modules!();
 
 enum Job {
     Open(PathBuf),
-    Save(Document, PathBuf),
+    Save(Document, PathBuf, bool),
     Recovery(Vec<Document>, u64),
     Shutdown(Vec<Document>),
 }
@@ -34,6 +37,14 @@ struct Workbench {
     save_close: bool,
     jobs: mpsc::Sender<Job>,
     events: mpsc::Receiver<Event>,
+    /// The watch on the folder the active tab's file lives in, re-pointed by `paint` as the tabs
+    /// change. See `yantrik-file-follow` for why an editor watches a folder at all.
+    follow: follow::Watch,
+    /// What that watch has seen, waiting for the UI thread to come and read it.
+    moves: mpsc::Receiver<follow::Move>,
+    /// The path the watch is pointed at: the active tab's file as `paint` last saw it. A move
+    /// event is about THIS file, which by the time it is read may belong to a background tab.
+    watched: Option<PathBuf>,
     recovery_timer: slint::Timer,
     recovery_generation: u64,
     worker: Option<std::thread::JoinHandle<()>>,
@@ -137,7 +148,9 @@ fn wire(ui: &TextEditorApp, recovery_path: PathBuf, publish: bool) -> State {
         while let Ok(job) = work.recv() {
             let event = match job {
                 Job::Open(p) => Event::Open(Document::open(&p)),
-                Job::Save(d, p) => Event::Saved(d.save(&p)),
+                Job::Save(d, p, overwrite) => {
+                    Event::Saved(if overwrite { d.save_over(&p) } else { d.save(&p) })
+                }
                 Job::Recovery(d, g) => Event::Recovery(
                     if recovery_ok {
                         document::checkpoint(&recovery_path, &d)
@@ -159,6 +172,14 @@ fn wire(ui: &TextEditorApp, recovery_path: PathBuf, publish: bool) -> State {
             let _ = weak.upgrade_in_event_loop(|u| u.invoke_refresh());
         }
     });
+    // The folder watch and its mailbox. The watcher's own thread cannot touch the documents, so
+    // it puts what it saw on a channel and pokes `refresh` — the same callback the file worker
+    // wakes, so a move is read in `receive` beside the saves and opens.
+    let (moves, inbox) = mpsc::channel();
+    let wake = ui.as_weak();
+    let follow = follow::Watch::new(moves, move || {
+        let _ = wake.upgrade_in_event_loop(|u| u.invoke_refresh());
+    });
     let state = Rc::new(RefCell::new(Workbench {
         docs,
         active: 0,
@@ -169,6 +190,9 @@ fn wire(ui: &TextEditorApp, recovery_path: PathBuf, publish: bool) -> State {
         save_close: false,
         jobs,
         events,
+        follow,
+        moves: inbox,
+        watched: None,
         recovery_timer: slint::Timer::default(),
         recovery_generation: 0,
         worker: Some(worker),
@@ -197,7 +221,7 @@ fn wire(ui: &TextEditorApp, recovery_path: PathBuf, publish: bool) -> State {
             let mut b = s.borrow_mut();
             if index >= 0 && (index as usize) < b.docs.len() {
                 b.active = index as usize;
-                paint(&u, &b, true);
+                paint(&u, &mut b, true);
                 drop(b);
                 search(&u, &s, false);
             }
@@ -247,14 +271,14 @@ fn wire(ui: &TextEditorApp, recovery_path: PathBuf, publish: bool) -> State {
         }
         slint::CloseRequestResponse::KeepWindowShown
     });
-    paint(ui, &state.borrow(), true);
+    paint(ui, &mut state.borrow_mut(), true);
     ui.invoke_focus_editor();
     if publish {
         publish_control(ui, state.clone());
     }
     state
 }
-fn paint(ui: &TextEditorApp, b: &Workbench, content: bool) {
+fn paint(ui: &TextEditorApp, b: &mut Workbench, content: bool) {
     let d = &b.docs[b.active];
     ui.set_tabs(ModelRc::new(VecModel::from(
         b.docs
@@ -304,6 +328,11 @@ fn paint(ui: &TextEditorApp, b: &Workbench, content: bool) {
     ui.set_keywords(a.into());
     ui.set_strings(c.into());
     ui.set_comments(e.into());
+    // Re-point the folder watch at wherever the active tab's file lives now. Called from `paint`
+    // rather than from each of the places that change a path, because `paint` is the one function
+    // every one of them already goes through; re-pointing at the same folder is a no-op.
+    b.watched = b.docs[b.active].path.clone();
+    b.follow.point_at(b.watched.as_deref());
 }
 /// Small lexical highlighter. No parser service, background polling or per-token UI nodes.
 fn highlight(text: &str, language: &str) -> (String, String, String) {
@@ -408,7 +437,7 @@ fn edit(ui: &TextEditorApp, s: &State, text: String) {
     }
     let active = b.active;
     b.docs[active].edit(text);
-    paint(ui, &b, false);
+    paint(ui, &mut b, false);
     drop(b);
     search(ui, s, false);
     checkpoint(ui, s);
@@ -438,7 +467,13 @@ fn open(ui: &TextEditorApp, s: &State, path: PathBuf) {
     ui.set_notice("Opening file…".into());
     let _ = s.borrow().jobs.send(Job::Open(path));
 }
-fn save(ui: &TextEditorApp, s: &State, path: Option<PathBuf>) {
+/// Send the active tab's text to the worker to be written.
+///
+/// `overwrite` is the caller having been told that something is already at `path` and answering
+/// anyway; nothing in the window passes it — the Save As prompt still refuses to write over a
+/// file it was not expecting, and the one case where that refusal was wrong (the target IS this
+/// tab's own file, moved) is recognised inside `Document` and needs no permission.
+fn save(ui: &TextEditorApp, s: &State, path: Option<PathBuf>, overwrite: bool) {
     let b = s.borrow();
     let d = b.docs[b.active].snapshot();
     let Some(path) = path.or_else(|| d.path.clone()) else {
@@ -449,9 +484,70 @@ fn save(ui: &TextEditorApp, s: &State, path: Option<PathBuf>) {
     ui.set_busy(true);
     ui.set_notice("Saving…".into());
     ui.set_dialog_error("".into());
-    let _ = b.jobs.send(Job::Save(d, path));
+    let _ = b.jobs.send(Job::Save(d, path, overwrite));
+}
+/// The folder watch has reported a move. Follow it, if it was one of ours.
+///
+/// This is what closes #86 while the window is open: a file moved in Files goes on being the
+/// same tab, saved by Save, named correctly in the window and in `describe`. Only the path
+/// changes — the text and the baseline are untouched, because a rename moves the same bytes and
+/// the same inode, and a save's conflict check is still asking about the right file afterwards.
+fn follow_moves(ui: &TextEditorApp, s: &State) {
+    // Everything waiting, read as one decision. A rename arrives as two events — "it left", then
+    // "and here is where it went" — and acting on the first would send the app hunting through a
+    // directory for a file the second event is about to name.
+    let mut waiting = Vec::new();
+    loop {
+        let next = s.borrow().moves.try_recv();
+        match next {
+            Ok(moved) => waiting.push(moved),
+            Err(_) => break,
+        }
+    }
+    let Some(moved) = follow::latest(waiting) else { return };
+    // The event is about the file the watch was pointed at, which may sit in a tab that is no
+    // longer the active one — find that tab by the path, not by position.
+    let Some(watched) = s.borrow().watched.clone() else { return };
+    let now = match moved {
+        follow::Move::To(to) => Some(to),
+        // The event said only that the file left. Where it went is a look at the disk.
+        follow::Move::Away => {
+            let baseline = s
+                .borrow()
+                .docs
+                .iter()
+                .find(|d| d.path.as_ref() == Some(&watched))
+                .map(|d| d.baseline.clone());
+            baseline.and_then(|b| document::moved_to(&watched, &b))
+        }
+    };
+    match now {
+        Some(now) if now != watched => {
+            {
+                let mut b = s.borrow_mut();
+                let Some(d) = b.docs.iter_mut().find(|d| d.path.as_ref() == Some(&watched)) else {
+                    // The tab was closed while the event was in flight; nothing to follow.
+                    return;
+                };
+                d.path = Some(now.clone());
+            }
+            paint(ui, &mut s.borrow_mut(), false);
+            checkpoint(ui, s);
+            ui.set_notice(format!("This file moved. It is {} now.", now.display()).into());
+        }
+        Some(_) => {}
+        None => ui.set_notice(
+            format!(
+                "{} is not there any more, and nothing with the same name and the same contents \
+                 was found near it. Your draft is untouched — Save As to give it a file again.",
+                watched.display()
+            )
+            .into(),
+        ),
+    }
 }
 fn receive(ui: &TextEditorApp, s: &State) {
+    follow_moves(ui, s);
     loop {
         let event = s.borrow().events.try_recv();
         let Ok(event) = event else { break };
@@ -492,7 +588,7 @@ fn receive(ui: &TextEditorApp, s: &State) {
                         }
                         ui.set_dialog(0);
                         ui.set_notice("".into());
-                        paint(ui, &b, true);
+                        paint(ui, &mut b, true);
                         drop(b);
                         search(ui, s, false);
                     }
@@ -516,7 +612,7 @@ fn receive(ui: &TextEditorApp, s: &State) {
                         b.save_close = false;
                         ui.set_dialog(0);
                         ui.set_notice("Saved".into());
-                        paint(ui, &b, false);
+                        paint(ui, &mut b, false);
                         drop(b);
                         checkpoint(ui, s);
                         if close {
@@ -550,7 +646,7 @@ fn request_close(ui: &TextEditorApp, s: &State, index: usize, quitting: bool) {
     b.pending_close = Some(index);
     if b.docs[index].dirty() {
         b.active = index;
-        paint(ui, &b, true);
+        paint(ui, &mut b, true);
         ui.set_close_label(format!("{} has unsaved changes.", b.docs[index].title()).into());
         ui.set_dialog_error("".into());
         ui.set_dialog(3);
@@ -575,7 +671,7 @@ fn finish_close(ui: &TextEditorApp, s: &State) {
     }
     b.active = b.active.min(b.docs.len() - 1);
     ui.set_dialog(0);
-    paint(ui, &b, true);
+    paint(ui, &mut b, true);
     drop(b);
     checkpoint(ui, s);
     if quitting {
@@ -611,7 +707,7 @@ fn action(ui: &TextEditorApp, s: &State, id: &str) {
             let mut b = s.borrow_mut();
             let active = b.active;
             b.docs[active].undo(id == "redo");
-            paint(ui, &b, true);
+            paint(ui, &mut b, true);
             drop(b);
             search(ui, s, false);
             checkpoint(ui, s);
@@ -625,7 +721,7 @@ fn action(ui: &TextEditorApp, s: &State, id: &str) {
             b.docs.push(Document::blank());
             b.active = b.docs.len() - 1;
             ui.set_notice("".into());
-            paint(ui, &b, true);
+            paint(ui, &mut b, true);
         }
         "open" | "save-as" => {
             let b = s.borrow();
@@ -642,10 +738,10 @@ fn action(ui: &TextEditorApp, s: &State, id: &str) {
             ui.set_dialog_error("".into());
             ui.set_dialog(if id == "open" { 1 } else { 2 });
         }
-        "save" => save(ui, s, None),
+        "save" => save(ui, s, None, false),
         "save-close" => {
             s.borrow_mut().save_close = true;
-            save(ui, s, None);
+            save(ui, s, None, false);
         }
         "goto" => {
             ui.set_dialog_path(ui.get_cursor_line().to_string().into());
@@ -654,7 +750,7 @@ fn action(ui: &TextEditorApp, s: &State, id: &str) {
         }
         "confirm" => match ui.get_dialog() {
             1 => open(ui, s, expanded(&ui.get_dialog_path())),
-            2 => save(ui, s, Some(expanded(&ui.get_dialog_path()))),
+            2 => save(ui, s, Some(expanded(&ui.get_dialog_path())), false),
             4 => {
                 if let Ok(line) = ui.get_dialog_path().parse::<usize>() {
                     let text = ui.get_content();
@@ -697,7 +793,7 @@ fn action(ui: &TextEditorApp, s: &State, id: &str) {
                     b.docs.len() - 1
                 })
                 % b.docs.len();
-            paint(ui, &b, true);
+            paint(ui, &mut b, true);
             drop(b);
             search(ui, s, false);
         }
@@ -1110,25 +1206,35 @@ fn surface(ui: &TextEditorApp, s: &State) -> Vec<(Action, Handler)> {
     );
 
     add(
-        // Standard, like `save`: writing a file the caller named is this app's one job, and the
-        // store refuses to overwrite — an existing path is an error, never a silent replacement.
+        // Standard, like `save`: writing a file the caller named is this app's one job, and an
+        // existing path is refused rather than silently replaced — unless the caller says
+        // `overwrite=true`, having read the refusal that names it (#86).
         act(
             "save_as",
-            "Write the active tab to this path and keep the tab on it from now on. It refuses \
-             rather than overwrite a file that already exists.",
+            "Write the active tab to this path and keep the tab on it from now on. A file \
+             already at that path is refused unless `overwrite` says to replace it.",
         )
         .arg(arg(
             "path",
-            "Absolute path of the file to write, or one starting `~/`. Its folder must exist and \
-             nothing may already be at that path.",
-        )),
+            "Absolute path of the file to write, or one starting `~/`. Its folder must exist; a \
+             file already at the path needs `overwrite=true`.",
+        ))
+        .arg(
+            Param::flag("overwrite")
+                .optional()
+                .describe(
+                    "Replace a file that is already at that path. Leave it out and an existing \
+                     file is refused rather than overwritten.",
+                ),
+        ),
         |ui, s, args| {
             if ui.get_dialog() != 0 && ui.get_dialog() != 2 && ui.get_dialog() != 3 {
                 no_dialog(ui, "save_as")?;
             }
             let path = needed(ui, args, "save_as", "path", "An absolute path to write to.")?;
             let full = expanded(path.trim());
-            save(ui, s, Some(full.clone()));
+            let overwrite = args.get("overwrite").and_then(|v| v.as_bool()).unwrap_or(false);
+            save(ui, s, Some(full.clone()), overwrite);
             settle(ui, s);
             let answer = document_now(ui, s);
             if answer["path"] != serde_json::json!(full.display().to_string())

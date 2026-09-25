@@ -113,22 +113,25 @@ impl ProactiveEngine {
 
         // V15 frequency governor: bond-based cooldown
         let cooldown_secs = self.effective_cooldown_secs();
-        let elapsed = now - self.last_delivery_ts;
-        if elapsed < cooldown_secs {
+        if let Some(elapsed) = cooldown_elapsed(now, self.last_delivery_ts) {
+            if elapsed < cooldown_secs {
+                // Per-cycle while the cooldown runs, so it is a debug line: a desktop
+                // whose backend was down all day filled the log with these (#30).
+                tracing::debug!(
+                    elapsed_secs = elapsed as u64,
+                    cooldown_secs = cooldown_secs as u64,
+                    bond = self.bond_level.name(),
+                    "Proactive cooldown active (bond-scaled)"
+                );
+                return None;
+            }
+
             tracing::info!(
                 elapsed_secs = elapsed as u64,
-                cooldown_secs = cooldown_secs as u64,
                 bond = self.bond_level.name(),
-                "Proactive cooldown active (bond-scaled)"
+                "Proactive cooldown expired, checking urges"
             );
-            return None;
         }
-
-        tracing::info!(
-            elapsed_secs = elapsed as u64,
-            bond = self.bond_level.name(),
-            "Proactive cooldown expired, checking urges"
-        );
 
         // Peek at top pending urge
         let pending = urge_queue.get_pending(conn, 1);
@@ -372,6 +375,21 @@ fn now_ts() -> f64 {
         .as_secs_f64()
 }
 
+/// How long the cooldown has been running: the time since the engine last delivered.
+///
+/// `None` when it has never delivered. `last_delivery_ts` starts at `0.0`, and reading an
+/// unset `0.0` as a real timestamp made `now - 0.0` the seconds since the Unix epoch — the
+/// `elapsed_secs=1789671372` a dead backend logged once a minute all day (#30). A cooldown
+/// is measured from the engine's own last delivery, so before the first one there is no
+/// elapsed to report and nothing to wait out.
+fn cooldown_elapsed(now: f64, last_delivery_ts: f64) -> Option<f64> {
+    if last_delivery_ts > 0.0 {
+        Some(now - last_delivery_ts)
+    } else {
+        None
+    }
+}
+
 // ── What is not a thought ───────────────────────────────────────────────────────────────────
 
 /// Openings that mean the text is machinery talking, not the companion.
@@ -457,6 +475,12 @@ pub enum NotificationVerdict {
 /// The rule for what a proactive companion thought may become. One pure function — see the
 /// comment above for why it exists and what it refuses.
 pub fn judge_proactive(text: &str) -> NotificationVerdict {
+    // Before anything else: a placeholder standing in for "nothing" is not a thought. The model
+    // was told to say nothing and wrote the word for nothing (#88 — "[empty]" was posted to the
+    // notification centre, with no body, three times).
+    if is_contentless(text) {
+        return NotificationVerdict::Refuse("a placeholder that says nothing");
+    }
     // Machinery first: a tool's own error wearing a sentence.
     if let Some(why) = looks_like_tool_error(text) {
         return NotificationVerdict::Refuse(why);
@@ -540,6 +564,30 @@ fn is_empty_finding(text: &str) -> bool {
         .trim_start_matches(['*', '_', '`', '>', '"', '\'', ' '])
         .to_lowercase();
     EMPTY_FINDING.iter().any(|opening| start.starts_with(opening))
+}
+
+/// Whole-message placeholders a model writes when it was told to say nothing (#88).
+///
+/// Observed on the VM, filed on 21 September 2026: notifications 7, 28 and 41 carried the titles
+/// "[empty]", "[empty]" and "(empty)" with an empty body. Matched against the WHOLE message —
+/// unlike the opening rules above — so a real sentence that happens to contain one of these words
+/// ("the inbox was empty") is not caught, only a message that is nothing but the placeholder.
+const CONTENTLESS: &[&str] = &[
+    "", "[empty]", "(empty)", "empty", "[]", "()", "[none]", "(none)", "none", "null",
+    "[nothing]", "(nothing)", "nothing", "[blank]", "(blank)", "blank", "no content",
+    "[no content]", "(no content)", "n/a", "na", "-", "—",
+];
+
+/// Is the whole message a placeholder standing in for "nothing"?
+fn is_contentless(text: &str) -> bool {
+    let whole = text
+        .trim()
+        .trim_matches(['*', '_', '`', '>', '"', '\'', ' '])
+        .trim_end_matches(['.', '!', '…'])
+        .trim()
+        .to_lowercase()
+        .replace('\u{2019}', "'");
+    CONTENTLESS.contains(&whole.as_str())
 }
 
 /// Words and phrases that mark a thought as something a person can act on: a reminder, a finding
@@ -810,6 +858,49 @@ mod tests {
         assert!(
             engine.check(&queue, &conn).is_none(),
             "a turn that ends in a raw tool call must file nothing"
+        );
+    }
+
+    #[test]
+    fn a_placeholder_that_says_nothing_is_never_posted() {
+        use NotificationVerdict::*;
+
+        // Notifications 7, 28 and 41 on the VM, verbatim: titles "[empty]", "[empty]" and
+        // "(empty)" with no body (#88). The instruction had been "say nothing if nothing stands
+        // out", and the model wrote the word for nothing. That is not a thought, and this is its
+        // own rule — not an entry in the tool-error list, which is about machinery talking.
+        for placeholder in ["[empty]", "(empty)", "", "   ", "[none]", "None.", "*[empty]*", "\"(empty)\"", "n/a", "-"] {
+            assert_eq!(
+                judge_proactive(placeholder),
+                Refuse("a placeholder that says nothing"),
+                "a message that is nothing but a placeholder must not be said: {placeholder:?}"
+            );
+        }
+
+        // The rule matches the whole message: a real sentence that happens to contain one of
+        // these words is a real thought and is judged on its own merits.
+        assert_eq!(judge_proactive("The room was empty when I checked."), LensOnly);
+        assert!(matches!(
+            judge_proactive("The backup failed — the disk is almost full."),
+            Notify(_)
+        ));
+    }
+
+    #[test]
+    fn the_cooldown_measures_from_the_engines_own_last_delivery() {
+        // #30: a desktop whose backend never answered logged `elapsed_secs=1789671372`
+        // once a minute — the engine's delivery clock was never set, and an unset clock
+        // read as the seconds since the Unix epoch instead of "nothing delivered yet".
+        let now = 1_790_000_000.0; // a plausible "now" (September 2026)
+        assert_eq!(
+            cooldown_elapsed(now, 0.0),
+            None,
+            "a delivery clock that was never set has no elapsed to report"
+        );
+        assert_eq!(
+            cooldown_elapsed(now, now - 90.0),
+            Some(90.0),
+            "once something was delivered, the cooldown measures from that delivery"
         );
     }
 }

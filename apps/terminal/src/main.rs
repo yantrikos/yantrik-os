@@ -439,8 +439,8 @@ fn action(ui: &TerminalApp, state: &State, id: &str) {
         if ui.get_explaining() {
             return;
         }
-        if !companion::is_online() {
-            ui.set_explanation(companion::OFFLINE_HINT.into());
+        if let Some(hint) = companion::reach().hint() {
+            ui.set_explanation(hint.into());
             return;
         }
         let text = ui.get_screen_text();
@@ -456,9 +456,7 @@ fn action(ui: &TerminalApp, state: &State, id: &str) {
                 if ui.get_explanation_generation() == generation {
                     ui.set_explaining(false);
                     ui.set_explanation(
-                        answer
-                            .unwrap_or_else(|e| format!("Could not explain the output: {e}"))
-                            .into(),
+                        answer.unwrap_or_else(|e| e.to_string()).into(),
                     );
                 }
             });

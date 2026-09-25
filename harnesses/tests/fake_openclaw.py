@@ -289,6 +289,11 @@ def _cli() -> int:
     if dump:
         with open(dump, "a", encoding="utf-8") as handle:
             handle.write(json.dumps(sys.argv[1:]) + "\n")
+    # The directory the harness started this run in, one line per run (#183).
+    cwd_dump = os.environ.get("FAKE_OPENCLAW_CWD_DUMP")
+    if cwd_dump:
+        with open(cwd_dump, "a", encoding="utf-8") as handle:
+            handle.write(os.getcwd() + "\n")
 
     if scenario == "down":
         sys.stderr.write("Error: connect ECONNREFUSED 127.0.0.1:18789\n")

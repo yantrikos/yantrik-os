@@ -340,20 +340,27 @@ fn pick_role(g: &AgentsState, role: &str) {
     let catalog = crate::agents::catalog::Catalog::load();
     let Some(r) = catalog.find(role) else {
         g.set_new_note("".into());
+        g.set_new_note_reach("".into());
         return;
     };
     let attached = crate::wire::harness::host().map(crate::agents::catalog::minds_now).unwrap_or_default();
-    let note = match r.pick_mind(&attached) {
-        Ok(mind) => format!(
-            "Runs on {mind}. May touch {}. Hands back: {} Up to {} turns and {} minutes.",
+    let (note, patterns) = match r.pick_mind(&attached) {
+        // The reach in words a person reads; the patterns it was made from stay one click away
+        // in the dialog (#212), because the doors enforce the patterns, not the sentence.
+        Ok(mind) => (
+            format!(
+                "Runs on {mind}. May reach: {}. Hands back: {} Up to {} turns and {} minutes.",
+                r.reach.words(),
+                r.returns,
+                r.budget.turns,
+                r.budget.minutes
+            ),
             r.reach.text(),
-            r.returns,
-            r.budget.turns,
-            r.budget.minutes
         ),
-        Err(why) => why,
+        Err(why) => (why, String::new()),
     };
     g.set_new_note(note.into());
+    g.set_new_note_reach(patterns.into());
 }
 
 /// Say how a press went, when it did not go as asked.
@@ -446,6 +453,8 @@ fn sync_with_host(seen: &Seen) {
 fn pick_mind(g: &AgentsState, mind: &str) {
     g.set_new_mind(mind.into());
     g.set_new_error("".into());
+    // A mind has no reach of its own: whatever a role's patterns line said goes away with it.
+    g.set_new_note_reach("".into());
     let seen = Seen::now();
     let name = seen.minds.iter().find(|(id, _, _)| id == mind).map(|(_, name, _)| name.clone()).unwrap_or_else(|| mind.to_string());
     let theirs: Vec<&yantrik_harness::AgentEntry> = seen.agents.iter().filter(|a| a.harness == mind).collect();
@@ -822,6 +831,15 @@ fn details_of(a: &Agent, d: Details) -> AgentDetailsData {
         "not reported".to_string()
     };
     let cost = if d.usage.cost_usd > 0.0 { format!("${:.2}", d.usage.cost_usd) } else { String::new() };
+    // The catalog role it was started as, and what that role may touch — held on every door.
+    // The reach reads as words a person reads (#212), with the patterns the doors enforce one
+    // click away; a session saved before the words were kept has only the patterns, and then
+    // there is nothing further to open.
+    let (reach, reach_patterns) = match a.meta.role.as_ref() {
+        Some(r) if !r.reach_words.is_empty() => (r.reach_words.clone(), r.reach.clone()),
+        Some(r) => (r.reach.clone(), String::new()),
+        None => (String::new(), String::new()),
+    };
     AgentDetailsData {
         mind: a.meta.mind.as_str().into(),
         model: model.into(),
@@ -836,9 +854,11 @@ fn details_of(a: &Agent, d: Details) -> AgentDetailsData {
         tokens: tokens.into(),
         cost: cost.into(),
         refused: if d.refused > 0 { format!("{} events", d.refused).into() } else { "".into() },
-        // The catalog role it was started as, and what that role may touch — held on every door.
+        // What was refused, and why (#212): the store's newest lines, oldest first.
+        refused_lines: d.refusals.join("\n").into(),
         role: a.meta.role.as_ref().map(|r| r.name.clone()).unwrap_or_default().into(),
-        reach: a.meta.role.as_ref().map(|r| r.reach.clone()).unwrap_or_default().into(),
+        reach: reach.into(),
+        reach_patterns: reach_patterns.into(),
         basis: "Commands, files and approvals count only what the shell itself ran or asked. Calls \
                 include what the harness reported."
             .into(),
@@ -1622,6 +1642,7 @@ mod tests {
     }
 
     fn pending_card(id: &str, agent: &str) -> crate::approvals::Card {
+        let purpose = "Run one command line in a fresh terminal of your own.";
         crate::approvals::Card {
             id: id.into(),
             requester: "pi 0.87".into(),
@@ -1633,8 +1654,10 @@ mod tests {
             app: "shell".into(),
             action: "agent_run".into(),
             grade: "sensitive".into(),
-            purpose: "Run one command line in a fresh terminal of your own.".into(),
+            purpose: purpose.into(),
+            summary: crate::approvals::summary_of(purpose),
             args: vec!["command: rm -rf build".into()],
+            target: String::new(),
             warning: String::new(),
             can_session: true,
             status: crate::approvals::Status::Pending,
@@ -1799,13 +1822,43 @@ mod tests {
         let row = row_of(a);
         assert_eq!((row.role.as_str(), row.mind.as_str()), ("Reviewer", "deepseek"));
         let details = details_of(a, s.details(&reviewer).unwrap_or_default());
-        assert_eq!((details.role.as_str(), details.reach.as_str()), ("Reviewer", "editor, documents and notes · at most safe"));
+        // #212: the reach reads as a sentence a person reads; the patterns the doors enforce are
+        // one click away, never the first thing shown.
+        assert_eq!(
+            (details.role.as_str(), details.reach.as_str()),
+            ("Reviewer", "the Editor, Documents and Notes, and it may ask for safe acts")
+        );
+        assert_eq!(details.reach_patterns.as_str(), "editor, documents and notes · at most safe");
         let plain = s.agent(&AgentId("pi:c-plain1".into())).unwrap();
         assert_eq!((row_of(plain).role.as_str(), details_of(plain, Details::default()).reach.as_str()), ("", ""));
 
-        // The screen offers the catalog in New agent and draws both.
+        // A session saved before the words were kept falls back to its patterns, and then has no
+        // second copy of them to open.
+        let mut old_meta = agents::AgentMeta::new(AgentId("pi:c-old001".into()), "pi");
+        old_meta.role = Some(crate::agents::model::RoleMeta {
+            id: "reviewer".into(),
+            name: "Reviewer".into(),
+            reach: "editor, documents and notes · at most safe".into(),
+            reach_words: String::new(),
+            turns: 4,
+            minutes: 15,
+        });
+        s.upsert_agent(old_meta);
+        let old = details_of(s.agent(&AgentId("pi:c-old001".into())).unwrap(), Details::default());
+        assert_eq!(old.reach, "editor, documents and notes · at most safe");
+        assert_eq!(old.reach_patterns, "");
+
+        // The screen offers the catalog in New agent and draws both, with the patterns behind a
+        // click in the details column.
         let slint = read("../yantrik-ui-slint/ui/agents.slint");
-        for drawn in ["From the catalog", "AgentsState.start-role(AgentsState.new-role", "AgentsState.pick-role(role.id)", "label: \"Role\"", "AgentsState.details.reach"] {
+        for drawn in [
+            "From the catalog",
+            "AgentsState.start-role(AgentsState.new-role",
+            "AgentsState.pick-role(role.id)",
+            "label: \"Role\"",
+            "AgentsState.details.reach",
+            "AgentsState.details.reach-patterns",
+        ] {
             assert!(slint.contains(drawn), "{drawn:?} is not in agents.slint");
         }
     }
@@ -1939,5 +1992,94 @@ mod pop_out_window_tests {
         let off = rest.find(concat!("set_fullscreen(", "false)")).expect("the pop-out says it is not fullscreen");
         let shown = rest.find(concat!(".show", "()")).expect("and is shown");
         assert!(off < shown, "it says so before it is first shown");
+    }
+}
+
+/// The rough edges of the Agents screen itself (#212): the catalog dialog, the reach in words,
+/// and the refusal count. The store's refusal lines are tested in agents/store.rs and the words
+/// in agents/catalog.rs; here is what the screen makes of them.
+#[cfg(test)]
+mod rough_edges_tests {
+    use super::*;
+    use std::path::Path;
+
+    fn read(relative: &str) -> String {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(relative);
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()))
+    }
+
+    /// Five of the eight roles were what a person saw — Writer, Chair and Scribe below the fold,
+    /// with nothing to say the list went on. Every role is offered, and the list now says it
+    /// scrolls while more is below it, and stops saying so at the bottom.
+    #[test]
+    fn the_catalog_dialog_offers_every_role_and_says_the_list_scrolls() {
+        let offered: Vec<String> = roles_now().into_iter().map(|r| r.id.to_string()).collect();
+        for (file, _) in crate::agents::catalog::SHIPPED {
+            let id = file.trim_end_matches(".toml");
+            assert!(offered.iter().any(|o| o == id), "the dialog does not offer `{id}`: {offered:?}");
+        }
+
+        // The fold is the screen's: the cue is drawn while the window is not at the bottom, from
+        // the list's own height against the window's — never a hard-coded count of roles.
+        let slint = read("../yantrik-ui-slint/ui/agents.slint");
+        for drawn in [
+            "more roles below",
+            "roles-box.more-below",
+            "-roles-flick.viewport-y < roles-col.preferred-height - roles-box.shown-h - 2px",
+        ] {
+            assert!(slint.contains(drawn), "{drawn:?} is not in agents.slint");
+        }
+    }
+
+    /// "Refused 121 events" with no way to see a single one left a person guessing whether the
+    /// agent was misbehaving or the shell was broken. The count now opens into the store's lines.
+    #[test]
+    fn the_refused_count_opens_into_what_arrived_and_why() {
+        let mut s = Store::new();
+        let pi = AgentId("pi:c-7f3a91".into());
+        s.upsert_agent(agents::AgentMeta::new(pi.clone(), "pi"));
+        // Two arrivals the lifecycle refuses, with no turn open.
+        s.text(&pi, "a line with no turn open");
+        s.event(
+            &pi,
+            &crate::agents::Event::ToolEnd { call: "c-9".into(), ok: true, summary: String::new(), exit_code: Some(0) },
+            Provenance::Reported,
+        );
+        let details = details_of(s.agent(&pi).unwrap(), s.details(&pi).unwrap_or_default());
+        assert_eq!(details.refused.as_str(), "2 events", "the count stays the whole truth");
+        assert_eq!(
+            details.refused_lines.as_str(),
+            "some of its text — no turn was open\nan end for `c-9` — no turn was open",
+            "and the lines say what arrived and why each was refused"
+        );
+
+        // The details column draws the lines behind the count, and only the count when a session
+        // saved before the lines were kept has none.
+        let slint = read("../yantrik-ui-slint/ui/agents.slint");
+        for drawn in ["AgentsState.details.refused-lines", "refused-row.open"] {
+            assert!(slint.contains(drawn), "{drawn:?} is not in agents.slint");
+        }
+    }
+
+    /// The reach a person read was the doors' own patterns ("shell.agent_* and editor · at most
+    /// sensitive"). The dialog's note now says it in words, and the patterns — what the doors
+    /// actually enforce — are one click away under them, never gone.
+    #[test]
+    fn the_dialogs_reach_reads_as_words_with_the_patterns_one_click_away() {
+        let src = include_str!("agents.rs");
+        let src = src.split("#[cfg(test)]").next().unwrap();
+        assert!(src.contains("r.reach.words()"), "the note is the reach in words");
+        assert!(src.contains("g.set_new_note_reach(patterns.into());"), "and the patterns go to the dialog with it");
+
+        let slint = read("../yantrik-ui-slint/ui/agents.slint");
+        for drawn in ["AgentsState.new-note-reach", "the exact patterns", "AgentsState.details.reach-patterns"] {
+            assert!(slint.contains(drawn), "{drawn:?} is not in agents.slint");
+        }
+        // Both chip handlers clear the patterns with the note, so a role's reach cannot linger
+        // under a mind that has none.
+        assert!(
+            slint.matches("AgentsState.new-note-reach = \"\";").count() >= 2,
+            "the chips clear the patterns with the note"
+        );
     }
 }

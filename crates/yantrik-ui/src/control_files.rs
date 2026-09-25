@@ -111,8 +111,13 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
                 if !has_entry(&ui, &name) {
                     return Err(format!("nothing called `{name}` in {}", ui.get_file_browser_path()));
                 }
+                // The answer names the app the one rule picked for this file, so a caller
+                // learns where it went and not only that it went. `invoke_file_open` runs the
+                // same `classify` on the callback side; asking it here too is the cheap way to
+                // keep the answer and the launch on one rule (#233).
+                let app = crate::mime_dispatch::app_name(&crate::mime_dispatch::classify(&name));
                 ui.invoke_file_open(name.clone().into());
-                Ok(serde_json::json!({ "opened": name, "screen": crate::control::screen_name(ui.get_current_screen()) }))
+                Ok(serde_json::json!({ "opened": name, "app": app, "screen": crate::control::screen_name(ui.get_current_screen()) }))
             },
         )
         .action(

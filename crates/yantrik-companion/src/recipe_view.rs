@@ -20,9 +20,9 @@ use rusqlite::Connection;
 use serde::Serialize;
 
 use crate::recipe::{
-    agent_runs, blocked_on_agents, clock_text, role_display, waited_on, AgentBlock, AgentRun, AggregateOp, Condition,
-    ErrorAction, FilterOp, Recipe, RecipeStatus, RecipeStep, RecipeStore, RenderFormat, StoredStep, Trail,
-    WaitCondition, CANCELLED, PAUSED_FROM_VAR, UNREADABLE,
+    agent_runs, blocked_on_agents, clock_text_at, local_offset_secs, role_display, waited_on, AgentBlock, AgentRun,
+    AggregateOp, Condition, ErrorAction, FilterOp, Recipe, RecipeStatus, RecipeStep, RecipeStore, RenderFormat,
+    StoredStep, Trail, WaitCondition, CANCELLED, PAUSED_FROM_VAR, UNREADABLE,
 };
 
 /// How many recipes the desk reads. The built-in definitions alone are about fifty.
@@ -294,7 +294,9 @@ pub fn view(recipe: &Recipe, steps: &[StoredStep], vars: &Vars) -> RecipeView {
             _ if waits_on_agents => agents_text(steps, cur, vars, &runs),
             Some(RecipeStep::AskUser { .. }) => "your answer".to_string(),
             Some(RecipeStep::WaitFor { condition, timeout_secs }) => {
-                timer_text(condition, *timeout_secs, waited.as_ref().and_then(|w| w.until))
+                let until = waited.as_ref().and_then(|w| w.until);
+                // The wake time is read on the machine's own clock (#187), at the instant it wakes.
+                timer_text(condition, *timeout_secs, until, until.map(local_offset_secs).unwrap_or(0))
             }
             // Waiting with no wait behind it: the worker's clock resumes it within seconds.
             _ => "the clock to resume it".to_string(),
@@ -829,8 +831,8 @@ fn condition_text(c: &Condition) -> String {
         Condition::VarExists { var } => format!("{var} is set"),
         Condition::VarGt { var, threshold } => format!("{var} > {threshold}"),
         Condition::VarEmpty { var } => format!("{var} is empty"),
-        Condition::TimeAfter { hour, minute } => format!("after {hour:02}:{minute:02} UTC"),
-        Condition::TimeBefore { hour, minute } => format!("before {hour:02}:{minute:02} UTC"),
+        Condition::TimeAfter { hour, minute } => format!("after {hour:02}:{minute:02}"),
+        Condition::TimeBefore { hour, minute } => format!("before {hour:02}:{minute:02}"),
         Condition::Not { inner } => format!("not {}", condition_text(inner)),
         Condition::And { conditions } => joined(conditions, " and "),
         Condition::Or { conditions } => joined(conditions, " or "),
@@ -838,20 +840,23 @@ fn condition_text(c: &Condition) -> String {
 }
 
 /// What a waiting timer waits for, and — once it is waiting — the time it wakes: "15m to pass,
-/// until 08:15 UTC". A time of day already says its time. The engine's clock is UTC.
-fn timer_text(condition: &WaitCondition, timeout: Option<u64>, until: Option<f64>) -> String {
+/// until 08:15". A time of day already says its time. The wake time is read on a clock
+/// `offset_secs` east of UTC — the machine's own (#187), passed in so a test can pass a fixed
+/// one rather than the zone the test happens to run in (#309).
+fn timer_text(condition: &WaitCondition, timeout: Option<u64>, until: Option<f64>, offset_secs: i64) -> String {
     let base = wait_text(condition, timeout);
-    match until.map(clock_text) {
+    match until.map(|u| clock_text_at(u, offset_secs)) {
         Some(at) if at != base => format!("{base}, until {at}"),
         _ => base,
     }
 }
 
-/// What a WaitFor waits on. The executor reads time in UTC, so a time of day is said in UTC.
+/// What a WaitFor waits on. The executor reads time on the machine's clock, so a time of day is
+/// said as the person set it, with no zone to translate.
 fn wait_text(condition: &WaitCondition, timeout: Option<u64>) -> String {
     let base = match condition {
         WaitCondition::Duration { seconds } => format!("{} to pass", duration(*seconds)),
-        WaitCondition::Time { hour, minute } => format!("{hour:02}:{minute:02} UTC"),
+        WaitCondition::Time { hour, minute } => format!("{hour:02}:{minute:02}"),
     };
     match timeout {
         Some(t) => format!("{base}, {} at most", duration(t)),
@@ -1104,6 +1109,7 @@ pub fn apply(conn: &Connection, recipe_id: &str, op: &RecipeOp) -> Result<Applie
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::recipe::{clock_text, wakes_at_in};
     use serde_json::json;
 
     fn recipe(status: RecipeStatus, current_step: usize) -> Recipe {
@@ -1336,10 +1342,10 @@ mod tests {
         assert!(p.question.is_some());
         assert!(!p.can.answer && p.can.resume);
 
-        // A timer says what it counts.
+        // A timer says what it counts, as the person set it: the machine's own time of day.
         let timer = stored(vec![RecipeStep::WaitFor { condition: WaitCondition::Time { hour: 9, minute: 0 }, timeout_secs: None }, tool("x", json!({}), "x")], &["done"]);
         let t = view(&recipe(RecipeStatus::Waiting, 1), &timer, &Vars::new());
-        assert_eq!(t.waiting_for.as_deref(), Some("09:00 UTC"));
+        assert_eq!(t.waiting_for.as_deref(), Some("09:00"));
         assert!(t.question.is_none() && !t.can.answer);
     }
 
@@ -1593,10 +1599,14 @@ mod tests {
     /// 2026-09-23 08:00:00 UTC.
     const EIGHT_AM: f64 = 1_790_150_400.0;
 
-    /// A timer says when it wakes (#176): "waiting for 15m to pass, until 08:15 UTC" — on the row,
-    /// in the mind panel's line and in `describe`, all of which read `waiting_for`.
+    /// A timer says when it wakes (#176): "waiting for 15m to pass, until 08:15" — on the row,
+    /// in the mind panel's line and in `describe`, all of which read `waiting_for`. The wake time
+    /// is the engine's own clock reading (#187): the row and the panel are checked against the
+    /// same reading, and the wording against a clock at a fixed offset, so the test says the
+    /// same thing in every zone (#309).
     #[test]
     fn a_timer_says_when_it_wakes() {
+        let wake = clock_text(EIGHT_AM + 900.0);
         let steps = stored(
             vec![RecipeStep::WaitFor { condition: WaitCondition::Duration { seconds: 900 }, timeout_secs: None }, tool("send", json!({}), "x")],
             &["done"],
@@ -1604,13 +1614,23 @@ mod tests {
         let vars = Vars::from([("_wait".into(), json!({"step": 0, "since": EIGHT_AM, "until": EIGHT_AM + 900.0}))]);
         let v = view(&recipe(RecipeStatus::Waiting, 1), &steps, &vars);
         assert_eq!(states(&v), ["waiting", "pending"]);
-        assert_eq!(v.waiting_for.as_deref(), Some("15m to pass, until 08:15 UTC"));
-        assert_eq!(one_line(&v), "Tidy downloads — step 1 of 2, Wait, waiting for 15m to pass, until 08:15 UTC");
+        assert_eq!(v.waiting_for.as_deref(), Some(format!("15m to pass, until {wake}").as_str()));
+        assert_eq!(one_line(&v), format!("Tidy downloads — step 1 of 2, Wait, waiting for 15m to pass, until {wake}"));
 
-        // A time of day says just that time.
-        let at_nine = stored(vec![RecipeStep::WaitFor { condition: WaitCondition::Time { hour: 9, minute: 0 }, timeout_secs: None }], &["done"]);
-        let vars = Vars::from([("_wait".into(), json!({"step": 0, "since": EIGHT_AM, "until": EIGHT_AM + 3600.0}))]);
-        assert_eq!(view(&recipe(RecipeStatus::Waiting, 1), &at_nine, &vars).waiting_for.as_deref(), Some("09:00 UTC"));
+        // The same wording on a clock five and a half hours east, where 08:15 UTC reads 13:45:
+        // what a machine there shows, whatever zone this test runs in.
+        let ist = 19_800;
+        let quarter = WaitCondition::Duration { seconds: 900 };
+        assert_eq!(timer_text(&quarter, None, Some(EIGHT_AM + 900.0), ist), "15m to pass, until 13:45");
+
+        // A time of day says just that time, as the person set it: the wake instant the executor
+        // writes for it — the next local 09:00, east of UTC tomorrow's, at 03:30 UTC — reads
+        // back as "09:00", with no "until" after it. The old test wrote 09:00 UTC in the record
+        // instead, which only a machine at UTC reads as "09:00" (#309).
+        let nine = WaitCondition::Time { hour: 9, minute: 0 };
+        let until = wakes_at_in(&nine, None, EIGHT_AM, ist).expect("the next local 09:00");
+        assert_eq!(until, EIGHT_AM + 19.5 * 3_600.0);
+        assert_eq!(timer_text(&nine, None, Some(until), ist), "09:00");
     }
 
     /// A question asked inside a Branch is drawn where the recipe stands — at the Branch, which is

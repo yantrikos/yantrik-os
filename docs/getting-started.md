@@ -101,6 +101,16 @@ qemu-system-x86_64 -enable-kvm -m 4096 -smp 4 \
 
 VirtualBox ought to work — this is an ordinary Debian live ISO — but nobody here has checked
 it against a current build, so it is not on the list above. If you try it, say how it went.
+The settings this repository's own tools give it (configured, not measured):
+[`build-debian-iso.sh`](../deploy/yantrik-os/build-debian-iso.sh) says to import the ISO as
+boot media with **4 GB of RAM and EFI enabled**, and
+[`build-vbox-image.sh`](../deploy/yantrik-os/build-vbox-image.sh) creates its VM with the
+**VMSVGA** graphics controller and **128 MB** of video memory.
+
+On Proxmox, [`proxmox-deploy.sh`](../deploy/yantrik-os/proxmox-deploy.sh) provisions
+8 GB / 4 cores / a 24 GB disk, with **`vga: virtio`**. The virtio display is the one setting
+there that is not cosmetic: with Proxmox's default the machine boots, reports a healthy
+session, and shows a black screen forever, because there is no `/dev/dri` for labwc to find.
 
 ## 3. …or write it to a USB stick
 
@@ -142,9 +152,10 @@ network:
 ### What you see first
 
 First-run setup, as a sequence of full-screen questions: your name, what you are interested
-in, a hardware scan, how the assistant should behave, and then **the AI provider**, which is
-the one that matters — see below. If you booted an "Install" entry, the last screen also
-offers to install to disk.
+in, where you are, a hardware scan, how the assistant should behave, and then **the AI
+provider**, which is the one that matters — see below. It ends on a summary of your answers;
+if you booted an "Install" entry, that last screen also picks the disk and offers to install
+to it.
 
 Behind it is the shell: a status bar, a dock, and the Lens at the bottom, which is where you
 type to the mind.
@@ -212,6 +223,12 @@ Everything that ran without you being asked is written down in
 **This erases the disk you point it at.** Use a machine, or a VM, you can afford to wipe. The
 disk installer has not been through the boot test that the image itself has — treat it as the
 least-proven part of this.
+
+The target disk needs at least **6 GB** — one minimum, stated here, in the README's hardware
+table, and in the first-boot hardware scan, which a test holds together. The scan measures the
+whole size of the disk the picker has selected; it used to report the free space of the live
+session, which on a live USB describes the stick you booted from and not the disk you are
+about to install to.
 
 Two ways in, and they do the same work:
 

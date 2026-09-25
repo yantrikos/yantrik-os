@@ -1008,7 +1008,7 @@ mod tests {
         // The question it waits on, not the step after it that the pointer names.
         assert_eq!(line("Plan the week").step, "step 1 of 2 · asking you: Which days are you travelling?");
         assert_eq!(line("Plan the week").status, "waiting");
-        assert_eq!(line("Remind me").step, "step 1 of 2 · waiting for 17:05 UTC");
+        assert_eq!(line("Remind me").step, "step 1 of 2 · waiting for 17:05");
         assert_eq!(line("Weekly backup").step, "step 2 of 2 · paused before run_command");
         assert_eq!(line("Weekly backup").status, "paused");
         assert_eq!(recipes_in_flight(&recipe_view::list(&conn), 2).len(), 2, "capped");

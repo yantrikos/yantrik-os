@@ -19,8 +19,16 @@ pub mod store;
 #[path = "../../apps/calendar/src/views.rs"]
 pub mod views;
 
+/// The own-creation rule of #201: who made an event, and what that lets the maker delete
+/// without a person being asked. Also from the app side, and also pure — it is a comparison
+/// of two strings the machine established, with no socket, no `/proc` and no desktop in it,
+/// so it is tested here rather than against a live shell.
+#[path = "../../apps/calendar/src/ownership.rs"]
+pub mod ownership;
+
 #[cfg(test)]
 mod tests {
+    use super::ownership::{agent_identity, may_delete_unasked};
     use super::store::EventStore;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -62,7 +70,14 @@ mod tests {
             color: String::new(),
             is_all_day: false,
             attendees: Vec::new(),
+            creator: None,
         }
+    }
+
+    /// The same create, with a creator on it — what a surface sends when it verified who is
+    /// asking and that caller is allowed to be recorded as the maker of the event.
+    fn create_by(creator: &str, title: &str, start: &str, end: &str) -> CreateEventParams {
+        CreateEventParams { creator: Some(creator.into()), ..create(title, start, end) }
     }
 
     fn month(year: i32, m: u32, last: u32) -> EventsParams {
@@ -448,6 +463,7 @@ mod tests {
         let read: CreateEventParams = serde_json::from_value(bare).unwrap();
         assert!(!read.is_all_day);
         assert!(read.attendees.is_empty());
+        assert!(read.creator.is_none(), "a request that names no maker records none");
     }
 
     // ── What the store refuses ───────────────────────────────────────
@@ -615,14 +631,219 @@ mod tests {
         store.create(&create("First", "2026-09-22T09:00:00", "2026-09-22T10:00:00")).unwrap();
         assert_ne!(store.revision(), empty);
     }
+
+    // ── Who made an event, and what that lets the maker delete (#201) ──
+    //
+    // An unattended harness could put events on the calendar but never take them off again:
+    // `delete_event` is `sensitive` and its own description says the event is not recoverable,
+    // so every delete raised an approval card nobody was there to answer. The door #201 chose
+    // is `delete_own_event` — `standard`, and the handler only lets it through when the event
+    // is on record as created by exactly the identity this caller was verified to be. Both
+    // halves are tested here: the rule, as a table over strings, and the record, as something
+    // the store keeps and hands back untouched — including across a restart, because the arena
+    // creates in one run of the calendar and deletes in another.
+
+    #[test]
+    fn only_the_creator_may_delete_an_event_without_being_asked() {
+        // The reviewer's table, and then some. Neither side of this comparison ever comes
+        // from the request: the creator is what the store kept at creation, and the caller is
+        // what the machine established just now — a forged claim in the arguments reaches
+        // neither string, which is the row about somebody else's event.
+        let recorded = Some("forge.py");
+        assert!(
+            may_delete_unasked(recorded, Some("forge.py")),
+            "the caller that created an event may take it off unasked"
+        );
+        assert!(
+            !may_delete_unasked(recorded, Some("hermes_cli.main")),
+            "somebody else's event stays with `delete_event`, which asks — whatever the request claims"
+        );
+        assert!(
+            !may_delete_unasked(None, Some("forge.py")),
+            "an event older than the record has no creator to match, even against its true maker"
+        );
+        assert!(!may_delete_unasked(recorded, None), "a caller nothing could identify is nobody");
+        assert!(!may_delete_unasked(None, None), "and two absences are not the same somebody");
+        assert!(!may_delete_unasked(Some(""), Some("")), "two blanks are not the same somebody either");
+        assert!(
+            !may_delete_unasked(Some("  "), Some("  ")),
+            "nor are two strings with nothing in them"
+        );
+        assert!(!may_delete_unasked(recorded, Some("Forge.py")), "the comparison is exact");
+        assert!(!may_delete_unasked(recorded, Some("forge.py ")), "and not forgiving about edges");
+    }
+
+    #[test]
+    fn an_agent_is_one_identity_per_conversation_and_the_spelling_is_written_down_once() {
+        // The record side and the compare side must spell an agent the same way or the rule
+        // would never fire for agents at all — which is why there is one function that says
+        // `agent <mind>:<conversation>` and both sides call it.
+        let recorded = agent_identity("mind:42");
+        assert_eq!(recorded, "agent mind:42");
+        assert!(may_delete_unasked(Some(&recorded), Some(&agent_identity("mind:42"))));
+        assert!(
+            !may_delete_unasked(Some(&recorded), Some(&agent_identity("mind:43"))),
+            "another conversation is another somebody"
+        );
+        assert!(
+            !may_delete_unasked(Some(&recorded), Some("mind:42")),
+            "and a program is never an agent: the prefix is what keeps the kinds apart"
+        );
+    }
+
+    #[test]
+    fn the_store_keeps_the_creator_it_was_handed() {
+        let f = Fixture::new();
+        let store = f.store();
+        let saved = store
+            .create(&create_by("forge.py", "Harness run", "2026-09-22T14:00:00", "2026-09-22T15:00:00"))
+            .unwrap();
+        assert_eq!(saved.creator.as_deref(), Some("forge.py"));
+        let read = store.get(&saved.id).unwrap();
+        assert_eq!(read.creator.as_deref(), Some("forge.py"));
+        assert!(may_delete_unasked(read.creator.as_deref(), Some("forge.py")));
+    }
+
+    #[test]
+    fn a_create_that_names_no_maker_stores_none() {
+        // The window's own form, a service's reminder, a machine where the caller could not
+        // be identified: the event exists, but it belongs to nobody, and nobody's is everybody's
+        // — which means `delete_event`, and a person asked.
+        let f = Fixture::new();
+        let store = f.store();
+        let saved =
+            store.create(&create("Dentist", "2026-09-22T10:00:00", "2026-09-22T11:00:00")).unwrap();
+        assert!(saved.creator.is_none());
+        assert!(store.get(&saved.id).unwrap().creator.is_none());
+        assert!(!may_delete_unasked(None, Some("forge.py")));
+    }
+
+    #[test]
+    fn the_record_survives_the_calendar_app_restarting() {
+        // The arena requirement: create and delete may happen with the app, and the service,
+        // restarted in between. The creator lives in the event's own file, so a fresh store
+        // over the same directory — which is what a restart is, from here — reads it back.
+        let f = Fixture::new();
+        let id = f
+            .store()
+            .create(&create_by("forge.py", "Harness run", "2026-09-22T14:00:00", "2026-09-22T15:00:00"))
+            .unwrap()
+            .id;
+
+        let reopened = f.store();
+        let read = reopened.get(&id).unwrap();
+        assert_eq!(read.creator.as_deref(), Some("forge.py"), "the file kept it");
+        assert!(may_delete_unasked(read.creator.as_deref(), Some("forge.py")));
+    }
+
+    #[test]
+    fn an_event_file_from_before_the_record_existed_reads_as_having_no_creator() {
+        // Every event already on disk was stored by a service that had no `creator` field. The
+        // key is `#[serde(default)]`, so those files still parse — as None, which the rule
+        // refuses. Nobody's existing calendar becomes deletable by whoever asks.
+        let f = Fixture::new();
+        let store = f.store();
+        let saved = store
+            .create(&create_by("forge.py", "Old file", "2026-09-22T14:00:00", "2026-09-22T15:00:00"))
+            .unwrap();
+        let path = f.0.join(format!("{}.json", saved.id));
+        let mut json: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        json.as_object_mut().unwrap().remove("creator");
+        std::fs::write(&path, serde_json::to_string(&json).unwrap()).unwrap();
+
+        let read = store.get(&saved.id).unwrap();
+        assert!(read.creator.is_none(), "the file without the key parses, with nothing in it");
+        assert!(
+            !may_delete_unasked(read.creator.as_deref(), Some("forge.py")),
+            "and even the caller that made it must ask, because nothing proves that any more"
+        );
+    }
+
+    #[test]
+    fn an_update_keeps_the_creator() {
+        // Editing an event is not adopting it. The update path reads the stored event and
+        // changes only the fields it was given, so the record rides along untouched.
+        let f = Fixture::new();
+        let store = f.store();
+        let saved = store
+            .create(&create_by("forge.py", "Harness run", "2026-09-22T14:00:00", "2026-09-22T15:00:00"))
+            .unwrap();
+        let moved = store
+            .update(&UpdateEventParams {
+                id: saved.id.clone(),
+                start: Some("2026-09-22T15:00:00".into()),
+                end: Some("2026-09-22T16:00:00".into()),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(moved.creator.as_deref(), Some("forge.py"));
+        assert_eq!(store.get(&saved.id).unwrap().creator.as_deref(), Some("forge.py"));
+    }
+
+    #[test]
+    fn a_re_sync_keeps_the_creator_the_event_was_stored_with() {
+        // `upsert_remote` rebuilds the whole event from the remote's copy of it, and a remote
+        // calendar has never heard of this field. Without the explicit carry-over, the first
+        // sync after a surface create would wipe the record — and with it the maker's right to
+        // delete unasked. The flow is the real one: a caller makes an event, pushes it out,
+        // the push notes the remote id, and the next sync finds the event by that id.
+        let f = Fixture::new();
+        let store = f.store();
+        let saved = store
+            .create(&create_by("forge.py", "Harness run", "2026-09-22T14:00:00", "2026-09-22T15:00:00"))
+            .unwrap();
+        store
+            .update(&UpdateEventParams {
+                id: saved.id.clone(),
+                remote_id: Some("remote-1".into()),
+                ..Default::default()
+            })
+            .unwrap();
+
+        let synced = store
+            .upsert_remote(&UpsertRemoteEventParams {
+                remote_id: "remote-1".into(),
+                title: "Harness run (synced)".into(),
+                start: "2026-09-22T14:00:00".into(),
+                end: "2026-09-22T15:00:00".into(),
+                description: String::new(),
+                location: None,
+                is_all_day: false,
+                attendees: Vec::new(),
+            })
+            .unwrap();
+        assert_eq!(synced.id, saved.id, "the sync edited the event it already had");
+        assert_eq!(synced.title, "Harness run (synced)", "and the remote's copy of the fields won");
+        assert_eq!(
+            synced.creator.as_deref(),
+            Some("forge.py"),
+            "but a sync edits an event, it does not adopt it: the record stays"
+        );
+
+        // A remote nobody here ever made, arriving for the first time, has no verified maker.
+        let fresh = store
+            .upsert_remote(&UpsertRemoteEventParams {
+                remote_id: "remote-2".into(),
+                title: "Imported".into(),
+                start: "2026-09-23T14:00:00".into(),
+                end: "2026-09-23T15:00:00".into(),
+                description: String::new(),
+                location: None,
+                is_all_day: false,
+                attendees: Vec::new(),
+            })
+            .unwrap();
+        assert!(fresh.creator.is_none(), "a sync stores what a sync knows: nobody made this here");
+    }
 }
 
 #[cfg(test)]
 mod view_tests {
     use super::views::{
-        all_day_bounds, day_view, last_day_of_month, named_on, rescheduled, selected_date,
-        start_and_end, timezone_label, today_line, visible_range, week_bounds, week_view,
-        EventRef, Named, SourceEvent, ViewMode,
+        added_clock, all_day_bounds, day_view, last_day_of_month, name_event, named_on,
+        naming_index, rescheduled, selected_date, start_and_end, timezone_label, today_line,
+        visible_range, week_bounds, week_view, EventRef, NAMING_CAP, Named, SourceEvent, ViewMode,
     };
     use chrono::NaiveDate;
 
@@ -1102,6 +1323,32 @@ mod view_tests {
     }
 
     #[test]
+    fn an_all_day_add_needs_no_time() {
+        // The describe says `time` is not used with `all_day`, and the call sent that way used
+        // to be refused as "needs argument `time`" before it reached anything (#297). A
+        // whole-day event has no clock: the answer is the empty one, and a `time` that arrived
+        // anyway is not consulted, exactly as `all_day` promises.
+        assert_eq!(added_clock(None, true).unwrap(), "");
+        assert_eq!(added_clock(Some("14:30"), true).unwrap(), "");
+    }
+
+    #[test]
+    fn a_timed_add_without_a_time_is_refused_in_a_sentence_that_names_time() {
+        // The optionality stops where the whole day stops: an event at a particular hour is
+        // nothing without it. The refusal is the handler's own sentence, not the format
+        // complaint about an empty string, and it points at the way out.
+        let refused = added_clock(None, false).unwrap_err();
+        assert!(refused.contains("`time`"), "{refused}");
+        assert!(refused.contains("all_day"), "{refused}");
+        let refused = added_clock(Some("   "), false).unwrap_err();
+        assert!(refused.contains("`time`"), "{refused}");
+        // A `time` that is there but cannot hold a clock keeps its format refusal.
+        let refused = added_clock(Some("1430"), false).unwrap_err();
+        assert!(refused.contains("14:30") && refused.contains("1430"), "{refused}");
+        assert_eq!(added_clock(Some(" 14:30 "), false).unwrap(), "14:30");
+    }
+
+    #[test]
     fn an_all_day_event_the_app_stores_is_one_the_grid_leaves_alone() {
         // The two halves agreeing: what `all_day_bounds` writes is what `all_day_columns` reads,
         // so an all-day event added through the surface is on its day's header and not given an
@@ -1118,5 +1365,103 @@ mod view_tests {
         let week = week_view(&[event], date(2026, 9, 22));
         assert!(week.events.is_empty(), "an all-day event is not on the hour grid");
         assert_eq!(week.all_day[2], vec!["Conference".to_string()], "Tuesday's column");
+    }
+
+    // ── The name an approval card asks permission with (#54) ─────────
+    //
+    // `delete_event` recommends the store's id and the grant is bound to it byte for byte —
+    // the reliable way in, and the one a person cannot read. `named_on` goes title and date
+    // to id; these go id back, which is what the describe's naming index is built from.
+
+    #[test]
+    fn a_timed_event_is_named_by_title_day_and_start() {
+        // The event from the issue: a Friday afternoon appointment, asked away by its uuid.
+        assert_eq!(
+            name_event(&stored(
+                "01a0c718-3931-7342-b9c7-8de36140ddb0",
+                "Dentist",
+                "2026-09-25T13:00:00",
+                "2026-09-25T13:45:00"
+            )),
+            "Dentist, Fri 25 Sep 13:00"
+        );
+        assert_eq!(
+            name_event(&stored("b", "Standup", "2026-09-22T09:00:00", "2026-09-22T09:15:00")),
+            "Standup, Tue 22 Sep 09:00"
+        );
+    }
+
+    #[test]
+    fn an_all_day_event_says_it_is_all_day() {
+        // The grids leave these to the day header; reading out the midnight an all-day row is
+        // stored at would be inventing a time nobody gave.
+        let mut holiday = stored("d", "Company holiday", "2026-09-23T00:00:00", "2026-09-23T23:59:00");
+        holiday.is_all_day = true;
+        assert_eq!(name_event(&holiday), "Company holiday, Wed 23 Sep, all day");
+    }
+
+    #[test]
+    fn a_start_that_will_not_parse_adds_no_time() {
+        // A file edited by hand can hold anything. The title alone is short; a made-up time
+        // inside the sentence a person decides on would be worse than that.
+        assert_eq!(name_event(&stored("m", "Mystery", "sometime", "whenever")), "Mystery");
+    }
+
+    #[test]
+    fn the_index_keeps_every_name_until_the_cap_then_drops_the_oldest() {
+        let day = a_day();
+        let whole = naming_index(&day);
+        assert_eq!(whole.len(), day.len(), "an ordinary range keeps every name");
+        assert!(
+            whole.contains(&(day[0].id.clone(), name_event(&day[0]))),
+            "and the values are `name_event`'s, not a second sentence for the same thing"
+        );
+
+        // A range far past the cap: one event an hour, oldest first, plus a hand-edited row
+        // whose start will not parse — which counts as oldest of all (see `naming_index`).
+        let mut events: Vec<EventRef> = (0..NAMING_CAP + 10)
+            .map(|i| {
+                stored(
+                    &format!("e{i}"),
+                    &format!("Event {i}"),
+                    &format!("2026-01-{:02}T{:02}:00:00", 1 + i / 24, i % 24),
+                    &format!("2026-01-{:02}T{:02}:00:00", 1 + i / 24, i % 24),
+                )
+            })
+            .collect();
+        events.push(stored("junk", "Hand-edited", "sometime", "whenever"));
+        let index = naming_index(&events);
+        assert_eq!(index.len(), NAMING_CAP, "the cap holds whatever the range");
+        for gone in (0..10).map(|i| format!("e{i}")).chain(["junk".to_string()]) {
+            assert!(
+                !index.iter().any(|(id, _)| *id == gone),
+                "{gone} is at the old end and was dropped"
+            );
+        }
+        let newest = &events[NAMING_CAP + 9];
+        assert!(
+            index.contains(&(newest.id.clone(), name_event(newest))),
+            "what an action taken now was read from keeps its name"
+        );
+    }
+
+    /// The index is worth only what the app actually publishes. Pinned against the source, as
+    /// `describe_says_which_day_today_is` pins the day line, because the closure needs a live
+    /// window — and dropping this key is exactly the quiet half of #54: the card keeps working,
+    /// it just stops saying what the thing is.
+    #[test]
+    fn the_describe_publishes_what_its_ids_stand_for() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../apps/calendar/src/main.rs");
+        let src = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
+        assert!(
+            src.contains(".with(\"naming\", serde_json::Value::Object(naming))"),
+            "the calendar's describe must carry the id→name index"
+        );
+        assert!(
+            src.contains("views::naming_index(&event_refs(&s.events))"),
+            "built by the capped index over the events in hand, not a second formatter in main.rs"
+        );
     }
 }

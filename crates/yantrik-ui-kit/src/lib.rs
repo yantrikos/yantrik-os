@@ -661,3 +661,92 @@ mod every_app_is_an_app_window {
         );
     }
 }
+
+#[cfg(test)]
+mod a_test_crate_runs_when_ci_runs {
+    use std::path::{Path, PathBuf};
+
+    fn repo() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .canonicalize()
+            .expect("the kit sits two levels under the checkout")
+    }
+
+    /// The paths the root workspace names in its `members` list, one per line as written there.
+    fn root_members() -> Vec<String> {
+        let text = std::fs::read_to_string(repo().join("Cargo.toml")).expect("the root Cargo.toml");
+        let mut members = Vec::new();
+        let mut inside = false;
+        for line in text.lines() {
+            let line = line.trim_start();
+            if !inside {
+                inside = line.starts_with("members = [");
+                continue;
+            }
+            if line.starts_with(']') {
+                break;
+            }
+            if let Some(rest) = line.strip_prefix('"') {
+                if let Some(path) = rest.split('"').next() {
+                    members.push(path.to_string());
+                }
+            }
+        }
+        members
+    }
+
+    /// Every `tests/*-core` Rust crate is a member of the root workspace (#85).
+    ///
+    /// CI's only cargo test step is `cargo test --workspace --locked`. The crates under `tests/`
+    /// carried a `[workspace]` table of their own, which makes each one a workspace root that
+    /// `--workspace` never reaches: tests/document-core alone hid 66 tests behind it, sixteen
+    /// written after #84 found the gap and nobody ran them. #85's own lesson is that the defect
+    /// recreates itself — a new core crate written the same way would vanish the same way, and
+    /// the absence of a check was the only reason it took an issue to notice.
+    ///
+    /// `tests/blender-core` answers to the name but holds Python, no crate; the shell-scripts
+    /// job runs it, so a directory without a `Cargo.toml` is not this check's to make.
+    #[test]
+    fn every_core_test_crate_is_a_workspace_member() {
+        let members = root_members();
+        let mut unseen = Vec::new();
+        let mut seen = 0;
+        for entry in std::fs::read_dir(repo().join("tests")).expect("the tests directory") {
+            let dir = entry.expect("a tests entry").path();
+            let Some(name) = dir.file_name().map(|n| n.to_string_lossy().to_string()) else {
+                continue;
+            };
+            if !name.ends_with("-core") || !dir.join("Cargo.toml").is_file() {
+                continue;
+            }
+            seen += 1;
+            let rel = format!("tests/{name}");
+            if !members.iter().any(|m| m == &rel) {
+                unseen.push(format!("{rel}: not listed in the root Cargo.toml's members"));
+            }
+            let text = std::fs::read_to_string(dir.join("Cargo.toml")).expect("a readable Cargo.toml");
+            if text
+                .lines()
+                .any(|l| l.trim_start() == "[workspace]" || l.trim_start().starts_with("[workspace."))
+            {
+                unseen.push(format!(
+                    "{rel}: declares its own [workspace] table, so it is a workspace root no \
+                     `--workspace` command reaches"
+                ));
+            }
+        }
+        assert!(seen >= 10, "read only {seen} core test crates from tests/; the path is wrong");
+        assert!(
+            unseen.is_empty(),
+            "these test crates never run in CI:\n  {}\n\n\
+             A guard test nobody runs is a comment, and this repository's cargo CI runs exactly \
+             one command: `cargo test --workspace --locked` (.github/workflows/ci.yml). A crate \
+             outside the root workspace is invisible to it — its tests run only when somebody \
+             remembers to cd there (#85). Put the directory in the root Cargo.toml's members and \
+             delete the crate's `[workspace]` line and its Cargo.lock; then run it from the root \
+             once, because a crate nobody tested in years may not compile.",
+            unseen.join("\n  ")
+        );
+    }
+}

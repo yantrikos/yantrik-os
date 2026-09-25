@@ -22,6 +22,7 @@ import importlib.machinery
 import importlib.util
 import json
 import os
+import shutil
 import socket
 import subprocess
 import sys
@@ -102,6 +103,45 @@ def shell_pid():
     return int(out.split()[0]) if code == 0 and out else None
 
 
+def mind_switch_gate():
+    """Whether this run may switch minds at all.
+
+    `use_harness` is sensitive (#48): it writes the preferred-mind setting, which stands
+    after a restart. In plan mode the doors that raise cards refuse it outright, and in ask
+    mode it is a card a person has to answer — only auto and bypass run it unasked, the way
+    every mode used to. Called at the top of a check, before its loop, so a Skipped lands as
+    a SKIP verdict rather than being caught as one more dead mind.
+    """
+    mode = BASELINE.get("mode")
+    if mode == "plan":
+        raise Skipped("plan mode refuses use_harness, which is sensitive (#48)")
+    if mode not in ("auto", "bypass") and not ARGS.interactive:
+        raise Skipped("mode %s makes switching minds a card a person answers; "
+                      "run with --interactive" % mode)
+
+
+_MIND_CARD_ANNOUNCED = []
+
+
+def switch_mind(mid):
+    """One mind switch, through the door that can ask.
+
+    `yos act` puts the approval card up, waits for the person, and acts again with the
+    grant; a raw `app.act` cannot, and in ask mode it is refused with GRANT before the
+    handler runs. "Allow for this session" on the first card covers the switches after it,
+    so the run asks a person at most once.
+    """
+    mind_switch_gate()
+    if BASELINE.get("mode") not in ("auto", "bypass") and not _MIND_CARD_ANNOUNCED:
+        _MIND_CARD_ANNOUNCED.append(mid)
+        print("\n   >>> A card is going up for shell.use_harness — sensitive, because it writes the "
+              "preferred-mind setting (#48). Press ALLOW FOR THIS SESSION on the VM and the "
+              "switches after this one run unasked.", flush=True)
+    code, out = sh("yos act shell use_harness id=%s" % mid, timeout=200)
+    if "accepted: True" not in out:
+        raise Failed("could not switch to mind %s: %s" % (mid, out[-200:]))
+
+
 # ── ci: the desktop answers for itself ──────────────────────────────────────────────────────
 
 BASELINE = {}
@@ -135,6 +175,34 @@ def _mode_file():
         raise Failed("mode %r is not one this OS defines" % doc.get("mode"))
     BASELINE["mode"] = doc["mode"]
     return "mode %s" % doc["mode"]
+
+
+# The commands the image is built to ship, and what each one is for on a Yantrik machine.
+# An installed machine is kept current by yantrik-update, which replaces /opt/yantrik and
+# nothing else, so a package the image gained after an install never reaches the base system
+# until the updater reconciles it (#210: VM 520 had no `ip`, `ss` or `ping`). The names here
+# are commands, not packages — they are what the shipped code and the person at the keyboard
+# actually run — and they must stay in step with REQUIRED_PACKAGES in yantrik-update.
+IMAGE_COMMANDS = {
+    "ip": "the network tools and every `ip addr` a person types (iproute2)",
+    "ss": "socket listings the mind runs (iproute2)",
+    "ping": "the reachability check, and the first thing anyone tries on a broken network (iputils-ping)",
+    "grim": "every screenshot the desktop takes",
+    "curl": "the updater's downloads and the mind's fetches",
+    "python3": "yos itself is a python3 script",
+    "nano": "EDITOR, exported by yantrik-session",
+    "htop": "the process view beside the System Monitor app",
+}
+
+
+@check("every command the image ships is installed and answers on PATH")
+def _image_commands():
+    missing = [name for name in IMAGE_COMMANDS if not shutil.which(name)]
+    if missing:
+        raise Failed("not on PATH: %s — a machine from an older image is drifted; yantrik-update "
+                     "reconcile installs the packages behind them (%s)"
+                     % (", ".join(missing), "; ".join(IMAGE_COMMANDS[m] for m in missing)))
+    return "%d/%d present: %s" % (len(IMAGE_COMMANDS), len(IMAGE_COMMANDS), " ".join(sorted(IMAGE_COMMANDS)))
 
 
 @check("every action on every surface declares a grade")
@@ -410,6 +478,7 @@ def _problems():
 
 @check("every attached mind answers", tier="rc")
 def _minds():
+    mind_switch_gate()
     minds = [m for m in state().get("minds", []) if m.get("id")]
     report, dead = [], []
     base_active = BASELINE.get("mind")
@@ -417,7 +486,7 @@ def _minds():
         mid = m["id"]
         t0 = time.time()
         try:
-            act("shell", "use_harness", id=mid, timeout=15)
+            switch_mind(mid)
             conv = state().get("conversation", [])
             base = max((c.get("index", -1) for c in conv), default=-1)
             act("shell", "send_message", text="Release check: reply with exactly one word, READY.")
@@ -436,7 +505,7 @@ def _minds():
             dead.append("%s: %s" % (mid, str(e)[:100]))
     if base_active:
         try:
-            act("shell", "use_harness", id=base_active, timeout=15)
+            switch_mind(base_active)
         except Exception:  # noqa: BLE001
             pass
     if dead:
@@ -581,7 +650,7 @@ def _agent_command():
     minds = [m.get("id") for m in state().get("minds", [])]
     if "pi" not in minds:
         raise Skipped("pi is not attached; this check drives pi's own bash tool")
-    act("shell", "use_harness", id="pi", timeout=15)
+    switch_mind("pi")
     print("\n   >>> pi will ask to run a command: press ALLOW ONCE on the card (180 s).", flush=True)
     act("shell", "send_message",
         text="Release check: use your bash tool to run exactly this command and nothing else: "
@@ -603,9 +672,11 @@ def _agent_command():
 
 # ── last: what the run leaves behind ────────────────────────────────────────────────────────
 
-# Last of all, in every tier, so it sees what every check before it left. It ran in the middle of
-# ci, and the rc browser check that came later left its own page open in Chromium where nothing
-# looked (#190).
+# Last of every check that runs on an unlocked machine, in every tier, so it sees what every
+# check before it left. It ran in the middle of ci, and the rc browser check that came later
+# left its own page open in Chromium where nothing looked (#190). Only the locked-desktop check
+# comes after, and only because it must: it leaves the machine locked and nothing on this socket
+# can undo that, so anything that looked at the machine afterwards would see it through the lock.
 @check("no launch failed, no window is listed twice, and no window of the run's is left open")
 def _windows():
     def left_open():
@@ -629,6 +700,40 @@ def _windows():
     if msgs:
         raise Failed("; ".join(msgs))
     return "%d windows, none twice, none of the run's left open, no failed launch" % len(titles)
+
+
+@check("a locked desktop refuses to be taken anywhere")
+def _locked():
+    # #203: the login screen could be walked straight past — `yos act shell open_lens` took the
+    # desktop to the Lens with no credentials. Locked is a state now, held at the dispatch, and
+    # this is the check that it holds on a shipped machine. It runs last because it leaves the
+    # machine locked and nothing on this socket can undo that — which is the fix. The boottest's
+    # QEMU is thrown away afterwards; on a real machine a person unlocks at the keyboard, and the
+    # manual list already says so.
+    if state().get("screen") not in ("lock", "login"):
+        act("shell", "lock", timeout=15)
+        if not wait(lambda: state().get("screen") == "lock", 15):
+            raise Failed("shell.lock did not lock: screen is %r" % state().get("screen"))
+    st = state()
+    if st.get("locked") is not True:
+        raise Failed("a locked desktop does not say locked: true: %s" % json.dumps(st)[:200])
+    seen = []
+    for action, args in (("open_lens", {}), ("show_screen", {"screen": "desktop"})):
+        try:
+            act("shell", action, timeout=15, **args)
+            seen.append(("raw socket %s" % action, False, "it ran"))
+        except Exception as e:  # noqa: BLE001
+            seen.append(("raw socket %s" % action, "LOCKED:" in str(e), str(e)[:90]))
+        code, out = sh("yos act --no-ask shell %s%s"
+                       % (action, "".join(" %s=%s" % kv for kv in args.items())), timeout=30)
+        seen.append(("yos %s" % action, "LOCKED:" in out, out[:90]))
+    screen = state().get("screen")
+    open_doors = [d for d, refused, _ in seen if not refused]
+    if screen not in ("lock", "login"):
+        open_doors.append("the refusals did not hold the screen: %r" % screen)
+    if open_doors:
+        raise Failed("on a locked desktop: %s — %s" % (open_doors, seen))
+    return "open_lens and show_screen refused with LOCKED: over the socket and the CLI; the screen is still %s" % screen
 
 
 MANUAL = [

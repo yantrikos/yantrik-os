@@ -6,6 +6,16 @@
 //!
 //! No UI code, no backend logic — pure contracts only.
 
+/// `companion.ask` answers with this code when the shell replied but no model did.
+///
+/// The distinction earns its own code because the fallback is not an answer: with no model
+/// behind it the companion produces plausible-looking canned text, and an app that cannot tell
+/// the two apart shows that text as the model's words — and offers to write it into documents.
+/// An app that sees this code says no model answered — none set up, or the one set up did not
+/// answer — and changes nothing. (A server-defined code in JSON-RPC's reserved range; -32001 is
+/// already the mail service's "no account".)
+pub const ERR_NO_MODEL: i32 = -32002;
+
 pub mod email;
 pub mod calendar;
 pub mod weather;

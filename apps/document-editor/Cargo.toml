@@ -26,10 +26,9 @@ regex = { workspace = true }
 # Markdown -> HTML for the export, reusing the renderer Notes already depends on rather than
 # writing a second Markdown implementation to keep in step with the first.
 pulldown-cmark = { version = "0.13.1", default-features = false, features = ["html"] }
-# inotify on the folder the open document lives in, so moving the document in Files does not
-# strand it. Already in this tree at the same major version — crates/yantrik-os watches
-# ~/Documents with it — so this adds a dependency edge and no new build.
-notify = "7"
+# The folder watch and the move decisions, shared with the Text Editor so a file moved in
+# Files does not strand either editor (#86). Carries the notify dependency with it.
+yantrik-file-follow = { workspace = true }
 
 [build-dependencies]
 slint-build = "1.17"

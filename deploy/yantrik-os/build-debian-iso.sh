@@ -258,6 +258,16 @@ apt-get install -y -qq     seatd     libcap2-bin     chromium     pipewire-pulse
 # Each failed silently, which is why none of them was noticed from inside the desktop.
 apt-get install -y -qq     swaybg     xdg-utils     espeak-ng
 
+# ── The person's own tools ──
+# The first hour on a machine: the image had no text editor and no process viewer at all, so
+# the terminal could edit a file only through Python and list processes only through the
+# System Monitor app. nano is what yantrik-session exports as EDITOR, so `git commit`,
+# `crontab -e` and everything else that asks has something to open — the image ships no vi
+# either. htop complements, and does not replace, the app. No `|| true`: release-check
+# (tier ci) asserts both commands on the booted image, and yantrik-update reconciles them
+# on machines whose base system drifted from this list (#210).
+apt-get install -y -qq     nano     htop
+
 # ── Utilities (installer essentials) ──
 apt-get install -y -qq \
     jq parted rsync openssh-server openssl \

@@ -133,7 +133,7 @@ impl Surface {
         // Before a grant is spent: the action, the agent's reach, the arguments as sent.
         call.spend_grant(&mut authority, self.registry.app_id(), || {
             self.registry
-                .within_reach(reach.as_ref(), &call.action)
+                .within_reach(reach.as_ref(), &call.action, &call.args)
                 .and_then(|()| self.registry.check_call(&call.action, &call.args))
                 .map_err(refusal)
         })?;
@@ -144,7 +144,7 @@ impl Surface {
             let _caller = CallerScope::enter(who);
             let _token = AgentTokenScope::enter(agent_token);
             let later = LaterScope::enter();
-            let answer = self.registry.within_reach(reach.as_ref(), &action).and_then(|()| {
+            let answer = self.registry.within_reach(reach.as_ref(), &action, &args).and_then(|()| {
                 self.registry.act(&action, &args, expect_revision.as_deref(), &action_id, &authority)
             });
             (answer, later.take())

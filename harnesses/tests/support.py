@@ -26,6 +26,11 @@ for _path in (HARNESSES / "lib", HARNESSES / "deepseek", HARNESSES / "pi"):
     if str(_path) not in sys.path:
         sys.path.insert(0, str(_path))
 
+# Agent processes are started in a directory under the data home (#183). The suite points the
+# data home somewhere throwaway so that no test writes into the real ~/.local/share, and so a
+# test that needs a data home of its own has a previous value to restore.
+os.environ["XDG_DATA_HOME"] = tempfile.mkdtemp(prefix="yantrik-tests-data-")
+
 FAKE_MCP = str(Path(__file__).resolve().parent / "fake_mcp_server.py")
 FAKE_PI = str(Path(__file__).resolve().parent / "fake_pi.py")
 
