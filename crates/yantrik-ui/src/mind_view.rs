@@ -47,8 +47,19 @@ const CHECKOUT_CONFIG: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../config
 /// wlroots this ships with; the window list reads it back as Mind View.
 pub const NESTED_APP_ID: &str = "wlroots";
 
+/// How wlroots titles that window: "wlroots - WL-1". The person's labwc places it by this
+/// (config/labwc/rc.xml) and the shell finds it by it.
+pub const NESTED_TITLE_PREFIX: &str = "wlroots - ";
+
 /// The shell's own id for the Mind View window, as the window list and `show_app` spell it.
 pub const APP_ID: &str = "mind-view";
+
+/// What the taskbar and the window switcher call it. The title is kept as wlroots wrote it,
+/// because that is what they hand `wlrctl` to find it again.
+pub const DISPLAY_NAME: &str = "Mind View";
+
+/// How long the shell watches for Mind View's window to take the keyboard, once, as it opens.
+const FOCUS_WATCH: Duration = Duration::from_secs(3);
 
 /// The display Mind View serves, as the nested labwc itself reported it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -234,11 +245,15 @@ pub fn ensure() -> Result<Seat, String> {
     if let Some(answer) = current {
         return answer;
     }
+    // Asked before Mind View exists, so the answer is the person's window and not Mind View.
+    let front_before = crate::windows::front_now();
     match start() {
         Ok(nested) => {
             let seat = nested.seat.clone();
             tracing::info!(wayland = %seat.wayland, x11 = ?seat.x11, "Mind View started");
             with_state(|state| state.nested = Some(nested));
+            // Not waited for: the app the mind asked for is started as soon as the display is.
+            std::thread::spawn(move || hand_back_focus(front_before));
             Ok(seat)
         }
         Err(why) => {
@@ -247,6 +262,45 @@ pub fn ensure() -> Result<Seat, String> {
             Err(why)
         }
     }
+}
+
+/// Give the keyboard back to the window the person was in, once Mind View has taken it.
+///
+/// labwc focuses and raises every new window before any window rule runs, so Mind View opening
+/// takes the keyboard from whatever the person was typing into, and no rule can prevent it. So
+/// the shell watches for it to happen and puts the focus back — which also puts their window in
+/// front again, with Mind View beside it in its corner.
+///
+/// Only when an app of theirs had the keyboard. With the desktop itself in front there is nothing
+/// to hand back to: the shell is one fullscreen window, and raising it would put the whole of
+/// Mind View out of sight the moment it appeared, which is the opposite of letting them watch.
+fn hand_back_focus(front_before: Option<String>) {
+    let deadline = Instant::now() + FOCUS_WATCH;
+    while Instant::now() < deadline {
+        let now = crate::windows::front_now();
+        if let Some(title) = focus_to_return(front_before.as_deref(), now.as_deref()) {
+            if crate::windows::present(&title) {
+                tracing::info!(window = %title, "Mind View opened; the keyboard went back to the person's window");
+            }
+            return;
+        }
+        if now.as_deref().is_some_and(is_mind_view_title) {
+            // Mind View has the keyboard and there is nobody's window to give it back to.
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// The window to give the keyboard back to: the one the person was in, once Mind View has it.
+fn focus_to_return(before: Option<&str>, now: Option<&str>) -> Option<String> {
+    let before = before.filter(|title| !is_mind_view_title(title))?;
+    now.filter(|title| is_mind_view_title(title)).map(|_| before.to_string())
+}
+
+/// Whether a window title is the one wlroots gives a nested compositor's window.
+pub fn is_mind_view_title(title: &str) -> bool {
+    title.starts_with(NESTED_TITLE_PREFIX)
 }
 
 fn socket_path(wayland: &str) -> PathBuf {
@@ -452,6 +506,33 @@ mod tests {
         assert_eq!(route(who(), false, true), Route { mind_view: None, raise_on_handover: false });
         // Mind View failed this session: exactly what happened before it existed.
         assert_eq!(route(who(), true, false), Route { mind_view: None, raise_on_handover: true });
+    }
+
+    #[test]
+    fn the_keyboard_goes_back_to_the_persons_window_only() {
+        let mind_view = Some("wlroots - WL-1");
+        // They were typing into Notes; Mind View took the keyboard as it opened.
+        assert_eq!(focus_to_return(Some("Notes"), mind_view), Some("Notes".to_string()));
+        // Not yet: Mind View has not taken it, so there is nothing to undo.
+        assert_eq!(focus_to_return(Some("Notes"), Some("Notes")), None);
+        assert_eq!(focus_to_return(Some("Notes"), None), None);
+        // The desktop was in front: nothing of theirs to give it back to.
+        assert_eq!(focus_to_return(None, mind_view), None);
+        // Mind View itself was in front already (it was restarted): leave it.
+        assert_eq!(focus_to_return(Some("wlroots - WL-1"), mind_view), None);
+    }
+
+    #[test]
+    fn the_person_places_mind_view_by_the_title_the_shell_finds_it_by() {
+        let rules = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../config/labwc/rc.xml"
+        ))
+        .unwrap();
+        let rule = format!("identifier=\"{NESTED_APP_ID}\" title=\"{NESTED_TITLE_PREFIX}*\"");
+        assert!(rules.contains(&rule), "config/labwc/rc.xml places Mind View with {rule}");
+        assert!(is_mind_view_title("wlroots - WL-1"));
+        assert!(!is_mind_view_title("Notes"));
     }
 
     #[test]

@@ -219,4 +219,31 @@
       </action>
     </keybind>
   </keyboard>
+
+  <!--
+    ══ Mind View (#239) ══════════════════════════════════════════════════════════════════
+
+    The window a mind's apps are drawn in: a nested labwc (config/labwc-mind/rc.xml) that wlroots
+    names itself, app_id `wlroots` and title "wlroots - WL-1". Without a rule it opened at
+    wlroots' default 1280×720 in the middle of the screen, which on this desktop's 1280×800 is
+    the whole of it, over whatever the person was doing.
+
+    So it opens in the bottom-right corner, where the taskbar and the Lens are not: 760×500 is the
+    display the mind's apps get, and the smallest that holds one of ours (they ask for 640×400 at
+    least, and the nested labwc adds a title bar and a border inside it). MoveToEdge keeps to the
+    <margin> above, so it stops at the taskbar rather than under it; snapWindows="no" so it goes
+    to the screen's edge and not to the edge of whatever window is nearest.
+
+    Rules run once the window is mapped, and labwc focuses a new window before that, so no rule
+    can stop Mind View taking the keyboard as it opens. The shell hands it back instead
+    (mind_view::hand_back_focus). Checked on labwc 0.7.1; the actions are the same in 0.8.3's
+    labwc-actions(5).
+  -->
+  <windowRules>
+    <windowRule identifier="wlroots" title="wlroots - *">
+      <action name="ResizeTo" width="760" height="500" />
+      <action name="MoveToEdge" direction="right" snapWindows="no" />
+      <action name="MoveToEdge" direction="down" snapWindows="no" />
+    </windowRule>
+  </windowRules>
 </labwc_config>

@@ -42,6 +42,17 @@
     <followMouse>no</followMouse>
   </focus>
 
+  <!--
+    Every window fills Mind View. It is a view onto what the mind is doing, not a second desktop
+    to arrange: an app that opened at its preferred 1100×800 inside a 760×500 display would be
+    mostly off its edge, and the person watching would see a title bar and a corner.
+  -->
+  <windowRules>
+    <windowRule identifier="*">
+      <action name="Maximize" />
+    </windowRule>
+  </windowRules>
+
   <keyboard>
     <keybind key="A-Tab">
       <action name="NextWindow" />

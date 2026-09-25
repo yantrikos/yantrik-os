@@ -850,7 +850,7 @@ fn derive_context(title: &str, app_id: &str) -> String {
                 .to_string()
         }
         // wlroots titles the window "wlroots - WL-1", which says nothing to a person.
-        "mind-view" => "Mind View".to_string(),
+        "mind-view" => crate::mind_view::DISPLAY_NAME.to_string(),
         "files" => {
             if title.contains('/') {
                 title.rsplit('/').next().unwrap_or("").to_string()

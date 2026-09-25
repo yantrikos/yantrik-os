@@ -199,7 +199,9 @@ export component Taskbar inherits Rectangle {
                                 y: (parent.height - self.height) / 2;
                             }
                             Text {
-                                text: w.title;
+                                // Mind View's title is wlroots' own "wlroots - WL-1", kept because
+                                // it is what `activate-window` finds the window by (#239).
+                                text: w.app-id == "mind-view" ? "Mind View" : w.title;
                                 color: win.is-active ? Theme.text-primary : Theme.text-secondary;
                                 font-size: Theme.fs-caption;
                                 font-weight: win.is-active ? 500 : 400;

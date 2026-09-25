@@ -104,7 +104,8 @@ export component WindowSwitcher inherits Rectangle {
 
                         // Title (truncated)
                         Text {
-                            text: win.title;
+                            // As in the taskbar: named for a person, found by its title (#239).
+                            text: win.app-id == "mind-view" ? "Mind View" : win.title;
                             color: Theme.text-primary;
                             font-size: Theme.fs-micro;
                             horizontal-alignment: center;
