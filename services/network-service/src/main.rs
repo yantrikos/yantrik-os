@@ -42,6 +42,9 @@
 mod firewall;
 mod nmcli;
 
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
 use yantrik_ipc_contracts::network::{
     method, ConnectionType, DnsConfig, DnsSetParams, DnsSetResult, FirewallState, KnownNetwork,
     NetworkInterfaceInfo, NetworkStatus, RadioState, ScannedNetwork, WifiConnectParams,
@@ -66,11 +69,15 @@ fn main() {
 struct NetworkHandler {
     /// `app.describe` and `app.act`, dispatched as an app window's are.
     surface: Surface,
+    /// The minimum rescan interval, shared by the raw `network.wifi_scan` method and the
+    /// surface's `wifi_scan` action: one verb with two doors, one gate between them (#332).
+    rescans: Arc<RescanGate>,
 }
 
 impl Default for NetworkHandler {
     fn default() -> Self {
-        NetworkHandler { surface: network_surface() }
+        let rescans = Arc::new(RescanGate::new(RESCAN_INTERVAL));
+        NetworkHandler { surface: network_surface(rescans.clone()), rescans }
     }
 }
 
@@ -113,6 +120,20 @@ impl ServiceHandler for NetworkHandler {
         if let Some(answer) = self.surface.answer(method_name, &params, peer) {
             return answer;
         }
+        // The raw methods are the desktop's own plumbing (#332): the Network Manager window
+        // calls them by name, and until #43 decides what each one is worth, nobody else gets
+        // them at all — `wifi_connect` from here takes a password and `dns_set` rewrites this
+        // machine's resolvers, with no grade, no card and no ceiling on any of it. The gate is
+        // the kernel's account of the calling process; the graded actions on `app.act` above
+        // answer any caller, under the ceiling, the mode and the grant, exactly as before. A
+        // method that is not one of this service's is left to the unknown-method answer below,
+        // whoever asks: the protocol's `-32601` for a name nobody serves is the checker's
+        // (`yos check`) and every caller's to get.
+        if method_name.starts_with("network.") {
+            if let Err(why) = own_process_only(peer) {
+                return Err(ServiceError { code: -32035, message: why });
+            }
+        }
         match method_name {
             method::INTERFACES => Ok(serde_json::to_value(read_interfaces()?).unwrap()),
             method::STATUS => Ok(serde_json::to_value(read_status()?).unwrap()),
@@ -127,7 +148,7 @@ impl ServiceHandler for NetworkHandler {
             }
             method::WIFI_SCAN => {
                 let p: WifiScanParams = params_for(method_name, params)?;
-                Ok(serde_json::to_value(wifi_scan(p.rescan)?).unwrap())
+                Ok(serde_json::to_value(wifi_scan(&self.rescans, p.rescan)?).unwrap())
             }
             method::WIFI_CONNECT => {
                 let p: WifiConnectParams = params_for(method_name, params)?;
@@ -372,7 +393,13 @@ fn require_adapter() -> Result<String, ServiceError> {
     wifi_adapter_name().ok_or_else(|| service_error(&Trouble::NoWifiAdapter))
 }
 
-fn wifi_scan(rescan: bool) -> Result<Vec<ScannedNetwork>, ServiceError> {
+fn wifi_scan(gate: &RescanGate, rescan: bool) -> Result<Vec<ScannedNetwork>, ServiceError> {
+    // The interval is taken before the adapter is even asked: what it counts is rescan attempts
+    // on this socket, and a loop that only ever reached a missing adapter would still be a loop
+    // (#332). `rescan=false` never touches the gate — the cached list costs the radio nothing.
+    if rescan {
+        gate.take()?;
+    }
     require_adapter()?;
     if rescan {
         // A rescan that fails is reported and the cached list is not returned in its place: a
@@ -384,6 +411,110 @@ fn wifi_scan(rescan: bool) -> Result<Vec<ScannedNetwork>, ServiceError> {
     // rows that need no password, and this is the one call that wants it.
     let saved = saved_ssids();
     read_scan_cached(&saved).map_err(|t| service_error(&t))
+}
+
+// ── The minimum rescan interval (#332) ───────────────────────────────
+//
+// A rescan puts the radio off the air while it sweeps the bands, so a loop of
+// `wifi_scan rescan=true` — on the raw method or on the surface's action — is a loop of
+// knocking Wi-Fi off: the person's call drops, their music stops, for as long as the caller
+// keeps asking. Ten seconds is the issue's example and the adapter's own sweep bound
+// (`SCAN_WAIT_SECS`), which is also what the Network Manager window's scan action defers for;
+// a person clicking as fast as they can stays inside it.
+
+/// The minimum time between two rescans this socket runs.
+const RESCAN_INTERVAL: Duration = Duration::from_secs(nmcli::SCAN_WAIT_SECS as u64);
+
+/// When the last rescan attempt went out, and how close together attempts may be.
+struct RescanGate {
+    interval: Duration,
+    last: Mutex<Option<Instant>>,
+}
+
+impl RescanGate {
+    fn new(interval: Duration) -> Self {
+        RescanGate { interval, last: Mutex::new(None) }
+    }
+
+    /// Take the rescan slot at `now`, or refuse with how long the caller has to wait and the
+    /// way around it (`rescan=false`, the cached list). Checked and recorded in one lock, so
+    /// two callers racing cannot both take the slot. The refusal is a `ServiceError` with its
+    /// own code because it leaves through two doors — the raw method answers it whole, and
+    /// the surface answers its sentence — and a caller may branch on either.
+    fn take_at(&self, now: Instant) -> Result<(), ServiceError> {
+        let mut last = self.last.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(previous) = *last {
+            let elapsed = now.saturating_duration_since(previous);
+            if elapsed < self.interval {
+                let wait = (self.interval - elapsed).as_secs() + 1;
+                return Err(ServiceError {
+                    code: -32034,
+                    message: format!(
+                        "the radio was asked to rescan {ago} seconds ago and a rescan takes \
+                         Wi-Fi off the air while it sweeps: this socket runs one at most every \
+                         {interval} seconds. Wait {wait} seconds, or ask with `rescan=false` \
+                         and get NetworkManager's cached list now",
+                        ago = elapsed.as_secs(),
+                        interval = self.interval.as_secs(),
+                    ),
+                });
+            }
+        }
+        *last = Some(now);
+        Ok(())
+    }
+
+    fn take(&self) -> Result<(), ServiceError> {
+        self.take_at(Instant::now())
+    }
+}
+
+// ── The raw methods answer the desktop's own programs (#332) ────────
+
+/// Whether `/proc` says this executable is one of this OS's own binaries: every program the
+/// desktop ships is named `yantrik-*`, and a binary replaced mid-run reads as
+/// `/path/yantrik-x (deleted)`, which still passes — right for a service restarted while a
+/// caller holds the socket. A path that is not absolute is not the kernel's answer and is
+/// refused like anything else.
+fn is_own_binary(exe: &str) -> bool {
+    exe.starts_with('/')
+        && exe.rsplit('/').next().is_some_and(|base| base.starts_with("yantrik-"))
+}
+
+/// The peer check on the raw methods, and the refusals in sentences.
+///
+/// Same-uid limits stand (#154): this stops accidents and casual impersonation — a script,
+/// another user's process, a caller that never says who it is — not hostile code running as
+/// the same user, which can be the shell's own child and wear its name.
+fn own_process_only(peer: Option<PeerCred>) -> Result<(), String> {
+    let Some(peer) = peer else {
+        return Err(
+            "the kernel would not say which process is calling, and the raw network.* \
+             methods answer the desktop's own programs; the graded actions on app.act \
+             answer any caller"
+                .to_string(),
+        );
+    };
+    let exe = std::fs::read_link(format!("/proc/{}/exe", peer.pid))
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_default();
+    if is_own_binary(&exe) {
+        return Ok(());
+    }
+    Err(if exe.is_empty() {
+        format!(
+            "the process calling the raw network.* methods (pid {}) could not be identified \
+             from /proc, and those methods answer the desktop's own programs; the graded \
+             actions on app.act answer any caller",
+            peer.pid
+        )
+    } else {
+        format!(
+            "the raw network.* methods answer the desktop's own programs and the process \
+             calling is {exe} (pid {}); the graded actions on app.act answer any caller",
+            peer.pid
+        )
+    })
 }
 
 fn wifi_radio(enabled: bool) -> Result<WifiState, ServiceError> {
@@ -771,7 +902,7 @@ fn firewall_state() -> FirewallState {
 /// give (#179's defect was publishing a surface with nothing true on it): disconnecting and
 /// radio-off cannot be undone over the channel they close, so they are graded `dangerous` and
 /// belong where the person whose Wi-Fi goes off is looking at the card (`docs/sdk/grades.md`).
-fn network_surface() -> Surface {
+fn network_surface(rescans: Arc<RescanGate>) -> Surface {
     Surface::new(APP)
         .socket_name("network")
         .describe(|| {
@@ -783,9 +914,9 @@ fn network_surface() -> Surface {
                 .with("error", e.message)
             })
         })
-        .action(wifi_scan_action(), |args| {
+        .action(wifi_scan_action(), move |args| {
             let rescan = args["rescan"].as_bool().unwrap_or(false);
-            wifi_scan(rescan)
+            wifi_scan(&rescans, rescan)
                 .map(|networks| serde_json::to_value(networks).unwrap())
                 .map_err(|e| e.message)
         })
@@ -818,7 +949,10 @@ fn wifi_scan_action() -> Action {
     Action::new("wifi_scan", "List the Wi-Fi networks this machine can see")
         .arg(
             Param::flag("rescan")
-                .describe("Ask the radio for a fresh list first, instead of answering from NetworkManager's cache")
+                .describe("Ask the radio for a fresh list first, instead of answering from \
+                           NetworkManager's cache. A rescan takes Wi-Fi off the air while it \
+                           sweeps, so this socket runs one at most every ten seconds and \
+                           refuses a sooner one; the cached list is always there (#332)")
                 .optional(),
         )
         .expected_seconds(10)
@@ -1316,5 +1450,94 @@ mod tests {
     #[test]
     fn the_surface_is_declared_soundly() {
         assert!(NetworkHandler::default().surface.registry().problems().is_empty());
+    }
+
+    /// The interval's own counting, on constructed instants: a second rescan inside the
+    /// interval is refused with its own code, a sentence naming the wait and the cached-list
+    /// way round, and once the interval has passed the slot opens again.
+    #[test]
+    fn the_rescan_gate_counts_its_interval() {
+        let gate = RescanGate::new(Duration::from_secs(10));
+        let t0 = Instant::now();
+        assert!(gate.take_at(t0).is_ok());
+        let err = gate.take_at(t0 + Duration::from_secs(3)).unwrap_err();
+        assert_eq!(err.code, -32034);
+        assert!(err.message.contains("at most every 10 seconds"), "{}", err.message);
+        assert!(err.message.contains("Wait 8 seconds"), "{}", err.message);
+        assert!(err.message.contains("`rescan=false`"), "{}", err.message);
+        assert!(gate.take_at(t0 + Duration::from_secs(10)).is_ok(), "the interval passed");
+    }
+
+    /// The loop item 4 of #332 named, on the door itself: two `wifi_scan rescan=true` acts back
+    /// to back, and the second is the gate's refusal whatever this machine's Wi-Fi is — the
+    /// slot is taken before the adapter is asked, so the refusal holds on a machine with no
+    /// adapter as firmly as on one with. The first act's answer is the machine's (a list, or
+    /// the trouble that stopped it) and is not pinned here. Through the surface the refusal
+    /// arrives as every handler sentence does (-32602, the envelope's one code); the gate's own
+    /// code, -32034, is what the raw method answers with, and the pure test above pins it.
+    #[test]
+    fn a_loop_of_rescans_cannot_keep_knocking_wifi_off() {
+        let handler = NetworkHandler::default();
+        let _first = handler.act(&act_wifi_scan(serde_json::json!({ "rescan": true }), None), at("sensitive", "ask"));
+        let err = handler
+            .act(&act_wifi_scan(serde_json::json!({ "rescan": true }), None), at("sensitive", "ask"))
+            .unwrap_err();
+        assert!(err.message.contains("at most every 10 seconds"), "{}", err.message);
+        assert!(err.message.contains("`rescan=false`"), "{}", err.message);
+
+        // The cached list is the way round, and it needs no slot: `rescan=false` is answered
+        // (here, on a machine whose Wi-Fi the test must not touch, by whatever the machine
+        // says — but never by the gate).
+        let cached = handler.act(&act_wifi_scan(serde_json::json!({}), None), at("sensitive", "ask"));
+        if let Err(err) = cached {
+            assert!(!err.message.contains("at most every"), "a cached read hit the rescan gate: {}", err.message);
+        }
+    }
+
+    /// The raw `network.*` methods are the desktop's own plumbing (#332): a caller the kernel
+    /// cannot place, or a process that is not a Yantrik binary, is refused before any method is
+    /// looked at — `wifi_connect` from here takes a password and `dns_set` rewrites this
+    /// machine's resolvers with no grade and no card on either. The graded doors are untouched
+    /// by the check: `app.describe` still answers any caller at all.
+    #[test]
+    fn the_raw_methods_answer_only_the_desktops_own_programs() {
+        let handler = NetworkHandler::default();
+        // No peer credentials at all: refused, and the sentence says where the open door is.
+        let err = handler.handle(method::STATUS, serde_json::json!({})).unwrap_err();
+        assert_eq!(err.code, -32035);
+        assert!(err.message.contains("would not say which process is calling"), "{}", err.message);
+        assert!(err.message.contains("app.act"), "{}", err.message);
+
+        // A real process that is not a Yantrik binary — this test runner itself.
+        let pid = std::process::id();
+        let peer = PeerCred { pid: pid as i32, uid: 0, gid: 0 };
+        let err = handler
+            .handle_from(method::WIFI_SCAN, serde_json::json!({ "rescan": false }), Some(peer))
+            .unwrap_err();
+        assert_eq!(err.code, -32035);
+        assert!(err.message.contains("the process calling is"), "{}", err.message);
+        assert!(err.message.contains(&format!("(pid {pid})")), "{}", err.message);
+
+        // The gate itself never sees the check: `app.describe` answers with no peer.
+        let described = handler.handle("app.describe", serde_json::json!({})).expect("describe answers any caller");
+        assert_eq!(described["app"], "network");
+
+        // And a name no service serves keeps the protocol's own answer for a caller the raw
+        // methods refuse: `yos check` probes with one and expects -32601, which the socket
+        // layer maps from this -1.
+        let err = handler.handle("app.yos_check_no_such_method", serde_json::json!({})).unwrap_err();
+        assert_eq!(err.code, -1);
+    }
+
+    /// What counts as one of this OS's own binaries: an absolute path whose last segment is a
+    /// `yantrik-` name — including a binary replaced mid-run, which the kernel reports with a
+    /// " (deleted)" suffix — and nothing else. A relative path is not the kernel's answer.
+    #[test]
+    fn a_yantrik_binary_passes_the_peer_check_and_anything_else_does_not() {
+        assert!(is_own_binary("/opt/yantrik/bin/yantrik-network-manager"));
+        assert!(is_own_binary("/opt/yantrik/bin/yantrik-ui (deleted)"), "a service restarted mid-call");
+        assert!(!is_own_binary("/usr/bin/python3"));
+        assert!(!is_own_binary("yantrik-ui"), "not an absolute path");
+        assert!(!is_own_binary(""));
     }
 }

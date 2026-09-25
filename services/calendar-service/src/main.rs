@@ -28,13 +28,15 @@
 
 mod store;
 
+use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use store::EventStore;
 use yantrik_ipc_contracts::calendar::{
-    method, CreateEventParams, DeleteEventParams, EventsParams, GetEventParams, UpdateEventParams,
-    UpsertRemoteEventParams, DEFAULT_REMINDER_MINUTES, MAX_REMINDER_MINUTES,
+    method, CalendarEvent, CreateEventParams, DeleteEventParams, EventsParams, GetEventParams,
+    UpdateEventParams, UpsertRemoteEventParams, DEFAULT_REMINDER_MINUTES, MAX_REMINDER_MINUTES,
 };
 #[cfg(test)]
 use yantrik_service_sdk::gate::{self, Authority};
@@ -80,7 +82,10 @@ struct CalendarHandler {
 impl Default for CalendarHandler {
     fn default() -> Self {
         let store = Arc::new(EventStore::new(calendar_dir()));
-        CalendarHandler { store: store.clone(), surface: calendar_surface(store) }
+        CalendarHandler {
+            store: store.clone(),
+            surface: calendar_surface(store, Arc::new(BurstGate::new(ADD_BURST_LIMIT, ADD_BURST_WINDOW))),
+        }
     }
 }
 
@@ -119,6 +124,20 @@ impl ServiceHandler for CalendarHandler {
         // shell writes, as an app window's dispatch reads them.
         if let Some(answer) = self.surface.answer(method_name, &params, peer) {
             return answer;
+        }
+        // The raw methods are the desktop's own plumbing (#332): the Calendar window, the
+        // companion and the shell's wiring call them by name, and until #43 decides what each
+        // one is worth, nobody else gets them at all — `create_event` from here takes a
+        // caller-written `creator`, which the graded door establishes by machine and never by
+        // argument. The gate is the kernel's account of the calling process; the graded
+        // actions on `app.act` above answer any caller, under the ceiling, the mode and the
+        // grant, exactly as before. A method that is not one of this service's is left to the
+        // unknown-method answer below, whoever asks: the protocol's `-32601` for a name nobody
+        // serves is the checker's (`yos check`) and every caller's to get.
+        if method_name.starts_with("calendar.") {
+            if let Err(why) = own_process_only(peer) {
+                return Err(ServiceError { code: -32001, message: why });
+            }
         }
         match method_name {
             method::EVENTS => {
@@ -194,7 +213,13 @@ impl CalendarHandler {
     #[cfg(test)]
     fn over(dir: PathBuf) -> CalendarHandler {
         let store = Arc::new(EventStore::new(dir));
-        CalendarHandler { store: store.clone(), surface: calendar_surface(store) }
+        CalendarHandler {
+            store: store.clone(),
+            surface: calendar_surface(
+                store,
+                Arc::new(BurstGate::new(ADD_BURST_LIMIT, ADD_BURST_WINDOW)),
+            ),
+        }
     }
 }
 
@@ -214,7 +239,7 @@ impl CalendarHandler {
 /// (#201) belong to the Calendar app's window, where a delete that cannot be undone is graded
 /// for a person to approve; `calendar.revision` and `calendar.upsert_remote` are plumbing an
 /// open window and the syncer call directly — plumbing nobody should be asked to *act* on.
-fn calendar_surface(store: Arc<EventStore>) -> Surface {
+fn calendar_surface(store: Arc<EventStore>, burst: Arc<BurstGate>) -> Surface {
     let describing = store.clone();
     Surface::new(APP)
         .socket_name("calendar")
@@ -225,15 +250,24 @@ fn calendar_surface(store: Arc<EventStore>) -> Surface {
         })
         .action(add_event_action(), {
             let store = store.clone();
-            move |args| add_event(&store, args)
+            move |args| add_event(&store, &burst, args)
         })
-        .action(update_event_action(), move |args| update_event(&store, args))
+        .action(update_event_action(), {
+            let store = store.clone();
+            move |args| update_event(&store, args)
+        })
+        .action(update_own_event_action(), move |args| update_own_event(&store, args))
 }
 
 /// What this surface can be asked to do, as `describe` publishes it.
 #[cfg(test)]
 fn calendar_actions() -> Vec<Action> {
-    vec![list_events_action(), add_event_action(), update_event_action()]
+    vec![
+        list_events_action(),
+        add_event_action(),
+        update_event_action(),
+        update_own_event_action(),
+    ]
 }
 
 /// The grade this surface publishes for `action`, from the same table `describe` hands out, so
@@ -279,13 +313,10 @@ fn add_event_action() -> Action {
         )
 }
 
-/// Change a stored event; fields left out keep what they had.
-///
-/// `standard` per `docs/sdk/grades.md`: an update moves something that still exists. It cannot
-/// hand the event to a new owner — the stored creator record stays what it was (#201), so a
-/// later delete-without-asking remains the original caller's alone.
-fn update_event_action() -> Action {
-    Action::new("update_event", "Change a stored event; fields left out keep what they had")
+/// The arguments both update doors declare, written down once: the split of #332 changes who
+/// may call, not what a call carries.
+fn update_event_args(action: Action) -> Action {
+    action
         .arg(Param::text("id").describe("The event's id, as `list_events` reports it"))
         .arg(Param::text("title").describe("A new title").optional())
         .arg(Param::text("start").describe("A new start, same formats as `add_event`").optional())
@@ -301,6 +332,36 @@ fn update_event_action() -> Action {
         )
 }
 
+/// Change any stored event; fields left out keep what they had.
+///
+/// `sensitive` (#332), by `docs/sdk/grades.md`'s rule to grade an action by the worst its
+/// arguments allow: the `id` names any event in the store — the person's own, a Google-synced
+/// one, another caller's — so a call here can rewrite an appointment that is not the caller's,
+/// and the person sees a card. It cannot hand the event to a new owner — the stored creator
+/// record stays what it was (#201) — and editing an event the caller created itself stays
+/// `standard`, at `update_own_event` below: the #201 split the delete doors already have.
+fn update_event_action() -> Action {
+    update_event_args(
+        Action::new("update_event", "Change any stored event; fields left out keep what they had")
+            .risk("sensitive"),
+    )
+}
+
+/// Change an event this caller created itself; fields left out keep what they had.
+///
+/// `standard`, like `add_event` and the Calendar window's `delete_own_event`: for the caller
+/// that made the event this is the edit half of the arrangement #201 built for deletes — an
+/// unattended harness can put an event on, move it and take it off again without a person
+/// being asked. Every other event is refused here and stays with `update_event` above: same
+/// grade, same card, exactly as it was.
+fn update_own_event_action() -> Action {
+    update_event_args(Action::new(
+        "update_own_event",
+        "Change an event this caller created itself; fields left out keep what they had. Any \
+         other event is `update_event`, which asks a person first",
+    ))
+}
+
 fn list_events(store: &EventStore, args: &serde_json::Value) -> Result<serde_json::Value, String> {
     let now = chrono::Local::now().naive_local();
     let params = EventsParams {
@@ -313,7 +374,22 @@ fn list_events(store: &EventStore, args: &serde_json::Value) -> Result<serde_jso
         .map_err(|e| e.message)
 }
 
-fn add_event(store: &EventStore, args: &serde_json::Value) -> Result<serde_json::Value, String> {
+fn add_event(
+    store: &EventStore,
+    burst: &BurstGate,
+    args: &serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let is_all_day = args.get("all_day").and_then(|v| v.as_bool()).unwrap_or(false);
+    let reminder_minutes = reminder_arg(args)?;
+    // The Calendar window's own refusal, on this door too (#332): the notifications service
+    // never announces an all-day event, so a reminder asked for beside `all_day` would be
+    // stored and then never fire — a promise kept on file and broken in fact.
+    if is_all_day && reminder_minutes.is_some() {
+        return Err(
+            "an all-day event is never announced; drop `reminder_minutes` or drop `all_day`"
+                .to_string(),
+        );
+    }
     let params = CreateEventParams {
         // The dispatch has already refused anything missing or of another type; `check_arguments`
         // is why the reads below can unwrap_or_default without second-guessing the caller.
@@ -323,20 +399,52 @@ fn add_event(store: &EventStore, args: &serde_json::Value) -> Result<serde_json:
         description: text_arg(args, "description").unwrap_or_default(),
         location: text_arg(args, "location"),
         color: String::new(),
-        is_all_day: args.get("all_day").and_then(|v| v.as_bool()).unwrap_or(false),
+        is_all_day,
         attendees: Vec::new(),
         // Who is asking, as the machine establishes it — never from these arguments, which the
         // caller writes; see `requester` (#201).
         creator: requester(),
-        reminder_minutes: reminder_arg(args)?,
+        reminder_minutes,
     };
+    // Taken after the argument checks and right before the write: a refused call consumed
+    // nothing, and every stored event announces itself to the person, so the cap counts
+    // exactly the announcements this caller can make (#332).
+    burst.hit(&burst_key())?;
     let event = store.create(&params).map_err(|e| e.message)?;
     tracing::info!(id = %event.id, title = %event.title, "Created event");
     serde_json::to_value(event).map_err(|e| e.to_string())
 }
 
 fn update_event(store: &EventStore, args: &serde_json::Value) -> Result<serde_json::Value, String> {
-    let params = UpdateEventParams {
+    let params = update_params(args)?;
+    apply_update(store, params)
+}
+
+/// The `standard` update door: an event this very caller created, and nothing else (#332).
+///
+/// The record is read back from the event's own file, and the caller is what `requester`
+/// establishes just now — the same two machine-established strings the #201 delete rule
+/// compares, never anything the request claims. Every other event is refused in a sentence
+/// that points at `update_event`, where the person sees the card.
+fn update_own_event(
+    store: &EventStore,
+    args: &serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let params = update_params(args)?;
+    if let Some(stored) = store.get(&params.id) {
+        let me = requester();
+        if !created_by_the_caller(stored.creator.as_deref(), me.as_deref()) {
+            return Err(not_the_makers(&stored, me));
+        }
+    }
+    // No stored event to compare against — an id that is not here, or one that is a path —
+    // goes to the store, whose refusal is the one sentence both update doors share.
+    apply_update(store, params)
+}
+
+/// The update both doors declared, as the store's own parameters.
+fn update_params(args: &serde_json::Value) -> Result<UpdateEventParams, String> {
+    Ok(UpdateEventParams {
         id: text_arg(args, "id").unwrap_or_default(),
         title: text_arg(args, "title"),
         start: text_arg(args, "start"),
@@ -347,10 +455,50 @@ fn update_event(store: &EventStore, args: &serde_json::Value) -> Result<serde_js
         attendees: None,
         remote_id: None,
         reminder_minutes: reminder_arg(args)?,
-    };
+    })
+}
+
+fn apply_update(
+    store: &EventStore,
+    params: UpdateEventParams,
+) -> Result<serde_json::Value, String> {
     let event = store.update(&params).map_err(|e| e.message)?;
     tracing::info!(id = %event.id, "Updated event");
     serde_json::to_value(event).map_err(|e| e.to_string())
+}
+
+/// The #201 rule, on this side of the wire: the caller that created an event may change it
+/// without a person being asked. One comparison of two strings the machine established — the
+/// record the store kept at creation and the identity `requester` verified just now. The
+/// Calendar window's `ownership` module carries the same rule for its own door; it lives in a
+/// binary crate, so the rule is written twice rather than moved into a library both binaries
+/// would have to depend on (#320's `valid_id` is the precedent).
+fn created_by_the_caller(creator: Option<&str>, caller: Option<&str>) -> bool {
+    match (creator, caller) {
+        (Some(creator), Some(caller)) => !creator.trim().is_empty() && creator == caller,
+        _ => false,
+    }
+}
+
+/// Why `update_own_event` refused, in the shape the window's `delete_own_event` refusal has:
+/// both identities named as the machine established them, and the door that does change
+/// anybody's event.
+fn not_the_makers(stored: &CalendarEvent, me: Option<String>) -> String {
+    let who = me.unwrap_or_else(|| "nobody this machine could identify".to_string());
+    let why = match stored.creator.as_deref() {
+        Some(made_by) => format!(
+            "“{}” was created by {made_by} and this call is {who}: only the caller that \
+             created an event may change it without a person being asked",
+            stored.title
+        ),
+        None => format!(
+            "“{}” has no creator on record — it is older than the record, a person made it \
+             in the window, or a sync stored it — and this call is {who}: only the caller \
+             that created an event may change it without a person being asked",
+            stored.title
+        ),
+    };
+    format!("{why}. Any event changes through `update_event`, which asks first")
 }
 
 /// A declared text argument, present or not. The dispatch guarantees the type.
@@ -400,6 +548,129 @@ fn requester() -> Option<String> {
     let who = caller()?;
     let name = peer_identity::resolve(Some(who.pid)).name();
     if name.is_empty() { None } else { Some(name) }
+}
+
+// ── The burst cap on `add_event` (#332) ─────────────────────────────
+//
+// Every stored event announces itself to the person through the notifications service, so a
+// loop of `add_event` is a loop of notifications: ten in a minute is far more than a person
+// driving a calendar and far less than a runaway caller. The cap is per caller, not per
+// socket, so one flooded agent does not lock out the window beside it.
+
+/// How many `add_event` calls one caller may make inside [`ADD_BURST_WINDOW`].
+const ADD_BURST_LIMIT: usize = 10;
+/// The window the cap counts over.
+const ADD_BURST_WINDOW: Duration = Duration::from_secs(60);
+
+/// Recent `add_event` calls per caller, oldest first.
+struct BurstGate {
+    limit: usize,
+    window: Duration,
+    hits: Mutex<HashMap<String, VecDeque<Instant>>>,
+}
+
+impl BurstGate {
+    fn new(limit: usize, window: Duration) -> Self {
+        BurstGate { limit, window, hits: Mutex::new(HashMap::new()) }
+    }
+
+    /// Take an add slot for `who` at `now`: `Ok` while the caller is under the cap, `Err` with
+    /// the wait when it is not. Checked and recorded in one lock, so a caller racing itself
+    /// cannot take two slots at once.
+    fn hit_at(&self, who: &str, now: Instant) -> Result<(), String> {
+        let mut hits = self.hits.lock().unwrap_or_else(|e| e.into_inner());
+        let queue = hits.entry(who.to_string()).or_default();
+        while let Some(front) = queue.front() {
+            if now.saturating_duration_since(*front) > self.window {
+                queue.pop_front();
+            } else {
+                break;
+            }
+        }
+        if queue.len() >= self.limit {
+            let retry = queue
+                .front()
+                .map(|oldest| {
+                    self.window.saturating_sub(now.saturating_duration_since(*oldest)).as_secs() + 1
+                })
+                .unwrap_or(1);
+            return Err(format!(
+                "this caller added {limit} events in the last {window} seconds and every \
+                 stored event announces itself to the person: wait {retry} seconds and add \
+                 this one again",
+                limit = self.limit,
+                window = self.window.as_secs(),
+            ));
+        }
+        queue.push_back(now);
+        Ok(())
+    }
+
+    fn hit(&self, who: &str) -> Result<(), String> {
+        self.hit_at(who, Instant::now())
+    }
+}
+
+/// Whose column of the burst cap this call writes to: the agent token it carried where it
+/// carried one, else the user the kernel's peer credentials report, else one shared column —
+/// an in-process call has neither, and a caller the machine cannot place is exactly the one
+/// that should share a cap rather than get a column of its own.
+fn burst_key() -> String {
+    if let Some(token) = agent_token() {
+        return format!("token {token}");
+    }
+    match caller() {
+        Some(who) => format!("uid {}", who.uid),
+        None => "unidentified".to_string(),
+    }
+}
+
+// ── The raw methods answer the desktop's own programs (#332) ────────
+
+/// Whether `/proc` says this executable is one of this OS's own binaries: every program the
+/// desktop ships is named `yantrik-*`, and a binary replaced mid-run reads as
+/// `/path/yantrik-x (deleted)`, which still passes — right for a service restarted while a
+/// caller holds the socket. A path that is not absolute is not the kernel's answer and is
+/// refused like anything else.
+fn is_own_binary(exe: &str) -> bool {
+    exe.starts_with('/')
+        && exe.rsplit('/').next().is_some_and(|base| base.starts_with("yantrik-"))
+}
+
+/// The peer check on the raw methods, and the refusals in sentences.
+///
+/// Same-uid limits stand (#154): this stops accidents and casual impersonation — a script,
+/// another user's process, a caller that never says who it is — not hostile code running as
+/// the same user, which can be the shell's own child and wear its name.
+fn own_process_only(peer: Option<PeerCred>) -> Result<(), String> {
+    let Some(peer) = peer else {
+        return Err(
+            "the kernel would not say which process is calling, and the raw calendar.* \
+             methods answer the desktop's own programs; the graded actions on app.act \
+             answer any caller"
+                .to_string(),
+        );
+    };
+    let exe = std::fs::read_link(format!("/proc/{}/exe", peer.pid))
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_default();
+    if is_own_binary(&exe) {
+        return Ok(());
+    }
+    Err(if exe.is_empty() {
+        format!(
+            "the process calling the raw calendar.* methods (pid {}) could not be identified \
+             from /proc, and those methods answer the desktop's own programs; the graded \
+             actions on app.act answer any caller",
+            peer.pid
+        )
+    } else {
+        format!(
+            "the raw calendar.* methods answer the desktop's own programs and the process \
+             calling is {exe} (pid {}); the graded actions on app.act answer any caller",
+            peer.pid
+        )
+    })
 }
 
 /// What this calendar holds, and how an event gets announced.
@@ -543,14 +814,17 @@ mod tests {
             .expect("add_event is standard: it runs unasked in ask mode")
     }
 
-    /// `add_event` and `update_event` are `standard` and `list_events` is `safe` — the grades
-    /// `docs/sdk/grades.md` rules for the Calendar app's own actions, on the same store — and
-    /// `describe` shows exactly what `act` enforces.
+    /// `add_event` and `update_own_event` are `standard`, `update_event` is `sensitive` — any
+    /// event in the store, including the person's own, is what its `id` argument allows
+    /// (#332) — and `list_events` is `safe`: the grades `docs/sdk/grades.md` rules, on the
+    /// same store as the Calendar app's own actions. And `describe` shows exactly what `act`
+    /// enforces.
     #[test]
     fn the_published_grades_are_what_describe_shows() {
         assert_eq!(published_grade("list_events"), Some("safe"));
         assert_eq!(published_grade("add_event"), Some("standard"));
-        assert_eq!(published_grade("update_event"), Some("standard"));
+        assert_eq!(published_grade("update_event"), Some("sensitive"));
+        assert_eq!(published_grade("update_own_event"), Some("standard"));
 
         let (handler, dir) = scratch();
         let described = handler.handle("app.describe", serde_json::json!({})).expect("describe");
@@ -643,21 +917,23 @@ mod tests {
         }
         assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 2, "a refused lead stored nothing");
 
-        // An update moves the lead, and one that does not say keeps what is stored.
+        // An update moves the lead, and one that does not say keeps what is stored. In auto
+        // mode, which runs a sensitive action unasked — `update_event` reached every stored
+        // event, so #332 graded it for a person to approve.
         let id = said["result"]["id"].clone();
         let moved = handler
             .act(
                 &act_params("update_event", serde_json::json!({ "id": id, "reminder_minutes": 5 }), None),
-                at("sensitive", "ask"),
+                at("sensitive", "auto"),
             )
-            .expect("a standard edit");
+            .expect("auto mode runs the sensitive edit unasked");
         assert_eq!(moved["result"]["reminder_minutes"], 5);
         let kept = handler
             .act(
                 &act_params("update_event", serde_json::json!({ "id": id, "title": "Renamed" }), None),
-                at("sensitive", "ask"),
+                at("sensitive", "auto"),
             )
-            .expect("a standard edit");
+            .expect("auto mode runs the sensitive edit unasked");
         assert_eq!(kept["result"]["reminder_minutes"], 5, "an unstated lead keeps what it had");
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -790,7 +1066,8 @@ mod tests {
     /// `update_event` edits the stored event and nothing else: fields left out keep what they
     /// had, and the creator record survives (#201) — an update cannot hand somebody else's
     /// event to a new owner, which is what a later delete-unasked would key off. An id that is
-    /// not here is refused in the store's words.
+    /// not here is refused in the store's words. In auto mode throughout: the action is
+    /// `sensitive` since #332, and auto is the mode that runs a sensitive action unasked.
     #[test]
     fn update_event_edits_a_stored_event_and_keeps_its_owner() {
         let (handler, dir) = scratch();
@@ -799,9 +1076,9 @@ mod tests {
         let updated = handler
             .act(
                 &act_params("update_event", serde_json::json!({ "id": id, "title": "Renamed" }), None),
-                at("sensitive", "ask"),
+                at("sensitive", "auto"),
             )
-            .expect("update_event is standard");
+            .expect("auto mode runs the sensitive edit unasked");
         assert_eq!(updated["result"]["title"], "Renamed");
         assert_eq!(updated["result"]["start"], started, "a field left out kept what it had");
 
@@ -833,9 +1110,9 @@ mod tests {
         handler
             .act(
                 &act_params("update_event", serde_json::json!({ "id": owned["id"], "location": "Room 2" }), None),
-                at("sensitive", "ask"),
+                at("sensitive", "auto"),
             )
-            .expect("a standard edit");
+            .expect("auto mode runs the sensitive edit unasked");
         let listed = handler
             .act(&act_params("list_events", serde_json::json!({}), None), at("sensitive", "ask"))
             .unwrap();
@@ -848,7 +1125,7 @@ mod tests {
         let err = handler
             .act(
                 &act_params("update_event", serde_json::json!({ "id": "no-such-id" }), None),
-                at("sensitive", "ask"),
+                at("sensitive", "auto"),
             )
             .unwrap_err();
         assert_eq!(err.code, -32602);
@@ -891,7 +1168,7 @@ mod tests {
             let err = handler
                 .act(
                     &act_params("update_event", serde_json::json!({ "id": id, "title": "Taken" }), None),
-                    at("sensitive", "ask"),
+                    at("sensitive", "auto"),
                 )
                 .unwrap_err();
             assert_eq!(err.code, -32602);
@@ -918,9 +1195,9 @@ mod tests {
         handler
             .act(
                 &act_params("update_event", serde_json::json!({ "id": id, "title": "Renamed" }), None),
-                at("sensitive", "ask"),
+                at("sensitive", "auto"),
             )
-            .expect("a service-issued id is a valid one");
+            .expect("auto mode runs the sensitive edit unasked");
         let listed = handler
             .act(&act_params("list_events", serde_json::json!({}), None), at("sensitive", "ask"))
             .expect("a safe read");
@@ -958,7 +1235,10 @@ mod tests {
             )
             .unwrap_err();
         assert_eq!(err.code, -32602);
-        assert_eq!(err.message, "unknown action `delete_event`; this app offers: list_events, add_event, update_event");
+        assert_eq!(
+            err.message,
+            "unknown action `delete_event`; this app offers: list_events, add_event, update_event, update_own_event"
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -1032,5 +1312,344 @@ mod tests {
         let (handler, dir) = scratch();
         assert!(handler.surface.registry().problems().is_empty());
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// `app.act` for `action` carrying an agent token beside the args, as a mind's call does.
+    fn act_as(action: &str, args: serde_json::Value, token: &str) -> serde_json::Value {
+        serde_json::json!({ "action": action, "args": args, "agent_token": token })
+    }
+
+    /// Two agents the shell is standing in for, each with a token in the reach file: one to
+    /// create events and one to try at them. The reader is installed once for the process, as
+    /// the shell's own is; a token it does not know — every other test's — reads as no reach,
+    /// exactly as the missing file did before.
+    fn stand_in_reach_file() {
+        static ONCE: std::sync::Once = std::sync::Once::new();
+        ONCE.call_once(|| {
+            reach::read_reach_with(|token| match token {
+                "tok-owner" => Some(reach::Reach {
+                    agent: "pi:c-owner".into(),
+                    role: "coder".into(),
+                    name: "Coder".into(),
+                    surfaces: vec!["calendar".into()],
+                    ceiling: "sensitive".into(),
+                }),
+                "tok-stranger" => Some(reach::Reach {
+                    agent: "deepseek:c-stranger".into(),
+                    role: "reviewer".into(),
+                    name: "Reviewer".into(),
+                    surfaces: vec!["calendar".into()],
+                    ceiling: "sensitive".into(),
+                }),
+                _ => None,
+            });
+        });
+    }
+
+    /// The ownership rule #332 put on both update doors, end to end over the socket's dispatch,
+    /// and the `requester()` case item 5 of the issue asked to have pinned: a token the reach
+    /// file believes. An event added under a token records the agent the token belongs to —
+    /// never anything from the arguments — the agent that made it may move it at `standard`,
+    /// and any other caller gets the refusal naming both identities and pointing at
+    /// `update_event`, where a person sees the card. That card is the last assertion: the
+    /// stranger's `update_event` in ask mode stops at the gate's `GRANT:` refusal.
+    #[test]
+    fn only_the_maker_moves_an_event_unasked_and_the_reach_file_is_what_names_the_maker() {
+        stand_in_reach_file();
+        let (handler, dir) = scratch();
+
+        // A token in the reach file is believed: the event records the agent it belongs to.
+        let added = handler
+            .act(
+                &act_as(
+                    "add_event",
+                    serde_json::json!({ "title": "Owner's", "start": days_from_now(2), "end": days_from_now(3) }),
+                    "tok-owner",
+                ),
+                at("sensitive", "ask"),
+            )
+            .expect("add_event is standard");
+        let id = added["result"]["id"].clone();
+        assert_eq!(added["result"]["creator"], "agent pi:c-owner", "the creator is the token's agent");
+
+        // The maker moves its own event, unasked, at `standard`.
+        let moved = handler
+            .act(
+                &act_as("update_own_event", serde_json::json!({ "id": id, "title": "Moved" }), "tok-owner"),
+                at("sensitive", "ask"),
+            )
+            .expect("the maker's own event needs no card");
+        assert_eq!(moved["result"]["title"], "Moved");
+        assert_eq!(moved["result"]["creator"], "agent pi:c-owner", "an update re-assigned the event");
+
+        // Another agent — identified by its own token, not by anything it says — is refused in
+        // a sentence naming both identities and the door that does ask.
+        let err = handler
+            .act(
+                &act_as("update_own_event", serde_json::json!({ "id": id, "title": "Taken" }), "tok-stranger"),
+                at("sensitive", "ask"),
+            )
+            .unwrap_err();
+        assert_eq!(err.code, -32602);
+        assert!(err.message.contains("agent pi:c-owner"), "{}", err.message);
+        assert!(err.message.contains("agent deepseek:c-stranger"), "{}", err.message);
+        assert!(err.message.ends_with("Any event changes through `update_event`, which asks first"), "{}", err.message);
+        let listed = handler
+            .act(&act_params("list_events", serde_json::json!({}), None), at("safe", "plan"))
+            .unwrap();
+        assert_eq!(listed["result"].as_array().unwrap()[0]["title"], "Moved", "a refused update changed nothing");
+
+        // And that door asks: `update_event` is `sensitive`, so the stranger's call stops at
+        // the gate with the card's sentence, in a mode that raises cards.
+        let err = handler
+            .act(
+                &act_as("update_event", serde_json::json!({ "id": id, "title": "Taken" }), "tok-stranger"),
+                at("sensitive", "ask"),
+            )
+            .unwrap_err();
+        assert!(
+            err.message.starts_with("GRANT: calendar.update_event is graded `sensitive` and this machine is in ask mode"),
+            "{}",
+            err.message
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// An event with no creator on record — older than the record, made by a person in the
+    /// window, or stored by a sync — is nobody's to move unasked: `update_own_event` refuses it
+    /// and says why, and the refusal still points at the door a person decides on.
+    #[test]
+    fn an_event_with_no_creator_on_record_is_nobodys_to_move_unasked() {
+        let (handler, dir) = scratch();
+        let added = an_event(&handler, "Orphan");
+        let id = added["result"]["id"].clone();
+        assert!(added["result"]["creator"].is_null(), "an in-process act has no caller to record");
+        let err = handler
+            .act(
+                &act_params("update_own_event", serde_json::json!({ "id": id, "title": "Taken" }), None),
+                at("sensitive", "ask"),
+            )
+            .unwrap_err();
+        assert!(err.message.contains("has no creator on record"), "{}", err.message);
+        assert!(err.message.ends_with("Any event changes through `update_event`, which asks first"), "{}", err.message);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// An id that is not here is refused in the store's words on the own-event door too, and a
+    /// crafted id never reaches the ownership comparison: both fall through to the one refusal
+    /// the store already pins (#320).
+    #[test]
+    fn update_own_event_refuses_a_missing_or_crafted_id_as_the_store_does() {
+        let (handler, dir) = scratch();
+        for id in ["no-such-id", "../outside"] {
+            let err = handler
+                .act(
+                    &act_params("update_own_event", serde_json::json!({ "id": id, "title": "Taken" }), None),
+                    at("sensitive", "ask"),
+                )
+                .unwrap_err();
+            assert_eq!(err.code, -32602, "{id}");
+            assert!(
+                err.message == format!("No event here with id {id}")
+                    || err.message == format!("`{id}` is not an event id; ids are the names list_events reports, never paths"),
+                "{id}: {}",
+                err.message
+            );
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A reminder is a promise the notifications service keeps for timed events only, so this
+    /// door refuses the two ways it could be made silently (#332): `all_day` beside
+    /// `reminder_minutes` on `add_event` — the window's own refusal, in the window's words — and
+    /// an `update_event` that would turn a reminding timed event into an all-day one. The
+    /// store's sentence names the stored lead; the event is left exactly as it was.
+    #[test]
+    fn no_all_day_change_may_silence_a_reminder() {
+        let (handler, dir) = scratch();
+        let err = handler
+            .act(
+                &act_params(
+                    "add_event",
+                    serde_json::json!({
+                        "title": "Fair",
+                        "start": days_from_now(2),
+                        "end": days_from_now(3),
+                        "all_day": true,
+                        "reminder_minutes": 30,
+                    }),
+                    None,
+                ),
+                at("sensitive", "ask"),
+            )
+            .unwrap_err();
+        assert_eq!(err.message, "an all-day event is never announced; drop `reminder_minutes` or drop `all_day`");
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0, "a refused add stored nothing");
+
+        let added = handler
+            .act(
+                &act_params(
+                    "add_event",
+                    serde_json::json!({
+                        "title": "Flight",
+                        "start": days_from_now(2),
+                        "end": days_from_now(3),
+                        "reminder_minutes": 45,
+                    }),
+                    None,
+                ),
+                at("sensitive", "ask"),
+            )
+            .expect("a timed event with a lead is what the store keeps");
+        let id = added["result"]["id"].clone();
+
+        let err = handler
+            .act(
+                &act_params("update_event", serde_json::json!({ "id": id, "all_day": true }), None),
+                at("sensitive", "auto"),
+            )
+            .unwrap_err();
+        assert!(err.message.contains("never announced"), "{}", err.message);
+        assert!(err.message.contains("45 minutes"), "the sentence names the stored lead: {}", err.message);
+        let listed = handler
+            .act(&act_params("list_events", serde_json::json!({}), None), at("safe", "plan"))
+            .unwrap();
+        let stored = &listed["result"].as_array().unwrap()[0];
+        assert_eq!(stored["is_all_day"], false, "a refused update changed nothing");
+        assert_eq!(stored["reminder_minutes"], 45);
+
+        // The other directions stay open: `all_day: false` on a timed event is the no-op it
+        // says, and an all-day event may become timed — it gains a reminder, loses none.
+        handler
+            .act(
+                &act_params("update_event", serde_json::json!({ "id": id, "all_day": false }), None),
+                at("sensitive", "auto"),
+            )
+            .expect("saying what is already so changes nothing");
+        let all_day = handler
+            .act(
+                &act_params(
+                    "add_event",
+                    serde_json::json!({ "title": "Fair", "start": days_from_now(4), "end": days_from_now(4), "all_day": true }),
+                    None,
+                ),
+                at("sensitive", "ask"),
+            )
+            .expect("an all-day event with no reminder asked for is fine");
+        let day_id = all_day["result"]["id"].clone();
+        let timed = handler
+            .act(
+                &act_params("update_event", serde_json::json!({ "id": day_id, "all_day": false }), None),
+                at("sensitive", "auto"),
+            )
+            .expect("all-day to timed gains a reminder");
+        assert_eq!(timed["result"]["is_all_day"], false);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// The burst cap item 4 of #332 asked for, on the door itself: ten adds in a minute go
+    /// through — far more than a person driving a calendar — and the eleventh is refused in a
+    /// sentence that says why and how long to wait, having stored nothing.
+    #[test]
+    fn a_flood_of_adds_is_refused_before_it_floods_the_person() {
+        let (handler, dir) = scratch();
+        for i in 0..ADD_BURST_LIMIT {
+            handler
+                .act(
+                    &act_params(
+                        "add_event",
+                        serde_json::json!({ "title": format!("Event {i}"), "start": days_from_now(2), "end": days_from_now(3) }),
+                        None,
+                    ),
+                    at("sensitive", "ask"),
+                )
+                .unwrap_or_else(|e| panic!("{i}: {}", e.message));
+        }
+        let err = handler
+            .act(
+                &act_params(
+                    "add_event",
+                    serde_json::json!({ "title": "One too many", "start": days_from_now(2), "end": days_from_now(3) }),
+                    None,
+                ),
+                at("sensitive", "ask"),
+            )
+            .unwrap_err();
+        assert!(
+            err.message.contains(&format!("added {ADD_BURST_LIMIT} events in the last {} seconds", ADD_BURST_WINDOW.as_secs())),
+            "{}",
+            err.message
+        );
+        assert!(err.message.contains("announces itself"), "{}", err.message);
+        assert!(err.message.contains("seconds and add this one again"), "{}", err.message);
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), ADD_BURST_LIMIT, "a refused add stored nothing");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// The cap's counting, on constructed instants: it refuses at the limit, counts one caller
+    /// apart from another, and lets a caller back in once its oldest add has left the window.
+    #[test]
+    fn the_burst_cap_counts_a_window_per_caller() {
+        let burst = BurstGate::new(2, Duration::from_secs(60));
+        let t0 = Instant::now();
+        assert!(burst.hit_at("a", t0).is_ok());
+        assert!(burst.hit_at("a", t0 + Duration::from_secs(1)).is_ok());
+        let err = burst.hit_at("a", t0 + Duration::from_secs(2)).unwrap_err();
+        assert!(err.contains("wait 59 seconds"), "{err}");
+        assert!(burst.hit_at("b", t0 + Duration::from_secs(2)).is_ok(), "one caller's flood is another's business");
+        // Sixty-one seconds on, the first add has left the window and the cap lets one in —
+        // and only one: at that same instant the add from one second in is inside the window
+        // still, so the very next call is refused again.
+        assert!(burst.hit_at("a", t0 + Duration::from_secs(61)).is_ok(), "the window slides");
+        assert!(burst.hit_at("a", t0 + Duration::from_secs(61)).is_err());
+    }
+
+    /// The raw `calendar.*` methods are the desktop's own plumbing (#332): a caller the kernel
+    /// cannot place, or a process that is not a Yantrik binary, is refused before any method is
+    /// looked at — `create_event` from here takes a caller-written `creator`, which the graded
+    /// door establishes by machine. The graded doors are untouched by the check: `app.describe`
+    /// still answers any caller at all.
+    #[test]
+    fn the_raw_methods_answer_only_the_desktops_own_programs() {
+        let (handler, dir) = scratch();
+        // No peer credentials at all: refused, and the sentence says where the open door is.
+        let err = handler.handle(method::EVENTS, serde_json::json!({})).unwrap_err();
+        assert_eq!(err.code, -32001);
+        assert!(err.message.contains("would not say which process is calling"), "{}", err.message);
+        assert!(err.message.contains("app.act"), "{}", err.message);
+
+        // A real process that is not a Yantrik binary — this test runner itself.
+        let pid = std::process::id();
+        let peer = PeerCred { pid: pid as i32, uid: 0, gid: 0 };
+        let err = handler
+            .handle_from(method::CREATE_EVENT, serde_json::json!({ "title": "x" }), Some(peer))
+            .unwrap_err();
+        assert_eq!(err.code, -32001);
+        assert!(err.message.contains("the process calling is"), "{}", err.message);
+        assert!(err.message.contains(&format!("(pid {pid})")), "{}", err.message);
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0, "a refused create stored nothing");
+
+        // The gate itself never sees the check: `app.describe` answers with no peer.
+        let described = handler.handle("app.describe", serde_json::json!({})).expect("describe answers any caller");
+        assert_eq!(described["app"], "calendar");
+
+        // And a name no service serves keeps the protocol's own answer for a caller the raw
+        // methods refuse: `yos check` probes with one and expects -32601, which the socket
+        // layer maps from this -1.
+        let err = handler.handle("app.yos_check_no_such_method", serde_json::json!({})).unwrap_err();
+        assert_eq!(err.code, -1);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// What counts as one of this OS's own binaries: an absolute path whose last segment is a
+    /// `yantrik-` name — including a binary replaced mid-run, which the kernel reports with a
+    /// " (deleted)" suffix — and nothing else. A relative path is not the kernel's answer.
+    #[test]
+    fn a_yantrik_binary_passes_the_peer_check_and_anything_else_does_not() {
+        assert!(is_own_binary("/opt/yantrik/bin/yantrik-ui"));
+        assert!(is_own_binary("/opt/yantrik/bin/yantrik-calendar (deleted)"), "a service restarted mid-call");
+        assert!(!is_own_binary("/usr/bin/python3"));
+        assert!(!is_own_binary("yantrik-ui"), "not an absolute path");
+        assert!(!is_own_binary(""));
     }
 }

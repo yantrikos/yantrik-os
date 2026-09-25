@@ -386,6 +386,23 @@ impl EventStore {
             event.location = Some(v.clone());
         }
         if let Some(v) = params.is_all_day {
+            // The reminder must not be stopped silently (#332). The notifications service
+            // announces timed events only, and every stored event carries a lead, so making a
+            // timed event all-day would keep a `reminder_minutes` on file that never fires
+            // again. Refused rather than applied, in a sentence that says what to do instead:
+            // keep the time, or take the event off and add it again as an all-day one. The
+            // other direction gains a reminder rather than losing one and stays allowed, and
+            // `upsert_remote` — the sync's own door — sets the flag from the remote and is not
+            // an update the caller chose.
+            if v && !event.is_all_day {
+                return Err(bad_request(format!(
+                    "`{}` is a timed event announced {} minutes before it starts, and all-day \
+                     events are never announced: making it all-day would silently stop the \
+                     reminder. Leave `all_day` out to keep the time, or delete the event and \
+                     add it again as an all-day one",
+                    event.title, event.reminder_minutes
+                )));
+            }
             event.is_all_day = v;
         }
         if let Some(v) = &params.attendees {
