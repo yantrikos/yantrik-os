@@ -228,8 +228,8 @@ them already handles the refusal, which is `-32602` like every other in §5.
 ### `app.explain` (optional)
 
 The sentence about ONE call (#137): what this action does with THESE arguments, in the app's own
-words, for an approval card to draw between the published purpose — the same for every call of the
-action — and the arguments themselves.
+words, for an approval card to draw under the argument box — after the published purpose, the same
+for every call of the action, and the arguments themselves.
 
 `params`:
 
@@ -534,7 +534,8 @@ protocol:
 - **1, extended: the sentence about one call** (#137): an action MAY declare that it can say what
   ONE call of it does, with that call's own arguments — `"explains": true` on `describe`, and the
   sentence from a second method, `app.explain` (§4), because it depends on arguments `describe`
-  never sees. An approval card draws it between the published purpose and the arguments. A
+  never sees. An approval card draws it under the argument box, after the published purpose and
+  the arguments. A
   surface that has not implemented the method answers `-32601`, an action that declared no
   explainer refuses with `-32602`, and in every case — error, refusal, slowness — the card is
   exactly what it was: the flag lets a client skip the question, and nothing that was about to be

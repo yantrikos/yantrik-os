@@ -761,17 +761,44 @@ fn explained_in(address: &str, action: &str, args: &serde_json::Value) -> String
 /// one wrapped paragraph and never the app's own layout. The length bound is the store's
 /// (`EXPLAINED_CHARS`, applied in `Store::request`), so the cut names the true length once.
 fn sanitised_explanation(raw: &str) -> String {
-    // The Unicode bidi controls: the paired embeds/overrides/marks (U+202A–U+202E), the
-    // isolates (U+2066–U+2069), the directional marks (U+200E, U+200F) and the Arabic letter
-    // mark (U+061C). All are invisible, and all change how the rest of a line reads.
-    const BIDI: [char; 12] = [
-        '\u{202A}', '\u{202B}', '\u{202C}', '\u{202D}', '\u{202E}', '\u{2066}', '\u{2067}',
-        '\u{2068}', '\u{2069}', '\u{200E}', '\u{200F}', '\u{061C}',
-    ];
+    /// Unicode's format characters (general category Cf), none of which draws anything. Among
+    /// them the bidi controls — the embeds and overrides (U+202A–U+202E), the isolates
+    /// (U+2066–U+2069), the directional marks (U+200E, U+200F) and the Arabic letter mark
+    /// (U+061C) — which change how the rest of a line reads; and the other invisibles a line can
+    /// hide words behind: zero-width spaces and joiners, the word joiner and invisible
+    /// operators, the byte-order mark, the soft hyphen, the interlinear annotation marks and the
+    /// tag characters.
+    fn is_format_character(c: char) -> bool {
+        matches!(
+            c,
+            '\u{00AD}'
+                | '\u{0600}'..='\u{0605}'
+                | '\u{061C}'
+                | '\u{06DD}'
+                | '\u{070F}'
+                | '\u{0890}'..='\u{0891}'
+                | '\u{08E2}'
+                | '\u{180E}'
+                | '\u{200B}'..='\u{200F}'
+                | '\u{202A}'..='\u{202E}'
+                | '\u{2060}'..='\u{2064}'
+                | '\u{2066}'..='\u{206F}'
+                | '\u{FEFF}'
+                | '\u{FFF9}'..='\u{FFFB}'
+                | '\u{110BD}'
+                | '\u{110CD}'
+                | '\u{13430}'..='\u{1343F}'
+                | '\u{1BCA0}'..='\u{1BCA3}'
+                | '\u{1D173}'..='\u{1D17A}'
+                | '\u{E0001}'
+                | '\u{E0020}'..='\u{E007F}'
+        )
+    }
+
     let mut out = String::with_capacity(raw.len());
     let mut gap = false;
     for c in raw.chars() {
-        if BIDI.contains(&c) || (c.is_control() && !c.is_whitespace()) {
+        if is_format_character(c) || (c.is_control() && !c.is_whitespace()) {
             continue; // dropped without a trace: nothing invisible survives the label
         }
         if c.is_whitespace() {
@@ -1171,6 +1198,19 @@ pub fn wire(ui: &App) {
     ui.on_approval_allow_session(move |id| {
         let id = id.to_string();
         let card = approvals::card(&id);
+        // The press can only come from a card that offered the rule, but the press and the paint
+        // are not the same moment. A card that offers no standing yes (an explained one, #137)
+        // gets the one action the person said yes to and no rule, whatever button reached here.
+        if card.as_ref().is_some_and(|card| !card.can_session) {
+            match approvals::grant(&id) {
+                Ok(()) => tracing::info!(request = %id, "allowed once: this card offers no session rule"),
+                Err(e) => tracing::info!(request = %id, reason = %e, "Allow did not apply"),
+            }
+            if let Some(ui) = session_ui.upgrade() {
+                sync(&ui);
+            }
+            return;
+        }
         match approvals::grant_for_session(&id) {
             Ok(()) => tracing::info!(request = %id, "a person allowed one action for this session"),
             Err(e) => {
@@ -2883,7 +2923,7 @@ mod service_surface_approval_tests {
             Some(serde_json::json!({
                 "app": "system-monitor",
                 "action": "kill_process",
-                "explanation": "After\u{202E} this, the session ends.\n\nIts\tunsaved work\u{7} is \u{2066}gone\u{2069}.\n   Say this plainly.",
+                "explanation": "\u{FEFF}After\u{202E} this, the sess\u{200B}ion ends.\n\nIts\tunsaved work\u{7} is \u{2066}gone\u{2069}.\u{E0041}\n   Say this plainly.",
             })),
         );
         let (_, _, _, explained) = published_detail_in(

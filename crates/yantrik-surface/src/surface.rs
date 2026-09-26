@@ -113,7 +113,8 @@ impl Surface {
 
     /// The reply to `app.explain` (#137): `{action, args}` → `{app, action, explanation}` — the
     /// sentence this surface says about ONE call of one of its actions, with that call's own
-    /// arguments, which an approval card shows between the action's purpose and its arguments.
+    /// arguments, which an approval card shows under the argument box, after the action's
+    /// purpose and its arguments.
     ///
     /// Reading, not acting: no ceiling, no mode, no grant, no reach — it changes nothing and
     /// spends nothing, so it needs none of what `act` holds a call to. An action that declared no

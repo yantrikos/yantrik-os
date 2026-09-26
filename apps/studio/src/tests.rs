@@ -282,9 +282,24 @@ fn set_backend_explains_the_call_not_the_action() {
     );
     // A base_url that is not a URL says nothing rather than guessing a destination.
     assert_eq!(explains(json!({ "kind": "openai-images", "base_url": "not a url" })), "");
-    // A kind the closure cannot establish a destination for says nothing rather than guessing,
-    // and the card then reads exactly as it did before.
-    assert_eq!(explains(json!({ "kind": "comfyui" })), "");
+    // Every spelling `set_backend` accepts is explained as that backend: a spelling the
+    // explainer did not know used to leave the card unexplained, and an unexplained card still
+    // offers "Allow for this session" — a mind could pick the spelling that bought it one.
+    assert_eq!(
+        explains(json!({ "kind": "OpenAI" })),
+        "After this, prompts go to api.openai.com and may cost money."
+    );
+    assert_eq!(explains(json!({ "kind": "off" })), "After this, prompts stay on this machine.");
+    assert_eq!(
+        explains(json!({ "kind": "comfy" })),
+        "After this, prompts go to the ComfyUI server on this machine."
+    );
+    assert_eq!(
+        explains(json!({ "kind": "comfyui", "base_url": "http://gpu-box.lan:8188" })),
+        "After this, prompts go to the ComfyUI server at gpu-box.lan."
+    );
+    // A kind `set_backend` would refuse says nothing, and the card reads as it did before.
+    assert_eq!(explains(json!({ "kind": "midjourney" })), "");
     assert_eq!(explains(json!({})), "");
 
     // The rendered describe carries the FACT — this action can explain one call of itself — and

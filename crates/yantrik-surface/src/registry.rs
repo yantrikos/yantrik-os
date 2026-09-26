@@ -232,8 +232,8 @@ impl<D: ?Sized, H: ?Sized> Registry<D, H> {
     }
 
     /// What this surface says about ONE call to `name`, with these arguments (#137) — the
-    /// sentence an approval card shows between the action's purpose, which is the same for
-    /// every call of it, and the argument box.
+    /// sentence an approval card shows under the argument box, after the action's purpose (the
+    /// same for every call of it) and the arguments themselves.
     ///
     /// Display only, and deliberately so: this consults no ceiling, no mode and no grant, spends
     /// nothing and binds nothing. A grant is bound to the arguments, and a sentence about them is

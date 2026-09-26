@@ -702,29 +702,37 @@ fn surface(engine: Engine) -> Vec<(Action, Handler)> {
         // after this call, and nothing guessed beyond that. A kind this closure does not know
         // gets an honest nothing rather than a guess — the card then reads as it did before.
         .explain(|args| {
-            match args.get("kind").and_then(Value::as_str).unwrap_or_default().trim() {
-                "fake" => "After this, prompts stay on this machine.".to_string(),
-                "openai-images" => {
-                    let url = given(args, "base_url");
-                    let url = url.trim();
-                    if url.is_empty() {
-                        "After this, prompts go to api.openai.com and may cost money.".to_string()
-                    } else {
-                        // Name the PARSED HOST, never the raw argument: `base_url` is
-                        // caller-supplied text, and "https://api.openai.com@evil.example/v1"
-                        // would read as naming api.openai.com while every prompt and the key
-                        // go to evil.example. A URL that parses to no host gets an honest
-                        // nothing rather than a guess, like a kind this closure does not know.
-                        match url::Url::parse(url).ok().and_then(|u| u.host_str().map(str::to_owned))
-                        {
-                            Some(host) => {
-                                format!("After this, prompts go to {host} and may cost money.")
-                            }
-                            None => String::new(),
-                        }
+            // Read the kind the way `set_backend` itself will (`Kind::parse`), not by its one
+            // canonical spelling: "openai" and "OpenAI_Images" pick the same backend, and a
+            // spelling this closure did not know used to leave the card unexplained — which is
+            // also the card that still offers a standing yes (#137).
+            let Some(kind) = config::Kind::parse(&given(args, "kind")) else {
+                return String::new();
+            };
+            // Where the call goes: the URL it names, else the one the backend falls back to.
+            let named = given(args, "base_url");
+            let url = match (named.trim(), kind) {
+                ("", config::Kind::OpenAiImages) => config::DEFAULT_OPENAI_URL,
+                ("", config::Kind::ComfyUi) => config::DEFAULT_COMFY_URL,
+                (url, _) => url,
+            };
+            // Name the PARSED HOST, never the raw argument: `base_url` is caller-supplied text,
+            // and "https://api.openai.com@evil.example/v1" would read as naming api.openai.com
+            // while every prompt and the key go to evil.example. A URL that parses to no host
+            // gets an honest nothing rather than a guess.
+            let host = || url::Url::parse(url).ok().and_then(|u| u.host_str().map(str::to_owned));
+            match kind {
+                config::Kind::Fake => "After this, prompts stay on this machine.".to_string(),
+                config::Kind::OpenAiImages => host()
+                    .map(|host| format!("After this, prompts go to {host} and may cost money."))
+                    .unwrap_or_default(),
+                config::Kind::ComfyUi => match host().as_deref() {
+                    Some("127.0.0.1" | "localhost" | "[::1]") => {
+                        "After this, prompts go to the ComfyUI server on this machine.".to_string()
                     }
-                }
-                _ => String::new(),
+                    Some(host) => format!("After this, prompts go to the ComfyUI server at {host}."),
+                    None => String::new(),
+                },
             }
         }),
         do_set_backend,
