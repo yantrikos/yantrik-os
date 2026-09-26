@@ -435,16 +435,37 @@ fn do_forget(
     settle(ui, state, outcome)
 }
 
+/// What network-service answers a rescan asked for within ten seconds of the last (#332).
+const RESCAN_TOO_SOON: i32 = -32034;
+
+/// Sweep the band and read the list back; if the radio was swept moments ago, read the list
+/// that sweep left instead.
+///
+/// The service runs one rescan per ten seconds for everyone on its socket, so a mind that just
+/// rescanned used to turn the person's own Scan press into a refusal — and the refusal into an
+/// empty list, the one outcome that says "no networks here" when there are some. A list that
+/// is seconds old is as current as the sweep the press asked for.
+fn scan_now() -> Result<Vec<ScannedNetwork>, String> {
+    let sweep = serde_json::to_value(WifiScanParams { rescan: true }).unwrap();
+    match SyncRpcClient::for_service("network").call(method::WIFI_SCAN, sweep) {
+        Err(e) if e.code == RESCAN_TOO_SOON => {
+            let cached = serde_json::to_value(WifiScanParams { rescan: false }).unwrap();
+            call(method::WIFI_SCAN, cached)
+        }
+        Err(e) => Err(format!("{}: {}", method::WIFI_SCAN, e.message)),
+        Ok(value) => serde_json::from_value(value).map_err(|e| {
+            format!("{} answered in a shape this app does not understand: {e}", method::WIFI_SCAN)
+        }),
+    }
+}
+
 /// Ask the adapter to sweep the band, then read the list back. Runs off the UI thread.
 fn do_scan(ui: &NetworkManagerApp, state: &State) {
     ui.set_wifi_scanning(true);
     let state = state.clone();
     off_thread(
         ui,
-        || {
-            let params = serde_json::to_value(WifiScanParams { rescan: true }).unwrap();
-            call::<Vec<ScannedNetwork>>(method::WIFI_SCAN, params)
-        },
+        scan_now,
         move |ui, outcome| {
             ui.set_wifi_scanning(false);
             match &outcome {

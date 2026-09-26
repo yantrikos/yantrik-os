@@ -611,13 +611,19 @@ impl BurstGate {
     }
 }
 
-/// Whose column of the burst cap this call writes to: the agent token it carried where it
-/// carried one, else the user the kernel's peer credentials report, else one shared column —
-/// an in-process call has neither, and a caller the machine cannot place is exactly the one
-/// that should share a cap rather than get a column of its own.
+/// Whose column of the burst cap this call writes to: the agent a token the reach file knows
+/// belongs to, else the user the kernel's peer credentials report, else one shared column — an
+/// in-process call has neither, and a caller the machine cannot place is exactly the one that
+/// should share a cap rather than get a column of its own.
+///
+/// Never the token itself. The caller writes the token, so a column per token was a column per
+/// call for anyone who wrote a new one each time — eleven adds under eleven made-up tokens went
+/// straight past the cap. The same belief `requester()` uses decides the column here.
 fn burst_key() -> String {
     if let Some(token) = agent_token() {
-        return format!("token {token}");
+        if let Ok(Some(reach)) = reach::reach_of(&token) {
+            return format!("agent {}", reach.agent);
+        }
     }
     match caller() {
         Some(who) => format!("uid {}", who.uid),
@@ -627,14 +633,18 @@ fn burst_key() -> String {
 
 // ── The raw methods answer the desktop's own programs (#332) ────────
 
-/// Whether `/proc` says this executable is one of this OS's own binaries: every program the
-/// desktop ships is named `yantrik-*`, and a binary replaced mid-run reads as
+/// Whether `/proc` says this executable is one of this OS's own binaries: `yantrik` itself —
+/// the CLI whose `ask` and `serve` run the companion, calendar and network tools included — and
+/// every `yantrik-*` program beside it. A binary replaced mid-run reads as
 /// `/path/yantrik-x (deleted)`, which still passes — right for a service restarted while a
 /// caller holds the socket. A path that is not absolute is not the kernel's answer and is
 /// refused like anything else.
 fn is_own_binary(exe: &str) -> bool {
-    exe.starts_with('/')
-        && exe.rsplit('/').next().is_some_and(|base| base.starts_with("yantrik-"))
+    let Some(base) = exe.strip_prefix('/').and_then(|path| path.rsplit('/').next()) else {
+        return false;
+    };
+    let base = base.strip_suffix(" (deleted)").unwrap_or(base);
+    base == "yantrik" || base.starts_with("yantrik-")
 }
 
 /// The peer check on the raw methods, and the refusals in sentences.
@@ -1582,6 +1592,20 @@ mod tests {
         );
         assert!(err.message.contains("announces itself"), "{}", err.message);
         assert!(err.message.contains("seconds and add this one again"), "{}", err.message);
+
+        // A token the reach file does not know is not a column of its own: the caller wrote it,
+        // and a new one per call used to be a fresh cap per call.
+        let err = handler
+            .act(
+                &act_as(
+                    "add_event",
+                    serde_json::json!({ "title": "Under a new name", "start": days_from_now(2), "end": days_from_now(3) }),
+                    "made-up-token-11",
+                ),
+                at("sensitive", "ask"),
+            )
+            .unwrap_err();
+        assert!(err.message.contains("seconds and add this one again"), "{}", err.message);
         assert_eq!(std::fs::read_dir(&dir).unwrap().count(), ADD_BURST_LIMIT, "a refused add stored nothing");
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -1648,6 +1672,9 @@ mod tests {
     fn a_yantrik_binary_passes_the_peer_check_and_anything_else_does_not() {
         assert!(is_own_binary("/opt/yantrik/bin/yantrik-ui"));
         assert!(is_own_binary("/opt/yantrik/bin/yantrik-calendar (deleted)"), "a service restarted mid-call");
+        assert!(is_own_binary("/opt/yantrik/bin/yantrik"), "the CLI: `yantrik ask` runs the companion's tools");
+        assert!(is_own_binary("/opt/yantrik/bin/yantrik (deleted)"));
+        assert!(!is_own_binary("/opt/yantrik/bin/yantrikish"), "a name that only starts like ours");
         assert!(!is_own_binary("/usr/bin/python3"));
         assert!(!is_own_binary("yantrik-ui"), "not an absolute path");
         assert!(!is_own_binary(""));

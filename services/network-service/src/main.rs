@@ -471,14 +471,18 @@ impl RescanGate {
 
 // ── The raw methods answer the desktop's own programs (#332) ────────
 
-/// Whether `/proc` says this executable is one of this OS's own binaries: every program the
-/// desktop ships is named `yantrik-*`, and a binary replaced mid-run reads as
+/// Whether `/proc` says this executable is one of this OS's own binaries: `yantrik` itself —
+/// the CLI whose `ask` and `serve` run the companion, calendar and network tools included — and
+/// every `yantrik-*` program beside it. A binary replaced mid-run reads as
 /// `/path/yantrik-x (deleted)`, which still passes — right for a service restarted while a
 /// caller holds the socket. A path that is not absolute is not the kernel's answer and is
 /// refused like anything else.
 fn is_own_binary(exe: &str) -> bool {
-    exe.starts_with('/')
-        && exe.rsplit('/').next().is_some_and(|base| base.starts_with("yantrik-"))
+    let Some(base) = exe.strip_prefix('/').and_then(|path| path.rsplit('/').next()) else {
+        return false;
+    };
+    let base = base.strip_suffix(" (deleted)").unwrap_or(base);
+    base == "yantrik" || base.starts_with("yantrik-")
 }
 
 /// The peer check on the raw methods, and the refusals in sentences.
@@ -1536,6 +1540,9 @@ mod tests {
     fn a_yantrik_binary_passes_the_peer_check_and_anything_else_does_not() {
         assert!(is_own_binary("/opt/yantrik/bin/yantrik-network-manager"));
         assert!(is_own_binary("/opt/yantrik/bin/yantrik-ui (deleted)"), "a service restarted mid-call");
+        assert!(is_own_binary("/opt/yantrik/bin/yantrik"), "the CLI: `yantrik ask` runs the companion's tools");
+        assert!(is_own_binary("/opt/yantrik/bin/yantrik (deleted)"));
+        assert!(!is_own_binary("/opt/yantrik/bin/yantrikish"), "a name that only starts like ours");
         assert!(!is_own_binary("/usr/bin/python3"));
         assert!(!is_own_binary("yantrik-ui"), "not an absolute path");
         assert!(!is_own_binary(""));
