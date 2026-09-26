@@ -65,6 +65,9 @@ mod clipboard;
 mod features;
 mod filebrowser;
 mod fileops;
+/// Un-minimising a window without maximising it: the wlr foreign-toplevel protocol, spoken
+/// directly because wlrctl does not expose it (#265).
+mod foreign_toplevel;
 // What minds this machine could have, before any of them is running.
 mod harness_catalogue;
 mod harness_install;

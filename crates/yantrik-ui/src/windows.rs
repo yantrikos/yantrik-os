@@ -348,11 +348,13 @@ fn toplevel_args(verb: &str, title: &str) -> Vec<String> {
     toplevel_command(verb, &format!("title:{title}"))
 }
 
-/// The command line that brings a MINIMIZED window back onto the screen.
+/// The command line that brings a MINIMIZED window back onto the screen — the fallback for when
+/// the foreign-toplevel protocol cannot be used (see [`crate::foreign_toplevel`]).
 ///
-/// A minimized window cannot take focus while it is still minimized, and wlrctl has no
-/// "unminimize" verb — `maximize` is what brings it back. `state:minimized` narrows it to windows
-/// that are actually minimized, so presenting a visible window does not resize it.
+/// A minimized window cannot take focus while it is still minimized, and wlrctl 0.2.2 has no
+/// "unminimize" verb — `maximize` is what brings it back, at the cost that is #265's title: the
+/// window returns maximized instead of at the size it was minimized at. `state:minimized` narrows
+/// it to windows that are actually minimized, so presenting a visible window does not resize it.
 fn restore_command(matchspec: &str) -> Vec<String> {
     let mut args = toplevel_command("maximize", matchspec);
     args.push("state:minimized".to_string());
@@ -465,13 +467,41 @@ fn ask_compositor(commands: Vec<Vec<String>>) -> Result<(), String> {
 
 /// Bring the window called `title` to the front, restoring it first if it was minimized. Says
 /// whether the compositor had such a window.
+///
+/// The un-minimise goes over the wlr foreign-toplevel protocol, not wlrctl (#265): wlrctl 0.2.2's
+/// only verb that brings a minimized window back is `maximize`, so a window restored from the
+/// taskbar came back maximized whatever size it went away at. The protocol's `unset_minimized`
+/// brings it back at its old size; the old wlrctl call stays as the fallback for a compositor
+/// that does not offer the protocol, and says so in the log when it runs.
 pub fn present(title: &str) -> bool {
     let specs = matchspecs(title, &shell_windows());
-    if let Err(why) = run_first_matching(&specs.iter().map(|s| restore_command(s)).collect::<Vec<_>>()) {
-        // Not a warning: the usual reason is that the window was never minimized, and the
-        // matchspec simply matched nothing.
-        tracing::debug!(window = %title, reason = %why, "nothing to un-minimize before focusing");
+    // The app_id fallback matchspecs decided to offer, if it offered one: the protocol path
+    // names windows by exactly the two keys wlrctl does, under the same rules.
+    let app_id = specs.iter().find_map(|s| s.strip_prefix("app_id:"));
+    match crate::foreign_toplevel::restore(title, app_id) {
+        crate::foreign_toplevel::Restore::Restored => {}
+        crate::foreign_toplevel::Restore::NothingNamed => {
+            // Not a warning, as before: the usual reason is that the window was never minimized.
+            tracing::debug!(window = %title, "nothing to un-minimize before focusing");
+        }
+        crate::foreign_toplevel::Restore::Unavailable(why) => {
+            tracing::warn!(
+                window = %title,
+                reason = %why,
+                "the foreign-toplevel protocol is unavailable; falling back to `wlrctl maximize`, \
+                 which brings a minimized window back maximized rather than at its old size"
+            );
+            if let Err(why) =
+                run_first_matching(&specs.iter().map(|s| restore_command(s)).collect::<Vec<_>>())
+            {
+                tracing::debug!(window = %title, reason = %why, "nothing to un-minimize before focusing");
+            }
+        }
     }
+    // The protocol's `activate` has already asked for the focus; this is the answer the caller
+    // gets — `present` promises to say whether the compositor had such a window — and it still
+    // names the window by every matchspec, which is all the NothingNamed and Unavailable paths
+    // have left to try.
     match run_first_matching(&commands_for("focus", &specs)) {
         Ok(()) => true,
         Err(why) => {
@@ -1180,6 +1210,8 @@ mod tests {
             ["toplevel", "close", "title:Notes: Handover"],
             "a colon in the title belongs to the title; wlrctl splits the matchspec on the first"
         );
+        // The restore line is the fallback for a compositor without the foreign-toplevel
+        // protocol; the one `present` normally sends is built in foreign_toplevel.rs.
         assert_eq!(
             restore_args("System Monitor"),
             ["toplevel", "maximize", "title:System Monitor", "state:minimized"],
@@ -1600,5 +1632,45 @@ mod app_name_tests {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod restore_path_tests {
+    /// Minimise any app, click it in the taskbar, and it used to come back MAXIMISED (#265):
+    /// wlrctl 0.2.2's only verb that brings a minimized window back is `maximize`. The restore
+    /// now goes over the foreign-toplevel protocol, whose `unset_minimized` leaves the size
+    /// alone, and the `maximize` line only runs when the protocol is not offered.
+    ///
+    /// This reads `present` itself, because the fix is which path runs first: a test of the
+    /// fallback command line alone would still pass with the fallback as the only path.
+    #[test]
+    fn presenting_a_window_un_minimises_over_the_protocol_and_only_maximises_as_a_fallback() {
+        let source = include_str!("windows.rs");
+        let start = source
+            .find("pub fn present(title: &str)")
+            .expect("the restore path every taskbar click and `show_app` goes through");
+        let end = start + source[start..].find("\npub fn ").expect("present ends where present_app begins");
+        let body = &source[start..end];
+
+        let protocol = body
+            .find("foreign_toplevel::restore(")
+            .unwrap_or_else(|| panic!("present must un-minimize over the foreign-toplevel protocol:\n{body}"));
+        let maximise = body
+            .find("restore_command")
+            .unwrap_or_else(|| panic!("the wlrctl fallback stays for a compositor without the protocol:\n{body}"));
+        assert!(
+            protocol < maximise,
+            "the protocol is the restore path and `wlrctl maximize` the fallback, not the other \
+             way round — maximizing is what brings the window back at the wrong size. \
+             present as written:\n{body}"
+        );
+        let unavailable = body
+            .find("Unavailable")
+            .unwrap_or_else(|| panic!("the fallback runs when the protocol is unavailable:\n{body}"));
+        assert!(
+            unavailable < maximise,
+            "the maximize line runs only on the Unavailable branch. present as written:\n{body}"
+        );
     }
 }

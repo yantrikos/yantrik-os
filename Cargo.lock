@@ -11083,6 +11083,8 @@ dependencies = [
  "tracing-subscriber",
  "ureq 2.12.1",
  "vt100",
+ "wayland-client",
+ "wayland-protocols-wlr",
  "yantrik-agent-terminal",
  "yantrik-app-runtime",
  "yantrik-chat",
