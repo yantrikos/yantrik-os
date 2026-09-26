@@ -197,6 +197,9 @@ pub fn view(recipe: &Recipe, steps: &[StoredStep], vars: &Vars) -> RecipeView {
     let waits_on_agents = waited_any.as_ref().is_some_and(|w| w.agents);
     // An Agent step whose start the shell put off, and why: drawn waiting, needing the person.
     let put_off = waited_any.as_ref().filter(|w| w.agents).and_then(|w| w.put_off.clone().map(|why| (w.step, why)));
+    // Where a wait on agents stands: a Branch waiting on an agent inside one of its arms —
+    // a mid-arm answer, or the join before it closes — is drawn at the Branch (#194).
+    let agents_wait_at = waited_any.as_ref().filter(|w| w.agents).map(|w| w.step);
     let waited = waited_any.filter(|w| !w.agents && w.on.is_some());
     let waiting_on = waited.as_ref().map(|w| w.step);
     let trail = Trail::read(vars);
@@ -224,8 +227,12 @@ pub fn view(recipe: &Recipe, steps: &[StoredStep], vars: &Vars) -> RecipeView {
             if waiting_on == Some(i) || put_off.as_ref().is_some_and(|(at, _)| *at == i) {
                 return "waiting";
             }
-            // Its agent is working on it.
-            if !finished && runs.get(&i).is_some_and(AgentRun::working) {
+            // Its agent is working on it — at the top of the recipe; an arm agent's key is the
+            // Branch's, and the Branch's own row is drawn from its wait (#194).
+            if !finished && runs.get(&i.to_string()).is_some_and(AgentRun::working) {
+                return "waiting";
+            }
+            if !finished && agents_wait_at == Some(i) && matches!(s.step, RecipeStep::Branch { .. }) {
                 return "waiting";
             }
             // Running here now — even a step marked from a loop's last round.
@@ -306,14 +313,15 @@ pub fn view(recipe: &Recipe, steps: &[StoredStep], vars: &Vars) -> RecipeView {
     };
     let agents: Vec<AgentView> = runs
         .iter()
-        .map(|(step, r)| AgentView {
-            step: *step,
+        // An agent inside a Branch's arm belongs to the Branch's step (#194).
+        .filter_map(|(key, r)| Some(AgentView {
+            step: crate::recipe::agent_key_step(key)?,
             role: r.role_name.clone(),
             mind: r.mind.clone(),
             agent: r.agent.clone(),
             state: r.state.clone(),
             needs_you: r.needs_you.clone().filter(|_| r.working()),
-        })
+        }))
         .collect();
     // What it needs the person for: a start put off, or an agent waiting in its pane.
     let in_flight = matches!(recipe.status, RecipeStatus::Running | RecipeStatus::Waiting | RecipeStatus::Paused);
@@ -374,8 +382,8 @@ fn inputs_of(template_id: &str) -> Vec<InputView> {
 /// What a recipe waiting on its agents waits for, in a few words: "the Chair's answer
 /// (deepseek)", "answers from the Researcher (deepseek), the Red team (pi) and the Planner
 /// (deepseek)", or a place for its next one.
-fn agents_text(steps: &[StoredStep], at: usize, vars: &Vars, runs: &std::collections::BTreeMap<usize, AgentRun>) -> String {
-    let who = |k: &usize| runs.get(k).map(|r| format!("the {} ({})", r.role_name, r.mind)).unwrap_or_else(|| "an agent".into());
+fn agents_text(steps: &[StoredStep], at: usize, vars: &Vars, runs: &std::collections::BTreeMap<String, AgentRun>) -> String {
+    let who = |k: &String| runs.get(k).map(|r| format!("the {} ({})", r.role_name, r.mind)).unwrap_or_else(|| "an agent".into());
     match blocked_on_agents(steps, at, vars) {
         Some(AgentBlock::Answers(ks)) if ks.len() == 1 => {
             let k = &ks[0];
@@ -403,14 +411,14 @@ fn step_view(
     unbound: Vec<String>,
     vars: &Vars,
     trail: &Trail,
-    runs: &std::collections::BTreeMap<usize, AgentRun>,
+    runs: &std::collections::BTreeMap<String, AgentRun>,
 ) -> StepView {
     let (kind, mut label, summary, detail) = describe_step(&s.step);
     let store_as = store_as_of(&s.step).map(str::to_string);
     let path = path_of(s, state, trail);
     // An Agent step is called by its role — the one its variables name — and, once it has an
     // agent, the mind that agent runs on: "Chair · deepseek".
-    let agent = match (&s.step, runs.get(&s.step_index)) {
+    let agent = match (&s.step, runs.get(&s.step_index.to_string())) {
         (RecipeStep::Agent { .. }, Some(run)) => {
             label = run.stage();
             Some(format!("the {} on {} ({})", run.role_name, run.mind, run.agent))

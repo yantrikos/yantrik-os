@@ -162,7 +162,9 @@ pub enum RecipeStep {
     /// recipe — waits for the answer. So Agent steps that do not read each other's answers work
     /// at the same time, and a step that needs one waits for it. `role`, `prompt` and `context`
     /// take `{{var}}`s. Only in a run the person allowed to start agents
-    /// ([`RecipeStore::allow_agents`]), and only at the top of a recipe, not inside a Branch.
+    /// ([`RecipeStore::allow_agents`]). Inside a Branch's arm the agent belongs to the Branch: it
+    /// is tracked under the Branch's own key ([`agent_key`]), and the Branch joins every agent it
+    /// started — waits for their answers — before it closes.
     Agent {
         /// A catalog role's id or name: researcher, planner, coder, reviewer, red-team, writer,
         /// chair, scribe, or the person's own.
@@ -425,9 +427,10 @@ pub const SINCE_WAIT_VAR: &str = "_since_wait";
 /// A recipe's own step budget, when it sets one; `recipe_executor::STEP_BUDGET` otherwise.
 pub const STEP_BUDGET_VAR: &str = "_step_budget";
 
-/// The agents a recipe's Agent steps handed work to ([`AgentRun`]), keyed by the step's index:
-/// the ones still working, and — so the Recipes screen can say who answered — the last one each
-/// step had.
+/// The agents a recipe's Agent steps handed work to ([`AgentRun`]), keyed by where the step sits
+/// ([`agent_key`]): a top-level step's own index ("3"), and an Agent step inside a Branch's arm
+/// the Branch's index plus the path down to it ("1:e0"). The ones still working, and — so the
+/// Recipes screen can say who answered — the last one each step had.
 pub const AGENTS_VAR: &str = "_agents";
 
 /// One Agent step's agent, as the executor keeps it in [`AGENTS_VAR`].
@@ -472,32 +475,188 @@ impl AgentRun {
     }
 }
 
-/// Every Agent step's agent a recipe's variables hold, by step index. An entry that does not
-/// read as one is left out.
-pub fn agent_runs(vars: &std::collections::HashMap<String, serde_json::Value>) -> std::collections::BTreeMap<usize, AgentRun> {
+/// Every Agent step's agent a recipe's variables hold, by its key ([`agent_key`]). An entry that
+/// does not read as one is left out.
+pub fn agent_runs(vars: &std::collections::HashMap<String, serde_json::Value>) -> std::collections::BTreeMap<String, AgentRun> {
     vars.get(AGENTS_VAR)
         .and_then(|v| v.as_object())
         .map(|m| {
             m.iter()
-                .filter_map(|(k, v)| Some((k.parse::<usize>().ok()?, serde_json::from_value::<AgentRun>(v.clone()).ok()?)))
+                .filter_map(|(k, v)| Some((k.clone(), serde_json::from_value::<AgentRun>(v.clone()).ok()?)))
                 .collect()
         })
         .unwrap_or_default()
 }
 
 /// Write them back.
-pub fn save_agent_runs(conn: &Connection, recipe_id: &str, runs: &std::collections::BTreeMap<usize, AgentRun>) {
+pub fn save_agent_runs(conn: &Connection, recipe_id: &str, runs: &std::collections::BTreeMap<String, AgentRun>) {
     let map: serde_json::Map<String, serde_json::Value> =
-        runs.iter().map(|(k, v)| (k.to_string(), serde_json::to_value(v).unwrap_or_default())).collect();
+        runs.iter().map(|(k, v)| (k.clone(), serde_json::to_value(v).unwrap_or_default())).collect();
     RecipeStore::set_var(conn, recipe_id, AGENTS_VAR, &serde_json::Value::Object(map));
+}
+
+// ── The position inside a Branch, and the agents that belong to it ──
+
+/// One Branch the recipe is inside: where it sits in its arm's list, the arm it took, and the
+/// index in that arm of the step to run next. [`BRANCH_VAR`] keeps the stack, outermost first, so
+/// a question or a timer inside an arm waits like any other and a restart comes back to the same
+/// place.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Frame {
+    pub step: usize,
+    pub arm: String,
+    pub next: usize,
+}
+
+/// The frames of the Branch a recipe is inside, when the one it is inside is the Branch at step
+/// `at`. None when it is in no Branch, or in another one.
+pub fn branch_frames(vars: &std::collections::HashMap<String, serde_json::Value>, at: usize) -> Option<Vec<Frame>> {
+    let frames: Vec<Frame> = vars.get(BRANCH_VAR).and_then(|v| serde_json::from_value(v.clone()).ok())?;
+    (frames.first().map(|f| f.step) == Some(at)).then_some(frames)
+}
+
+/// Whether a Branch's arms have all run: closing every finished frame, as the executor's
+/// `close_finished` does, leaves nothing.
+pub fn branch_done(top: &RecipeStep, frames: &[Frame]) -> bool {
+    let mut frames = frames.to_vec();
+    loop {
+        let Some(last) = frames.last() else { return true };
+        if last.next < arm_list(top, &frames).len() {
+            return false;
+        }
+        frames.pop();
+        match frames.last_mut() {
+            None => return true,
+            Some(parent) => parent.next += 1,
+        }
+    }
+}
+
+/// The step a Branch the recipe is inside stands at — finished arms closed, a Branch reached
+/// inside an arm entered — with the frames as they stand at it, the way the executor's `descend`
+/// finds it. None when the whole Branch is done.
+pub fn branch_position(at: usize, top: &RecipeStep, vars: &std::collections::HashMap<String, serde_json::Value>) -> Option<(Vec<Frame>, RecipeStep)> {
+    let mut frames = branch_frames(vars, at)?;
+    loop {
+        loop {
+            let last = frames.last()?;
+            if last.next < arm_list(top, &frames).len() {
+                break;
+            }
+            frames.pop();
+            if let Some(parent) = frames.last_mut() {
+                parent.next += 1;
+            }
+        }
+        let sub = arm_list(top, &frames).get(frames.last()?.next)?.clone();
+        if let RecipeStep::Branch { condition, .. } = &sub {
+            // A Branch whose condition is an answer still coming cannot choose its arm yet:
+            // entering it now would read the condition unset and commit to `else` for good. The
+            // position stands at the Branch itself instead, and its reads — the condition among
+            // them — hold the recipe until the answer is in.
+            if agent_runs(vars).values().any(|r| r.working() && r.store_as == *condition) {
+                return Some((frames, sub));
+            }
+            frames.push(Frame { step: frames.last()?.next, arm: choose(&sub, vars).to_string(), next: 0 });
+            continue;
+        }
+        return Some((frames, sub));
+    }
+}
+
+/// The `_agents` key of the step a Branch stands at ([`branch_position`]'s frames): the Branch's
+/// step index, then each frame's arm and index down to it — "1:e0" for the first step of the else
+/// arm of the Branch at step 1, "2:t0.e3" inside a Branch nested in its then arm. A top-level
+/// step's key is its plain index.
+pub fn agent_key(cur: usize, frames: &[Frame]) -> String {
+    let at = frames.last().map(|f| f.next).unwrap_or(0);
+    let path: Vec<String> = frames
+        .iter()
+        .enumerate()
+        .map(|(d, f)| format!("{}{}", f.arm.chars().next().unwrap_or('e'), frames.get(d + 1).map_or(at, |inner| inner.step)))
+        .collect();
+    format!("{cur}:{}", path.join("."))
+}
+
+/// The top-level step an `_agents` key belongs to: "3" → 3, and "1:e0" → 1 (the Branch an Agent
+/// step inside an arm belongs to).
+pub fn agent_key_step(key: &str) -> Option<usize> {
+    key.split(':').next().and_then(|s| s.parse().ok())
+}
+
+/// The arm index of an Agent step that sat directly in a Branch's arm: "1:e0" → 0. None for a
+/// top-level key ("3"), and for an agent deeper in nested Branches ("1:t0.e2"): only the
+/// outermost arm's steps have a `subs` entry of their own in the trail.
+pub fn agent_key_sub(key: &str) -> Option<usize> {
+    let (_, path) = key.split_once(':')?;
+    if path.contains('.') {
+        return None;
+    }
+    path.get(1..).and_then(|s| s.parse().ok())
+}
+
+/// The agents the Branch at step `at` started and has still working — the ones it joins before
+/// it closes, nested Branches' included, since they all carry its key prefix.
+pub fn branch_agents_working(vars: &std::collections::HashMap<String, serde_json::Value>, at: usize) -> Vec<String> {
+    let prefix = format!("{at}:");
+    agent_runs(vars)
+        .iter()
+        .filter(|(k, r)| r.working() && k.starts_with(&prefix))
+        .map(|(k, _)| k.clone())
+        .collect()
+}
+
+/// The steps of the arm the innermost frame is in.
+pub fn arm_list<'a>(top: &'a RecipeStep, frames: &[Frame]) -> &'a [RecipeStep] {
+    let mut at: &'a RecipeStep = top;
+    let mut list: &'a [RecipeStep] = &[];
+    for (depth, frame) in frames.iter().enumerate() {
+        if depth > 0 {
+            match list.get(frame.step) {
+                Some(step) => at = step,
+                None => return &[],
+            }
+        }
+        list = match at {
+            RecipeStep::Branch { then_steps, else_steps, .. } => {
+                if frame.arm == "then" {
+                    then_steps
+                } else {
+                    else_steps
+                }
+            }
+            _ => &[],
+        };
+    }
+    list
+}
+
+/// Which arm a Branch takes: `then` when its condition names a variable that is set and not
+/// empty, false or 0.
+pub fn choose(step: &RecipeStep, vars: &std::collections::HashMap<String, serde_json::Value>) -> &'static str {
+    match step {
+        RecipeStep::Branch { condition, .. } if vars.get(condition).is_some_and(truthy) => "then",
+        _ => "else",
+    }
+}
+
+fn truthy(v: &serde_json::Value) -> bool {
+    match v {
+        serde_json::Value::Null => false,
+        serde_json::Value::Bool(b) => *b,
+        serde_json::Value::Number(n) => n.as_f64().is_some_and(|f| f != 0.0),
+        serde_json::Value::String(s) => !s.is_empty() && s != "false" && s != "0",
+        serde_json::Value::Array(a) => !a.is_empty(),
+        serde_json::Value::Object(o) => !o.is_empty(),
+    }
 }
 
 /// Why the step at a recipe's pointer cannot run yet, for its agents.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AgentBlock {
-    /// It reads what these steps' agents have not answered yet — or it is the end, and they are
-    /// still working. Step indexes.
-    Answers(Vec<usize>),
+    /// It reads what these agents have not answered yet — or it is the end, and they are still
+    /// working. `_agents` keys ([`agent_key`]).
+    Answers(Vec<String>),
     /// It is an Agent step, and the recipe already has as many agents working as it may
     /// (`recipe_executor::AGENTS_AT_ONCE`).
     Place,
@@ -506,28 +665,51 @@ pub enum AgentBlock {
 /// Whether the step at `at` — `steps.len()` for the end — must wait for the recipe's agents:
 /// it reads an answer still coming (a `{{name}}`, an input variable, a JumpIf's or a Branch's
 /// condition, anything its arms read), or it is the end with answers still out, or it is an Agent
-/// step whose own last agent is still working or for which there is no place. None: it may run.
+/// step whose own last agent is still working or for which there is no place. A Branch the recipe
+/// is inside answers for the sub-step it stands at — its arm goes on while the agents it started
+/// work — and, when its arms have all run, for the join of those agents before it closes (#194).
+/// None: it may run.
 pub fn blocked_on_agents(
     steps: &[StoredStep],
     at: usize,
     vars: &std::collections::HashMap<String, serde_json::Value>,
 ) -> Option<AgentBlock> {
     let runs = agent_runs(vars);
-    let working: Vec<(usize, &AgentRun)> = runs.iter().filter(|(_, r)| r.working()).map(|(k, r)| (*k, r)).collect();
-    if working.is_empty() {
+    if !runs.values().any(AgentRun::working) {
         return None;
     }
     let Some(step) = steps.iter().find(|s| s.step_index == at).map(|s| &s.step) else {
         // The end: every answer is in before the recipe is done.
-        return Some(AgentBlock::Answers(working.iter().map(|(k, _)| *k).collect()));
+        return Some(AgentBlock::Answers(runs.iter().filter(|(_, r)| r.working()).map(|(k, _)| k.clone()).collect()));
     };
+    if matches!(step, RecipeStep::Branch { .. }) && branch_frames(vars, at).is_some() {
+        return match branch_position(at, step, vars) {
+            Some((frames, sub)) => blocks_on_agents(&sub, &agent_key(at, &frames), &runs),
+            None => {
+                // The arms have all run: the Branch joins the agents it started before it closes.
+                let own = branch_agents_working(vars, at);
+                (!own.is_empty()).then_some(AgentBlock::Answers(own))
+            }
+        };
+    }
+    blocks_on_agents(step, &at.to_string(), &runs)
+}
+
+/// Whether the one step `step` — whose own `_agents` key is `own` — must wait for the recipe's
+/// agents: the body of [`blocked_on_agents`], for the step a top-level pointer or a Branch's
+/// position stands at.
+pub(crate) fn blocks_on_agents(step: &RecipeStep, own: &str, runs: &std::collections::BTreeMap<String, AgentRun>) -> Option<AgentBlock> {
+    let working: Vec<(&String, &AgentRun)> = runs.iter().filter(|(_, r)| r.working()).collect();
+    if working.is_empty() {
+        return None;
+    }
     let is_agent = matches!(step, RecipeStep::Agent { .. });
-    if is_agent && working.iter().any(|(k, _)| *k == at) {
+    if is_agent && working.iter().any(|(k, _)| k.as_str() == own) {
         // Round again before its last round's agent has answered.
-        return Some(AgentBlock::Answers(vec![at]));
+        return Some(AgentBlock::Answers(vec![own.to_string()]));
     }
     let reads = crate::recipe_view::reads(step);
-    let needed: Vec<usize> = working.iter().filter(|(_, r)| reads.contains(&r.store_as)).map(|(k, _)| *k).collect();
+    let needed: Vec<String> = working.iter().filter(|(_, r)| reads.contains(&r.store_as)).map(|(k, _)| (*k).clone()).collect();
     if !needed.is_empty() {
         return Some(AgentBlock::Answers(needed));
     }
@@ -913,6 +1095,17 @@ impl Trail {
         if let Some(last) = self.entry(step).get_mut("subs").and_then(|v| v.as_array_mut()).and_then(|a| a.last_mut()) {
             if last.as_str() == Some(from) {
                 *last = to.into();
+            }
+        }
+    }
+
+    /// One step of the arm, `from` → `to`, at its index: an arm Agent step's answer landing where
+    /// its "waiting" was recorded. Unlike [`Trail::settle_last`], the step is not the last sub —
+    /// the arm went on while the agent worked (#194).
+    pub fn settle_sub(&mut self, step: usize, index: usize, from: &str, to: &str) {
+        if let Some(slot) = self.entry(step).get_mut("subs").and_then(|v| v.as_array_mut()).and_then(|a| a.get_mut(index)) {
+            if slot.as_str() == Some(from) {
+                *slot = to.into();
             }
         }
     }
