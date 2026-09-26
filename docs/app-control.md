@@ -301,8 +301,8 @@ content, and a content action a paired action takes back stays `standard` (`add_
 | arcade | `new_character`, `new_game`, `update_game`, `update_character`, `build`, `play`, `verify`, `screenshot` | standard | editing and building library content, editable again |
 | arcade | `delete` | sensitive | destroys the one named game |
 | calendar | `select_day`, `show_month`, `go_to_today`, `set_view` | standard | moving around the calendar |
-| calendar | `add_event`, `update_event`, `delete_own_event` | standard | content, paired: what `add_event` writes, `delete_own_event` takes back |
-| calendar | `delete_event` | sensitive | no trash — the file the event lives in is removed, and its description says it is not recoverable |
+| calendar | `add_event`, `update_own_event`, `delete_own_event` | standard | content, paired: what `add_event` writes, `update_own_event` moves and `delete_own_event` takes back — the caller's own events, by the #201 record |
+| calendar | `update_event`, `delete_event` | sensitive | reach any stored event — the person's own, a Google-synced one, another caller's — so the person sees a card (#332); a delete has no trash, and its description says the event is not recoverable |
 | containers | `refresh`, `start`, `show_logs` | standard | reads, and starting what is stopped |
 | containers | `stop`, `restart` | sensitive | interrupts what the container was serving |
 | containers | `remove` | dangerous | the writable layer goes with it |
@@ -380,6 +380,15 @@ changes anything, and the graded `app.act` action that does the same thing where
 a row here has no method behind it, so a new method — mutating or not — cannot join a service
 until somebody has written down what it is beside the gate.
 
+Two services took an interim step in the meantime (#332): the calendar and network sockets answer
+their raw methods only to a process the kernel's peer credentials identify as one of the desktop's
+own binaries — `/proc/<pid>/exe` pointing at a `yantrik-*` program — and refuse anything else with
+a sentence pointing at `app.act`, which still answers any caller under the ceiling, the mode and
+the grant. That is a check of the executable, not of the person: code running as the same user can
+be the shell's own child and wear its name, so the #154 limits stand, and what each method is
+worth stays with #43. The table below lists every method all the same — a peer check is not a
+grade, and it records what stands beside both until the methods themselves can be gated.
+
 <!-- service-methods: kept honest by `python3 -m unittest discover -s tests/service-methods`, which reads every service's dispatch and holds the two lists together. `read` changes nothing that outlives the call; `change` does. -->
 | Service | Method | | Gated `app.act` beside it | What it is, and who calls it |
 | --- | --- | --- | --- | --- |
@@ -392,7 +401,7 @@ until somebody has written down what it is beside the gate.
 | network | `network.wifi_state` | read | — | |
 | network | `network.wifi_known` | read | — | |
 | network | `network.firewall` | read | — | |
-| network | `network.wifi_scan` | change | `wifi_scan` (app) — standard | asks the radio to rescan |
+| network | `network.wifi_scan` | change | `wifi_scan` (app) — standard | asks the radio to rescan; both doors share one gate of at most one rescan per ten seconds (#332) |
 | network | `network.wifi_radio` | change | `wifi_radio` (app) — dangerous | turns Wi-Fi off; on a machine reached over Wi-Fi, takes away the channel the undo would travel on |
 | network | `network.wifi_connect` | change | `wifi_connect` (app) — sensitive | joins a network, storing the credential |
 | network | `network.dns_set` | change | none | writes the machine's resolvers. The gated door is the companion's `network_dns_set` tool (sensitive), not an action |
@@ -402,7 +411,7 @@ until somebody has written down what it is beside the gate.
 | calendar | `calendar.get_event` | read | — | |
 | calendar | `calendar.revision` | read | — | |
 | calendar | `calendar.create_event` | change | `add_event` (app) — standard | writes an event file |
-| calendar | `calendar.update_event` | change | `update_event` (app) — standard | rewrites an event file |
+| calendar | `calendar.update_event` | change | `update_event` (app) — sensitive, `update_own_event` (app) — standard | rewrites an event file; the app's split of #332/#201 decides which of the two a caller gets |
 | calendar | `calendar.delete_event` | change | `delete_event` (app) — sensitive | removes the file the event lives in; no trash |
 | calendar | `calendar.upsert_remote` | change | none | stores what a CalDAV sync fetched; the companion's sync is the graded door in front of it |
 | notes | `notes.list` | read | — | the library, enumerated |

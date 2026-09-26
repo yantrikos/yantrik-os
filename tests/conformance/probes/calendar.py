@@ -512,7 +512,8 @@ def run():
             surface = lib.actions(APP)
             probe.check(
                 "the control surface publishes a way to take an event off the calendar",
-                "delete_event" in surface and "update_event" in surface,
+                "delete_event" in surface and "update_event" in surface
+                and "update_own_event" in surface,
                 contract=2, evidence={"actions": surface})
 
             # Two more on the 24th, between the 09:00 and the 14:00 already on it. The one that
@@ -624,17 +625,20 @@ def run():
             # time and had to delete it and make it again. The check is the file on disk, not the
             # action's answer: KEPT_TITLE runs 12:00-13:00, and moving it to 15:30 must keep the
             # hour it already runs for, because the instruction said nothing about length.
+            # KEPT_TITLE is this probe's own event, so it moves through `update_own_event`
+            # (standard): `update_event` reaches any event and is `sensitive` since #332, which
+            # in ask mode would leave this section refused on its grade and never exercised.
             moved_id = (stored().get(KEPT_TITLE) or {}).get("id")
-            moved = lib.act(APP, "update_event", id=moved_id or "", time="15:30")
+            moved = lib.act(APP, "update_own_event", id=moved_id or "", time="15:30")
             how_refused = lib.refusal_kind(moved)
             if how_refused == "policy":
                 probe.note("update_not_exercised", {
                     "update_path_exercised": False,
                     "statement": "Moving an event was NOT EXERCISED on this machine.",
-                    "why": "the control surface refused `update_event` on its grade, before "
+                    "why": "the control surface refused `update_own_event` on its grade, before "
                            "dispatch. The app never ran.",
                     "the_refusal_in_full": moved.get("refused"),
-                    "checks_not_exercised": ["update_event moves an event and the file on disk "
+                    "checks_not_exercised": ["update_own_event moves an event and the file on disk "
                                              "agrees, keeping the length it already ran for"],
                 })
             else:
@@ -644,7 +648,7 @@ def run():
                     timeout=15, what="the moved event to be at its new time on disk")
                 record = stored().get(KEPT_TITLE) or {}
                 probe.check(
-                    "update_event moves the event on disk, and keeps how long it runs",
+                    "update_own_event moves the probe's own event on disk, and keeps how long it runs",
                     bool(landed)
                     and record.get("start") == iso(DATE) + "T15:30:00"
                     and record.get("end") == iso(DATE) + "T16:30:00"

@@ -43,9 +43,11 @@ for p in socks:
         else:
             err = resp.get("error", {})
             # -32601 (no such method) and -32602 (bad params) are both proof the
-            # server received, parsed, routed and validated the call. Only a
-            # connect/timeout failure means dead.
-            if err.get("code") in (-32601, -32602):
+            # server received, parsed, routed and validated the call. So are -32001 and
+            # -32035: calendar and network answer their raw methods only to the desktop's
+            # own programs (#332), and this probe is python3. Only a connect/timeout
+            # failure means dead.
+            if err.get("code") in (-32601, -32602, -32001, -32035):
                 print(f"SERVING  {name:16s} {method:24s} -> dispatched, rejected params: {err.get('message')}")
                 alive += 1
             else:

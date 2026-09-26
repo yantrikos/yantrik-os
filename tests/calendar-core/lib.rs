@@ -28,7 +28,7 @@ pub mod ownership;
 
 #[cfg(test)]
 mod tests {
-    use super::ownership::{agent_identity, may_delete_unasked};
+    use super::ownership::{agent_identity, may_change_unasked, may_delete_unasked};
     use super::store::EventStore;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -441,16 +441,6 @@ mod tests {
         }];
         let saved = store.create(&params).unwrap();
 
-        let all_day = store
-            .update(&UpdateEventParams {
-                id: saved.id.clone(),
-                is_all_day: Some(true),
-                ..Default::default()
-            })
-            .unwrap();
-        assert!(all_day.is_all_day);
-        assert_eq!(all_day.attendees.len(), 1, "an update that said nothing about them kept them");
-
         let renamed = store
             .update(&UpdateEventParams {
                 id: saved.id.clone(),
@@ -458,7 +448,58 @@ mod tests {
                 ..Default::default()
             })
             .unwrap();
-        assert!(renamed.is_all_day, "and kept the flag the previous update set");
+        assert_eq!(renamed.attendees.len(), 1, "an update that said nothing about them kept them");
+        assert!(!renamed.is_all_day, "and kept the flag it did not mention");
+    }
+
+    #[test]
+    fn making_a_timed_event_all_day_is_refused_because_its_reminder_would_go_silent() {
+        // #332: `update` used to set `all_day` on a timed event and say nothing about the
+        // reminder it was stopping — the notifications service announces timed events only,
+        // and every stored event carries a lead, so "make it all-day" was silently "make it
+        // never announce again". Refused instead, in a sentence that names the lead at stake
+        // and the way out; a refused change leaves the event as it was.
+        let f = Fixture::new();
+        let store = f.store();
+        let saved = store
+            .create(&create_reminding(45, "Flight", "2026-09-22T14:00:00", "2026-09-22T16:00:00"))
+            .unwrap();
+
+        let err = store
+            .update(&UpdateEventParams {
+                id: saved.id.clone(),
+                is_all_day: Some(true),
+                ..Default::default()
+            })
+            .expect_err("a timed event with a reminder does not go silently all-day");
+        assert!(err.message.contains("never announced"), "{}", err.message);
+        assert!(err.message.contains("45"), "the lead it would have lost: {}", err.message);
+        let read = store.get(&saved.id).unwrap();
+        assert!(!read.is_all_day, "a refused change left the event as it was");
+        assert_eq!(read.reminder_minutes, 45);
+
+        // Telling a timed event it is timed changes nothing, so nothing is lost.
+        store
+            .update(&UpdateEventParams {
+                id: saved.id.clone(),
+                is_all_day: Some(false),
+                ..Default::default()
+            })
+            .expect("a flag that is already what the event is, is not the refused change");
+
+        // And the other direction — an all-day event becoming timed — gains a reminder
+        // rather than losing one, so an update may make it.
+        let mut holiday = create("Company holiday", "2026-09-23T00:00:00", "2026-09-23T23:59:59");
+        holiday.is_all_day = true;
+        let holiday = store.create(&holiday).unwrap();
+        let timed = store
+            .update(&UpdateEventParams {
+                id: holiday.id.clone(),
+                is_all_day: Some(false),
+                ..Default::default()
+            })
+            .unwrap();
+        assert!(!timed.is_all_day);
     }
 
     #[test]
@@ -679,6 +720,40 @@ mod tests {
         );
         assert!(!may_delete_unasked(recorded, Some("Forge.py")), "the comparison is exact");
         assert!(!may_delete_unasked(recorded, Some("forge.py ")), "and not forgiving about edges");
+    }
+
+    #[test]
+    fn the_creator_may_also_change_an_event_without_being_asked() {
+        // #332 extended the rule from #201 to edits: `update_event` was `standard` for every
+        // event in the store, so any caller could rewrite anybody else's appointment — the
+        // person's own or a Google-synced one — unasked. The split is the delete's: editing
+        // your own event is `standard`, editing anyone else's is `sensitive` and shows the
+        // person a card. One comparison, keyed the same way, pinned on both sides.
+        let recorded = Some("forge.py");
+        assert!(
+            may_change_unasked(recorded, Some("forge.py")),
+            "the maker of an event may move it unasked"
+        );
+        assert!(
+            !may_change_unasked(recorded, Some("hermes_cli.main")),
+            "somebody else's event stays with `update_event`, which asks"
+        );
+        assert!(
+            !may_change_unasked(None, Some("forge.py")),
+            "an event with no creator on record has no maker to match, even for its true one"
+        );
+        assert!(!may_change_unasked(recorded, None), "a caller nothing could identify is nobody");
+        assert!(!may_change_unasked(Some(""), Some("")), "two blanks are not the same somebody");
+        assert!(
+            may_delete_unasked(recorded, Some("forge.py"))
+                && may_change_unasked(recorded, Some("forge.py")),
+            "deleting and changing are one rule: a maker that may take its event off may move it"
+        );
+        assert!(
+            !may_delete_unasked(recorded, Some("hermes_cli.main"))
+                && !may_change_unasked(recorded, Some("hermes_cli.main")),
+            "and a stranger may neither, unasked"
+        );
     }
 
     #[test]
