@@ -52,7 +52,7 @@ use yantrik_ml::{ChatMessage, GenerationConfig};
 
 use crate::companion::CompanionService;
 use crate::recipe::{
-    agent_key, agent_key_step, agent_key_sub, agent_runs, arm_list, blocked_on_agents, branch_agents_working,
+    agent_key, agent_key_step, agent_key_sub, agent_runs, arm_list, blocked_on_agents, blocks_on_agents, branch_agents_working,
     branch_done, branch_frames, choose, clock_text, resolve_vars, resolve_vars_in_json, role_display, save_agent_runs, waited_on,
     wakes_at, AggregateOp, AgentRun, ErrorAction, FilterOp, Frame, Recipe, RecipeStatus, RecipeStep, RecipeStore,
     StoredStep, Trail, WaitRecord, Waited, BRANCH_VAR, CANCELLED, SINCE_WAIT_VAR, STEP_BUDGET_VAR, UNREADABLE,
@@ -893,6 +893,26 @@ fn agent_in_arm<H: RecipeHost>(
         return fail(host, recipe, cur, "not an Agent step", "not an Agent step");
     };
     let id = recipe.id.as_str();
+    // The check `advance` makes before every step, made here too. On a Branch's first entry no
+    // frames are saved yet, so that check saw only the Branch, never the Agent step in its arm:
+    // a fourth agent started past AGENTS_AT_ONCE, and a loop back into the arm started the step
+    // again over its last round's agent, still working, which was then never polled or released.
+    if let Some(block) = blocks_on_agents(here, &agent_key(cur, frames), &agent_runs(vars)) {
+        tracing::info!(recipe_id = id, step = cur, waits_on = ?block, "An Agent step inside a Branch's arm waits on the recipe's agents");
+        // The frames keep pointing at the step, as for a start the shell put off: it is asked
+        // again from there once the agents it waits on have answered.
+        let at = frames.last().map(|f| f.next).unwrap_or(0);
+        let inner: Vec<(String, usize)> = frames
+            .iter()
+            .enumerate()
+            .map(|(d, f)| (f.arm.clone(), frames.get(d + 1).map_or(at, |inner| inner.step)))
+            .collect();
+        save_trail(host, id, trail);
+        set(host, id, BRANCH_VAR, json!(frames));
+        let record = WaitRecord { step: cur, inner, since: now, until: None, agents: true, put_off: None };
+        begin_wait(host, id, record, cur);
+        return Advance::Blocked;
+    }
     let leave = host.with_conn(|c| RecipeStore::agents_allowed(c, id));
     let role = resolve_vars(role, vars).trim().to_string();
     if role.is_empty() || role.contains("{{") {
@@ -3001,6 +3021,76 @@ mod tests {
         assert!(desk.said.iter().any(|s| s == "Found: It is in the attic."), "{:?}", desk.said);
         assert_eq!(Trail::read(&RecipeStore::get_vars(&desk.conn, &id)).subs(0), ["answered", "done"]);
         assert_eq!(desk.view(&id).steps[0].path.as_deref(), Some("took else: Researcher (answered) → Notify"), "the arm's steps, as they came to");
+    }
+
+    /// The cap on agents at once holds inside an arm too, on the Branch's first entry — before
+    /// anything has saved where the Branch stands, which is when the check made before every
+    /// step could not see the Agent step in its arm and a fourth agent started (#194 review).
+    #[test]
+    fn an_agent_step_first_in_an_arm_waits_for_a_place_like_any_other() {
+        let steps = [
+            agent("researcher", "Find it", "a1"),
+            agent("writer", "Draft it", "b1"),
+            agent("reviewer", "Check it", "c1"),
+            RecipeStep::Branch {
+                condition: "x".into(),
+                then_steps: vec![],
+                else_steps: vec![agent("editor", "Edit it", "d1")],
+            },
+            format("{{a1}} {{b1}} {{c1}} {{d1}}", "out"),
+        ];
+        let mut desk = Desk::new();
+        for role in ["researcher", "writer", "reviewer", "editor"] {
+            desk.hands().says(role, vec![AgentPoll::Working]);
+        }
+        let id = desk.start_allowed(&steps);
+        run(&mut desk, &id, 20);
+        assert_eq!(desk.hands().roles(), ["researcher", "writer", "reviewer"], "no fourth agent while three work");
+        assert_eq!(desk.status(&id), (RecipeStatus::Waiting, 3), "at the Branch, for a place");
+
+        // One answers: its place goes to the arm's agent, and the recipe runs to the end once
+        // every answer is in.
+        desk.hands().answer("pi:c-0001", "one");
+        desk.tick();
+        assert_eq!(desk.hands().roles(), ["researcher", "writer", "reviewer", "editor"], "the arm's agent took the place");
+        for (agent, said) in [("pi:c-0002", "two"), ("pi:c-0003", "three"), ("pi:c-0004", "four")] {
+            desk.hands().answer(agent, said);
+        }
+        desk.tick();
+        assert_eq!(desk.status(&id).0, RecipeStatus::Done, "{:?}", desk.said);
+        assert_eq!(desk.var(&id, "out"), Some(json!("one two three four")));
+    }
+
+    /// A Branch inside an arm whose condition is an answer an arm agent has not given yet waits
+    /// for it, then takes the arm the answer picks. It used to be entered at once with the
+    /// condition unset, commit to `else` for good, and run it while the answer was still coming
+    /// (#194 review).
+    #[test]
+    fn a_nested_branch_on_an_arm_agent_s_answer_waits_for_it_to_choose() {
+        let steps = [RecipeStep::Branch {
+            condition: "x".into(),
+            then_steps: vec![],
+            else_steps: vec![
+                agent("researcher", "Is it there?", "found"),
+                RecipeStep::Branch {
+                    condition: "found".into(),
+                    then_steps: vec![notify("Went then.")],
+                    else_steps: vec![notify("Went else.")],
+                },
+            ],
+        }];
+        let mut desk = Desk::new();
+        desk.hands().says("researcher", vec![AgentPoll::Working]);
+        let id = desk.start_allowed(&steps);
+        run(&mut desk, &id, 20);
+        assert_eq!(desk.status(&id), (RecipeStatus::Waiting, 0), "at the Branch, for the answer the inner one reads");
+        assert!(desk.said.is_empty(), "no arm of the inner Branch ran: {:?}", desk.said);
+
+        desk.hands().answer("pi:c-0001", "Yes, in the attic.");
+        desk.tick();
+        assert_eq!(desk.status(&id).0, RecipeStatus::Done, "{:?}", desk.said);
+        assert!(desk.said.iter().any(|s| s == "Went then."), "{:?}", desk.said);
+        assert!(!desk.said.iter().any(|s| s == "Went else."), "{:?}", desk.said);
     }
 
     /// A Branch whose Agent step fails does not hang the run: the recipe fails with the reason,

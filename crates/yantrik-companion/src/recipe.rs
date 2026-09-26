@@ -549,7 +549,14 @@ pub fn branch_position(at: usize, top: &RecipeStep, vars: &std::collections::Has
             }
         }
         let sub = arm_list(top, &frames).get(frames.last()?.next)?.clone();
-        if matches!(sub, RecipeStep::Branch { .. }) {
+        if let RecipeStep::Branch { condition, .. } = &sub {
+            // A Branch whose condition is an answer still coming cannot choose its arm yet:
+            // entering it now would read the condition unset and commit to `else` for good. The
+            // position stands at the Branch itself instead, and its reads — the condition among
+            // them — hold the recipe until the answer is in.
+            if agent_runs(vars).values().any(|r| r.working() && r.store_as == *condition) {
+                return Some((frames, sub));
+            }
             frames.push(Frame { step: frames.last()?.next, arm: choose(&sub, vars).to_string(), next: 0 });
             continue;
         }
@@ -691,7 +698,7 @@ pub fn blocked_on_agents(
 /// Whether the one step `step` — whose own `_agents` key is `own` — must wait for the recipe's
 /// agents: the body of [`blocked_on_agents`], for the step a top-level pointer or a Branch's
 /// position stands at.
-fn blocks_on_agents(step: &RecipeStep, own: &str, runs: &std::collections::BTreeMap<String, AgentRun>) -> Option<AgentBlock> {
+pub(crate) fn blocks_on_agents(step: &RecipeStep, own: &str, runs: &std::collections::BTreeMap<String, AgentRun>) -> Option<AgentBlock> {
     let working: Vec<(&String, &AgentRun)> = runs.iter().filter(|(_, r)| r.working()).collect();
     if working.is_empty() {
         return None;
