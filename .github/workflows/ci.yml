@@ -72,6 +72,62 @@ jobs:
       - name: Test
         run: cargo test --workspace --locked
 
+  arm64-cross:
+    name: arm64 cross-build
+    # #270's Pi 5 image and general ARM64 image are built from an aarch64 build of the whole
+    # workspace. This job keeps that build green with the same setup script and env file a
+    # real machine uses.
+    #
+    # In a Debian 13 container, not on the Ubuntu runner itself. Ubuntu 24.04's multiarch
+    # cannot install libglib2.0-dev:arm64 (pulled in by libspeechd-dev:arm64) beside its own
+    # amd64 packages: apt refused with "held broken packages" twice, the second time with the
+    # runner's amd64 glib tools already removed. Debian 13, the system the ARM64 image is built
+    # on, installs the same list cleanly; container 531 on node2 built the whole workspace this
+    # way. The release target directory comes to about 6 GB, which fits the runner's disk.
+    #
+    # It builds; it does not run the tests. The binaries are arm64 and the runner is x86, and
+    # running them would need an arm64 machine or qemu-user. Not a required check, so it does
+    # not hold up merges.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    container:
+      image: debian:trixie
+    env:
+      # The warning suppression the machine-local .cargo/config.toml gives x86_64, for the
+      # rustc 1.93.x lint-emitter ICEs; that file is gitignored, so the flag travels here, as
+      # the target-specific variable. Not RUSTFLAGS: a bare RUSTFLAGS replaces every target's
+      # flags instead of adding to them.
+      CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS: -A warnings
+    steps:
+      - name: Tools the container lacks
+        run: apt-get update -qq && apt-get install -y -qq git curl ca-certificates > /dev/null
+
+      - uses: actions/checkout@v4
+
+      - name: Cross-build environment
+        # The cross gcc and the arm64 libraries the -sys crates link against. Idempotent;
+        # the pure half of what it does to apt sources is held by the selftest in the
+        # shell-scripts job below. The container runs as root, so no sudo.
+        run: bash deploy/yantrik-os/setup-arm64-cross.sh
+
+      - name: Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-linux-gnu
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ci-arm64-debian-v1
+          cache-on-failure: true
+
+      - name: The environment the build needs
+        # The one copy of the six variables, appended to $GITHUB_ENV from the same file
+        # the setup script prints. Comments are dropped: $GITHUB_ENV reads KEY=value.
+        run: grep -Ev '^[[:space:]]*(#|$)' deploy/yantrik-os/arm64-cross.env >> "$GITHUB_ENV"
+
+      - name: Build
+        run: cargo build --release --target aarch64-unknown-linux-gnu --workspace --bins --locked
+
   shell-scripts:
     name: shell scripts
     runs-on: ubuntu-latest
@@ -171,6 +227,13 @@ jobs:
       # registrations and both packaging scripts against the reader; no builds, no machine.
       - name: The packaging scripts ask the tree which services they ship
         run: bash deploy/yantrik-os/service-bins.sh selftest
+
+      # The arm64 cross-build setup's offline half (#270): the apt-sources rewriters — a
+      # wrong one bricks a machine's apt-get update, and on a runner that shows up as a
+      # red arm64 job an hour into it — and the env file's shape, which both a build
+      # machine's shell and $GITHUB_ENV have to accept as-is.
+      - name: The arm64 cross-build setup holds its sources rewriting and its env file
+        run: bash deploy/yantrik-os/setup-arm64-cross.sh selftest
 
       # The harnesses that ship as source (harnesses/lib, harnesses/pi, harnesses/deepseek).
       # Same shape as the two above: stdlib-only Python over a fake of everything it talks to —
