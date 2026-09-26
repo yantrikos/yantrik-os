@@ -28,7 +28,16 @@ DETACH = "harness.detach"
 
 
 class HarnessError(Exception):
-    """The desktop refused a call, or could not be reached."""
+    """The desktop refused a call, or could not be reached.
+
+    `gone` is True when there was no desktop to answer: nothing at the socket, a dropped
+    connection, or a restarted desktop that does not know this session. The turns being answered
+    then are not over; they are held for the desktop attached to next (#246).
+    """
+
+    def __init__(self, message: str, gone: bool = False) -> None:
+        super().__init__(message)
+        self.gone = gone
 
 
 def socket_path() -> Optional[str]:
@@ -74,16 +83,17 @@ def call(address: str, method: str, params: Dict[str, Any], timeout: float = 10.
                     break
                 buf += piece
     except OSError as exc:
-        raise HarnessError(f"{method}: {exc}") from exc
+        raise HarnessError(f"{method}: {exc}", gone=True) from exc
     if not buf.strip():
-        raise HarnessError(f"{method}: the desktop closed the connection without answering")
+        raise HarnessError(f"{method}: the desktop closed the connection without answering", gone=True)
     try:
         reply = json.loads(buf)
     except ValueError as exc:
         raise HarnessError(f"{method}: unreadable reply {buf[:200]!r}") from exc
     if isinstance(reply, dict) and reply.get("error"):
         err = reply["error"]
-        raise HarnessError(err.get("message", str(err)) if isinstance(err, dict) else str(err))
+        message = err.get("message", str(err)) if isinstance(err, dict) else str(err)
+        raise HarnessError(message, gone="not attached any more" in message)
     return reply.get("result") if isinstance(reply, dict) else None
 
 
@@ -102,6 +112,17 @@ class Turn:
     # The gateway session working on it, and how many heartbeats in a row found it not running.
     session_key: str = ""
     idle_beats: int = 0
+    # The id the desktop now knows this turn by (#246). `turn_id` is the gateway's name for it
+    # and never changes; a desktop that restarted gives the turn back under a new id.
+    desktop_turn: Optional[int] = None
+    # While the desktop is gone: what the turn said, and how it ended if it did.
+    away: bool = False
+    away_text: List[str] = field(default_factory=list)
+    away_end: Optional[Tuple[Optional[str], str]] = None
+
+    def on_desktop(self) -> int:
+        """The id to use in a call to the desktop."""
+        return self.desktop_turn if self.desktop_turn is not None else int(self.turn_id)
 
 
 class Ledger:
