@@ -150,24 +150,55 @@ class YantrikAdapter(BasePlatformAdapter):
                 self._said_no_desktop = True
             return False
         self._address = address
+        # What Hermes is still answering for a desktop it lost (#246). Offered back so the
+        # desktop that restarted can take the turns up again instead of failing them.
+        held = self._ledger.open_turns()
+        params: Dict[str, Any] = {
+            "id": HARNESS_ID,
+            "name": HARNESS_NAME,
+            "detail": _detail(),
+            "tools": True,
+            "memory": True,
+        }
+        if held:
+            params["resume"] = [
+                {"conversation": "main", "agent_token": "", "turn_id": t.on_desktop(), "prompt": t.text}
+                for t in held
+            ]
         try:
-            result = await self._call(
-                desktop.ATTACH,
-                {
-                    "id": HARNESS_ID,
-                    "name": HARNESS_NAME,
-                    "detail": _detail(),
-                    "tools": True,
-                    "memory": True,
-                },
-            )
+            result = await self._call(desktop.ATTACH, params)
         except desktop.HarnessError as exc:
             logger.warning("[yantrik] could not attach to %s: %s", address, exc)
             return False
         self._session = (result or {}).get("session")
         self._said_no_desktop = False
         logger.info("[yantrik] attached to the desktop at %s as `%s`", address, HARNESS_ID)
+        if self._session:
+            await self._picked_up(result or {}, held)
         return bool(self._session)
+
+    async def _picked_up(self, reply: Dict[str, Any], held: list) -> None:
+        """Carry on the turns the desktop took back, under the ids it gave them, and let go of
+        the rest (#246)."""
+        mapping = {
+            int(r["was"]): int(r["turn_id"])
+            for r in reply.get("resumed") or []
+            if isinstance(r.get("was"), int) and isinstance(r.get("turn_id"), int)
+        }
+        for turn in held:
+            new = mapping.get(turn.on_desktop())
+            if new is None:
+                # An older desktop, or one that did not take it: there is nowhere for the rest.
+                self._ledger.close(turn.turn_id)
+                continue
+            turn.desktop_turn = new
+            said, end = "".join(turn.away_text), turn.away_end
+            turn.away, turn.away_text, turn.away_end = False, [], None
+            logger.info("[yantrik] turn %s picked back up as %s after the desktop came back", turn.turn_id, new)
+            if said:
+                await self._stream(turn, said)
+            if end is not None:
+                await self._finish(turn.turn_id, error=end[0], why=end[1])
 
     async def _run(self) -> None:
         while True:
@@ -182,8 +213,10 @@ class YantrikAdapter(BasePlatformAdapter):
                     # failed on its side; attach again and carry on.
                     logger.warning("[yantrik] lost the desktop (%s); attaching again", exc)
                     self._session = None
+                    # Not closed: Hermes is still working on them, and the desktop attached to
+                    # next may take them back (#246). What they say meanwhile is held.
                     for turn in self._ledger.open_turns():
-                        self._ledger.close(turn.turn_id)
+                        turn.away = True
                     await asyncio.sleep(RETRY_SECONDS)
                     continue
                 if isinstance(got, dict) and got.get("turn_id") is not None:
@@ -350,6 +383,12 @@ class YantrikAdapter(BasePlatformAdapter):
         A turn that already said something is completed even when the gateway reports a failure:
         what was streamed stays on screen, and a failure would tell the person nothing was.
         """
+        waiting = self._ledger.get(turn_id)
+        if waiting is not None and (waiting.away or not self._session):
+            # The desktop is gone: how it ended is said to the one that takes it back.
+            waiting.away = True
+            waiting.away_end = (error, why)
+            return
         turn = self._ledger.close(turn_id)
         if turn is None or not self._session:
             return
@@ -366,25 +405,32 @@ class YantrikAdapter(BasePlatformAdapter):
             if error and not turn.said_anything:
                 await self._call(
                     desktop.FAIL,
-                    {"session": self._session, "turn_id": int(turn_id), "error": error},
+                    {"session": self._session, "turn_id": turn.on_desktop(), "error": error},
                 )
             else:
-                await self._call(desktop.COMPLETE, {"session": self._session, "turn_id": int(turn_id)})
+                await self._call(desktop.COMPLETE, {"session": self._session, "turn_id": turn.on_desktop()})
         except desktop.HarnessError as exc:
             logger.info("[yantrik] turn %s was already gone on the desktop: %s", turn_id, exc)
 
     # ── Text out ───────────────────────────────────────────────────────────────────────────────
 
     async def _stream(self, turn: desktop.Turn, delta: str) -> bool:
-        if not self._session:
-            return False
+        if turn.away or not self._session:
+            # The desktop is gone; held for the one that takes this turn back (#246).
+            turn.away = True
+            turn.away_text.append(delta)
+            return True
         try:
             await self._call(
                 desktop.CHUNK,
-                {"session": self._session, "turn_id": int(turn.turn_id), "delta": delta},
+                {"session": self._session, "turn_id": turn.on_desktop(), "delta": delta},
             )
             return True
         except desktop.HarnessError as exc:
+            if exc.gone:
+                turn.away = True
+                turn.away_text.append(delta)
+                return True
             # The desktop no longer waits for this turn (it timed out, or the shell restarted).
             logger.info("[yantrik] turn %s is closed on the desktop: %s", turn.turn_id, exc)
             self._ledger.close(turn.turn_id)
