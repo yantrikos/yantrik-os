@@ -192,6 +192,7 @@ IMAGE_COMMANDS = {
     "python3": "yos itself is a python3 script",
     "nano": "EDITOR, exported by yantrik-session",
     "htop": "the process view beside the System Monitor app",
+    "swaybg": "the wallpaper, and the label Mind View shows while it is empty",
 }
 
 

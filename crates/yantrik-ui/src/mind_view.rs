@@ -43,9 +43,25 @@ const START_BUDGET: Duration = Duration::from_secs(5);
 const INSTALLED_CONFIG: &str = "/opt/yantrik/share/labwc-mind";
 const CHECKOUT_CONFIG: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../config/labwc-mind");
 
-/// The app_id wlroots gives the window a nested compositor draws into. Not configurable in the
-/// wlroots this ships with; the window list reads it back as Mind View.
-pub const NESTED_APP_ID: &str = "wlroots";
+/// Whether a window on the person's desktop is the one a nested compositor draws into, which is
+/// Mind View. The window list then reads it back as Mind View.
+///
+/// The names are not ours to choose. wlroots gives the window the app_id `wlroots` and the title
+/// `wlroots - WL-1`, which is what the spike saw on labwc 0.7.1. labwc 0.8 retitles it
+/// `labwc - WL-1`, and on the VM that miss left the taskbar showing a black window by that name.
+/// So either program's name is accepted, as the app_id or as the start of such a title.
+///
+/// The title counts only when the window declared no app_id. Any page or terminal can set its
+/// own title to `labwc - WL-1`, and a window on the person's desktop must not pass as contained.
+pub fn is_nested_window(declared_id: &str, title: &str) -> bool {
+    const COMPOSITORS: [&str; 2] = ["wlroots", "labwc"];
+    if !declared_id.is_empty() {
+        return COMPOSITORS.iter().any(|c| declared_id.eq_ignore_ascii_case(c));
+    }
+    title
+        .split_once(" - ")
+        .is_some_and(|(name, output)| COMPOSITORS.contains(&name) && output.starts_with("WL-"))
+}
 
 /// The shell's own id for the Mind View window, as the window list and `show_app` spell it.
 pub const APP_ID: &str = "mind-view";
@@ -270,14 +286,52 @@ fn seat_file(dir: &Path) -> PathBuf {
 /// `DISPLAY` in the environment — the only place those names can be read from, since labwc picks
 /// the first free `wayland-N` itself. Written to a file rather than passed as `sh -c '…'` because
 /// labwc splits `-s` into words itself, and quoting through that is not something to get wrong.
-fn seat_script(seat_file: &Path) -> String {
-    format!(
-        "#!/bin/sh\n\
-         # Written by yantrik-ui for Mind View (#239): say which display this labwc is serving.\n\
-         printf '%s\\n%s\\n' \"$WAYLAND_DISPLAY\" \"${{DISPLAY:-}}\" > '{seat}.tmp' && mv '{seat}.tmp' '{seat}'\n",
-        seat = seat_file.display()
-    )
+///
+/// It then does two things for how Mind View looks, both skipped where the tool is missing:
+/// - sizes it to [`SIZE_PERCENT`] of the person's screen, by setting the nested output's mode,
+///   which is what the window on their desktop follows. At wlroots' default 1280×720 it filled a
+///   small screen, and read as the desktop having gone black rather than as a window on it;
+/// - puts [`EMPTY_HINT`] behind the windows. A nested labwc draws nothing of its own, so an empty
+///   Mind View was a black rectangle that said nothing about what it was.
+///
+/// `outer` is the person's display, which the script cannot otherwise see: its own
+/// `WAYLAND_DISPLAY` is the nested one.
+fn seat_script(seat_file: &Path, config: &Path, outer: &str) -> String {
+    const SCRIPT: &str = r#"#!/bin/sh
+# Written by yantrik-ui for Mind View (#239): say which display this labwc is serving.
+printf '%s\n%s\n' "$WAYLAND_DISPLAY" "${DISPLAY:-}" > '@SEAT@.tmp' && mv '@SEAT@.tmp' '@SEAT@'
+# A window on the person's desktop, not all of it: a share of their screen, in logical pixels.
+if command -v wlr-randr >/dev/null; then
+    size=$(WAYLAND_DISPLAY='@OUTER@' wlr-randr | awk -v pct=@PCT@ '
+        /\(.*current/ && !mode { split($1, m, "x"); mode = 1 }
+        /Scale:/ && !scale { scale = $2 }
+        END { if (mode) { if (scale <= 0) scale = 1; printf "%dx%d", m[1] * pct / 100 / scale, m[2] * pct / 100 / scale } }')
+    output=$(wlr-randr | awk 'NR == 1 { print $1 }')
+    [ -n "$size" ] && [ -n "$output" ] && wlr-randr --output "$output" --custom-mode "$size"
+fi >/dev/null 2>&1 &
+# And say what it is while nothing is drawn in it.
+command -v swaybg >/dev/null && swaybg -m center -c '@BG@' -i '@HINT@' >/dev/null 2>&1 &
+"#;
+    SCRIPT
+        .replace("@SEAT@", &seat_file.display().to_string())
+        .replace("@OUTER@", outer)
+        .replace("@PCT@", &SIZE_PERCENT.to_string())
+        .replace("@BG@", EMPTY_BACKGROUND)
+        .replace("@HINT@", &config.join(EMPTY_HINT).display().to_string())
 }
+
+/// How much of the person's screen Mind View takes when it opens, in each direction. Enough for
+/// an app to be usable in, small enough to read as one window among theirs; the title bar's
+/// maximise button gives it the whole screen.
+const SIZE_PERCENT: u32 = 70;
+
+/// The picture behind an empty Mind View, in its configuration directory: its name and one line
+/// on what it is for.
+const EMPTY_HINT: &str = "empty.png";
+
+/// What the rest of the window is filled with around it: the desktop's inactive title bar colour
+/// (`config/labwc/themerc`), which is also the picture's own background.
+const EMPTY_BACKGROUND: &str = "#0c0c14";
 
 /// Read what the startup command wrote: the Wayland display, then the X display or nothing.
 fn parse_seat(text: &str) -> Option<Seat> {
@@ -304,7 +358,8 @@ fn start() -> Result<Nested, String> {
     let seat_file = seat_file(&dir);
     let _ = std::fs::remove_file(&seat_file);
     let script = dir.join("mind-view-seat.sh");
-    std::fs::write(&script, seat_script(&seat_file))
+    let outer = std::env::var("WAYLAND_DISPLAY").unwrap_or_default();
+    std::fs::write(&script, seat_script(&seat_file, &config, &outer))
         .map_err(|e| format!("{}: {e}", script.display()))?;
     #[cfg(unix)]
     {
@@ -348,6 +403,23 @@ fn start() -> Result<Nested, String> {
         }
         std::thread::sleep(Duration::from_millis(25));
     }
+}
+
+/// Where a window a mind opens outside the launcher is drawn, as the environment to start it
+/// with: Mind View's display when minds' apps go there and it is up (started if need be), the
+/// person's own otherwise. Handed to the companion's browser tools at startup, which used to write
+/// the person's display into every launch and so bypassed Mind View entirely.
+///
+/// Can wait for Mind View to start, so never on the UI thread; the companion's tools run on its
+/// own worker.
+pub fn display_for_mind() -> Vec<(&'static str, String)> {
+    if crate::wire::settings::minds_open_in_mind_view() {
+        if let Ok(seat) = ensure() {
+            return seat.env();
+        }
+    }
+    let person = std::env::var("WAYLAND_DISPLAY").unwrap_or_else(|_| "wayland-0".to_string());
+    vec![("WAYLAND_DISPLAY", person)]
 }
 
 // ── What is in it ────────────────────────────────────────────────────
@@ -485,7 +557,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let file = seat_file(&dir);
         let script = dir.join("seat.sh");
-        std::fs::write(&script, seat_script(&file)).unwrap();
+        std::fs::write(&script, seat_script(&file, Path::new(CHECKOUT_CONFIG), "wayland-0")).unwrap();
         let status = Command::new("sh")
             .arg(&script)
             .env("WAYLAND_DISPLAY", "wayland-7")
@@ -504,5 +576,25 @@ mod tests {
             Path::new(CHECKOUT_CONFIG).join("rc.xml").is_file(),
             "config/labwc-mind/rc.xml is what Mind View's labwc runs with"
         );
+    }
+
+    #[test]
+    fn the_empty_hint_ships_beside_the_configuration() {
+        assert!(
+            Path::new(CHECKOUT_CONFIG).join(EMPTY_HINT).is_file(),
+            "config/labwc-mind/empty.png is what an empty Mind View shows"
+        );
+    }
+
+    /// labwc 0.7.1 left wlroots' names on the window; 0.8.3 retitles it after itself.
+    #[test]
+    fn the_nested_window_is_known_by_either_compositor_name() {
+        assert!(is_nested_window("wlroots", "wlroots - WL-1"));
+        assert!(is_nested_window("labwc", "labwc - WL-1"));
+        assert!(is_nested_window("wlroots", "labwc - WL-1"));
+        assert!(is_nested_window("", "labwc - WL-2"));
+        assert!(!is_nested_window("", "labwc - notes.txt"));
+        assert!(!is_nested_window("", "wlroots - WLAN setup"));
+        assert!(!is_nested_window("firefox", "Mozilla Firefox"));
     }
 }

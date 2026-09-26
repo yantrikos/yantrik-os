@@ -233,6 +233,7 @@ cp "$PROJECT_ROOT/config/labwc/autostart" "$ROOT/share/labwc/autostart"
 # it with -C on this directory; without it, a mind's apps open on the person's desktop as before.
 mkdir -p "$ROOT/share/labwc-mind"
 cp "$PROJECT_ROOT/config/labwc-mind/rc.xml" "$ROOT/share/labwc-mind/rc.xml"
+cp "$PROJECT_ROOT/config/labwc-mind/empty.png" "$ROOT/share/labwc-mind/empty.png"
 # Barlow is embedded in each app binary, which the compositor cannot read a font out of, so the
 # same files also ship loose for fontconfig.
 cp "$PROJECT_ROOT/crates/yantrik-design-tokens/slint/fonts/"*.ttf "$ROOT/share/fonts/"

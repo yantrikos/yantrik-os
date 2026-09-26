@@ -743,10 +743,10 @@ fn toplevel_entry(line: &str) -> WindowEntry {
     // `images` — none of which is the id the dock keys its running mark by, so after a shell
     // restart those four tiles stayed dark with the apps plainly open on screen. Guessing is now
     // the last resort, for windows that are neither ours nor self-identifying.
-    let app_id = if declared_id == crate::mind_view::NESTED_APP_ID {
-        // The window a nested compositor draws into, which is Mind View. wlroots names it
-        // itself ("wlroots - WL-1") and the title is kept as it is, because the title is what
-        // the taskbar hands `wlrctl` to find it again.
+    let app_id = if crate::mind_view::is_nested_window(declared_id, &title) {
+        // The window a nested compositor draws into, which is Mind View. The compositor names
+        // it itself ("wlroots - WL-1", or "labwc - WL-1" on labwc 0.8) and the title is kept as
+        // it is, because the title is what the taskbar hands `wlrctl` to find it again.
         crate::mind_view::APP_ID.to_string()
     } else if !declared_id.is_empty() {
         declared_id.to_lowercase()
@@ -849,7 +849,7 @@ fn derive_context(title: &str, app_id: &str) -> String {
                 .unwrap_or("")
                 .to_string()
         }
-        // wlroots titles the window "wlroots - WL-1", which says nothing to a person.
+        // The compositor titles the window "labwc - WL-1", which says nothing to a person.
         "mind-view" => "Mind View".to_string(),
         "files" => {
             if title.contains('/') {
@@ -1100,6 +1100,16 @@ mod tests {
         assert_eq!(mind_view.title, "wlroots - WL-1");
         assert_eq!(mind_view.subtitle, "Mind View");
         assert_eq!(mind_view.wayland_app_id, "wlroots");
+        // labwc 0.8 names it after itself, as VM 520 printed it, and it is still Mind View.
+        let labwc = toplevel_entry("labwc: labwc - WL-1");
+        assert_eq!(labwc.app_id, "mind-view");
+        assert_eq!(labwc.title, "labwc - WL-1");
+        assert_eq!(labwc.subtitle, "Mind View");
+        assert_eq!(toplevel_entry(": labwc - WL-1").app_id, "mind-view");
+        // A window that declares its own app_id is never Mind View by its title alone: a page
+        // or a terminal can be titled anything.
+        assert_ne!(toplevel_entry("chromium: labwc - WL-1").app_id, "mind-view");
+        assert_ne!(toplevel_entry("foot: wlroots - WL-1").app_id, "mind-view");
         assert_eq!(toplevel_entry("Some Foreign Window").wayland_app_id, "");
     }
 

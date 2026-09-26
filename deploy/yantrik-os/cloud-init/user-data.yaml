@@ -48,6 +48,8 @@ packages:
   # told nothing is.
   - wlrctl
   - wlr-randr
+  # The wallpaper, and the label Mind View shows while it is empty. Without it both are black.
+  - swaybg
   - mesa-utils
   - foot
   # The eyes. Chromium is driven over CDP rather than by screenshotting.
