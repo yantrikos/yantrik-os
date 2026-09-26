@@ -779,9 +779,11 @@ fn allowed_on_card(origin: &RecipeOrigin, call: &AgentCall<'_>, role: &catalog::
         }
     );
     // No naming line: the shell publishes no id→name index, and `hand_off`'s arguments name
-    // themselves — the recipe a person is being asked to start is in the `purpose` above.
+    // themselves — the recipe a person is being asked to start is in the `purpose` above. For
+    // the same reason there is no per-call sentence (#137): the purpose above already differs
+    // by the one argument this call carries.
     match approvals::request(
-        &origin.label(), verified, "shell", "hand_off", args, "sensitive", &purpose, "",
+        &origin.label(), verified, "shell", "hand_off", args, "sensitive", &purpose, "", "",
     ) {
         Ok(asked) => {
             asks.insert(key, asked.id);

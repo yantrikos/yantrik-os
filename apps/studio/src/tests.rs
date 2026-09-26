@@ -239,6 +239,91 @@ fn the_surface_publishes_nine_actions_and_says_what_each_one_costs() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// #137: the two cards for `set_backend` carried the same paragraph — the action's published
+/// purpose, the same for every call of it — and the person had to work out for themselves that
+/// `kind: fake` brings the prompts back onto this machine. The purpose states the condition
+/// ("naming a hosted service means…"); the per-call sentence says which side of it these
+/// arguments fall on, and nothing beyond what they establish.
+#[test]
+fn set_backend_explains_the_call_not_the_action() {
+    let (dir, found) = world("explain");
+    let engine = an_engine(r#"{"backend":{"kind":"fake"}}"#, &found);
+    let actions = surface(engine.clone());
+
+    let set_backend = spec_of(&actions, "set_backend");
+    let explains = |args: Value| {
+        set_backend
+            .explainer
+            .as_ref()
+            .expect("set_backend explains one call of itself")
+            .sentence(&args)
+    };
+    // The issue's two sentences, for the issue's two cards.
+    assert_eq!(explains(json!({ "kind": "fake" })), "After this, prompts stay on this machine.");
+    assert_eq!(
+        explains(json!({
+            "kind": "openai-images", "model": "gpt-image-1", "api_key_env": "OPENAI_API_KEY"
+        })),
+        "After this, prompts go to api.openai.com and may cost money."
+    );
+    // A call that named where to go: the sentence names the HOST that URL actually reaches —
+    // never the raw argument, which is caller-supplied text the shell would vouch for.
+    assert_eq!(
+        explains(json!({ "kind": "openai-images", "base_url": "https://images.example/v1" })),
+        "After this, prompts go to images.example and may cost money."
+    );
+    // The userinfo trick: this URL reads like api.openai.com while the prompts and the key go
+    // to evil.example. The sentence must name where the call goes, not what it looks like.
+    assert_eq!(
+        explains(json!({
+            "kind": "openai-images", "base_url": "https://api.openai.com@evil.example/v1"
+        })),
+        "After this, prompts go to evil.example and may cost money."
+    );
+    // A base_url that is not a URL says nothing rather than guessing a destination.
+    assert_eq!(explains(json!({ "kind": "openai-images", "base_url": "not a url" })), "");
+    // Every spelling `set_backend` accepts is explained as that backend: a spelling the
+    // explainer did not know used to leave the card unexplained, and an unexplained card still
+    // offers "Allow for this session" — a mind could pick the spelling that bought it one.
+    assert_eq!(
+        explains(json!({ "kind": "OpenAI" })),
+        "After this, prompts go to api.openai.com and may cost money."
+    );
+    assert_eq!(explains(json!({ "kind": "off" })), "After this, prompts stay on this machine.");
+    assert_eq!(
+        explains(json!({ "kind": "comfy" })),
+        "After this, prompts go to the ComfyUI server on this machine."
+    );
+    assert_eq!(
+        explains(json!({ "kind": "comfyui", "base_url": "http://gpu-box.lan:8188" })),
+        "After this, prompts go to the ComfyUI server at gpu-box.lan."
+    );
+    // A kind `set_backend` would refuse says nothing, and the card reads as it did before.
+    assert_eq!(explains(json!({ "kind": "midjourney" })), "");
+    assert_eq!(explains(json!({})), "");
+
+    // The rendered describe carries the FACT — this action can explain one call of itself — and
+    // never a sentence, because the sentence depends on arguments `describe` does not see.
+    let rendered = described(&engine, &actions);
+    let flag = |name: &str| {
+        rendered["actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|a| a["name"] == name)
+            .unwrap()
+            .get("explains")
+            .cloned()
+    };
+    assert_eq!(flag("set_backend"), Some(json!(true)));
+    for name in
+        ["generate", "variations", "upscale", "open", "delete", "cancel", "cancel_all", "refresh"]
+    {
+        assert_eq!(flag(name), None, "`{name}` publishes what it always did");
+    }
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 // ── the whole path, on the backend every machine has ──────────────────────
 
 #[test]

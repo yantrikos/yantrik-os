@@ -12,8 +12,8 @@ use crate::call::{finish_later, next_action_id, refusal, service_id_for, ActCall
 use crate::context::{AgentTokenScope, Caller, CallerScope, LaterScope};
 use crate::registry::{Registry, SharedDescriber, SharedHandler};
 
-/// One surface — what it reports, what it can be asked to do — answering `app.describe` and
-/// `app.act` on whatever thread the request arrives on.
+/// One surface — what it reports, what it can be asked to do — answering `app.describe`,
+/// `app.act` and `app.explain` on whatever thread the request arrives on.
 ///
 /// Build it with [`Surface::new`], [`Surface::describe`] and [`Surface::action`], then either
 /// [`Surface::serve`] it on its own socket, or hold it inside a service's own
@@ -79,8 +79,8 @@ impl Surface {
         self.registry.describe()
     }
 
-    /// Answer `app.describe` or `app.act`; `None` for any other method, so a service can go on
-    /// answering its own:
+    /// Answer `app.describe`, `app.act` or `app.explain`; `None` for any other method, so a
+    /// service can go on answering its own:
     ///
     /// ```rust,ignore
     /// fn handle_from(&self, method: &str, params: Value, peer: Option<PeerCred>) -> Result<Value, ServiceError> {
@@ -106,8 +106,32 @@ impl Surface {
                 Some(Ok(self.registry.describe()))
             }
             "app.act" => Some(self.act(params, peer, Authority::now())),
+            "app.explain" => Some(self.explain(params)),
             _ => None,
         }
+    }
+
+    /// The reply to `app.explain` (#137): `{action, args}` → `{app, action, explanation}` — the
+    /// sentence this surface says about ONE call of one of its actions, with that call's own
+    /// arguments, which an approval card shows under the argument box, after the action's
+    /// purpose and its arguments.
+    ///
+    /// Reading, not acting: no ceiling, no mode, no grant, no reach — it changes nothing and
+    /// spends nothing, so it needs none of what `act` holds a call to. An action that declared no
+    /// explainer is refused with a sentence saying so (`-32602`, an answer and not a transport
+    /// failure), which is what tells an asker to draw no line rather than retry.
+    pub fn explain(&self, params: &Value) -> Result<Value, ServiceError> {
+        let action = params["action"].as_str().unwrap_or("").trim();
+        if action.is_empty() {
+            return Err(refusal("app.explain needs a non-empty `action`".into()));
+        }
+        let args = params.get("args").cloned().unwrap_or_else(|| serde_json::json!({}));
+        let explanation = self.registry.explain(action, &args).map_err(refusal)?;
+        Ok(serde_json::json!({
+            "app": self.registry.app_id(),
+            "action": action,
+            "explanation": explanation,
+        }))
     }
 
     /// `app.act` under `authority` — the ceiling and the mode as the caller read them, which for

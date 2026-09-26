@@ -119,6 +119,18 @@ const ARG_ROWS: usize = 8;
 /// full and bounded there.
 const TARGET_CHARS: usize = 160;
 
+/// How much of the app's sentence about ONE call the card shows before it stops (#137).
+///
+/// Like the purpose it is prose, so like the purpose a cut has to land on a word and name the
+/// true length. It is a sentence an app writes about arguments it was just handed — and on a
+/// surface with a mind attached that is mind text — so the bound is against the absurd, an
+/// explainer that tries to be the purpose again, and sits far above the two sentences Studio
+/// publishes. It is applied the moment the sentence arrives at the store (see
+/// [`Store::request`]), so the RECORD is bounded too, not only the card drawn from it. The card
+/// wraps it; the block is hidden entirely when the app says nothing, so today's card stays
+/// today's card.
+const EXPLAINED_CHARS: usize = 600;
+
 /// How much of the action's own description the card shows before it stops.
 ///
 /// This was 240, on the belief that every published purpose on this machine is one sentence.
@@ -319,6 +331,17 @@ struct Record {
     /// byte (see [`Store::consume`]), so an id whose meaning the app later changes loosens
     /// nothing the person allowed.
     target: String,
+    /// What the app says about THIS call, with these arguments — or empty, which is what an app
+    /// that publishes no per-call explainer gets (#137). Asked once, when the request is raised,
+    /// so the sentence the person read is the sentence the record keeps. It is app text — on a
+    /// surface with a mind attached, mind text — so the shell sanitises it before asking here
+    /// and [`Store::request`] cuts it to [`EXPLAINED_CHARS`] on arrival: the record itself is
+    /// bounded, not only the card drawn from it.
+    ///
+    /// Outside the grant for the same reason `target` is: the binding is the arguments, and a
+    /// sentence about them changes nothing about what was allowed. It DOES close the standing
+    /// yes: a card carrying one offers no session rule (see [`Card::can_session`]).
+    explained: String,
     created: Instant,
     /// Wall-clock `HH:MM` for the transcript record. `Instant` cannot render as a time of day,
     /// and the record a person reads afterwards is about when, not about how long ago.
@@ -379,13 +402,22 @@ pub struct Card {
     /// nothing about what the grant covers — the arguments box above is that, byte for byte —
     /// and a cut one names its true length like every other bounded line on the card.
     pub target: String,
+    /// What the app says about this call, with these arguments — one bounded sentence, or empty
+    /// when the app explains nothing per call and the card is exactly what it was (#137). Drawn
+    /// under the argument box: the purpose states the rule, the box holds the one call, and this
+    /// says what THIS call does — the bridge between the two, placed after both. Like
+    /// [`Card::target`] it says nothing about what the grant covers, and a cut one names its
+    /// true length.
+    pub explained: String,
     /// A sentence to put in front of the buttons, or empty. See [`warning_for`].
     pub warning: String,
     /// Whether the card may offer "Allow for this session" as a third choice. See
     /// [`may_offer_session_rule`] — computed from the purpose as the app published it, not from
     /// `purpose` above, so that even a description long enough to be cut at [`PURPOSE_CHARS`]
     /// cannot lose the phrase that says the action is irreversible and end up offering a
-    /// standing yes for exactly the action that must not have one.
+    /// standing yes for exactly the action that must not have one. Never offered while the
+    /// card carries a per-call sentence (#137): that sentence explained THIS call, and the
+    /// session rule would stand in for every later one, unexplained.
     pub can_session: bool,
     pub status: Status,
     /// The one-line transcript record, once this has been decided. Empty while pending.
@@ -553,6 +585,13 @@ impl Store {
     /// target app's own index by whoever raises the card — see [`Card::target`]. It is not part
     /// of the identity of the question either: the same action with the same arguments is the
     /// same question however its ids read, whether or not the app has said why.
+    ///
+    /// `explained` is the app's sentence about this one call (#137) — see [`Card::explained`].
+    /// It is not part of the identity of the question for the same reason: the same call is the
+    /// same question however the app words its sentence about it, and an app that reworded the
+    /// sentence between two asks must not thereby put up a second card. It is cut to
+    /// [`EXPLAINED_CHARS`] on arrival here, so the record never holds more than the card's
+    /// bound of app text.
     #[allow(clippy::too_many_arguments)]
     pub fn request(
         &mut self,
@@ -564,6 +603,7 @@ impl Store {
         grade: &str,
         purpose: &str,
         target: &str,
+        explained: &str,
         now: Instant,
         at: &str,
     ) -> Result<Requested, String> {
@@ -633,6 +673,12 @@ impl Store {
             grade: grade.to_string(),
             purpose: purpose.trim().to_string(),
             target: target.trim().to_string(),
+            // Cut once, on arrival, and by the store itself: the sentence is app text — mind
+            // text, on a surface with a mind attached — so the RECORD must never hold more
+            // than the card's bound, whoever raises the card. `cards` then passes it through:
+            // a second cut would replace the marker that names the sentence's true length
+            // with one naming the length of the already-cut line.
+            explained: clip_at_word(explained.trim(), EXPLAINED_CHARS),
             created: now,
             created_at: at.to_string(),
             decided: None,
@@ -826,8 +872,16 @@ impl Store {
                 // `PURPOSE_CHARS` mistake rebuilt — "13:0" and "13:00… " are not the same
                 // sentence about when the appointment is.
                 target: clip_at_word(&record.target, TARGET_CHARS),
+                // Cut at a word already, in `request`: the sentence arrives as app text and
+                // the record itself is bounded there, so this is a pass-through — cutting
+                // again here would rename the true length the marker names (#137).
+                explained: record.explained.clone(),
                 warning: warning_for(&record.grade, &record.purpose),
-                can_session: may_offer_session_rule(&record.grade, &record.purpose),
+                // A card that needed a sentence about THIS call to be understood must not offer
+                // a standing yes: the session rule would cover every later call of the action,
+                // and the sentence the person just read explained exactly one (#137).
+                can_session: may_offer_session_rule(&record.grade, &record.purpose)
+                    && record.explained.is_empty(),
                 status,
                 record: record_line(record, status),
                 age_secs: now.duration_since(record.created).as_secs(),
@@ -921,6 +975,7 @@ pub fn request(
     grade: &str,
     purpose: &str,
     target: &str,
+    explained: &str,
 ) -> Result<Requested, String> {
     locked().request(
         requester,
@@ -931,6 +986,7 @@ pub fn request(
         grade,
         purpose,
         target,
+        explained,
         Instant::now(),
         &hhmm(),
     )
@@ -1059,6 +1115,7 @@ mod approvals_tests {
                 args(serde_json::json!({"id": "evt-3", "confirm": true})),
                 "sensitive",
                 "Delete an event from the calendar. It is not recoverable.",
+                "",
                 "",
                 now,
                 "12:03",
@@ -1223,6 +1280,7 @@ mod approvals_tests {
                     "sensitive",
                     "Delete an event.",
                     "",
+                    "",
                     now,
                     "12:03",
                 )
@@ -1237,6 +1295,7 @@ mod approvals_tests {
                 serde_json::json!({"id": "evt-99"}),
                 "sensitive",
                 "Delete an event.",
+                "",
                 "",
                 now,
                 "12:03",
@@ -1260,6 +1319,7 @@ mod approvals_tests {
                 "sensitive",
                 "Delete an event.",
                 "",
+                "",
                 now,
                 "12:03",
             )
@@ -1273,6 +1333,7 @@ mod approvals_tests {
                 serde_json::json!({"id": "evt-3"}),
                 "sensitive",
                 "Delete an event.",
+                "",
                 "",
                 now,
                 "12:03",
@@ -1305,6 +1366,7 @@ mod approvals_tests {
                 "sensitive",
                 "Delete an event.",
                 "",
+                "",
                 now + Duration::from_secs(5),
                 "12:03",
             )
@@ -1322,6 +1384,7 @@ mod approvals_tests {
                 "sensitive",
                 "Delete an event.",
                 "",
+                "",
                 now + Duration::from_secs(5),
                 "12:03",
             )
@@ -1337,6 +1400,7 @@ mod approvals_tests {
                 serde_json::json!({"id": "evt-3", "confirm": true}),
                 "sensitive",
                 "Delete an event.",
+                "",
                 "",
                 now + DENIAL_QUIET + Duration::from_secs(1),
                 "12:03",
@@ -1408,6 +1472,7 @@ mod approvals_tests {
                 "dangerous",
                 "Delete a file. It is not recoverable.",
                 "",
+                "",
                 now,
                 "12:03",
             )
@@ -1461,6 +1526,7 @@ mod approvals_tests {
                 "sensitive",
                 "Take an event off the calendar. It is not recoverable.",
                 "id 01a0c718… is \u{201c}Dentist, Fri 25 Sep 13:00\u{201d}",
+                "",
                 now,
                 "12:03",
             )
@@ -1484,6 +1550,7 @@ mod approvals_tests {
                 "sensitive",
                 "Take an event off the calendar. It is not recoverable.",
                 "a different sentence about the same event",
+                "",
                 now,
                 "12:04",
             )
@@ -1557,7 +1624,7 @@ mod approvals_tests {
     fn ask_studio(store: &mut Store, now: Instant, args: serde_json::Value) -> Card {
         let id = store
             .request("hermes", verified(), "studio", "set_backend", args, "sensitive",
-                SET_BACKEND_PURPOSE, "", now, "19:32")
+                SET_BACKEND_PURPOSE, "", "", now, "19:32")
             .unwrap()
             .id;
         store.pending(now).into_iter().find(|c| c.id == id).expect("the card")
@@ -1679,6 +1746,7 @@ mod approvals_tests {
                 "sensitive",
                 RUN_RECIPE_PURPOSE,
                 "",
+                "",
                 now,
                 "12:03",
             )
@@ -1702,6 +1770,7 @@ mod approvals_tests {
                 "agent_run",
                 args(serde_json::json!({"command": "true"})),
                 "sensitive",
+                "",
                 "",
                 "",
                 now,
@@ -1798,6 +1867,7 @@ mod approvals_tests {
                 "sensitive",
                 "",
                 "",
+                "",
                 now,
                 "12:03",
             )
@@ -1848,5 +1918,178 @@ mod approvals_tests {
         assert!(record.starts_with("Withdrawn: shell.agent_run — 12:04"), "{record}");
         assert_eq!(store.outcome(&pi, now), Some((Outcome::Withdrawn, record)));
         assert_eq!(store.status(&ds, now), Some(Status::Pending), "another agent's card stays up");
+    }
+
+    /// #137: the app's sentence about ONE call rides the card beside the arguments — and rides
+    /// nothing else. It is not part of the question's identity (an app rewording its sentence
+    /// must not conjure a second card), it is not part of the grant (consume still compares the
+    /// arguments and nothing else), and an app that says nothing per call gets exactly today's
+    /// card: an empty line, which the markup hides.
+    #[test]
+    fn approvals_the_apps_sentence_about_one_call_rides_beside_the_arguments() {
+        let mut store = Store::new();
+        let now = Instant::now();
+
+        let fake = store
+            .request(
+                "hermes",
+                verified(),
+                "studio",
+                "set_backend",
+                args(serde_json::json!({"kind": "fake"})),
+                "sensitive",
+                SET_BACKEND_PURPOSE,
+                "",
+                "After this, prompts stay on this machine.",
+                now,
+                "19:32",
+            )
+            .unwrap();
+        assert!(fake.fresh);
+        let card = store.pending(now).into_iter().find(|c| c.id == fake.id).unwrap();
+        assert_eq!(card.explained, "After this, prompts stay on this machine.");
+        assert_eq!(card.purpose, SET_BACKEND_PURPOSE, "the action's own paragraph is untouched");
+
+        // The same call asked again with a REWORDED sentence is the same question: one card,
+        // and the sentence the person is reading stays the one they were first shown.
+        let again = store
+            .request(
+                "hermes",
+                verified(),
+                "studio",
+                "set_backend",
+                args(serde_json::json!({"kind": "fake"})),
+                "sensitive",
+                SET_BACKEND_PURPOSE,
+                "",
+                "A different wording of the same call.",
+                now + Duration::from_secs(1),
+                "19:33",
+            )
+            .unwrap();
+        assert!(!again.fresh && again.id == fake.id, "a reworded sentence is not a second card");
+        let card = store.pending(now).into_iter().find(|c| c.id == fake.id).unwrap();
+        assert_eq!(card.explained, "After this, prompts stay on this machine.");
+
+        // The grant binds to the arguments; the sentence rides along and binds nothing.
+        store.grant(&fake.id, now, "19:34").unwrap();
+        store.consume(&fake.id, "studio", "set_backend", &args(serde_json::json!({"kind": "fake"})), now).unwrap();
+
+        // An app that explains nothing per call: today's card, empty line.
+        let plain = store
+            .request(
+                "hermes",
+                verified(),
+                "studio",
+                "set_backend",
+                args(serde_json::json!({"kind": "openai-images"})),
+                "sensitive",
+                SET_BACKEND_PURPOSE,
+                "",
+                "",
+                now,
+                "19:35",
+            )
+            .unwrap()
+            .id;
+        let card = store.pending(now).into_iter().find(|c| c.id == plain).unwrap();
+        assert_eq!(card.explained, "", "no explainer, no line — the card is what it was");
+
+        // And the absurd is cut at a word, naming its true length, like every bounded prose
+        // line on the card.
+        // 1139 characters (the store keeps the sentence trimmed), and the 600th falls inside a
+        // word ("prompts sta…"), so the cut has to back up to the space before it.
+        let long = "prompts stay local ".repeat(60);
+        let long = long.trim();
+        assert!(long.chars().count() > 600);
+        let cut = store
+            .request(
+                "hermes",
+                verified(),
+                "studio",
+                "set_backend",
+                args(serde_json::json!({"kind": "comfyui"})),
+                "sensitive",
+                SET_BACKEND_PURPOSE,
+                "",
+                long,
+                now,
+                "19:36",
+            )
+            .unwrap()
+            .id;
+        let card = store.pending(now).into_iter().find(|c| c.id == cut).unwrap();
+        assert!(
+            card.explained.ends_with(&format!("… ({} characters in full)", long.chars().count())),
+            "a cut sentence names its true length: {}",
+            card.explained
+        );
+        let head = &card.explained[..card.explained.find('…').unwrap()];
+        assert!(head.ends_with("prompts"), "and the cut lands on a word, not on \"sta\": {}", card.explained);
+
+        // The record itself is bounded — the cut happened on arrival, not at draw — and the
+        // card shows exactly what was stored: a second cut would replace the marker naming
+        // the true length (1139) with one naming the length of the already-cut line.
+        let record = store.records.iter().find(|r| r.id == cut).unwrap();
+        assert!(
+            record.explained.chars().count() <= EXPLAINED_CHARS + 40,
+            "the store keeps no more of the app's reply than the card's bound: {} characters",
+            record.explained.chars().count()
+        );
+        assert_eq!(card.explained, record.explained);
+    }
+
+    /// #137: a card that speaks about ONE call offers no standing yes. "Allow for this
+    /// session" would stop the asking for EVERY later call of the action, and the sentence the
+    /// person just read explained exactly one call, with exactly these arguments. A card that
+    /// needed that sentence to be understood is a card that has to keep asking.
+    #[test]
+    fn approvals_a_card_that_speaks_about_one_call_offers_no_standing_yes() {
+        let mut store = Store::new();
+        let now = Instant::now();
+
+        let speaking = store
+            .request(
+                "hermes",
+                verified(),
+                "studio",
+                "set_backend",
+                args(serde_json::json!({"kind": "fake"})),
+                "sensitive",
+                SET_BACKEND_PURPOSE,
+                "",
+                "After this, prompts stay on this machine.",
+                now,
+                "19:40",
+            )
+            .unwrap()
+            .id;
+        let card = store.pending(now).into_iter().find(|c| c.id == speaking).unwrap();
+        assert!(!card.explained.is_empty(), "the card carries its sentence");
+        assert!(
+            !card.can_session,
+            "the sentence explained ONE call; a session rule would stand in for all of them"
+        );
+
+        // The same action, the same grade, nothing said per call: the session rule is offered
+        // exactly as before. The suppression belongs to the sentence, not to the action.
+        let plain = store
+            .request(
+                "hermes",
+                verified(),
+                "studio",
+                "set_backend",
+                args(serde_json::json!({"kind": "openai-images"})),
+                "sensitive",
+                SET_BACKEND_PURPOSE,
+                "",
+                "",
+                now,
+                "19:41",
+            )
+            .unwrap()
+            .id;
+        let card = store.pending(now).into_iter().find(|c| c.id == plain).unwrap();
+        assert!(card.can_session, "an ordinary sensitive card still offers the session rule");
     }
 }

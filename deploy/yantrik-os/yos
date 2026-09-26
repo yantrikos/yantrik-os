@@ -1718,6 +1718,13 @@ DESCRIBE_SCHEMA = {
                                                     "when the app knows it is more than a "
                                                     "moment; a client sizes its timeout by it.",
                                      "type": "integer"},
+                "explains": {"description": "Present and true when the action can say what "
+                                            "ONE call of it does with that call's own "
+                                            "arguments; the sentence itself comes from "
+                                            "app.explain, because it depends on arguments "
+                                            "describe never sees. Absent when the action "
+                                            "explains nothing per call.",
+                             "type": "boolean"},
             },
         },
         "parameters": {

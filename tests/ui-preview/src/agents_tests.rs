@@ -346,6 +346,7 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
         args: lines(&["from: ~/Pictures/copy of a.jpg", "to: ~/.local/share/Trash"]),
         // Files names no handle — both arguments are paths a person can read (#54).
         target: "".into(),
+        explained: "".into(),
         warning: "".into(),
         can_session: false,
         decision: "".into(),
