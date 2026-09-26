@@ -1295,7 +1295,13 @@ mod process_readings {
         let dir = std::env::temp_dir().join(format!("sysmon-35-{tag}-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("a directory of our own");
         let program = dir.join("yos-monitor-current-cpu-check");
-        std::fs::copy("/usr/bin/yes", &program)
+        // A link, not a copy. A copy is a file this process holds open for writing, and a sibling
+        // test forking in that moment carries the write descriptor into its child until the child
+        // execs; running the copy inside that window fails with ETXTBSY, "Text file busy" (four CI
+        // runs on main did). A link is never open for writing, and exec through it still gives the
+        // child the long name as argv[0] and the truncated one as its `comm`.
+        let _ = std::fs::remove_file(&program);
+        std::os::unix::fs::symlink("/usr/bin/yes", &program)
             .expect("a `yes` that answers to a long name");
         let mut spinner = Command::new(&program);
         (Ended::spawn(&mut spinner), program)

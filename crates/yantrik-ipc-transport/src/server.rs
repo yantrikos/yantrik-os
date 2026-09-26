@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
-use crate::protocol::{RpcRequest, RpcResponse, RPC_METHOD_NOT_FOUND, RPC_PARSE_ERROR};
+use crate::protocol::{RpcRequest, RpcResponse, RPC_INTERNAL_ERROR, RPC_METHOD_NOT_FOUND, RPC_PARSE_ERROR};
 
 /// Directory holding this session's service sockets.
 ///
@@ -341,7 +341,21 @@ async fn handle_connection<R, W>(
         let response = match serde_json::from_str::<RpcRequest>(&line) {
             Ok(req) => {
                 tracing::debug!(method = %req.method, peer = ?peer, "RPC request");
-                dispatch(handler, req, peer)
+                // Handlers are synchronous and may hold a call for as long as it takes — the
+                // companion's `ask` runs for ninety seconds. Run on a runtime worker, that call
+                // also held the I/O driver whenever its worker was the last to poll it: the other
+                // workers slept on their condvars, nothing polled the socket, and the next
+                // connection was not even accepted until the slow call ended. The blocking pool
+                // is where a call that blocks belongs.
+                let handler = handler.clone();
+                let id = req.id.clone();
+                match tokio::task::spawn_blocking(move || dispatch(&handler, req, peer)).await {
+                    Ok(response) => response,
+                    Err(e) => {
+                        tracing::error!(error = %e, "RPC handler panicked");
+                        RpcResponse::error(id, RPC_INTERNAL_ERROR, "the service failed while answering".into())
+                    }
+                }
             }
             Err(e) => {
                 tracing::warn!(error = %e, "Failed to parse RPC request");
@@ -552,6 +566,85 @@ mod socket_dir_tests {
         assert_eq!(reply["result"], "pong");
         assert_eq!(reply["id"], "a", "the id comes back as it was sent, string or number");
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Holds `slow` until released, panics on `boom`, and answers everything else at once.
+    struct Held {
+        entered: std::sync::mpsc::SyncSender<()>,
+        release: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
+    }
+
+    impl ServiceHandler for Held {
+        fn service_id(&self) -> &str {
+            "held"
+        }
+        fn handle(
+            &self,
+            method: &str,
+            _params: serde_json::Value,
+        ) -> Result<serde_json::Value, yantrik_ipc_contracts::email::ServiceError> {
+            match method {
+                "slow" => {
+                    let _ = self.entered.send(());
+                    let _ = self.release.lock().unwrap().recv_timeout(std::time::Duration::from_secs(30));
+                }
+                "boom" => panic!("a handler that fails outright"),
+                _ => {}
+            }
+            Ok(serde_json::json!({ "method": method }))
+        }
+    }
+
+    /// A call held in its handler must not hold up anyone else's. On a current-thread runtime the
+    /// handler used to run on the one thread the accept loop needs, so this was certain to fail;
+    /// on the companion's four-worker runtime it failed only when the held call's worker was the
+    /// last to poll the socket, which made it a CI flake (`a_slow_call_in_flight_…`, twice on
+    /// main) rather than the ninety-second freeze it was on a person's desktop.
+    #[test]
+    fn a_call_held_in_its_handler_does_not_hold_up_another() {
+        let dir = std::env::temp_dir().join(format!("yantrik-held-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("held.sock");
+        let address = path.to_string_lossy().to_string();
+
+        let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel(1);
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let handler = Arc::new(Held { entered: entered_tx, release: std::sync::Mutex::new(release_rx) });
+        let serving = address.clone();
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+            let _ = rt.block_on(RpcServer::new(&serving).serve(handler));
+        });
+        for _ in 0..200 {
+            if std::os::unix::net::UnixStream::connect(&path).is_ok() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+
+        let slow_path = path.clone();
+        let slow = std::thread::spawn(move || one_line(&slow_path, r#"{"jsonrpc":"2.0","id":1,"method":"slow"}"#));
+        entered_rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the slow call reached its handler");
+
+        // `one_line` waits five seconds; the slow call is held for thirty.
+        let fast = one_line(&path, r#"{"jsonrpc":"2.0","id":2,"method":"fast"}"#);
+        assert_eq!(fast["result"]["method"], "fast", "{fast}");
+
+        // A handler that panics costs its caller an answer, not the server: the caller hears an
+        // internal error under its own id, and the next caller is served as usual.
+        let boom = one_line(&path, r#"{"jsonrpc":"2.0","id":3,"method":"boom"}"#);
+        assert_eq!(boom["error"]["code"], RPC_INTERNAL_ERROR, "{boom}");
+        assert_eq!(boom["id"], 3);
+        let after = one_line(&path, r#"{"jsonrpc":"2.0","id":4,"method":"fast"}"#);
+        assert_eq!(after["result"]["method"], "fast", "{after}");
+
+        let _ = release_tx.send(());
+        let slow = slow.join().expect("the slow caller");
+        assert_eq!(slow["result"]["method"], "slow", "{slow}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

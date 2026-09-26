@@ -9,7 +9,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 # The agent-reach file keeps a digest of each agent token, never the token (src/reach.rs).
 sha2 = { workspace = true }
-tokio = { workspace = true, features = ["net", "io-util", "sync"] }
+tokio = { workspace = true, features = ["net", "io-util", "sync", "rt"] }
 tracing = { workspace = true }
 yantrik-ipc-contracts = { workspace = true }
 
