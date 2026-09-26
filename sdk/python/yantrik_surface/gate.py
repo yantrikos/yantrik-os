@@ -148,6 +148,25 @@ def _as_u64(value):
     return None
 
 
+def _proc_stat(pid):
+    """`pid`'s state character (field 3 of `/proc/<pid>/stat`) and start time (field 22), or
+    None when there is no such process or no `/proc` to ask."""
+    try:
+        with open("/proc/%d/stat" % pid, "rb") as f:
+            stat = f.read().decode("utf-8", "replace")
+    except (OSError, ValueError):
+        return None
+    # Field 2, the command name, may hold spaces and parentheses, so the fields are counted
+    # from the LAST `)`. The token after that is field 3, the state, and starttime is field 22.
+    fields = stat.rpartition(")")[2].split()
+    if len(fields) < 20 or not fields[0]:
+        return None
+    try:
+        return fields[0][0], int(fields[19])
+    except ValueError:
+        return None
+
+
 def proc_start_ticks(pid):
     """`pid`'s start time — field 22 of `/proc/<pid>/stat`, clock ticks since boot — or None
     when there is no such process or no `/proc` to ask.
@@ -156,34 +175,45 @@ def proc_start_ticks(pid):
     a dead shell's mode. A pid and the start time it was recorded with name one process,
     because whatever reuses the pid does not also reuse the boot tick it started at.
     """
+    seen = _proc_stat(pid)
+    return None if seen is None else seen[1]
+
+
+def boot_id():
+    """The boot this machine is in — `/proc/sys/kernel/random/boot_id` — or None when there is
+    no `/proc` to ask. The kernel picks a fresh random id on every boot, so an identity
+    recorded under a different one names a machine that has since restarted (#333)."""
     try:
-        with open("/proc/%d/stat" % pid, "rb") as f:
-            stat = f.read().decode("utf-8", "replace")
+        with open("/proc/sys/kernel/random/boot_id", "rb") as f:
+            text = f.read().decode("utf-8", "replace")
     except (OSError, ValueError):
         return None
-    # Field 2, the command name, may hold spaces and parentheses, so the fields are counted
-    # from the LAST `)`. The token after that is field 3, and starttime is field 22.
-    fields = stat.rpartition(")")[2].split()
-    if len(fields) < 20:
-        return None
-    try:
-        return int(fields[19])
-    except ValueError:
-        return None
+    return text.strip() or None
 
 
 def _names_a_live_shell(doc):
-    """Whether the shell that wrote `doc` is the process still running under that pid —
-    `gate::names_a_live_shell`, whose comment carries the reasoning. A file that names no
-    shell reads as it always did; a file that names one is trusted only while it runs, and
-    half an identity fails closed like a dead one."""
+    """Whether the shell that wrote `doc` is the process still running under that pid, in this
+    boot — `gate::names_a_live_shell`, whose comment carries the reasoning. A file that names
+    no shell reads as it always did; a file that names one is trusted only while it runs, and
+    less than the whole identity — a pid with no start time, or a file from before the boot id
+    existed with no boot to tie the pair to — fails closed like a dead one."""
     pid = _as_u64(doc.get("shell_pid"))
     start = _as_u64(doc.get("shell_start_ticks"))
-    if pid is None and start is None:
-        return True
-    if pid is None or start is None or pid > 0xFFFFFFFF:
+    boot = doc.get("boot_id") if isinstance(doc.get("boot_id"), str) else None
+    if pid is None or start is None or boot is None:
+        return pid is None and start is None and boot is None
+    if pid > 0xFFFFFFFF:
         return False
-    return proc_start_ticks(pid) == start
+    this_boot = boot_id()
+    if this_boot is None or boot.strip() != this_boot:
+        return False
+    seen = _proc_stat(pid)
+    if seen is None:
+        return False
+    state, started = seen
+    # A zombie has exited but not been reaped: it keeps its pid and its start time in /proc,
+    # and the shell behind them is gone all the same. `X` is the kernel's own "dead".
+    return started == start and state not in ("Z", "X")
 
 
 def mode_from(text, now):
@@ -192,8 +222,8 @@ def mode_from(text, now):
     Anything unreadable is `ask`. A bypass whose deadline has passed reads as the mode before
     it (or `ask`), so a shell that died mid-bypass does not leave this app trusting it past the
     minute the person was promised; a bypass with no deadline is trusted while the shell that
-    wrote the file is running — the file names it, and a name that is not running reads as
-    `ask`, session rules and all (#154).
+    wrote the file is running — the file names it and the boot it wrote in, and a name that is
+    not running, or a boot that has ended, reads as `ask`, session rules and all (#154, #333).
     """
     try:
         doc = json.loads(text)

@@ -173,8 +173,31 @@ def _mode_file():
     doc = json.load(open(path))
     if doc.get("mode") not in ("plan", "ask", "auto", "bypass"):
         raise Failed("mode %r is not one this OS defines" % doc.get("mode"))
+    # The mode alone proves nothing: the apps trust the file only while the shell it names is
+    # running, in this boot, and read any other file as Ask whatever mode it says (#154,
+    # #333). So the name is checked against the shell that is actually running — a stale file
+    # here means every dispatch on this machine is enforcing Ask while the chip shows
+    # something else.
+    pid = shell_pid()
+    if pid is None:
+        raise Failed("no yantrik-ui process is running for the mode file to name")
+    stat = open("/proc/%d/stat" % pid).read().rsplit(")", 1)[1].split()
+    boot = open("/proc/sys/kernel/random/boot_id").read().strip()
+    problems = []
+    if doc.get("shell_pid") != pid:
+        problems.append("names shell_pid %r, and the shell running is pid %d"
+                        % (doc.get("shell_pid"), pid))
+    if doc.get("shell_start_ticks") != int(stat[19]):
+        problems.append("names shell_start_ticks %r, and the kernel gives pid %d %s"
+                        % (doc.get("shell_start_ticks"), pid, stat[19]))
+    if doc.get("boot_id") != boot:
+        problems.append("names boot_id %r, and this boot is %s" % (doc.get("boot_id"), boot))
+    if problems:
+        raise Failed("mind-mode.json does not name the running shell: %s — apps would all "
+                     "read Ask, whatever the person chose" % "; ".join(problems))
     BASELINE["mode"] = doc["mode"]
-    return "mode %s" % doc["mode"]
+    return "mode %s, and the file names the shell that is running (pid %d, this boot)" % (
+        doc["mode"], pid)
 
 
 # The commands the image is built to ship, and what each one is for on a Yantrik machine.

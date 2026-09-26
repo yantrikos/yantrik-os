@@ -253,7 +253,7 @@ pub fn other_names(app_id: &str) -> &'static [&'static str] {
 // `ControlRpc::dispatch`), and the registry decides with `gate::decide` inside the same turn of
 // the event loop as the handler.
 pub use yantrik_ipc_transport::gate::{
-    configured_ceiling, configured_mode, decide, grant_of, mode_from, mode_path, permit,
+    boot_id, configured_ceiling, configured_mode, decide, grant_of, mode_from, mode_path, permit,
     proc_start_ticks, spend_grants_with, unrecoverable, Authority, Mode, AGENT_TOKEN, DEFAULT_MODE,
     LADDER, MODES, MODE_FILE, SOCKET_FLOOR, UNRECOVERABLE_PHRASES,
 };

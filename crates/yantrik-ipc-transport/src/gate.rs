@@ -159,10 +159,13 @@ pub fn ceiling_from(text: &str) -> String {
 //
 // So the mode is read here too, the way the ceiling is: the shell writes it to a small file
 // beside `settings.yaml` whenever it changes (`mind_mode::publish_policy_file` in the shell), and
-// every dispatch reads it per call. The file also names the shell that wrote it — its pid, and
-// the start time the kernel gives that pid — and a file whose shell is not running reads as
-// `ask`: a shell that died in bypass, or with "allow for this session" rules, must not keep
-// either in force until the next shell start happens to rewrite the file (#154).
+// every dispatch reads it per call. The file also names the shell that wrote it — its pid, the
+// start time the kernel gives that pid, and the boot the machine was in — and a file whose shell
+// is not running reads as `ask`: a shell that died in bypass, or with "allow for this session"
+// rules, must not keep either in force until the next shell start happens to rewrite the file
+// (#154). The boot id is the part a reboot cannot leave standing: the file itself survives one
+// on disk, and in theory the kernel could hand a new process the same pid at the same start
+// tick, so without it the old shell's name could still match (#333).
 //
 // A call above what the mode allows must carry a GRANT — the
 // `request_id` the shell's `request_approval` minted and a person's Allow turned into one — and
@@ -256,29 +259,61 @@ fn unix_now() -> u64 {
 /// dead shell's mode. A pid and the start time it was recorded with name one process, because
 /// whatever reuses the pid does not also reuse the boot tick it started at.
 pub fn proc_start_ticks(pid: u32) -> Option<u64> {
+    proc_stat(pid).map(|(_, start)| start)
+}
+
+/// `pid`'s state character (field 3 of `/proc/<pid>/stat`) and start time (field 22), or `None`
+/// when there is no such process or no `/proc` to ask.
+fn proc_stat(pid: u32) -> Option<(char, u64)> {
     let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
     // Field 2, the command name, may hold spaces and parentheses — a shell called `(tmux)` is
     // one field — so the fields are counted from the LAST `)`, which closes it. The token after
-    // that is field 3, and starttime is field 22: index 19 from there.
+    // that is field 3, the state, and starttime is field 22: index 19 from there.
     let after_comm = stat.rsplit_once(')')?.1;
-    after_comm.split_whitespace().nth(19)?.parse().ok()
+    let mut fields = after_comm.split_whitespace();
+    let state = fields.next()?.chars().next()?;
+    let start = fields.nth(18)?.parse().ok()?;
+    Some((state, start))
 }
 
-/// Whether the shell that wrote `doc` is the process still running under that pid.
+/// The boot this machine is in — `/proc/sys/kernel/random/boot_id` — or `None` when there is no
+/// `/proc` to ask. The kernel picks a fresh random id on every boot, so an identity recorded
+/// under a different one names a machine that has since restarted (#333).
+pub fn boot_id() -> Option<String> {
+    std::fs::read_to_string("/proc/sys/kernel/random/boot_id")
+        .ok()
+        .map(|text| text.trim().to_string())
+        .filter(|id| !id.is_empty())
+}
+
+/// Whether the shell that wrote `doc` is the process still running under that pid, in this boot.
 ///
 /// A file that names no shell — one an older shell wrote, or a program wrote by hand — reads as
 /// it always did: anybody who can write this file can write any mode into it, so demanding an
 /// identity from such a writer would close no door the same-uid limit leaves open (#154, item 5).
-/// A file that DOES name one is trusted only while that shell runs, and half an identity names
-/// no process anybody can find alive, so it fails closed like a dead one.
+/// A file that DOES name one is trusted only while that shell runs, and less than the whole
+/// identity — a pid with no start time, or a file from before the boot id existed with no boot
+/// to tie the pair to — names no process anybody can find alive, so it fails closed like a dead
+/// one.
 fn names_a_live_shell(doc: &serde_json::Value) -> bool {
     let pid = doc.get("shell_pid").and_then(|v| v.as_u64());
     let start = doc.get("shell_start_ticks").and_then(|v| v.as_u64());
-    let (Some(pid), Some(start)) = (pid, start) else {
-        return pid.is_none() && start.is_none();
+    let boot = doc.get("boot_id").and_then(|v| v.as_str());
+    let (Some(pid), Some(start), Some(boot)) = (pid, start, boot) else {
+        return pid.is_none() && start.is_none() && boot.is_none();
     };
     let Ok(pid) = u32::try_from(pid) else { return false };
-    proc_start_ticks(pid) == Some(start)
+    let Some(this_boot) = boot_id() else { return false };
+    if boot.trim() != this_boot {
+        return false;
+    }
+    match proc_stat(pid) {
+        // A zombie has exited but not been reaped: it keeps its pid and its start time in
+        // /proc, and the shell behind them is gone all the same. `X` is the kernel's own
+        // "dead", which some kernels show instead of removing the entry.
+        Some((state, started)) => started == start && state != 'Z' && state != 'X',
+        None => false,
+    }
 }
 
 /// Read the mode out of what the shell wrote. Public so the shell's own test can prove that
@@ -288,8 +323,9 @@ fn names_a_live_shell(doc: &serde_json::Value) -> bool {
 /// rewrites the file, but a shell that crashed mid-bypass leaves a file saying `bypass` with
 /// nobody left to fold it — so the file carries when the bypass ends and this honours it. A
 /// bypass "until restart" carries no end and is trusted while the shell that wrote the file is
-/// running: the file names that shell, and this checks the name against the process table, so a
-/// shell that died leaves `ask` behind rather than its last mode (#154).
+/// running: the file names that shell and the boot it wrote in, and this checks the name
+/// against the process table and the machine's boot id, so a shell that died — and a machine
+/// that rebooted — leave `ask` behind rather than its last mode (#154, #333).
 pub fn mode_from(text: &str, now_unix: u64) -> Mode {
     let Ok(doc) = serde_json::from_str::<serde_json::Value>(text) else {
         tracing::warn!("{MODE_FILE} is not JSON; using {DEFAULT_MODE}");
@@ -845,6 +881,7 @@ mod tests {
         let mut child = std::process::Command::new("true").spawn().expect("a child to reap");
         let started = proc_start_ticks(child.id()).expect("a running child has a start time");
         child.wait().expect("the child can be waited");
+        let boot = boot_id().expect("this machine has booted");
 
         let dead = serde_json::json!({
             "mode": "bypass",
@@ -852,6 +889,7 @@ mod tests {
             "bypass_expires_unix": null,
             "shell_pid": child.id(),
             "shell_start_ticks": started,
+            "boot_id": boot,
             "session_rules": [{"app": "calendar", "action": "delete_event"}],
         });
         let read = mode_from(&dead.to_string(), 0);
@@ -862,19 +900,87 @@ mod tests {
         // is not the kernel's — what a reused pid would look like — also reads as `ask`.
         let pid = std::process::id();
         let real = proc_start_ticks(pid).expect("this test is itself running");
-        let reused =
-            serde_json::json!({"mode": "auto", "shell_pid": pid, "shell_start_ticks": real + 1});
+        let reused = serde_json::json!({"mode": "auto", "shell_pid": pid,
+                                        "shell_start_ticks": real + 1, "boot_id": boot});
         assert_eq!(mode_from(&reused.to_string(), 0).name, DEFAULT_MODE);
 
         // A live shell's own identity is honoured, and half an identity — a pid with no start
         // time to check it against — names no process anybody can find alive.
-        let alive = serde_json::json!({"mode": "auto", "shell_pid": pid, "shell_start_ticks": real});
+        let alive = serde_json::json!({"mode": "auto", "shell_pid": pid,
+                                       "shell_start_ticks": real, "boot_id": boot});
         assert_eq!(mode_from(&alive.to_string(), 0).name, "auto");
         let half = serde_json::json!({"mode": "auto", "shell_pid": pid});
         assert_eq!(mode_from(&half.to_string(), 0).name, DEFAULT_MODE);
 
         // A file that names no shell at all reads the way it always has.
         assert_eq!(mode_from(r#"{"mode":"auto"}"#, 0).name, "auto");
+    }
+
+    /// #333, item 1: the identity used to be the pid and start time alone, and the file
+    /// outlives a reboot on disk — in theory a new process could come up under the same pair
+    /// and resurrect the mode a dead shell left behind. The boot id in the file is the part no
+    /// reboot leaves standing: the kernel picks a fresh one every boot.
+    #[test]
+    fn an_identity_from_another_boot_reads_as_ask() {
+        let pid = std::process::id();
+        let start = proc_start_ticks(pid).expect("this test is itself running");
+        let boot = boot_id().expect("this machine has booted");
+
+        // The whole identity, recorded in this boot, is honoured.
+        let alive = serde_json::json!({"mode": "bypass", "shell_pid": pid,
+                                       "shell_start_ticks": start, "boot_id": boot});
+        assert_eq!(mode_from(&alive.to_string(), 0).name, "bypass");
+
+        // The same pid under the same start time, recorded in a boot that has ended: what the
+        // file left on disk across a reboot would look like if the kernel handed the pair out
+        // again.
+        let stale_boot = serde_json::json!({"mode": "bypass", "shell_pid": pid,
+                                            "shell_start_ticks": start,
+                                            "boot_id": "00000000-0000-0000-0000-000000000000"});
+        assert_eq!(mode_from(&stale_boot.to_string(), 0).name, DEFAULT_MODE);
+
+        // A file from before the boot id existed names a live pid under a live start time and
+        // nothing to tie the pair to this boot: two thirds of an identity fails closed like
+        // half of one.
+        let pre_upgrade = serde_json::json!({"mode": "bypass", "shell_pid": pid,
+                                             "shell_start_ticks": start});
+        assert_eq!(mode_from(&pre_upgrade.to_string(), 0).name, DEFAULT_MODE);
+
+        // And a boot id on its own is no identity at all.
+        let lonely = serde_json::json!({"mode": "bypass", "boot_id": boot});
+        assert_eq!(mode_from(&lonely.to_string(), 0).name, DEFAULT_MODE);
+    }
+
+    /// #333, item 2: a child that has exited but not been reaped keeps its pid and its start
+    /// time in /proc — as a zombie. An identity checked against the pair alone would call the
+    /// shell behind them alive; the state character says it is not.
+    #[test]
+    fn a_shell_that_is_a_zombie_is_not_alive_either() {
+        let mut child = std::process::Command::new("true").spawn().expect("a child to exit");
+        let pid = child.id();
+        // Wait for the state the assertion needs — the child a zombie, unreaped — not for a
+        // fixed time.
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let zombied = loop {
+            if proc_stat(pid).map(|(state, _)| state) == Some('Z') {
+                break true;
+            }
+            if std::time::Instant::now() >= deadline {
+                break false;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        let started = proc_start_ticks(pid).expect("a zombie keeps its start time");
+        let doc = serde_json::json!({
+            "mode": "bypass", "shell_pid": pid, "shell_start_ticks": started,
+            "boot_id": boot_id().expect("this machine has booted"),
+        });
+        // Read while the zombie is still unreaped: the pid and start time are both in /proc
+        // and both match the file, so only the state stands between this and `bypass`.
+        let read = mode_from(&doc.to_string(), 0).name;
+        child.wait().expect("the zombie can be reaped");
+        assert!(zombied, "the child never reached the zombie state");
+        assert_eq!(read, DEFAULT_MODE, "a zombie's bypass died with it");
     }
 
     // ── The vectors every other implementation replays ─────────────────

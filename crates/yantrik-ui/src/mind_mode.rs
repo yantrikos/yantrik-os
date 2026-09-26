@@ -841,18 +841,26 @@ fn persist(mode: Mode) {
 // to boot into, and the next shell start rewrites it before anything can read a stale one. A
 // bypass with a deadline carries it, so a shell that died mid-bypass leaves a file the apps stop
 // trusting at the minute the person was promised. A bypass "until restart" carries no minute,
-// so the file also names the shell that wrote it — its pid, and the start time the kernel gives
-// that pid — and the apps read a file whose shell is not running as `ask` (#154). The rules
-// ride under the same name: they were answers to cards a dead shell will never raise again.
+// so the file also names the shell that wrote it — its pid, the start time the kernel gives
+// that pid, and the boot the machine was in — and the apps read a file whose shell is not
+// running as `ask` (#154). The boot id is the part a reboot cannot leave standing: the file
+// survives one on disk, and in theory a new process could come up under the same pid at the
+// same start tick, so without it the old shell's name could still match (#333). The rules ride
+// under the same name: they were answers to cards a dead shell will never raise again.
 
-/// This process's pid and the start time the kernel gives it, read once: both are facts for
-/// the lifetime of the shell, and every publish writes the same pair.
-fn shell_identity() -> Option<(u32, u64)> {
-    static IDENTITY: OnceLock<Option<(u32, u64)>> = OnceLock::new();
-    *IDENTITY.get_or_init(|| {
-        let pid = std::process::id();
-        yantrik_app_runtime::control::proc_start_ticks(pid).map(|start| (pid, start))
-    })
+/// This process's pid, the start time the kernel gives it, and the boot the machine is in, read
+/// once: all three are facts for the lifetime of the shell, and every publish writes the same
+/// identity.
+fn shell_identity() -> Option<&'static (u32, u64, String)> {
+    static IDENTITY: OnceLock<Option<(u32, u64, String)>> = OnceLock::new();
+    IDENTITY
+        .get_or_init(|| {
+            let pid = std::process::id();
+            let start = yantrik_app_runtime::control::proc_start_ticks(pid)?;
+            let boot = yantrik_app_runtime::control::boot_id()?;
+            Some((pid, start, boot))
+        })
+        .as_ref()
 }
 
 /// The file's contents for this state.
@@ -877,16 +885,17 @@ pub fn policy_json(modes: &Modes, now: Instant, now_unix: u64) -> String {
                  the shell shows, and the next change overwrites it.",
     });
     match shell_identity() {
-        Some((pid, start)) => {
+        Some((pid, start, boot)) => {
             doc["shell_pid"] = serde_json::json!(pid);
             doc["shell_start_ticks"] = serde_json::json!(start);
+            doc["boot_id"] = serde_json::json!(boot);
         }
-        // No /proc to read a start time from, so the file names no shell and the apps read it
+        // No /proc to read the identity from, so the file names no shell and the apps read it
         // the way they read one an older shell wrote. Said out loud: it means nothing on this
         // machine bounds a dead shell's mode to its own lifetime.
         None => tracing::warn!(
-            "could not read this shell's start time from /proc; the mode file will name no \
-             shell, and the apps cannot tell a dead shell's mode from a live one"
+            "could not read this shell's start time or the boot id from /proc; the mode file \
+             will name no shell, and the apps cannot tell a dead shell's mode from a live one"
         ),
     }
     serde_json::to_string_pretty(&doc).unwrap_or_default()
@@ -1427,13 +1436,23 @@ mod mind_mode_tests {
         // It is trusted because the file names the shell that wrote it and that shell — this
         // test's own process — is running. The same file left behind by a shell that DIED
         // reads as `ask`, which is the whole of #154's first item: a pid under a start time
-        // the kernel does not give it names nothing alive.
+        // the kernel does not give it names nothing alive. And the name carries the boot it
+        // was written in (#333), which the file cannot keep across a reboot: the same pid and
+        // start time under a boot that has ended also reads as `ask`.
         let doc: serde_json::Value = serde_json::from_str(&text).unwrap();
         assert_eq!(doc["shell_pid"].as_u64(), Some(std::process::id() as u64));
         let start = doc["shell_start_ticks"].as_u64().expect("the file carries a start time");
+        assert_eq!(
+            doc["boot_id"].as_str().map(str::to_string),
+            yantrik_app_runtime::control::boot_id(),
+            "the file carries this boot's id"
+        );
         let mut dead = doc.clone();
         dead["shell_start_ticks"] = serde_json::json!(start + 1);
         assert_eq!(mode_from(&dead.to_string(), unix).name, "ask");
+        let mut rebooted = doc.clone();
+        rebooted["boot_id"] = serde_json::json!("00000000-0000-0000-0000-000000000000");
+        assert_eq!(mode_from(&rebooted.to_string(), unix).name, "ask");
     }
 
     /// Choosing bypass twice must not strand the machine there.
